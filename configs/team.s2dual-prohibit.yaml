@@ -1,0 +1,64 @@
+# WHAT THIS FAMILY IS
+#
+# Three seats: an Adopter and two Coders that cannot see or address each other.
+# The Adopter is the only channel between them, so what crosses is whatever it
+# chose to write. Coder A is asked for the narrowest change that accounts for
+# the defect, Coder B for one that covers the stated requirement wherever the
+# code implements it; which of the two this run delivers is the Adopter's call.
+#
+# EVERY SEAT IS SINGLE2. `profile: single2` on a role seats the evaluated
+# single agent: its system prompt, its history shaper, its safety wrapper and
+# its tool output caps -- a `bash` result capped at 10,000 characters -- with
+# the role's card appended to that prompt rather than replacing it. The single
+# agent arm runs the same implementation, so a difference between the two arms
+# is the organization and not the seat. That is the whole reason this family
+# exists next to `team.dual-*.yaml`, which seats OpenCollab's own agent.
+#
+# NOT POOLABLE WITH `dual-*`. Same roster, same four edges, same five treatment
+# blocks byte for byte -- and a different agent under them. Rows do not merge.
+#
+# THE TOOLS ARE SINGLE2'S SIX, IN ITS ORDER, PLUS THE THREE A TEAM NEEDS. The
+# order is the file's and reaches the model as written, so it is Single2's
+# evaluated order rather than this repository's alphabetical habit. The three
+# additions are `message_agent`, `team_status` and `submit`; the card says what
+# they do and what ends a run here, because Single2's own prompt says a reply
+# without a tool call ends the session, which is not true of a team seat.
+#
+# ONE AT A TIME. The cards that command anything command the Adopter to ask one
+# Coder, and to write the second its own brief once the first has answered.
+# Turns are serialized by the harness regardless (`serialize_turns=True`), and
+# that setting is recorded on every run under
+# `assigned.topology_nodes.turns_serialized`.
+#
+# NOT BEST-OF-2. The second candidate is written after the Adopter has seen the
+# first, so the two are not independent draws.
+#
+# THIS CELL: rung 1, against `dual-prohibit` -- the command, the
+# suspension line, and the prohibition on applying the fix oneself.
+entry: adopter
+
+roles:
+  adopter:
+    profile: single2
+    prompt_file: s2dual/adopter.s2dual-prohibit.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+  coder_a:
+    profile: single2
+    prompt_file: s2dual/coder-a.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+  coder_b:
+    profile: single2
+    prompt_file: s2dual/coder-b.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+# Four directed edges, not six. The Adopter reaches both Coders and both reach
+# it back -- the return edges are what make a prebuilt peer able to deliver at
+# all. `coder_a` and `coder_b` are NOT connected: the scheduler refuses a
+# message between them (`_scheduler_team.py:188`), so anything one Coder learns
+# of the other's work is something the Adopter decided to tell it.
+topology:
+  adopter: [coder_a, coder_b]
+  coder_a: [adopter]
+  coder_b: [adopter]

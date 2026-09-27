@@ -27,6 +27,11 @@ roles:
     # temperature: 0.2
     # thinking / thinking_params: per-role extended-thinking overrides. Optional.
     # thinking: true
+    # profile: run this seat as a named agent profile (`single2`). Optional —
+    # omit for OpenCollab's own agent. The profile's system prompt leads and the
+    # `prompt` above is appended to it; it also sets the shaper, the safety
+    # wrapper and the tool output caps.
+    # profile: single2
     # tools: the allowlist this role may call. Names must be from the menu below.
     # A role that spawns/messages others needs the coordination tools AND matching
     # topology edges.

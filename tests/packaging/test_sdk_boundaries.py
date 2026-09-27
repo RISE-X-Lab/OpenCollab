@@ -81,10 +81,11 @@ def test_v2_request_dto_modules_stay_deleted() -> None:
 
 def test_public_modules_export_only_documented_names() -> None:
     import opencollab.environments as environments
+    import opencollab.models as models
     import opencollab.sdk as sdk
     import opencollab.tools as tools
     import opencollab.workflows as workflows
 
-    for module in (sdk, tools, environments, workflows):
+    for module in (sdk, tools, environments, workflows, models):
         assert module.__all__
         assert all(not name.startswith("_") for name in module.__all__)

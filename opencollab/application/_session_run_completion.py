@@ -13,6 +13,7 @@ from opencollab.application._session_run_shared import (
     _WRITE_TOOLS,
     GenerationTimeoutError,
     _ContextOverflowStop,
+    _request_tool_names,
     _submit_tool_choice,
     _TokenBudgetStop,
 )
@@ -23,6 +24,8 @@ from opencollab.application.shaping import forced_shape
 from opencollab.application.steering import (
     build_steering_block,
     fold_steering,
+    resolve_budget_nudge_mode,
+    resolve_write_nudge_mode,
 )
 from opencollab.application.tool_execution import TERMINAL_CAPTURE_SKIP_MESSAGE
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
@@ -403,7 +406,16 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             has_structured_output=_STRUCTURED_OUTPUT_TOOL in tool_names,
             structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),
             write_landed=self.state.turn.has_landed_write,
+            budget_nudge_mode=resolve_budget_nudge_mode(),
+            write_nudge_mode=resolve_write_nudge_mode(),
+            prev_used_tokens=(
+                self.state.used_tokens
+                if self._steering_prev_used_tokens is None
+                else self._steering_prev_used_tokens
+            ),
         )
+        # Spend at the turn just built, so the next turn can see a band crossing.
+        self._steering_prev_used_tokens = self.state.used_tokens
         self._maybe_trace_steering(steering_level)
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
@@ -497,6 +509,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     async def _complete_with_choice(
         self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None
     ) -> CompletionResponse:
+        # Record-only capture of what this request offers, read back by
+        # ``record_llm_trace`` after the response returns. This is the single
+        # place a request is issued, so it sees the list AFTER the steering hard
+        # rung narrows it and the choice AFTER an override or a degrade to
+        # "auto". Provider-specific conversions happen after this observation;
+        # the trace identifies its application stage.
+        self._last_request_tool_names = _request_tool_names(tools)
+        self._last_request_tool_choice = tool_choice
         # ``thinking`` is read defensively (getattr) so duck-typed agent stubs
         # without the field keep working. When OFF (the default) the call is made
         # exactly as before — the thinking kwargs are omitted entirely so the LLM
@@ -526,7 +546,17 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             remaining_budget = int(self.max_budget_tokens) - int(
                 self.state.used_tokens
             )
-            reserved_input_tokens = estimate_request_tokens(messages, tools)
+            # Reserve what the request will actually carry. The outbound
+            # normalizer strips ``reasoning_content`` on every streaming call
+            # (openai_provider._build_request_kwargs passes
+            # ``keep_reasoning_content=not stream``), so counting recorded
+            # reasoning here reserved input the provider never billed and
+            # stopped sessions that still held most of their budget.
+            reserved_input_tokens = estimate_request_tokens(
+                messages,
+                tools,
+                keep_reasoning_content=not getattr(self.agent, "llm_stream_chat", False),
+            )
             output_budget = remaining_budget - reserved_input_tokens
             if output_budget < 1:
                 raise _TokenBudgetStop(

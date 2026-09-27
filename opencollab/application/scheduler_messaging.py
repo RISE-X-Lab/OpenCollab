@@ -226,6 +226,7 @@ class MessagingMixin:
             )
             self._autosave_session(to_aid)
             delivered_events = await self._drain_message_inbox_locked(to_aid)
+        await self.snapshot_delivery_tree("message_sent", aid=from_aid, to_aid=to_aid)
         # Scheduler events are observational and may re-enter send_message. Emit
         # only after releasing the per-target lock, and isolate sink failures so
         # durable queue mutation and the drive task cannot be rolled back halfway.

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+from opencollab.adapters.tools.adopt import AdoptTool
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
@@ -33,6 +34,7 @@ STATELESS_TOOL_FACTORIES: dict[str, Callable[[], Tool]] = {
     "apply_patch": ApplyPatchTool,
     "git_diff": GitDiffTool,
     "grep": GrepTool,
+    "adopt": AdoptTool,
     "submit": SubmitTool,
     "ask_user": AskUserTool,
 }
@@ -200,7 +202,7 @@ def _instantiate(
     Bash retains the caller's process-isolation requirement.
     """
     kwargs: dict[str, object] = dict(limits.get(name, {}))
-    if name == "bash":
+    if name in {"bash", "adopt"}:
         kwargs["require_process_isolation"] = not allow_unisolated_shell
     if name == "file_write":
         kwargs["allow_create"] = allow_file_creation

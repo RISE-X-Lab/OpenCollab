@@ -6,10 +6,20 @@ Ollama, vLLM, etc.) via the OpenAI SDK.
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
+from opencollab.adapters.llm._chat_response import _parse_response
+from opencollab.adapters.llm._chat_response import _usage_int as _usage_int
+from opencollab.adapters.llm._chat_stream import (
+    _STREAM_REQUEST_FIELDS,
+    _create_and_consume_chat_stream,
+    _stream_state_to_response,
+)
+from opencollab.adapters.llm.first_token import (
+    NOT_STREAMED,
+    begin_attempt,
+)
 from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
 from opencollab.adapters.llm.tool_contracts import (
     NormalizedToolChoice,
@@ -19,12 +29,7 @@ from opencollab.adapters.llm.tool_contracts import (
 )
 from opencollab.adapters.llm.types import (
     LLMResponse,
-    Usage,
-    estimate_messages_tokens,
     model_capabilities,
-    rescue_empty_turn,
-    to_plain_data,
-    usage_to_dict,
 )
 
 # ``extra_body`` is merged into the OpenAI SDK's request payload after the
@@ -83,11 +88,14 @@ def _build_request_kwargs(
     top_p: float | None = None,
     max_output_tokens: int | None = None,
     reasoning_effort: str | None = None,
+    keep_reasoning_content: bool = True,
 ) -> dict[str, Any]:
     reasoning_model = _uses_reasoning_request_fields(model)
     kwargs: dict[str, Any] = {
         "model": model,
-        "messages": _normalize_request_messages(messages),
+        "messages": _normalize_request_messages(
+            messages, keep_reasoning_content=keep_reasoning_content
+        ),
     }
     if not reasoning_model:
         kwargs["temperature"] = temperature
@@ -127,21 +135,37 @@ def _build_request_kwargs(
     return kwargs
 
 
-def _normalize_request_messages(messages: list[dict]) -> list[dict]:
-    """Make message payloads acceptable to stricter OpenAI-compatible gateways."""
+# Message keys an OpenAI-compatible endpoint accepts on the request path.
+_REQUEST_MESSAGE_FIELDS = frozenset({
+    "role",
+    "content",
+    "reasoning_content",
+    "tool_calls",
+    "tool_call_id",
+    "name",
+})
+
+
+def _normalize_request_messages(
+    messages: list[dict], *, keep_reasoning_content: bool = True
+) -> list[dict]:
+    """Make message payloads acceptable to stricter OpenAI-compatible gateways.
+
+    ``keep_reasoning_content=False`` drops recorded chain-of-thought from the
+    outbound history. Streaming turns this on: streaming is what makes
+    ``reasoning_content`` non-empty in the first place, and echoing it back
+    would both inflate input tokens and diverge the request from the
+    non-streaming baseline by more than the two streaming keys. The reasoning
+    still reaches the trajectory — it is recorded, just not resent.
+    """
+    dropped = frozenset() if keep_reasoning_content else frozenset({"reasoning_content"})
+    allowed = _REQUEST_MESSAGE_FIELDS - dropped
     normalized: list[dict] = []
     for message in messages:
         item = {
             key: value
             for key, value in message.items()
-            if key in {
-                "role",
-                "content",
-                "reasoning_content",
-                "tool_calls",
-                "tool_call_id",
-                "name",
-            }
+            if key in allowed
         }
         if item.get("content") is None:
             item["content"] = ""
@@ -149,228 +173,6 @@ def _normalize_request_messages(messages: list[dict]) -> list[dict]:
             item["content"] = " "
         normalized.append(item)
     return normalized
-
-
-# kimi (DashScope OpenAI-compat) sometimes emits tool calls as literal text in
-# ``message.content`` using these special-token delimiters, with
-# finish_reason='stop' and an EMPTY parsed ``tool_calls`` list. Parse the markup
-# back into a normal tool-call response so the intended tool actually runs.
-_MARKUP_SECTION_BEGIN = "<|tool_calls_section_begin|>"
-_MARKUP_SECTION_END = "<|tool_calls_section_end|>"
-_MARKUP_CALL_BEGIN = "<|tool_call_begin|>"
-_MARKUP_CALL_END = "<|tool_call_end|>"
-_MARKUP_ARG_BEGIN = "<|tool_call_argument_begin|>"
-
-# One tool-call block: header (functions.NAME:ID) then JSON args, between the
-# call-begin and call-end markers. Non-greedy so multiple blocks parse cleanly.
-_MARKUP_CALL_RE = re.compile(
-    re.escape(_MARKUP_CALL_BEGIN)
-    + r"\s*functions\.(?P<name>[^:\s]+):(?P<id>\S+?)\s*"
-    + re.escape(_MARKUP_ARG_BEGIN)
-    + r"(?P<args>.*?)"
-    + re.escape(_MARKUP_CALL_END),
-    re.DOTALL,
-)
-
-
-def _extract_markup_tool_calls(
-    content: str,
-) -> tuple[list[dict[str, Any]], str | None]:
-    """Parse kimi's literal tool-call markup out of ``content``.
-
-    Returns ``(tool_calls, cleaned_content)``. ``tool_calls`` uses the same dict
-    shape this module builds from ``message.tool_calls``. ``cleaned_content`` is
-    the surrounding prose with the markup section removed (``None`` if nothing
-    meaningful remains). On any structural problem returns ``([], content)`` so
-    the caller keeps its current behaviour.
-    """
-    if not content or _MARKUP_SECTION_BEGIN not in content:
-        return [], content
-
-    if (
-        content.count(_MARKUP_SECTION_BEGIN) != 1
-        or content.count(_MARKUP_SECTION_END) != 1
-    ):
-        return [], content
-    start = content.index(_MARKUP_SECTION_BEGIN)
-    section_start = start + len(_MARKUP_SECTION_BEGIN)
-    end_idx = content.index(_MARKUP_SECTION_END, section_start)
-    section = content[section_start:end_idx]
-
-    tool_calls: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    cursor = 0
-    for match in _MARKUP_CALL_RE.finditer(section):
-        if section[cursor:match.start()].strip():
-            return [], content
-        raw_args = match.group("args").strip()
-        try:
-            json.loads(raw_args)
-        except (ValueError, TypeError):
-            return [], content
-        call_id = match.group("id")
-        if call_id in seen_ids:
-            return [], content
-        seen_ids.add(call_id)
-        tool_calls.append({
-            "id": call_id,
-            "type": "function",
-            "function": {
-                "name": match.group("name"),
-                "arguments": raw_args,
-            },
-        })
-        cursor = match.end()
-
-    if not tool_calls or section[cursor:].strip():
-        return [], content
-
-    # Strip the validated markup section while preserving surrounding prose.
-    cleaned = content[:start] + content[end_idx + len(_MARKUP_SECTION_END):]
-    cleaned = cleaned.strip()
-    return tool_calls, (cleaned or None)
-
-
-def _normalize_tool_arguments(arguments: str | None) -> str:
-    raw = (arguments or "").strip()
-    if raw.startswith("{}{"):
-        candidate = raw[2:].strip()
-        try:
-            json.loads(candidate)
-        except (TypeError, ValueError):
-            return raw
-        return candidate
-    return raw
-
-
-def _parse_response(
-    resp: Any, request_messages: list[dict], tools: list[dict] | None = None
-) -> LLMResponse:
-    choice = resp.choices[0]
-    message = choice.message
-
-    tool_calls = []
-    if message.tool_calls:
-        for tool_call in message.tool_calls:
-            tool_calls.append({
-                "id": tool_call.id,
-                "type": "function",
-                "function": {
-                    "name": tool_call.function.name,
-                    "arguments": _normalize_tool_arguments(tool_call.function.arguments),
-                },
-            })
-
-    content = message.content
-    reasoning = getattr(message, "reasoning_content", None) or None
-    # kimi (DashScope compat) sometimes emits tool calls as literal special-token
-    # markup instead of structured ``tool_calls`` — in ``content`` or, under
-    # thinking mode, inside ``reasoning_content`` (finish_reason='stop', empty
-    # ``message.tool_calls``). Recover them so the tool actually runs instead of
-    # being treated as a prose stop.
-    markup_recovered = False
-    if not tool_calls:
-        markup_calls, cleaned = _extract_markup_tool_calls(content)
-        if markup_calls:
-            tool_calls = markup_calls
-            content = cleaned
-            markup_recovered = True
-        elif reasoning:
-            markup_calls, cleaned_reasoning = _extract_markup_tool_calls(reasoning)
-            if markup_calls:
-                tool_calls = markup_calls
-                reasoning = cleaned_reasoning
-                markup_recovered = True
-
-    usage = _parse_usage(resp, request_messages, message, tools)
-    # Surface the P6 recovery as an observability counter (summed up the chain
-    # into the run metrics) without altering the recovered response itself.
-    usage.markup_recovered = 1 if markup_recovered else 0
-    # Thinking providers (e.g. kimi-k2.6 with ``enable_thinking``) put the
-    # chain-of-thought in ``reasoning_content`` and the answer in ``content``.
-    # Keep the reasoning for trajectory observability; the shared rescue rung
-    # falls back to it only when the turn is otherwise empty.
-    content = rescue_empty_turn(content, tool_calls, reasoning)
-    return LLMResponse(
-        content=content,
-        tool_calls=tool_calls,
-        usage=usage,
-        finish_reason=choice.finish_reason,
-        reasoning=reasoning,
-        provider_model=(
-            value
-            if isinstance((value := getattr(resp, "model", None)), str) and value
-            else None
-        ),
-    )
-
-
-def _parse_usage(
-    resp: Any,
-    request_messages: list[dict],
-    message: Any,
-    tools: list[dict] | None = None,
-) -> Usage:
-    """Build a ``Usage`` from an OpenAI-compatible response, with estimate fallback.
-
-    Some OpenAI-compatible endpoints (proxies, certain streaming configs,
-    vLLM/Ollama) omit the ``usage`` block or report zero token counts. Left
-    untreated the call would contribute 0 to the budget meter, so the budget
-    would never trip and only ``max_steps`` would bound the session. When the
-    reported counts are missing or zero we fall back to a non-zero estimate
-    derived from the request messages (input) and response text (output).
-
-    Note: OpenAI-compatible ``prompt_tokens`` ALREADY includes cached tokens
-    (``cached_tokens`` appears only as a sub-detail under
-    ``prompt_tokens_details``), so we do NOT add any cache field here — that
-    would double-count. The additive cache fix applies only to Anthropic.
-    """
-    usage = getattr(resp, "usage", None)
-    raw_usage = usage_to_dict(usage)
-    input_tokens = _usage_int(raw_usage, "prompt_tokens")
-    output_tokens = _usage_int(raw_usage, "completion_tokens")
-    prompt_details = raw_usage.get("prompt_tokens_details") or {}
-    cached_tokens = _usage_int(prompt_details, "cached_tokens")
-    completion_details = raw_usage.get("completion_tokens_details") or {}
-    reasoning_tokens = _usage_int(completion_details, "reasoning_tokens")
-
-    estimated = False
-    if input_tokens <= 0:
-        input_tokens = estimate_messages_tokens(request_messages, tools)
-        estimated = True
-    if output_tokens <= 0:
-        output_tokens = _estimate_output_tokens(message)
-        estimated = True
-
-    return Usage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cached_tokens,
-        reasoning_tokens=reasoning_tokens or None,
-        estimated=estimated,
-        raw_usage=raw_usage,
-    )
-
-
-def _usage_int(source: Any, key: str) -> int:
-    if not isinstance(source, dict):
-        return 0
-    value = source.get(key)
-    if value in (None, ""):
-        return 0
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return 0
-    return max(0, parsed)
-
-
-def _estimate_output_tokens(message: Any) -> int:
-    """Estimate output tokens from all serialized assistant response fields."""
-    plain_message = to_plain_data(message)
-    if not isinstance(plain_message, dict):
-        return 0
-    return estimate_messages_tokens([{"role": "assistant", **plain_message}])
 
 
 async def complete_openai(
@@ -387,8 +189,18 @@ async def complete_openai(
     max_output_tokens: int | None = None,
     reasoning_effort: str | None = None,
     provider_error_time_budget: RetryTimeBudget | None = None,
+    stream: bool = False,
+    first_event_timeout: float | None = 180.0,
+    stream_idle_timeout: float | None = 180.0,
 ) -> LLMResponse:
-    """Single-shot completion against an OpenAI-compatible endpoint."""
+    """Single-shot completion against an OpenAI-compatible endpoint.
+
+    ``stream`` is OFF by default and, when off, this function executes exactly
+    the code it always has: no streaming keys are built, so the SDK sends the
+    same JSON body as before and the same parser reads the reply. Turning it on
+    is the only way to capture ``reasoning_content``, which several endpoints
+    (DeepSeek among them) return solely over the streamed wire format.
+    """
     kwargs = _build_request_kwargs(
         model,
         messages,
@@ -400,10 +212,41 @@ async def complete_openai(
         top_p,
         max_output_tokens,
         reasoning_effort,
+        # Streaming is what makes reasoning non-empty; recording it must not
+        # turn into resending it on the next turn.
+        keep_reasoning_content=not stream,
     )
-    resp = await with_retry(
-        lambda: client.chat.completions.create(**kwargs),
+    if not stream:
+
+        async def unstreamed_once() -> Any:
+            # Same call as before, wrapped only so the attempt's start time and
+            # "this one has no first token" are on the record.
+            begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
+            return await client.chat.completions.create(**kwargs)
+
+        resp = await with_retry(
+            unstreamed_once,
+            max_retries=max_retries,
+            retry_time_budget=provider_error_time_budget,
+        )
+        return _parse_response(resp, kwargs["messages"], kwargs.get("tools"))
+
+    stream_kwargs = {**kwargs, **_STREAM_REQUEST_FIELDS}
+
+    async def request_once() -> LLMResponse:
+        # create() and the drain belong to the SAME retry unit. create()
+        # returns as soon as the response headers land, so wrapping only it
+        # would leave a mid-stream break outside the retry — a silent
+        # degradation, since a half-received answer looks like a whole one.
+        state = await _create_and_consume_chat_stream(
+            client, stream_kwargs, first_event_timeout, stream_idle_timeout
+        )
+        return _stream_state_to_response(
+            state, stream_kwargs["messages"], stream_kwargs.get("tools")
+        )
+
+    return await with_retry(
+        request_once,
         max_retries=max_retries,
         retry_time_budget=provider_error_time_budget,
     )
-    return _parse_response(resp, kwargs["messages"], kwargs.get("tools"))

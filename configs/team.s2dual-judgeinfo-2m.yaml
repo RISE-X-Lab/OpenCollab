@@ -1,0 +1,35 @@
+
+# EXPERIMENT 3: THE REFERENCE CELL WITH THE BUDGET STATED (2,000,000 TOKENS)
+#
+# `team.s2dual-judge.yaml` in every respect but the Adopter's card, whose
+# capabilities pair ends on two sentences: the budget of this run, the same for
+# each seat, and how much a single agent working alone used on these tasks
+# (Single2 alone, s2single-qwen38-tp-pro36: mean 1,320,000, median 1,470,000).
+# The spec's budget_per_seat must be the number the card states.
+entry: adopter
+
+roles:
+  adopter:
+    profile: single2
+    prompt_file: s2dual/adopter.s2dual-judgeinfo-2m.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+  coder_a:
+    profile: single2
+    prompt_file: s2dual/coder-a.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+  coder_b:
+    profile: single2
+    prompt_file: s2dual/coder-b.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+# Four directed edges, not six. The Adopter reaches both Coders and both reach
+# it back -- the return edges are what make a prebuilt peer able to deliver at
+# all. `coder_a` and `coder_b` are NOT connected: the scheduler refuses a
+# message between them (`_scheduler_team.py:188`), so anything one Coder learns
+# of the other's work is something the Adopter decided to tell it.
+topology:
+  adopter: [coder_a, coder_b]
+  coder_a: [adopter]
+  coder_b: [adopter]

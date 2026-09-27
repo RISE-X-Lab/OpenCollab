@@ -1,0 +1,120 @@
+# The registry of assembled Adopter cards. One entry per cell of the
+# dual-candidate family.
+#
+# This family is a SECOND INSTRUMENT, not more cells of the handoff ladder.
+# Three seats again, and the same per-seat budget, but the roster and the
+# topology are different: an `adopter` and two coders, `coder_a` and `coder_b`,
+# with four directed edges rather than six. The two coders are not connected,
+# so the Adopter is the only channel between them, and what crosses is whatever
+# the Adopter chose to write.
+#
+# WHAT IT IS FOR
+#
+# It puts the organization G22 runs in Python control flow -- two candidates
+# produced, one of them adopted -- in front of an agent that may or may not
+# carry it out. Under G22 the two candidate calls are `await`ed, so "both
+# candidates were produced" is true by construction and is not a measurement.
+# Here it is a choice, and whether it happened is read off the run.
+#
+# THE CELLS ARE THE HANDOFF LADDER'S, SEAT FOR SEAT
+#
+#     facts-v2     -> dual-judge      (block byte for byte the same file)
+#     cmd-prohibit -> dual-prohibit
+#     cmd-plain    -> dual-plain
+#     cmd-bare     -> dual-bare
+#     cmd-optout   -> dual-optout
+#
+# Each block here is its counterpart's bytes with ONE paragraph replaced -- the
+# one that divides the work, which the roster forces to change. Every other
+# paragraph, including the prohibition sentence and the opt-out permission, is
+# the handoff block's. `tests/test_dual_candidate_cards.py` asserts it.
+#
+# THE ORGANIZATION THE CARDS DECLARE
+#
+# One coder at a time. The Adopter asks the first, and when its answer is back
+# writes the second its own brief -- not a relay of the first's result, a brief
+# the Adopter composed, and what it carries over is its own judgement. Turns are
+# serialized by the harness in any case (`serialize_turns=True`), so nothing
+# here is asking for a scheduling behaviour that could not happen.
+#
+# NOT BEST-OF-2. The second candidate is written after the Adopter has seen the
+# first, so the two are not independent draws and no selection-from-independent
+# -samples reading applies. NOT G22'S RELAY EITHER: G22 hands coder B the native
+# test command coder A was observed running; here nothing crosses except what
+# the Adopter writes.
+#
+# NOTHING HERE IS POOLABLE WITH THE HANDOFF LADDER. Different body, different
+# roster, different topology.
+#
+#     card = shared.md
+#              {{CAPABILITIES}} <- capabilities/<capabilities>.md
+#              {{BLOCK}}        <- blocks/<block>.md
+#
+# `scripts/analyst_cards.py` renders every card set.
+#
+# WHAT THE NUMBER OFF THIS FAMILY IS, AND WHAT IT IS NOT
+#
+# `summary.alpha` in a batch report is "a `coder` or `tester` seat spent tokens
+# and spoke" (`cell_report.py:32,572`). This roster has neither of those role
+# names, so it reads 0.000 with an interval printed on it. And even once the
+# delegate seats are derived from the run's own entry role, that quantity reads
+# adherent when ONE coder was used -- which under a serial card is the failure
+# that matters, because a first seat that never answers means the second is
+# never asked at all. The quantity to read here is BOTH candidate seats spent
+# tokens and spoke. It is a different quantity, it must carry a different name,
+# and it has to be declared before the first launch.
+
+variants:
+
+  dual-judge:
+    team_file: team.dual-judge.yaml
+    block: judge
+    capabilities: full
+    note: >-
+      The reference cell of this family, and the only one that commands
+      nothing. Its block is `facts-v2`'s byte for byte -- that block names no
+      role, so the roster costs it no edit. Everything the Adopter knows about
+      the two Coders it knows from the shared body; what to do about them is
+      not stated anywhere. This is the cell an adherence number means the most
+      on, and the one where the organization is most likely not to happen.
+
+  dual-prohibit:
+    team_file: team.dual-prohibit.yaml
+    block: prohibit
+    capabilities: full
+    note: >-
+      Dual-candidate ladder rung 1, against `cmd-prohibit`: the command, the
+      suspension line, and the prohibition on applying the fix oneself. The
+      prohibition sentence is the handoff block's, unedited.
+
+  dual-plain:
+    team_file: team.dual-plain.yaml
+    block: plain
+    capabilities: full
+    note: >-
+      Dual-candidate ladder rung 2, against `cmd-plain`: rung 1 with the
+      prohibition deleted and nothing else changed.
+
+  dual-bare:
+    team_file: team.dual-bare.yaml
+    block: bare
+    capabilities: full
+    note: >-
+      Dual-candidate ladder rung 3, against `cmd-bare`: rung 2 with the
+      suspension line deleted too. The command alone.
+
+  dual-optout:
+    team_file: team.dual-optout.yaml
+    block: optout
+    capabilities: full
+    note: >-
+      Dual-candidate ladder rung 4, against `cmd-optout`: rung 3 plus explicit
+      permission to depart. The permission paragraph is the handoff block's,
+      unedited -- it names no role, so it needed none.
+
+# Adjacent rungs differ by exactly one move, as in the handoff ladder; the
+# ladder cannot attribute a difference otherwise. `dual-judge` is not a rung of
+# it: it is the reference cell, the same way `facts-v2` is not a rung of the
+# command ladder.
+ladders:
+  dual_command: [dual-prohibit, dual-plain, dual-bare, dual-optout]

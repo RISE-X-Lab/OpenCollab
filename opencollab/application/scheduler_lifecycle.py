@@ -356,6 +356,7 @@ class LifecycleMixin:
             try:
                 async with self._turn_gate():
                     self._turn_waiters.discard(aid)
+                    await self.snapshot_delivery_tree("turn_start", aid=aid)
                     result = (
                         await session.run_loop(cancel_event)
                         if cancel_event is not None

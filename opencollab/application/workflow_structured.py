@@ -134,6 +134,12 @@ class WorkflowStructuredMixin:
                 tools=combined_tools,
                 isolation=isolation,
                 label=label,
+                # Inherit the run-wide reasoning setting rather than forcing it
+                # off. Hard-coding it off here exempted every schema-bound agent
+                # from a setting the run had declared, which reads back from the
+                # trajectory as a per-arm difference in how the model was
+                # configured -- on the one axis an experiment turning reasoning
+                # on is trying to hold equal.
                 thinking=None,
             )
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
@@ -233,6 +239,13 @@ class WorkflowStructuredMixin:
                 isolation=isolation,
                 label=label,
                 tool_choice=_named_tool_choice(capture_tool.name),
+                # Inherit here too, for the same reason as the first pass. The
+                # original rationale for forcing it off -- that reasoning makes
+                # the model answer in free text instead of calling the capture
+                # tool -- was measured against the endpoint in use and did not
+                # reproduce: at the highest reasoning tier the model called the
+                # tool on every attempt. What remains is a latency cost, which
+                # the caller's own timeout already bounds.
                 thinking=None,
             )
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet

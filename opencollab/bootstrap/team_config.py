@@ -94,6 +94,27 @@ def _validate_thinking_params(
     return value
 
 
+def _normalize_profile(value: str | None) -> str | None:
+    """Validate a role's ``profile`` name, resolving ``"default"`` to ``None``.
+
+    The name is checked against the same resolver the SDK and the workflow
+    runtime use, so a team file cannot name a profile those two do not have.
+    Imported inside the function because the profiles module reaches into the
+    adapters for a profile's tools and safety wrapper, and this module is
+    imported by the tool registry's own callers at startup.
+    """
+    if value is None:
+        return None
+    name = value.strip()
+    if not name:
+        raise ValueError("role profile must not be blank")
+
+    from opencollab.bootstrap.agent_profiles import resolve_agent_profile
+
+    resolve_agent_profile(name)
+    return None if name == "default" else name
+
+
 def _load_default_prompt(filename: str) -> str:
     return (_PROMPT_DIR / filename).read_text(encoding="utf-8")
 
@@ -125,6 +146,13 @@ class RoleConfig(BaseModel):
     thinking: bool | None = None
     thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
+    # Optional agent profile for this seat. ``None`` is OpenCollab's own agent;
+    # a named profile supplies the base system prompt, the shaper, the safety
+    # wrapper and the tool output caps the seat runs under, and the role's own
+    # card is appended to that base rather than replacing it. Resolved in
+    # ``ContextBuilder`` (prompt, tool limits) and ``DefaultSessionFactory``
+    # (shaper, safety), which is where the profile's other halves are wired.
+    profile: str | None = None
 
     @field_validator("prompt")
     @classmethod
@@ -132,6 +160,11 @@ class RoleConfig(BaseModel):
         if not value.strip():
             raise ValueError("role prompt must not be blank")
         return value
+
+    @field_validator("profile")
+    @classmethod
+    def _validate_profile(cls, value: str | None) -> str | None:
+        return _normalize_profile(value)
 
     @field_validator("model")
     @classmethod
@@ -175,6 +208,12 @@ class _RoleFileModel(BaseModel):
     thinking: bool | None = None
     thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
+    profile: str | None = None
+
+    @field_validator("profile")
+    @classmethod
+    def _validate_profile(cls, value: str | None) -> str | None:
+        return _normalize_profile(value)
 
     @field_validator("prompt")
     @classmethod
@@ -504,6 +543,7 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
             thinking=entry.thinking,
             thinking_params=entry.thinking_params,
             tools=list(entry.tools),
+            profile=entry.profile,
         )
 
     edges: dict[str, frozenset[str]] = {}

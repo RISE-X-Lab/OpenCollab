@@ -12,6 +12,7 @@ from typing import Any
 
 # A hunk header: @@ -<old_start>[,<old_len>] +<new_start>[,<new_len>] @@ [heading]
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_BARE_HUNK_RE = re.compile(r"^@@[ \t]*(?:@@[ \t]*)?$")
 _NEWLINE_RE = re.compile(r"\r\n|\r|\n")
 _MIXED_NEWLINES = "mixed"
 
@@ -69,7 +70,25 @@ def _summary(path: str, mode: str, before: str, after: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _apply_line_replace(source: str, params: dict[str, Any]) -> tuple[str | None, str]:
+def _locate_expected(lines: list[str], expected: str) -> list[tuple[int, int]]:
+    """Locate exact text, preserving blank lines and one optional terminator."""
+    variants = [expected]
+    if expected.endswith("\n"):
+        variants.append(expected[:-1])
+    hits: set[tuple[int, int]] = set()
+    for variant in variants:
+        if not variant:
+            continue
+        block = variant.split("\n")
+        for start in range(len(lines) - len(block) + 1):
+            if lines[start:start + len(block)] == block:
+                hits.add((start, start + len(block)))
+    return sorted(hits)
+
+
+def _apply_line_replace(
+    source: str, params: dict[str, Any], *, notes: list[str] | None = None
+) -> tuple[str | None, str]:
     """Replace the 1-based inclusive line range from ``params`` in ``source``.
 
     Returns ``(updated_text, "")`` on success or ``(None, error)`` on failure.
@@ -119,11 +138,25 @@ def _apply_line_replace(source: str, params: dict[str, Any]) -> tuple[str | None
         # Keep every blank line in the range and accept at most one terminator;
         # an empty insertion range has no line terminator to quote.
         if expected != actual and (not actual_lines or expected != actual + "\n"):
-            return None, (
-                "expected_str does not match the current content of lines "
-                f"{start_line}-{end_line}.\n--- expected ---\n{expected}\n"
-                f"--- actual ---\n{actual}"
-            )
+            if not params.get("relocate_expected", False):
+                return None, (
+                    "expected_str does not match the current content of lines "
+                    f"{start_line}-{end_line}.\n--- expected ---\n{expected}\n"
+                    f"--- actual ---\n{actual}"
+                )
+            hits = _locate_expected(lines, expected)
+            if len(hits) != 1:
+                whereabouts = (
+                    "does not appear anywhere in the file" if not hits
+                    else f"appears {len(hits)} times"
+                )
+                return None, f"expected_str {whereabouts}; add context to identify one range."
+            start_idx, end_idx = hits[0]
+            if notes is not None:
+                notes.append(
+                    f"expected_str did not match lines {start_line}-{end_line}; "
+                    f"matched lines {start_idx + 1}-{end_idx} uniquely"
+                )
 
     # Preserve the file's trailing-newline convention; new_str's own trailing
     # newline is normalised away since we re-split it into lines.
@@ -138,7 +171,7 @@ def _apply_line_replace(source: str, params: dict[str, Any]) -> tuple[str | None
 # ---------------------------------------------------------------------------
 
 
-def _parse_hunks(patch: str) -> tuple[list[dict] | None, str]:
+def _parse_hunks(patch: str, *, normalize_hunks: bool = False) -> tuple[list[dict] | None, str]:
     """Parse and structurally validate ``@@`` hunks from a unified diff."""
     hunks: list[dict] = []
     cur: dict | None = None
@@ -150,21 +183,23 @@ def _parse_hunks(patch: str) -> tuple[list[dict] | None, str]:
         raw_lines.pop()
     for line_number, raw in enumerate(raw_lines, 1):
         m = _HUNK_RE.match(raw)
-        if m:
+        bare = normalize_hunks and _BARE_HUNK_RE.fullmatch(raw) is not None
+        if m or bare:
             if cur is not None:
-                err = _validate_hunk_counts(cur)
+                err = _validate_hunk_counts(cur, normalize_hunks=normalize_hunks)
                 if err:
                     return None, err
             seen_header = True
-            old_start = int(m.group(1))
-            old_len = int(m.group(2) or 1)
-            new_start = int(m.group(3))
-            new_len = int(m.group(4) or 1)
+            old_start = int(m.group(1)) if m else None
+            old_len = int(m.group(2) or 1) if m else 0
+            new_start = int(m.group(3)) if m else None
+            new_len = int(m.group(4) or 1) if m else 0
             if old_start == 0 and old_len != 0:
                 return None, f"hunk header on patch line {line_number} has invalid old range."
             if new_start == 0 and new_len != 0:
                 return None, f"hunk header on patch line {line_number} has invalid new range."
             cur = {
+                "header_line": line_number,
                 "old_start": old_start,
                 "old_len": old_len,
                 "new_start": new_start,
@@ -198,16 +233,22 @@ def _parse_hunks(patch: str) -> tuple[list[dict] | None, str]:
     if not hunks:
         return None, "patch contains no applicable hunks."
     assert cur is not None
-    err = _validate_hunk_counts(cur)
+    err = _validate_hunk_counts(cur, normalize_hunks=normalize_hunks)
     if err:
         return None, err
     return hunks, ""
 
 
-def _validate_hunk_counts(hunk: dict) -> str:
+def _validate_hunk_counts(hunk: dict, *, normalize_hunks: bool = False) -> str:
     """Return an error unless hunk body counts match its header exactly."""
     old_count = sum(line[0] in " -" for line in hunk["lines"])
     new_count = sum(line[0] in " +" for line in hunk["lines"])
+    if normalize_hunks:
+        if not hunk["lines"]:
+            return f"hunk header on patch line {hunk['header_line']} has no body."
+        if hunk["old_start"] == 0 and old_count or hunk["new_start"] == 0 and new_count:
+            return "hunk starts at line 0 but its body contains lines."
+        hunk["old_len"], hunk["new_len"] = old_count, new_count
     if old_count != hunk["old_len"] or new_count != hunk["new_len"]:
         return (
             f"hunk near line {hunk['old_start']} declares {hunk['old_len']} old lines and "
@@ -249,7 +290,9 @@ def _find_block(
     return best_start
 
 
-def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:
+def _apply_unified_diff(
+    source: str, patch: str, *, normalize_hunks: bool = False
+) -> tuple[str | None, str]:
     """Apply a unified diff to ``source``; hunks are located by content.
 
     Returns ``(updated_text, "")`` on success or ``(None, error)`` on failure.
@@ -261,7 +304,7 @@ def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:
         )
     source = _normalize_newlines(source)
     patch = _normalize_newlines(patch)
-    hunks, err = _parse_hunks(patch)
+    hunks, err = _parse_hunks(patch, normalize_hunks=normalize_hunks)
     if err:
         return None, err
     assert hunks is not None
@@ -291,8 +334,20 @@ def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:
                 if tag in " +":
                     new_no_newline_positions.append(len(new_block) - 1)
 
-        expected_idx = hunk["old_start"] if hunk["old_len"] == 0 else hunk["old_start"] - 1
-        pos = _find_block(src_lines, old_block, expected_idx, src_idx)
+        if hunk["old_start"] is None:
+            hits = [
+                start for start in range(src_idx, len(src_lines) - len(old_block) + 1)
+                if old_block and src_lines[start:start + len(old_block)] == old_block
+            ]
+            if len(hits) != 1:
+                return None, (
+                    f"hunk #{n} without coordinates matched {len(hits)} ranges; "
+                    "add unique context or a numbered header."
+                )
+            pos = hits[0]
+        else:
+            expected_idx = hunk["old_start"] if hunk["old_len"] == 0 else hunk["old_start"] - 1
+            pos = _find_block(src_lines, old_block, expected_idx, src_idx)
         if pos is None:
             snippet = "\n".join(old_block[:6]) or "(empty context)"
             return None, (

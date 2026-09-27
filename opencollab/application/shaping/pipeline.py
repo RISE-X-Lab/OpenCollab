@@ -98,6 +98,13 @@ def approx_messages_tokens(messages: list[dict[str, Any]]) -> int:
     state included, so a thinking-heavy history is not read as shorter here
     than the budget check reads it. The once-per-request framing allowance is
     excluded because a constant term would break additivity.
+
+    Deliberately keeps ``keep_reasoning_content`` at its default (True), unlike
+    the pre-call budget reservation, which drops recorded reasoning when
+    streaming strips it from the outbound request. This is a compaction
+    threshold, not a reservation: the recorded reasoning still occupies the
+    local history that compaction is sizing, and shrinking the estimate here
+    would move every arm's compaction trigger. See ``test_shaping_pipeline``.
     """
     return estimate_request_message_tokens(messages)
 

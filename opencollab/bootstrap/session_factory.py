@@ -38,6 +38,10 @@ from opencollab.application.ports import (
 )
 from opencollab.application.scheduler import LaunchSpec
 from opencollab.application.session import Session
+from opencollab.bootstrap.agent_profiles import (
+    SingleAgentProfile,
+    resolve_agent_profile,
+)
 from opencollab.bootstrap.container import build_session_runtime, build_skill_store
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
@@ -447,7 +451,7 @@ class DefaultSessionFactory:
         prebuilt_roster: bool = False,
         allow_unisolated_shell: bool | None = None,
         allow_unisolated_child_shell: bool = False,
-        max_steps: int = SESSION_MAX_STEPS,
+        max_steps: int | None = SESSION_MAX_STEPS,
     ):
         self._cfg = cfg
         self._provider_retry_budget = (
@@ -468,7 +472,7 @@ class DefaultSessionFactory:
         # Run folder where every agent's transcript is persisted. When set,
         # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
         self._save_dir = save_dir
-        self._max_steps = int(max_steps)
+        self._max_steps = None if max_steps is None else int(max_steps)
 
     def _validate_responses_tool_support(self) -> None:
         """Reject statically incompatible team roles before opening a workspace."""
@@ -642,7 +646,19 @@ class DefaultSessionFactory:
             seed_user_messages=plan.startup_user_messages(),
             seed_system_messages=plan.startup_system_messages(),
             team_budget_exhausted=_team_budget_guard(scheduler),
+            agent_profile=self._role_profile(role),
         )
+
+    def _role_profile(self, role_name: str) -> SingleAgentProfile | None:
+        """The agent profile this seat runs under, or ``None`` for OpenCollab's.
+
+        The prompt half of a profile is folded in by ``ContextBuilder``; this is
+        the other half — the shaper and the safety wrapper, which the session
+        runtime applies. Both halves read the same declaration, so a seat cannot
+        take a profile's words while running OpenCollab's own history handling.
+        """
+        profile = self._team.role_for(role_name).profile
+        return resolve_agent_profile(profile) if profile is not None else None
 
     def create_lead_session(
         self,
@@ -693,6 +709,7 @@ class DefaultSessionFactory:
             aid=aid,
             seed_system_messages=plan.startup_system_messages(),
             team_budget_exhausted=_team_budget_guard(scheduler),
+            agent_profile=self._role_profile(self._team.entry),
         )
 
 

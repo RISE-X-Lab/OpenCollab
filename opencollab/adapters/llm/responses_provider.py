@@ -11,6 +11,7 @@ from typing import Any
 
 from opencollab.adapters.llm._responses_instructions import _check_instructions_echo
 from opencollab.adapters.llm.errors import TransientProviderError
+from opencollab.adapters.llm.first_token import NOT_STREAMED, RESPONSES_STREAM, begin_attempt, mark_first_token
 from opencollab.adapters.llm.responses_errors import (
     _TRANSIENT_RESPONSE_CODES,
     _TRANSIENT_RESPONSE_MESSAGES,
@@ -396,6 +397,8 @@ async def _consume_stream(
                 first_event_timeout if first else idle_timeout,
                 stage="first-event" if first else "stream-idle",
             )
+            if first:
+                mark_first_token(RESPONSES_STREAM)
             first = False
             if _handle_event(event, state, expected_model):
                 break
@@ -419,6 +422,7 @@ async def _create_and_consume_stream(
 ) -> _StreamState:
     loop = asyncio.get_running_loop()
     deadline = None if first_event_timeout is None else loop.time() + first_event_timeout
+    begin_attempt(streamed=True)
     try:
         if first_event_timeout is None:
             event_stream = await client.responses.create(**kwargs)
@@ -718,6 +722,7 @@ async def complete_responses(
     async def request_once() -> LLMResponse:
         if not stream:
             kwargs["stream"] = False
+            begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
             response = await client.responses.create(**kwargs)
             _check_instructions_echo(response, kwargs)
             return parse_responses_response(

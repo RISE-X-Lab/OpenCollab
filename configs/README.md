@@ -54,6 +54,26 @@ API-key fallback is provider and endpoint specific:
 Keys from another provider are not used as fallbacks. Process-environment
 values beat the same variable in an env file, and blank values are ignored.
 
+## Streaming chat completions
+
+`OPENCOLLAB_LLM_STREAM_CHAT=true` consumes OpenAI-compatible chat completions
+as a stream. It is off by default, and off means the request body is exactly
+the one the non-streaming path has always sent — neither `stream` nor
+`stream_options` is added — so runs recorded before and after this setting
+existed remain comparable.
+
+Turn it on to record the model's reasoning: several endpoints, DeepSeek among
+them, return `reasoning_content` **only** over the streamed format, so a
+non-streamed request pays for the thinking and receives none of the text.
+While streaming, recorded reasoning is kept out of the outbound history: it
+reaches the trajectory, but is not echoed back to the model on the next turn.
+
+Streaming reuses `OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT` and
+`OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT` (both 180s) — the request timeout only
+bounds a single socket read once a response is streamed. A stream that ends
+without a `finish_reason`, or one whose endpoint reports no token usage, is
+an error rather than a silently partial answer.
+
 ## Model capability metadata
 
 Compatibility differences are recorded in
@@ -157,6 +177,14 @@ Select `configs/team.yaml` through one of these inputs to activate it. With no
 selected team file, the built-in `lead` may spawn any ad-hoc role. See
 `team.example.yaml` for the schema (lead/analyst/coder/reviewer plus a
 `topology` graph). A selected file that is missing or unsafe raises an error.
+
+`team.collab.yaml` is a ready-made three-role team (Analyst, Coder, Tester) that
+hands work over rather than doing it in one seat, with every role prompt inline.
+It requires a prebuilt roster, which the CLI cannot ask for: started through
+`uv run opencollab --team-config`, it seats the Analyst alone and produces a
+solo run that reads like a team's. Run it with `scripts/run_collab_team.py`, the
+SDK (`prebuild_team=True`), or the evaluation harness. See
+[the team handoff](../docs/2026-08-31-collab-team.md).
 
 ## Validation
 

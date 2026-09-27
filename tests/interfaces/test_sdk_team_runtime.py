@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -488,3 +489,174 @@ def test_tool_presets_are_small_fresh_and_named() -> None:
     assert read_tools[0] is not programmatic.resolve_tools("read")[0]
     with pytest.raises(ValueError, match="unknown tool preset"):
         programmatic.resolve_tools("everything")
+
+
+def _wind_down_scheduler(
+    *, run_raises: BaseException | None, cleanup_failure: BaseException | None
+):
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.used_tokens = 416771
+            self.table = SimpleNamespace(entries={0: object()})
+            self.lead_session = SimpleNamespace(
+                phase=SimpleNamespace(value="done"),
+                state=SimpleNamespace(terminal_reason="completed"),
+                step_count=26,
+            )
+
+        async def run(self, _prompt: str) -> str:
+            if run_raises is not None:
+                raise run_raises
+            return "done"
+
+        async def cleanup(self, *, cleanup_timeout: float) -> None:
+            assert cleanup_timeout > 0
+            if cleanup_failure is not None:
+                raise cleanup_failure
+
+    return FakeScheduler()
+
+
+@pytest.mark.parametrize(
+    ("cleanup_fails", "trace_fails"),
+    ((True, False), (False, True), (True, True)),
+)
+async def test_team_wind_down_failure_keeps_what_the_run_spent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cleanup_fails: bool,
+    trace_fails: bool,
+) -> None:
+    # A teardown that fails does not unspend the budget or unwalk the steps.
+    # Replacing the result with an exception used to make a run that burned
+    # 416,771 tokens report zero, which reads downstream as a run that never
+    # happened -- and only on this path, because the single-agent regime
+    # annotates its failure and returns.
+    primary = ValueError("run-root-cause")
+    cleanup_failure = OSError("cleanup-secondary")
+    trace_failure = RuntimeError("trace-secondary")
+
+    monkeypatch.setattr(
+        programmatic,
+        "build_scheduler",
+        lambda *_args, **_kwargs: _wind_down_scheduler(
+            run_raises=primary,
+            cleanup_failure=cleanup_failure if cleanup_fails else None,
+        ),
+    )
+    monkeypatch.setattr(
+        programmatic,
+        "_close_tracer",
+        lambda _tracer: trace_failure if trace_fails else None,
+    )
+
+    result = await programmatic.run_team(
+        prompt="solve",
+        config={"model": "model", "provider": "openai", "budget": 50},
+        workspace=str(tmp_path),
+        team_config_path=None,
+        max_tokens=50,
+        timeout=None,
+        artifacts=None,
+        trace=False,
+        use_worktrees=False,
+    )
+
+    assert result.tokens == 416771
+    assert result.metrics["steps"] == 26
+    # The execution failure stays the one reported; the teardown failures are
+    # notes on it, which is how the root cause survived before and still does.
+    assert result.error is primary
+    assert result.status == "failed"
+    notes = getattr(primary, "__notes__", ())
+    if cleanup_fails:
+        assert any("cleanup-secondary" in note for note in notes)
+    if trace_fails:
+        assert any("trace-secondary" in note for note in notes)
+    # What is withdrawn is the settlement claim, so a caller that requires a
+    # settled workspace still refuses this run.
+    assert result.metrics["session_quiesced"] is False
+    assert result.metrics["environment_quiesced"] is False
+    assert result.metrics["execution_quiesced"] is False
+
+
+async def test_a_team_that_finished_but_did_not_settle_says_which_one_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cleanup_failure = OSError("cleanup-secondary")
+    monkeypatch.setattr(
+        programmatic,
+        "build_scheduler",
+        lambda *_args, **_kwargs: _wind_down_scheduler(
+            run_raises=None, cleanup_failure=cleanup_failure
+        ),
+    )
+
+    result = await programmatic.run_team(
+        prompt="solve",
+        config={"model": "model", "provider": "openai", "budget": 50},
+        workspace=str(tmp_path),
+        team_config_path=None,
+        max_tokens=50,
+        timeout=None,
+        artifacts=None,
+        trace=False,
+        use_worktrees=False,
+    )
+
+    # Nothing went wrong while the team worked, so the answer is kept; what
+    # failed is teardown, and the status and reason say so rather than leaving
+    # a caller to infer it from an absent metric.
+    assert result.output == "done"
+    assert result.tokens == 416771
+    assert result.status == "failed"
+    assert result.reason is not None
+    assert "cleanup-secondary" in result.reason
+    assert result.error is cleanup_failure
+    assert result.metrics["session_quiesced"] is False
+
+
+async def test_cancellation_during_team_wind_down_is_still_raised(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Reporting a failed teardown is not the same as swallowing cancellation:
+    # a cancelled caller must still see cancellation, not a result.
+    cleanup_failure = OSError("cleanup-secondary")
+    monkeypatch.setattr(
+        programmatic,
+        "build_scheduler",
+        lambda *_args, **_kwargs: _wind_down_scheduler(
+            run_raises=asyncio.CancelledError(), cleanup_failure=cleanup_failure
+        ),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await programmatic.run_team(
+            prompt="solve",
+            config={"model": "model", "provider": "openai", "budget": 50},
+            workspace=str(tmp_path),
+            team_config_path=None,
+            max_tokens=50,
+            timeout=None,
+            artifacts=None,
+            trace=False,
+            use_worktrees=False,
+        )
+
+
+
+
+async def test_sdk_team_accepts_no_step_ceiling_and_inherits_the_configured_budget(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_run_team(**kwargs):
+        captured.update(kwargs)
+        return ProgrammaticResult(output="done", status="completed", reason=None, tokens=1, artifacts=None)
+
+    monkeypatch.setattr(sdk_client, "run_team", fake_run_team)
+    result = await OpenCollab(tmp_path, config={"budget": 10**12}).team("solve", max_steps=None, trace=False)
+    assert result.status == "completed"
+    assert captured["max_steps"] is None
+    assert captured["max_tokens"] == 10**12

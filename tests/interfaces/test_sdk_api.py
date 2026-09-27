@@ -91,6 +91,12 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             # belongs beside the two conditions above rather than in the team
             # config: the config says who is seated and who may address whom.
             "serialize_turns",
+            # Whether the run writes down the tree it is graded on at each seat
+            # boundary. Also a question about the run: without it a team run
+            # delivers a patch that cannot be attributed to a seat, and "the
+            # work moved between seats" is unanswerable from the run's own
+            # records. Off by default -- it costs a ``git diff`` per boundary.
+            "record_delivery_tree",
         ),
         sdk.OpenCollab.workflow: (
             "self",
@@ -164,6 +170,7 @@ def test_workflow_decorator_is_minimal_but_keeps_explicit_metadata() -> None:
 
 def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
     import opencollab.environments as environments
+    import opencollab.models as models
     import opencollab.profiles as profiles
     import opencollab.tools as tools
     import opencollab.workflows as workflows
@@ -177,6 +184,7 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
         "evidence_tools",
         "has_pass_evidence",
         "profile_tool_limits",
+        "profile_tool_names",
     ]
     assert environments.__all__ == [
         "Environment",
@@ -188,6 +196,7 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
         "local_environment",
         "worktree_environment",
     ]
+    assert models.__all__ == ["inspect_model_runtime"]
     assert workflows.__all__ == ["CandidateRun", "WorkflowContext", "workflow"]
     assert profiles.__all__ == ["BASE_PROFILE", "resolve_profile_name"]
     assert profiles.BASE_PROFILE == profiles.resolve_profile_name(None) == "single2"

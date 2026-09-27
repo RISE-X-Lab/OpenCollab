@@ -225,27 +225,10 @@ def test_deepseek_max_reasoning_survives_workflow_thinking_override(monkeypatch)
     assert session.agent.reasoning_effort_policy == "configured"
 
 
-def test_luna_max_reasoning_survives_workflow_thinking_override(monkeypatch):
-    _patch_build_session(monkeypatch)
-    factory = workflow_runtime.WorkflowSessionFactory(
-        model="gpt-5.6-luna",
-        provider="openai",
-        wire_protocol="responses",
-        api_key="fake",  # pragma: allowlist secret
-        base_url="https://example.test",
-        thinking=True,
-        reasoning_effort="max",
-    )
-
-    session = factory.build_workflow_session(
-        prompt="return structured evidence",
-        budget=100_000,
-        thinking=False,
-    )
-
-    assert session.agent.thinking is True
-    assert session.agent.reasoning_effort == "max"
-    assert session.agent.reasoning_effort_policy == "configured"
+# Upstream `main` also carries a test pinning ``gpt-5.6-luna``'s capability row.
+# This branch drops that row on merge (see ``adapters/llm/types.py``), because a
+# row would change the instrument the already-collected luna runs were produced
+# on, so the test that pins it is dropped with it.
 
 
 @pytest.mark.asyncio
@@ -652,7 +635,7 @@ async def test_unbounded_workflow_retains_caller_request_and_stream_timeouts(mon
     monkeypatch.setenv("OPENCOLLAB_UNBOUNDED_LIMITS", str(unbounded).lower())
     calls = _patch_build_session(monkeypatch)
     config = _cfg()
-    config.update(llm_timeout=5.0, llm_first_event_timeout=6.0, llm_stream_idle_timeout=7.0)
+    config.update(llm_timeout=5.0, llm_first_event_timeout=6.0, llm_stream_idle_timeout=7.0, llm_stream_chat=True)
     context = workflow_runtime.build_workflow_context(cfg=config)
     assert await context.agent("return once", tools=[]) == "fake-reply"
     assert context.budget.total == (None if unbounded else config["budget"])
@@ -661,3 +644,4 @@ async def test_unbounded_workflow_retains_caller_request_and_stream_timeouts(mon
     assert calls[0]["agent"].llm_first_event_timeout == 6.0
     assert calls[0]["agent"].llm_stream_idle_timeout == 7.0
     assert calls[0]["agent"].llm_connect_timeout == 30.0
+    assert calls[0]["agent"].llm_stream_chat is True

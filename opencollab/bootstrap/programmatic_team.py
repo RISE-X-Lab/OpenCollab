@@ -41,9 +41,10 @@ async def run_team(
     use_worktrees: bool,
     prebuild_team: bool = False,
     allow_unisolated_shell: bool | None = None,
-    max_steps: int = SESSION_MAX_STEPS,
+    max_steps: int | None = SESSION_MAX_STEPS,
     serialize_turns: bool = False,
     environment: Environment | None = None,
+    record_delivery_tree: bool = False,
 ) -> ProgrammaticResult:
     """Run the scheduler regime once, including bounded team cleanup.
 
@@ -89,6 +90,7 @@ async def run_team(
             max_steps=max_steps,
             serialize_turns=serialize_turns,
             environment=environment,
+            record_delivery_tree=record_delivery_tree,
         )
     except BaseException as exc:
         tracer_failure = _programmatic._close_tracer(context.tracer)
@@ -218,6 +220,8 @@ async def run_team(
         metrics={
             "steps": int(getattr(lead, "step_count", 0)),
             "sessions": len(scheduler.table.entries),
+            **({"tree_snapshots": [dict(row) for row in scheduler.delivery_tree_snapshots]}
+               if record_delivery_tree else {}),
             # Cleanup also persists the terminal snapshot and releases owned
             # worktrees. Any wind-down failure leaves settlement unverified.
             **_programmatic._quiescence_metrics(

@@ -6,33 +6,8 @@ import shlex
 from collections.abc import Sequence
 
 
-def guarded_staged_diff_command(
-    *,
-    base_revision: str = "HEAD",
-    exclude_paths: Sequence[str] = (),
-) -> str:
-    """Stage through a temporary index without repository-local diff hooks.
-
-    Repository-local configuration is kept out of the evidence three ways, and
-    which one applies is per setting.
-
-    ``core.attributesFile`` and ``diff.ignoreSubmodules`` are pinned by an
-    explicit ``-c``, which outranks any repository-local value, so a repository
-    that marks a file undiffable or hides a gitlink change cannot do either
-    here. ``core.fsmonitor`` is judged by its value: a repository that turns a
-    monitor off is hardening itself and is allowed through, while one that turns
-    a monitor on is refused, because a monitor that lies about what changed can
-    only be trusted or refused, never overridden. Everything else that could
-    bend the reading -- a redirected working tree, a sparse checkout, an
-    excludes file, and the clean/smudge filters and external diff drivers a
-    tracked ``.gitattributes`` can still reach -- is refused outright.
-
-    A refusal exits 125 rather than reporting a patch this command cannot vouch
-    for.
-    """
-    if not isinstance(base_revision, str) or not base_revision.strip() or "\0" in base_revision:
-        raise ValueError("patch base revision is invalid")
-
+def _git_command_and_config_guard() -> tuple[str, str]:
+    """Share existing repository configuration restrictions with Git tools."""
     git_env = (
         "GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
         "GIT_EXTERNAL_DIFF= GIT_NO_REPLACE_OBJECTS=1"
@@ -52,14 +27,6 @@ def guarded_staged_diff_command(
         f'{git_env} git -c safe.directory="$PWD" -c core.filemode=true'
         f"{neutralized_config}"
     )
-    git_index_command = f'GIT_INDEX_FILE="$idx" {git_command}'
-    resets = ""
-    for path in exclude_paths:
-        if str(path).strip():
-            resets += (
-                f'{git_index_command} --literal-pathspecs reset -q '
-                f"{shlex.quote(base_revision)} -- {shlex.quote(str(path))} && "
-            )
     unsafe_config_guard = (
         "config_scopes=--local; "
         f'if [ "$({git_command} config --local --includes --type=bool '
@@ -98,6 +65,45 @@ def guarded_staged_diff_command(
         "END { exit bad ? 1 : 0 }' \"$info_attributes\"; then "
         "echo 'repository-local info/attributes can alter patch evidence' >&2; exit 125; fi; fi; "
     )
+    return git_command, unsafe_config_guard
+
+
+def guarded_staged_diff_command(
+    *,
+    base_revision: str = "HEAD",
+    exclude_paths: Sequence[str] = (),
+) -> str:
+    """Stage through a temporary index without repository-local diff hooks.
+
+    Repository-local configuration is kept out of the evidence three ways, and
+    which one applies is per setting.
+
+    ``core.attributesFile`` and ``diff.ignoreSubmodules`` are pinned by an
+    explicit ``-c``, which outranks any repository-local value, so a repository
+    that marks a file undiffable or hides a gitlink change cannot do either
+    here. ``core.fsmonitor`` is judged by its value: a repository that turns a
+    monitor off is hardening itself and is allowed through, while one that turns
+    a monitor on is refused, because a monitor that lies about what changed can
+    only be trusted or refused, never overridden. Everything else that could
+    bend the reading -- a redirected working tree, a sparse checkout, an
+    excludes file, and the clean/smudge filters and external diff drivers a
+    tracked ``.gitattributes`` can still reach -- is refused outright.
+
+    A refusal exits 125 rather than reporting a patch this command cannot vouch
+    for.
+    """
+    if not isinstance(base_revision, str) or not base_revision.strip() or "\0" in base_revision:
+        raise ValueError("patch base revision is invalid")
+
+    git_command, unsafe_config_guard = _git_command_and_config_guard()
+    git_index_command = f'GIT_INDEX_FILE="$idx" {git_command}'
+    resets = ""
+    for path in exclude_paths:
+        if str(path).strip():
+            resets += (
+                f'{git_index_command} --literal-pathspecs reset -q '
+                f"{shlex.quote(base_revision)} -- {shlex.quote(str(path))} && "
+            )
     stage_untracked = (
         f'{git_index_command} ls-files --others --exclude-per-directory=.gitignore '
         '-z > "$untracked" && '

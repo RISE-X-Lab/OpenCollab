@@ -327,3 +327,13 @@ def test_build_runtime_context_resolves_workspace_and_tracer(tmp_path, monkeypat
     finally:
         if ctx_trace.tracer:
             ctx_trace.tracer.close()
+
+
+def test_scheduler_can_leave_every_seat_without_a_step_ceiling(tmp_path):
+    ctx = build_runtime_context(str(tmp_path), _cfg(), trace=False)
+    scheduler = build_scheduler(
+        ctx, use_worktrees=False, interactive=False, auto_save=False, max_steps=None
+    )
+    assert scheduler.lead_session.max_steps is None
+    assert scheduler.lead_session.runner.max_steps is None
+    assert scheduler._session_factory._max_steps is None

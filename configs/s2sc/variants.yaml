@@ -1,0 +1,127 @@
+# The registry of assembled cards for the Single2-seated self-collaboration
+# family. One entry per cell.
+#
+# WHAT THIS FAMILY IS
+#
+# The handoff experiment's three roles -- an Analyst, a Coder and a Tester
+# (Dong et al. 2023, "Self-Collaboration Code Generation via ChatGPT") -- with
+# their cards ported onto the Single2 seat the way `s2dual` ported
+# `dual-candidate`: every role declares `profile: single2`, the card is
+# appended to that profile's prompt, and the card's opening section states the
+# three things the profile's prompt gets wrong about a team seat.
+#
+# WHAT IS VARIED: THE TOPOLOGY, AND THE BLOCK -- TWO BY TWO
+#
+# The handoff team connected every ordered pair. The cells here remove edges
+# from it, over two topologies that differ in exactly one directed edge,
+# `coder -> analyst`:
+#
+#   bypass     analyst -> coder, coder -> analyst, coder -> tester,
+#              tester -> analyst. The Coder can hand its work back to the
+#              Analyst directly, or to the Tester first.
+#   pipeline   the same without `coder -> analyst`. The Coder's work can reach
+#              the Analyst only through the Tester.
+#
+# In both, the Analyst cannot address the Tester and the Tester cannot address
+# the Coder, so the only way the Tester is ever asked anything is by the Coder.
+# What a cell's cards say about the topology is the `{{TOPOLOGY}}` slot, filled
+# from `topology/<name>.md` into all three cards alike, and the two topology
+# files differ in one contiguous deletion.
+#
+# Each topology is seated under two blocks, the closing section of the
+# Analyst's card:
+#
+#   judge   `s2dual`'s, byte for byte, which is `handoff/facts-v2`'s: nothing
+#           tells any seat what order to work in or whom to involve.
+#   plain   the handoff ladder's `cmd-plain` with its one sentence about the
+#           Tester deleted: the Analyst is asked to hand the implementation to
+#           the Coder, and told nothing about the Tester. That sentence asked
+#           the Analyst to message the Tester, an edge neither topology has;
+#           and with it gone, whether the Tester works is left to the topology
+#           alone. The Coder's and the Tester's cards carry no block, so they
+#           are the same bytes under both blocks.
+#
+# The comparison the family exists for is the two topologies under one block:
+# `s2sc-<block>-bypass` against `s2sc-<block>-pipeline`, once per block.
+#
+# WHAT IS HELD FIXED, AGAINST THE S2 CELLS
+#
+# The seat (`profile: single2`), the nine tools in Single2's order on every
+# role -- the Tester included, so the division of labour is written on the cards
+# and not enforced by the bundle -- the per-seat budget, the step cap, the wall
+# clock, the model, the key and the 36 tasks are those of `s2dual-judge`.
+#
+# NOT POOLABLE WITH `s2dual` OR THE HANDOFF LADDER. Different roster, different
+# cards, different topology. A number off this family is compared with a cell
+# of this family that differs from it in one thing.
+#
+#     analyst card = shared.md
+#                      {{CAPABILITIES}} <- capabilities/<capabilities>.md
+#                      {{TOPOLOGY}}     <- topology/<topology>.md
+#                      {{BLOCK}}        <- blocks/<block>.md
+#     coder card   = coder.md  with {{TOPOLOGY}} filled the same way
+#     tester card  = tester.md with {{TOPOLOGY}} filled the same way
+#
+# `scripts/analyst_cards.py` renders all three for every cell.
+#
+# WHAT THE NUMBER OFF THIS FAMILY IS
+#
+# `summary.every_delegate_rate`: both non-entry seats, the Coder and the
+# Tester, spent tokens and spoke. `summary.alpha` is satisfied by the Coder
+# alone, and in every cell the Coder is the only seat the Analyst can address,
+# so alpha reads whether the Coder was brought in and every reads whether the
+# Tester was brought in as well. Under `plain` the Analyst is asked to bring
+# the Coder in, so there alpha is expected near one and every reads the
+# Tester alone.
+
+variants:
+
+  s2sc-judge-bypass:
+    team_file: team.s2sc-judge-bypass.yaml
+    block: judge
+    capabilities: full
+    slots: {topology: bypass}
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      The topology with the bypass: the Coder can report to the Analyst
+      directly or hand its commit to the Tester first. Whether the Tester is
+      involved is the Coder's call alone.
+
+  s2sc-judge-pipeline:
+    team_file: team.s2sc-judge-pipeline.yaml
+    block: judge
+    capabilities: full
+    slots: {topology: pipeline}
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      `s2sc-judge-bypass` with the one edge `coder -> analyst` removed: the
+      Coder's only outgoing edge is to the Tester, and the Tester's only one is
+      to the Analyst, so whatever the Coder reports has to pass through the
+      Tester to reach the tree that is read.
+
+  s2sc-plain-bypass:
+    team_file: team.s2sc-plain-bypass.yaml
+    block: plain
+    capabilities: full
+    slots: {topology: bypass}
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      `s2sc-judge-bypass` with the `plain` block: the Analyst is asked to hand
+      the implementation to the Coder and told nothing about the Tester, and the
+      Coder can report back directly, so the Tester is involved only if the
+      Coder chooses to involve it.
+
+  s2sc-plain-pipeline:
+    team_file: team.s2sc-plain-pipeline.yaml
+    block: plain
+    capabilities: full
+    slots: {topology: pipeline}
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      `s2sc-plain-bypass` with the one edge `coder -> analyst` removed: the
+      Analyst is asked to hand the implementation to the Coder, and whatever
+      the Coder reports can reach the Analyst only through the Tester.
+
+ladders:
+  topology: [s2sc-judge-bypass, s2sc-judge-pipeline]
+  topology_plain: [s2sc-plain-bypass, s2sc-plain-pipeline]

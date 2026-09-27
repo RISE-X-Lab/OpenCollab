@@ -45,6 +45,11 @@ class VerificationTool(Tool, Protocol):
     def verified_targets(self) -> frozenset[str]: ...
 
 
+def profile_tool_names(profile: str | None) -> tuple[str, ...]:
+    """Return the profile's default coding tools in their execution order."""
+    return tuple(tool.name for tool in resolve_agent_profile(profile).resolve_tools("coding"))
+
+
 def profile_tool_limits(profile: str | None) -> dict[str, dict[str, int]]:
     """Return an independent copy of a profile's built-in tool defaults."""
     resolved = resolve_agent_profile(profile)
@@ -135,4 +140,5 @@ __all__ = [
     "evidence_tools",
     "has_pass_evidence",
     "profile_tool_limits",
+    "profile_tool_names",
 ]

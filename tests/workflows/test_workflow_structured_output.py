@@ -10,6 +10,7 @@ when the first pass answers in free text, returns a dict on capture, yields
 
 from __future__ import annotations
 
+import inspect
 import time
 from collections.abc import Sequence
 from types import SimpleNamespace
@@ -484,8 +485,20 @@ async def test_forced_retry_carries_first_pass_exploration():
 
 
 @pytest.mark.asyncio
-async def test_structured_agent_inherits_configured_thinking():
-    """Both structured sessions inherit the configured model reasoning setting."""
+async def test_structured_agent_inherits_the_run_wide_reasoning_setting():
+    """PART 3: neither session a schema= call builds may pin ``thinking`` — both
+    pass ``None`` so the run-wide reasoning default reaches them.
+
+    These two sessions used to force ``thinking=False``, on the theory that
+    reasoning makes a model answer in free text instead of calling the capture
+    tool. Pinning it meant a run that declared a reasoning setting silently did
+    not apply it to any schema-bound agent, so two arms of the same experiment
+    ran under different reasoning settings while reporting the same
+    configuration -- and the trajectory recorded the difference as
+    ``reasoning_effort_policy: suppressed`` on one side only. The behaviour that
+    justified pinning is a property of an endpoint, not of this code path, and
+    belongs to whoever chooses the run-wide default.
+    """
     # First pass misses (_NO_CALL) so the corrective commit session is also built.
     factory = ScriptedFactory(payloads=[_NO_CALL, {"x": 7}])
     ctx = WorkflowContext(factory)
@@ -494,7 +507,22 @@ async def test_structured_agent_inherits_configured_thinking():
 
     assert len(factory.builds) == 2
     assert factory.builds[0]["thinking"] is None  # free-exploration pass
-    assert factory.builds[1]["thinking"] is None  # forced corrective commit
+    assert factory.builds[1]["thinking"] is None  # corrective commit
+
+
+@pytest.mark.asyncio
+async def test_schema_and_plain_agents_agree_on_the_reasoning_setting():
+    """A schema= call and a plain call must hand the factory the same
+    ``thinking`` value. The two differ in how the answer is captured, and an
+    experiment comparing them must not also be comparing reasoning on against
+    reasoning off."""
+    schema_factory = ScriptedFactory(payloads=[{"x": 7}])
+    await WorkflowContext(schema_factory).agent("give me x", schema=SCHEMA)
+
+    plain_factory = ScriptedFactory(payloads=[])
+    await WorkflowContext(plain_factory).agent("just do it")
+
+    assert schema_factory.builds[0]["thinking"] == plain_factory.builds[0]["thinking"]
 
 
 @pytest.mark.asyncio
@@ -624,3 +652,32 @@ def test_structured_retry_carries_history_through_declared_state_port():
     assert WorkflowContext._carry_exploration(prior, retry) is True
     assert retry.state.messages == prior_messages
     assert retry.state.messages is not prior_messages
+
+
+def test_forced_commit_retry_window_is_the_caller_s_remaining_time():
+    """B4, restated after the merge removed the fixed cap.
+
+    A 60s window used to cancel the corrective pass before it made a call:
+    ``complete_openai`` waits ``first_event_timeout`` (180s) for the first
+    streamed event, so a retry deadline below that can expire while the
+    provider is still on its first reasoning turn — observed once as
+    sympy-20438, whose forced commit issued zero LLM calls and ended
+    ``cancelled``. This branch raised the cap to 180s; main removed the cap
+    instead, so the corrective pass now inherits the caller's whole remaining
+    role time and only a caller deadline can shorten it. Both fixes close B4;
+    this pins the one that survived, and keeps the provider number in view so
+    a future cap cannot silently reintroduce a window below it.
+    """
+    from opencollab.adapters.llm import openai_provider
+    from opencollab.application.workflow_structured import _structured_retry_timeout
+
+    provider_first_event_timeout = inspect.signature(
+        openai_provider.complete_openai
+    ).parameters["first_event_timeout"].default
+    assert provider_first_event_timeout == 180.0
+
+    # No caller deadline -> no window at all, rather than a fixed default.
+    assert _structured_retry_timeout(None) is None
+    # With a deadline the caller's remaining time is the window, uncapped.
+    assert _structured_retry_timeout(90.0) == 90.0
+    assert _structured_retry_timeout(600.0) == 600.0

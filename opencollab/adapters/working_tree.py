@@ -50,8 +50,12 @@ class EnvWorkingTreeProbe:
     those failures to its explicit ``None``/unknown result.
     """
 
-    def __init__(self, env: Any, *, workspace: str | None = None) -> None:
+    def __init__(
+        self, env: Any, *, workspace: str | None = None, from_initial_head: bool = False
+    ) -> None:
         self._env = env
+        self._from_initial_head = from_initial_head
+        self._initial_head: str | None = None
         # Pin the repo dir explicitly so the probe is correct regardless of the
         # env's cwd handling. Falls back to the env's own workspace attribute.
         self._workspace = workspace or getattr(env, "workspace", ".") or "."
@@ -91,6 +95,14 @@ class EnvWorkingTreeProbe:
 
     async def diff(self) -> str:
         workspace = shlex.quote(self._workspace)
+        if self._from_initial_head and self._initial_head is None:
+            head = await self._env.exec_cmd(
+                f"git -C {workspace} rev-parse --verify HEAD",
+                timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
+            )
+            _require_complete_result(head, "delivery-tree initial HEAD")
+            self._initial_head = head.stdout.strip()
+        revision = self._initial_head or "HEAD"
         status_result = await self._env.exec_cmd(
             f"git -C {workspace} status --porcelain=v1 --untracked-files=all",
             timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
@@ -98,7 +110,7 @@ class EnvWorkingTreeProbe:
         _require_complete_result(status_result, "working-tree status")
 
         tracked_result = await self._env.exec_cmd(
-            f"git -C {workspace} --no-pager diff HEAD --binary --no-ext-diff --",
+            f"git -C {workspace} --no-pager diff {shlex.quote(revision)} --binary --no-ext-diff --no-textconv --",
             timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
         )
         _require_complete_result(tracked_result, "tracked diff")
@@ -132,7 +144,7 @@ class EnvWorkingTreeProbe:
 
         tracked = tracked_result.stdout.rstrip("\n")
         if tracked:
-            append_complete(f"[Tracked changes vs HEAD]\n{tracked}")
+            append_complete(f"[Tracked changes vs {revision}]\n{tracked}")
 
         for path in untracked_paths:
             result = await self._env.exec_cmd(

@@ -133,6 +133,7 @@ async def test_agent_forwards_all_llm_configuration_to_runtime_agent(
             "llm_first_event_timeout": 2.5,
             "llm_stream_idle_timeout": 3.75,
             "provider_error_time_budget": 9.0,
+            "llm_stream_chat": True,
         },
         environment=object(),
     )
@@ -154,6 +155,7 @@ async def test_agent_forwards_all_llm_configuration_to_runtime_agent(
     assert agent.llm_first_event_timeout == 2.5
     assert agent.llm_stream_idle_timeout == 3.75
     assert agent.provider_error_time_budget == 9.0
+    assert agent.llm_stream_chat is True
 
 
 def _completed_agent_metrics() -> dict[str, object]:
@@ -170,6 +172,7 @@ def _completed_agent_metrics() -> dict[str, object]:
         "cleanup_quiesced": True,
         "execution_quiesced": True,
         "agent_profile": "single2",
+        "agent_tool_names": [],
     }
 
 

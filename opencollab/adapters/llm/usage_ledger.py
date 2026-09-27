@@ -187,6 +187,7 @@ def build_usage_record(
     status: str,
     response: LLMResponse | None = None,
     error: BaseException | None = None,
+    transport_timing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     usage = response.usage if response is not None else Usage()
     record: dict[str, Any] = {
@@ -207,6 +208,10 @@ def build_usage_record(
         **_safe_base_url(base_url),
         "usage": _usage_payload(usage, model),
     }
+    # Added, never in place of anything: readers of the six batches already on
+    # disk key off the fields above and must keep working unchanged.
+    if transport_timing is not None:
+        record["transport_timing"] = transport_timing
     if response is not None:
         record["finish_reason"] = response.finish_reason
     if error is not None:
@@ -240,6 +245,7 @@ def record_api_usage(
     status: str,
     response: LLMResponse | None = None,
     error: BaseException | None = None,
+    transport_timing: dict[str, Any] | None = None,
 ) -> None:
     try:
         append_usage_record(
@@ -253,6 +259,7 @@ def record_api_usage(
                 status=status,
                 response=response,
                 error=error,
+                transport_timing=transport_timing,
             )
         )
     except Exception:

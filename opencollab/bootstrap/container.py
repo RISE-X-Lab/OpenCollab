@@ -22,6 +22,7 @@ order acyclic regardless of which module is imported first.
 from __future__ import annotations
 
 import inspect
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -72,6 +73,8 @@ from opencollab.bootstrap.tool_registry import (
 )
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionState
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     # Re-exported at runtime via ``__getattr__`` (see bottom of module); declared
@@ -128,6 +131,7 @@ def _resolve_llm(
         connect_timeout=getattr(agent, "llm_connect_timeout", 30.0),
         first_event_timeout=getattr(agent, "llm_first_event_timeout", 180.0),
         stream_idle_timeout=getattr(agent, "llm_stream_idle_timeout", 180.0),
+        stream_chat=getattr(agent, "llm_stream_chat", False),
         context_window=getattr(agent, "context_window", None),
         provider_error_time_budget=getattr(agent, "provider_error_time_budget", 0.0),
         provider_retry_budget=provider_retry_budget,
@@ -178,6 +182,7 @@ def _build_summarizer(
                 connect_timeout=getattr(agent, "llm_connect_timeout", 30.0),
                 first_event_timeout=getattr(agent, "llm_first_event_timeout", 180.0),
                 stream_idle_timeout=getattr(agent, "llm_stream_idle_timeout", 180.0),
+                stream_chat=getattr(agent, "llm_stream_chat", False),
                 context_window=getattr(agent, "context_window", None),
                 provider_error_time_budget=getattr(agent, "provider_error_time_budget", 0.0),
                 provider_retry_budget=provider_retry_budget,
@@ -208,6 +213,79 @@ def _build_summarizer(
                         )
 
     return ReadTimeSummarizer(_summary_complete, transcript_path=auto_save_path)
+
+
+def _history_compaction_settings(resolved_llm: LLMPort) -> dict[str, Any]:
+    """The history-compaction thresholds a session will actually run under.
+
+    One resolution point for two consumers: the shaper wiring below, which hands
+    the numbers to the reactive layers, and the trajectory record, which writes
+    them down. Deriving them twice would let the recorded value drift from the
+    enforced one, which is the whole failure this record exists to close.
+    """
+    context_window = getattr(resolved_llm, "context_window", lambda: None)()
+    history_trigger, history_target = history_trigger_target(context_window)
+    return {
+        "context_window_tokens": context_window,
+        "history_trigger_tokens": history_trigger,
+        "history_target_tokens": history_target,
+        # Which branch of ``history_trigger_target`` produced the pair: scaled to
+        # the model's real window, or the fixed 120k/90k fallback an unknown
+        # window degrades to. Stated rather than left to be re-derived from
+        # ``context_window_tokens`` by a reader who knows the rule.
+        "history_thresholds_from": (
+            "context_window"
+            if context_window and context_window > 0
+            else "fixed_default"
+        ),
+    }
+
+
+def _trace_history_compaction(
+    tracer: TracePort | None,
+    *,
+    aid: int,
+    agent: Agent,
+    resolved_llm: LLMPort,
+    shaper_injected: bool,
+) -> None:
+    """Record, once per session, the compaction thresholds it runs under.
+
+    The reactive history layers scale to the active model's window, so two arms
+    of one experiment can compact an order of magnitude apart -- a 1,015,576-token
+    window triggers at 982,576, a model the capability table does not recognise
+    falls back to the fixed 120,000 -- and nothing on disk said which. Recovering
+    it meant guessing the window and redoing the arithmetic. This writes both
+    thresholds, the ``context_window`` they came from, and the branch that
+    produced them, keyed by the same ``aid`` every other record carries.
+
+    Observation only, and guarded: a record that cannot be built must not change
+    how the session runs.
+    """
+    if tracer is None:
+        return
+    try:
+        payload: dict[str, Any] = {
+            "aid": aid,
+            "model": getattr(agent, "model", None),
+        }
+        if shaper_injected:
+            # A caller-supplied shaper carries its own thresholds; this wiring
+            # never derived any. Writing the numbers we would have used would
+            # name a setting no layer is enforcing.
+            payload.update(
+                {
+                    "context_window_tokens": None,
+                    "history_trigger_tokens": None,
+                    "history_target_tokens": None,
+                    "history_thresholds_from": "injected_shaper",
+                }
+            )
+        else:
+            payload.update(_history_compaction_settings(resolved_llm))
+        tracer.log_step(step_type="session.history_compaction", payload=payload)
+    except Exception as exc:  # noqa: BLE001 - observability is non-authoritative
+        logger.error("history compaction trace failed: %s", exc)
 
 
 def _build_default_shaper(
@@ -249,9 +327,12 @@ def _build_default_shaper(
     wants an always-on front rung can compose one.
     """
     # Trigger/target scale to the active model's real context window, degrading
-    # to fixed defaults when the model is unrecognised.
-    context_window = getattr(resolved_llm, "context_window", lambda: None)()
-    history_trigger, history_target = history_trigger_target(context_window)
+    # to fixed defaults when the model is unrecognised. Resolved through
+    # ``_history_compaction_settings`` so the trajectory record and the wiring
+    # read the SAME two numbers rather than each deriving its own.
+    settings = _history_compaction_settings(resolved_llm)
+    history_trigger = settings["history_trigger_tokens"]
+    history_target = settings["history_target_tokens"]
     # A small input allowance cannot retain the same number of maximum-size
     # tool exchanges as a large window. Keep the latest location/evidence pair.
     affordable_groups = max(2, history_target // (DEFAULT_TOOL_RESULT_BUDGET // 4))
@@ -381,12 +462,24 @@ def build_session_runtime(
         auto_save_path,
         provider_retry_budget,
     )
+    resolved_shaper: ShaperPort
     if shaper is not None:
         resolved_shaper = shaper
     elif agent_profile is not None:
         resolved_shaper = agent_profile.build_shaper(resolved_llm, summarizer)
     else:
         resolved_shaper = _build_default_shaper(resolved_llm, summarizer)
+    # A profile shaper is NOT an injected one: ``build_shaper`` routes back
+    # through ``_build_default_shaper``, so it runs on the very thresholds
+    # derived above. Only a caller-supplied shaper carries thresholds this
+    # wiring never chose.
+    _trace_history_compaction(
+        tracer,
+        aid=aid,
+        agent=agent,
+        resolved_llm=resolved_llm,
+        shaper_injected=shaper is not None,
+    )
     runner = SessionRunUseCase(
         agent=agent,
         state=state,

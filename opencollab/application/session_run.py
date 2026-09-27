@@ -160,6 +160,12 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # (None|'soft'|'hard'). Drives _maybe_trace_steering to log only UPWARD
         # crossings, re-arming on a write reset. Never persisted.
         self._last_steering_level: str | None = None
+        # Spend seen the last time a steering block was built, so the
+        # ``thresholds`` cadence can fire on the CROSSING of a band rather than
+        # on every turn above it. ``None`` means "no previous turn in this
+        # process": the first build then compares spend against itself and
+        # crosses nothing, which is also what a resumed session wants.
+        self._steering_prev_used_tokens: int | None = None
         # One ``session_terminal`` row per session, not per turn: ``run_loop``
         # can be re-entered on an already-finished session as a read-only query
         # for its answer, and that must not add a second disposition.
@@ -179,6 +185,12 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._low_yield_m = low_yield_m
         self._pending_tool_allowlist: frozenset[str] | None = None
         self._pending_tool_gate_label: str | None = None
+        # What the application offered before provider request adaptation. Written by
+        # ``_complete_with_choice`` (the one place a request is issued) and read
+        # by ``record_llm_trace``; recording only, never consulted by control
+        # flow.
+        self._last_request_tool_names: list[str] = []
+        self._last_request_tool_choice: Any = None
         self._required_tool_retried = False
         # Message index where the current user turn began. It survives a
         # deferred suspend/resume so the returned answer is scoped to this turn.

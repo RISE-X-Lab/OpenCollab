@@ -112,6 +112,9 @@ class _SessionRunTraceMixin:
                 or self.agent.model,
                 "session_step": self.state.step_count,
                 "response_session_id": self._response_session_id,
+                "request_tool_names": list(self._last_request_tool_names),
+                "request_tool_choice": self._last_request_tool_choice,
+                "request_observation_stage": "application",
             }
             if usage is not None:
                 output_tokens = getattr(usage, "output_tokens", max(total_tokens - input_tokens, 0))
@@ -160,6 +163,7 @@ class _SessionRunTraceMixin:
             provider_model = getattr(response, "provider_model", None)
             if provider_model is not None:
                 payload["provider_model"] = provider_model
+            payload["transport_timing"] = getattr(response, "transport_timing", None)
             self.tracer.log_step(
                 step_type="llm_call",
                 payload=payload,

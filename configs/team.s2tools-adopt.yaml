@@ -1,0 +1,42 @@
+
+# THE s2dual ROSTER WITH AN ADOPTER THAT CAN ONLY READ AND ADOPT
+#
+# `team.s2dual-judge.yaml` in every respect but the Adopter's line: same three
+# Single2 seats, same Coder cards and tools, same four edges, the same block
+# (`judge`, which commands nothing). The Adopter holds `file_read`, `git_diff`
+# and `grep` of Single2's six -- no `bash`, `file_write` or `apply_patch` --
+# plus `adopt` and the three team tools. `adopt` checks out a commit that
+# already exists and shows what it changes from where the run started; it runs
+# no command and edits no file. Its card says so in the tools line, the
+# capabilities pair and the paragraph on bringing a commit over;
+# `configs/s2tools/variants.yaml` says why this is a family of its own.
+#
+# The Adopter cannot run the tests. It chooses between candidates from what
+# `adopt` shows it and what the Coders report.
+entry: adopter
+
+roles:
+  adopter:
+    profile: single2
+    prompt_file: s2tools/adopter.s2tools-adopt.md
+    tools: [file_read, git_diff, grep, adopt, message_agent, team_status, submit]
+
+  coder_a:
+    profile: single2
+    prompt_file: s2dual/coder-a.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+  coder_b:
+    profile: single2
+    prompt_file: s2dual/coder-b.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+# Four directed edges, not six. The Adopter reaches both Coders and both reach
+# it back -- the return edges are what make a prebuilt peer able to deliver at
+# all. `coder_a` and `coder_b` are NOT connected: the scheduler refuses a
+# message between them (`_scheduler_team.py:188`), so anything one Coder learns
+# of the other's work is something the Adopter decided to tell it.
+topology:
+  adopter: [coder_a, coder_b]
+  coder_a: [adopter]
+  coder_b: [adopter]

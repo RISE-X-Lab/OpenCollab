@@ -11,6 +11,7 @@ import json
 import re
 from typing import Any
 
+from opencollab.adapters.llm.first_token import NOT_STREAMED, begin_attempt
 from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
 from opencollab.adapters.llm.tool_contracts import (
     NormalizedToolChoice,
@@ -336,8 +337,16 @@ async def complete_anthropic(
         max_output_tokens,
         reasoning_effort,
     )
+
+    async def request_once() -> Any:
+        # The Anthropic path is not streamed, so there is no first token to
+        # time; the wrapper exists only to put that fact, and the attempt's
+        # start, on the record.
+        begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
+        return await client.messages.create(**kwargs)
+
     resp = await with_retry(
-        lambda: client.messages.create(**kwargs),
+        request_once,
         max_retries=max_retries,
         retry_time_budget=provider_error_time_budget,
     )
