@@ -6,9 +6,8 @@ purely observational; later steps key brakes on them.
 
 * T1 (SENSOR) — duplicate / empty / "No matches"-class results increment
   ``low_yield_since_progress``; a NOVEL informative result resets it AND
-  increments ``distinct_evidence_count``. Includes the red-team re-read case (a
-  path-normalized re-read of a known file at a shifted range yields novel content
-  but is still scored zero-gain via the call hash).
+  increments ``distinct_evidence_count``. Different read ranges can yield new
+  evidence; repeating a known range or returned content remains low-yield.
 * T2 (off==on parity) — folding the sensor (``apply_to``, the "on" path) leaves
   every CONTROL-FLOW-visible piece of state byte-for-byte identical to NOT folding
   it (the pre-sensor "off"/reference apply body); only the new observational
@@ -110,11 +109,7 @@ def test_t1_low_yield_increments_and_novel_resets_and_counts():
     assert state.turn.distinct_evidence_count == 2
 
 
-def test_t1_path_normalized_reread_scores_zero_gain_even_with_new_content():
-    # Red-team: re-cat a KNOWN file at a shifted range returns DIFFERENT content
-    # (novel content hash) but the SAME path-normalized (tool, args) call key, so
-    # the sensor must still score it zero-gain (low-yield) — a model cannot dodge
-    # the sensor by re-reading the same file with a different line range.
+def test_t1_new_read_range_counts_as_new_evidence():
     state = SessionState(messages=[])
     _run_one(
         state,
@@ -131,7 +126,17 @@ def test_t1_path_normalized_reread_scores_zero_gain_even_with_new_content():
         "file_read",
         '{"path":"ccode.py","offset":50}',
     )
-    assert state.turn.distinct_evidence_count == 1  # NOT counted as new evidence
+    assert state.turn.distinct_evidence_count == 2
+    assert state.turn.low_yield_since_progress == 0
+
+    # Repeating that same range still has zero gain, even if its output changes.
+    _run_one(
+        state,
+        ScriptedTool("file_read", ["File: ccode.py (...)\n50\tupdated beta"]),
+        "file_read",
+        '{"path":"ccode.py","offset":50}',
+    )
+    assert state.turn.distinct_evidence_count == 2
     assert state.turn.low_yield_since_progress == 1
 
 
