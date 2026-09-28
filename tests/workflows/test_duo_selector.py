@@ -27,7 +27,7 @@ async def test_g22_preserves_original_rejection_and_default_a(monkeypatch):
         ctx, {"goal": "Preserve the public return value"},
     )
     assert outcome["judge_result"] == result
-    assert outcome["prompt_revision"] == 4
+    assert outcome["prompt_revision"] == 5
     assert outcome["winner"] == outcome["adopted"] == "A"
     assert outcome["selection_reason"] == "contract-evidence-insufficient-default-a"
 
@@ -36,7 +36,7 @@ async def test_g22_preserves_original_rejection_and_default_a(monkeypatch):
 async def test_g22_identical_candidates_keep_mechanical_selection():
     ctx = Context(identical=True)
     outcome = await g22.duo(ctx, {"goal": "Repair public behavior"})
-    assert outcome["prompt_revision"] == 4
+    assert outcome["prompt_revision"] == 5
     assert outcome["winner"] == outcome["adopted"] == "A"
     assert outcome["selection_reason"] == "identical-diff"
     assert outcome["judge_used"] is False and not ctx.selector_calls
@@ -90,4 +90,83 @@ async def test_task_oriented_prompts_preserve_the_complete_delivery_scope(task):
         assert "non-empty source diff" not in prompt
         assert "Do not run git commit" not in prompt
         assert "withheld reference answers" in prompt
-    assert _prompts._PROMPT_REVISION == 4
+    assert _prompts._PROMPT_REVISION == 5
+
+
+@pytest.mark.parametrize("shared_gap", ["not_covered", "unclear"])
+async def test_complete_inventory_with_shared_shortcoming_can_select_b(tmp_path, shared_gap):
+    result = decision()
+    result["requirements"].append({
+        "requirement": "Preserve an edge case that both candidates leave unresolved",
+        "a_coverage": shared_gap,
+        "b_coverage": shared_gap,
+        "a_evidence": ["src/handler.py does not establish this edge case"],
+        "b_evidence": ["src/handler.py does not establish this edge case"],
+    })
+    ctx = Context(result=result)
+    outcome = await g22.duo(
+        ctx, {"goal": "Handle normal input and the edge case", "candidate_evidence_dir": str(tmp_path)},
+    )
+    assert outcome["judge_result"] == result
+    assert outcome["winner"] == outcome["adopted"] == "B"
+    assert outcome["selection_reason"] == "contract-adjudicated"
+    prompt, options = ctx.selector_calls[0]
+    assert "requirement inventory, not candidate correctness" in prompt
+    description = options["schema"]["properties"]["requirements_complete"]["description"]
+    assert "inventory completeness, not candidate correctness" in description
+    assert "not_covered or unclear" in description
+
+
+async def test_incomplete_inventory_still_rejects_a_b_recommendation(tmp_path):
+    result = decision()
+    result["requirements_complete"] = False
+    ctx = Context(result=result)
+    outcome = await g22.duo(ctx, {"goal": "Cover all requested behavior", "candidate_evidence_dir": str(tmp_path)})
+    assert outcome["judge_result"] == result
+    assert outcome["winner"] == "A"
+    assert outcome["selection_reason"] == "contract-evidence-insufficient-default-a"
+
+
+async def test_working_tree_delivery_keeps_a_better_supported_requirement_protected(tmp_path):
+    result = decision()
+    result["requirements"].append({
+        "requirement": "Preserve the existing default behavior",
+        "a_coverage": "covered",
+        "b_coverage": "not_covered",
+        "a_evidence": ["src/handler.py keeps the default path"],
+        "b_evidence": ["src/handler.py removes the default path"],
+    })
+    ctx = Context(result=result)
+    outcome = await g22.duo(ctx, {
+        "goal": "Implement the return value and preserve defaults",
+        "submission_mode": "working_tree",
+        "candidate_evidence_dir": str(tmp_path),
+    })
+    assert outcome["judge_result"]["winner"] == "B"
+    assert outcome["winner"] == outcome["adopted"] == "A"
+
+
+async def test_submission_mode_is_consistent_across_roles_and_isolated_between_calls(tmp_path):
+    goal = "Repair the return value and commit the change"
+    delegated, task_owned = Context(), Context()
+    outcomes = await asyncio.gather(
+        g22.duo(delegated, {"goal": goal, "submission_mode": "working_tree", "candidate_evidence_dir": str(tmp_path)}),
+        g22.duo(task_owned, {"goal": goal, "candidate_evidence_dir": str(tmp_path)}),
+    )
+    assert [r["submission_mode"] for r in outcomes] == ["working_tree", "task"]
+    for prompt, _ in [*delegated.coder_calls, *delegated.selector_calls]:
+        assert goal in prompt
+        assert "Runtime submission mode: working_tree" in prompt
+        assert "caller after selection" in prompt
+        assert "absent candidate commit" in prompt
+    for prompt, _ in [*task_owned.coder_calls, *task_owned.selector_calls]:
+        assert goal in prompt
+        assert "Runtime submission mode: working_tree" not in prompt
+
+
+@pytest.mark.parametrize("mode", ["unknown", None, {}, True])
+async def test_invalid_submission_mode_is_rejected_before_candidate_execution(mode):
+    ctx = Context()
+    with pytest.raises(ValueError, match="submission_mode"):
+        await g22.duo(ctx, {"goal": "Repair behavior", "submission_mode": mode})
+    assert ctx.coder_calls == []

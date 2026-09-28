@@ -51,7 +51,11 @@ A 寻找最简单、完整的解决办法。B 检查依赖、交互和边界条�
 
 裁决者依据任务的明确要求比较结果与验证证据。模型撰写的结果报告标为候选陈述。测试记录在目标、runner 和命令一致时参与比较。证据不足的要求保持 unclear，原有保守选择与回退规则继续生效。
 
-提示集中放在 [`_prompts.py`](../../opencollab/builtin_workflows/_prompts.py)。内部修订号为 4，结果中的 `prompt_revision` 记录该值，对外统一使用 `duo`。
+提示集中放在 [`_prompts.py`](../../opencollab/builtin_workflows/_prompts.py)。内部修订号为 5，结果中的 `prompt_revision` 记录该值，对外统一使用 `duo`。
+
+`requirements_complete` 表示裁决者已经逐项审阅所有明确需求。候选尚未覆盖的需求仍记录为 `not_covered` 或 `unclear`，需求清单完整时该字段仍为 true，裁决者据此比较候选间的具体差异。
+
+调用方负责提取选定工作树并完成后续提交时，传入 `submission_mode="working_tree"`。两个 coder 保留完整改动供调用方捕获，裁决者按这一委托关系判断交付职责。测试是否通过仍依据实际证据。默认值 `submission_mode="task"` 沿用任务本身的交付要求，结果会记录此次调用采用的模式。
 
 ## 完整证据读取
 

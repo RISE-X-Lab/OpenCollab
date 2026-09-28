@@ -27,7 +27,15 @@ CONTRACT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "winner": {"type": "string", "enum": ["A", "B"]},
-        "requirements_complete": {"type": "boolean"},
+        "requirements_complete": {
+            "type": "boolean",
+            "description": (
+                "True when the requirements array accounts for every explicit task requirement. "
+                "This measures inventory completeness, not candidate correctness or test success. "
+                "Keep true even when either or both candidates have not_covered or unclear entries; "
+                "use false only for an incomplete requirement inventory."
+            ),
+        },
         "requirements": {
             "type": "array",
             "minItems": 1,

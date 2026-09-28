@@ -83,8 +83,20 @@ fallback rules continue to apply.
 
 The current prompt text is kept together in
 [`_prompts.py`](../opencollab/builtin_workflows/_prompts.py). Its internal revision
-is 4 and is recorded as `prompt_revision` in the result. Callers use `duo`
+is 5 and is recorded as `prompt_revision` in the result. Callers use `duo`
 without a prompt-version suffix.
+
+`requirements_complete` means that the adjudicator has accounted for every
+explicit requirement. It does not mean that either candidate satisfies every
+requirement. Shared gaps remain visible as `not_covered` or `unclear` entries
+while the adjudicator compares concrete differences between the candidates.
+
+Set `submission_mode="working_tree"` when the caller captures the chosen diff
+and owns subsequent commits or submission. Both coders leave their intended
+changes available for capture, and the adjudicator treats the absent candidate
+commit as part of that delegated delivery process. This mode does not establish
+test success. The default `submission_mode="task"` follows the task-specific
+delivery instructions. The result records the mode used for that workflow call.
 
 ## Complete evidence for selection
 

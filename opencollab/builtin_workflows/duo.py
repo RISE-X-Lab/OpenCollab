@@ -21,6 +21,8 @@ async def duo(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
 
     ``candidate_evidence_dir`` optionally supplies a host-side parent directory.
     Each adjudication creates its own retained evidence directory.
+    ``submission_mode="working_tree"`` declares caller-owned patch capture and
+    later submission. The default ``"task"`` follows task-specific delivery.
     """
     async def adjudicator(context: Any, **options: Any) -> tuple[str, Any, str]:
         return await adjudicate_candidate_files(
