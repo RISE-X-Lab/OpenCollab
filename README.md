@@ -68,40 +68,9 @@ dual-coder workflow, achieving the highest reported Pass@1 in each comparison.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-results-dark.svg">
-    <img src="assets/benchmark-results-light.svg" alt="Cross-harness benchmark results. OC Duo leads Pass@1 with 64.25% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 69.91% on DeepSWE. The complete data and metric definitions follow below." width="980">
+    <img src="assets/benchmark-results-light.svg" alt="Cross-harness benchmark results. OC Duo leads Pass@1 with 64.25% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 69.91% on DeepSWE. Columns show Pass@1, average tokens, estimated average cost, and cache hit." width="980">
   </picture>
 </p>
-
-<details>
-<summary>View data and metric definitions</summary>
-
-| Dataset | Harness | Pass@1 (%) ↑ | Avg. Tokens (M) ↓ | Avg. Cost ($) ↓ | Cache Hit (%) ↑ |
-| --- | --- | ---: | ---: | ---: | ---: |
-| SWE-bench Pro | Mini-SWE-Agent | 61.66 | 4.16 | 0.90 | 36.65 |
-| SWE-bench Pro | Codex CLI | 63.73 | 7.31 | 0.73 | 90.27 |
-| SWE-bench Pro | Claude Code | 58.03 | 9.38 | 2.54 | 12.50 |
-| SWE-bench Pro | OC (Base) | 63.21 | 3.89 | 0.41 | 88.03 |
-| SWE-bench Pro | **OC (Duo)** | **64.25** | 6.50 | 0.73 | 84.95 |
-| Terminal-Bench 2.1 | Mini-SWE-Agent | 76.40 | 2.97 | 0.45 | 67.36 |
-| Terminal-Bench 2.1 | Codex CLI | 80.90 | 2.86 | 0.26 | 93.88 |
-| Terminal-Bench 2.1 | Claude Code | 77.53 | 21.95 | 2.73 | 79.32 |
-| Terminal-Bench 2.1 | OC (Base) | 79.78 | 1.54 | 0.19 | 78.38 |
-| Terminal-Bench 2.1 | **OC (Duo)** | **83.15** | 4.60 | 0.60 | 76.47 |
-| DeepSWE | Mini-SWE-Agent | 61.95 | 19.36 | 3.27 | 58.81 |
-| DeepSWE | Codex CLI | 47.79 | 15.01 | 1.30 | 96.47 |
-| DeepSWE | Claude Code | 56.64 | 77.90 | 7.66 | 91.16 |
-| DeepSWE | OC (Base) | 55.75 | 11.95 | 1.19 | 90.53 |
-| DeepSWE | **OC (Duo)** | **69.91** | 26.11 | 2.67 | 89.36 |
-
-The evaluated task sets contain 193 SWE-bench Pro tasks, 89 Terminal-Bench 2.1
-tasks, and 113 DeepSWE tasks. Token averages cover input and output tokens from
-the accepted attempts with recorded usage. Cache hit is the aggregate cached
-input divided by aggregate input. Average cost is an estimate computed as
-`T × (0.2975 − 0.2185 × h)`, where `T` is average tokens in millions and `h`
-is the cache-hit fraction. Bold values mark the highest Pass@1 per dataset.
-See [evaluation setup](#evaluate-with-opencollab-eval) to run benchmark tasks.
-
-</details>
 
 ## Quick start
 

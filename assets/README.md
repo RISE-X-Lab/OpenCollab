@@ -65,12 +65,9 @@ The five node dots use colors sampled along the gradient (`#713AED`, `#2A53EB`,
 ## Benchmark table
 
 `benchmark-results-light.svg` and `benchmark-results-dark.svg` display the
-benchmark data from the root README in a fixed-column layout. Both keep text
-editable and support the corresponding GitHub color scheme. The README keeps
-the data table and metric definitions in an expandable section.
-
-The SVG files retain editable text. Keep their values synchronized with the
-README data table when updating the results.
+benchmark results in a fixed-column layout. Both keep text editable and
+support the corresponding GitHub color scheme. Keep the values synchronized
+between the two themes when updating the results.
 
 ## Terminal splash
 
