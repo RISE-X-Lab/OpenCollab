@@ -167,9 +167,11 @@ If you find this project useful, please consider giving it a ⭐ and citing our 
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=RISE-X-Lab%2FOpenCollab&amp;type=date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date&amp;theme=dark">
-    <img src="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date" alt="OpenCollab star history chart" width="600">
-  </picture>
-</a>
+<p align="center">
+  <a href="https://www.star-history.com/?repos=RISE-X-Lab%2FOpenCollab&amp;type=date">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date&amp;theme=dark">
+      <img src="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date" alt="OpenCollab star history chart" width="600">
+    </picture>
+  </a>
+</p>
