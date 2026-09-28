@@ -5,6 +5,25 @@ All notable changes to OpenCollab are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.8.2] - 2026-09-28
+
+### Fixed
+
+- Corrected the input windows for Qwen 3.8 Flash and DeepSeek V4.1 Flash, and
+  avoided forced tool selection when Qwen thinking mode does not support it.
+- Marked reasoning as withheld in traces when a provider bills reasoning tokens
+  without returning reasoning content.
+- Aligned edit tool descriptions and the handoff experiment's analyst prompt
+  with the tools and permissions actually available to each role.
+- Retried transient, statusless gateway concurrency and streaming failures, and
+  preserved team results and usage when cleanup or trace persistence fails.
+- Notified waiting senders when a teammate stops without answering, including
+  after session restoration.
+- Accepted an optional final line terminator when validating a replacement
+  range ending in a blank line, while still rejecting mismatched ranges.
+
 ## [0.8.1] - 2026-09-27
 
 ### Changed
@@ -68,8 +87,6 @@ ineffective tool calls. Candidate worktrees retain the correct environment and
 cleanup ownership. Redirected CLI input preserves queued tasks and answers,
 including pipes, ordinary files, encodings and concurrent questions.
 
-
-## [Unreleased]
 
 ## [0.6.0] - 2026-09-04
 
@@ -223,7 +240,10 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.7.0...v0.8.0
 [0.6.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/563027175e2cc2540d19324def73010a7e436dcc...v0.4.1

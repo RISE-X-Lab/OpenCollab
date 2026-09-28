@@ -60,7 +60,7 @@ distribution just as CI does:
 
 ```bash
 set -euo pipefail
-release_version=0.8.1
+release_version=0.8.2
 artifact_root="$(mktemp -d -t "opencollab-${release_version}.XXXXXX")"
 mkdir -p "$artifact_root/sdist" "$artifact_root/wheel" "$artifact_root/assets"
 
@@ -105,15 +105,15 @@ remote_sha="$(git ls-remote origin "refs/tags/v${release_version}^{}" | cut -f1)
 test "$remote_sha" = "$release_sha"
 ```
 
-Prepare curated notes from the matching changelog section. While the project is
-classified as Alpha, publish it as a GitHub prerelease:
+Prepare curated notes from the matching changelog section. The maintainer
+chooses whether the GitHub entry is a regular release or a prerelease. The
+following command publishes a regular GitHub release.
 
 ```bash
 gh release create "v${release_version}" \
   "$artifact_root/assets/"* \
   --repo RISE-X-Lab/OpenCollab \
   --verify-tag \
-  --prerelease \
   --title "OpenCollab ${release_version}" \
   --notes-file release-notes.md
 ```
