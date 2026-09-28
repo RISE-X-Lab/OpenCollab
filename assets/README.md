@@ -69,8 +69,8 @@ benchmark data from the root README in a fixed-column layout. Both keep text
 editable and support the corresponding GitHub color scheme. The README keeps
 the data table and metric definitions in an expandable section.
 
-After editing the README data, regenerate both themes with
-`python scripts/render_benchmark_table.py` from the repository root.
+The SVG files retain editable text. Keep their values synchronized with the
+README data table when updating the results.
 
 ## Terminal splash
 
