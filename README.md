@@ -60,12 +60,20 @@ collaboration designs. The example includes a bilingual guide and tests.
 
 ## Benchmark results
 
-We compare five harnesses on SWE-bench Pro, Terminal-Bench 2.1, and DeepSWE
-using GPT-5.6-Luna with reasoning effort set to `max` for every role.
-[OC (Base)](docs/single2.md) uses a single agent, while
+Five harnesses evaluated with **GPT-5.6-Luna** at `max` reasoning effort.
+[OC (Base)](docs/single2.md) uses a single agent.
 [OC (Duo)](docs/duo.md) generates two candidates and selects one through its
-dual-coder workflow. OC (Duo) achieves the highest reported Pass@1 in all three
-comparisons.
+dual-coder workflow, achieving the highest reported Pass@1 in each comparison.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-results-dark.svg">
+    <img src="assets/benchmark-results-light.svg" alt="Cross-harness benchmark results. OC Duo leads Pass@1 with 64.25% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 69.91% on DeepSWE. The complete data and metric definitions follow below." width="980">
+  </picture>
+</p>
+
+<details>
+<summary>View data and metric definitions</summary>
 
 | Dataset | Harness | Pass@1 (%) ↑ | Avg. Tokens (M) ↓ | Avg. Cost ($) ↓ | Cache Hit (%) ↑ |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -92,6 +100,8 @@ input divided by aggregate input. Average cost is an estimate computed as
 `T × (0.2975 − 0.2185 × h)`, where `T` is average tokens in millions and `h`
 is the cache-hit fraction. Bold values mark the highest Pass@1 per dataset.
 See [evaluation setup](#evaluate-with-opencollab-eval) to run benchmark tasks.
+
+</details>
 
 ## Quick start
 
