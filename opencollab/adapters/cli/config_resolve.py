@@ -7,6 +7,7 @@ missing-key hint.
 
 from __future__ import annotations
 
+import typer
 from rich.console import Console
 
 from opencollab.bootstrap.config import accepted_api_key_envs, missing_api_key
@@ -37,16 +38,19 @@ def resolve_config(workspace: str, model: str | None, provider: str | None,
     # ``build_config`` returns a validated ``OpenCollabConfig`` (budget is
     # ``int`` with ``ge=1``), so ``model_dump`` already yields correctly-typed
     # values. ``filter_messages`` remains threaded as a compatibility input.
-    cfg = build_config(
-        workspace,
-        overrides={
-            "model": model,
-            "provider": provider,
-            "api_key": api_key,
-            "base_url": base_url,
-            "budget": budget,
-        },
-    ).model_dump()
+    try:
+        cfg = build_config(
+            workspace,
+            overrides={
+                "model": model,
+                "provider": provider,
+                "api_key": api_key,
+                "base_url": base_url,
+                "budget": budget,
+            },
+        ).model_dump()
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(f"Cannot load configuration: {exc}") from exc
     return {
         "model": cfg["model"],
         "provider": cfg["provider"],

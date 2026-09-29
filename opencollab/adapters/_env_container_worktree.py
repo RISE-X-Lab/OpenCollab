@@ -85,6 +85,8 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         self._branch = branch
         self._branch_owned = False
         self._worktree_registered = False
+        self._worktree_files_pending = False
+        self._registered_worktree_path: str | None = None
         self._base_commit: str | None = None
         self._diff_base: str | None = None
         self._head_commit: str | None = None
@@ -185,6 +187,12 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         if added.returncode != 0:
             raise RuntimeError(f"container git worktree add failed: {added.stderr.strip()}")
         self._worktree_registered = True
+        self._worktree_files_pending = True
+        # Git's registry uses physical paths, even when the configured root
+        # contains symlinks. Keep that identity for failed-removal recovery.
+        location = await self._git(self._worktree_dir, "rev-parse", "--show-toplevel")
+        if location.returncode == 0 and not location.stdout_truncated and not location.stderr_truncated:
+            self._registered_worktree_path = location.stdout.removesuffix("\n")
 
     async def get_diff(self) -> str:
         """This worktree's changes since the point its current work started from."""
@@ -250,9 +258,32 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
                     self._worktree_dir,
                     removed.stderr.strip(),
                 )
+                listed = await self._git(self._repository_root, "worktree", "list", "--porcelain", "-z")
+                if (
+                    self._registered_worktree_path is not None
+                    and listed.returncode == 0
+                    and not listed.stdout_truncated
+                    and not listed.stderr_truncated
+                ):
+                    self._worktree_registered = (
+                        f"worktree {self._registered_worktree_path}" in listed.stdout.split("\0")
+                    )
             else:
                 self._worktree_registered = False
-        if self._branch_owned and self._base_commit is not None:
+                self._worktree_files_pending = False
+        if not self._worktree_registered and self._worktree_files_pending:
+            removed_files = await self._docker(
+                "exec", "--", self._container_id or "", "rm", "-rf", "--", self._worktree_dir,
+                timeout=CONTAINER_GIT_TIMEOUT_SECONDS,
+            )
+            if removed_files.returncode == 0:
+                self._worktree_files_pending = False
+            else:
+                failures.append(
+                    f"worktree files retained at {self._worktree_dir}: "
+                    f"{removed_files.stderr.decode('utf-8', errors='replace').strip()}"
+                )
+        if not self._worktree_registered and self._branch_owned and self._base_commit is not None:
             # Delete only a lease that still stands where it was claimed, so a
             # branch something else advanced is left for its owner to explain.
             released = await self._git(

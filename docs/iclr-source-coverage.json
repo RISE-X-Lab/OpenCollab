@@ -1485,7 +1485,7 @@
     {
       "source_change": "M",
       "source_path": "opencollab/bootstrap/config.py",
-      "disposition": "source_identical",
+      "disposition": "adapted",
       "target_paths": [
         "opencollab/bootstrap/config.py"
       ]

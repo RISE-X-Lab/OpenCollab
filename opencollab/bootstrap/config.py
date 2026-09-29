@@ -261,7 +261,13 @@ def load_dotenv(path: str | None = None) -> dict[str, str]:
     if not stat.S_ISREG(inspected.st_mode):
         raise ValueError(f"config env path is not a regular file: {env_path}")
 
-    text = read_regular_text(env_path, max_bytes=MAX_DOTENV_BYTES)
+    try:
+        text = read_regular_text(env_path, max_bytes=MAX_DOTENV_BYTES)
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"config env file encoding error: expected UTF-8: {env_path} "
+            f"(byte {exc.start}: {exc.reason})"
+        ) from exc
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):

@@ -4,9 +4,9 @@ The target branch is `integrate/iclr-2027`. It starts at main `7e83256f`.
 The source boundary is ICLR `53506fdb`. Every pull request in this series targets
 the integration branch and builds on the preceding head.
 
-The final stage also merges main `27b970d8`, including release 0.8.2,
-range-aware file-read loop detection, Duo V5 workspace delivery, and the
-Duo V6 evidence-based selection rules.
+The final stage also merges main `fe36bed5`, including release 0.8.2,
+range-aware file-read loop detection, Duo V5 workspace delivery, Duo V6
+evidence-based selection rules, and worktree cleanup recovery.
 
 | Order | Head branch | Scope |
 | --- | --- | --- |
@@ -51,7 +51,9 @@ that name for the historical primary condition. Legacy cards retain their
 recorded treatment text. The card generator checks all 40 assembled cards.
 
 The final complete source and series each passed 3702 tests, whole-repository
-Ruff, and the existing four architecture checks. Earlier stage results are
+Ruff, and the existing four architecture checks. After merging main `fe36bed5`,
+the complete integration passed 3788 tests, whole-repository Ruff, dependency
+hygiene, and the same four architecture checks. Earlier stage results are
 recorded in their pull request descriptions. The OCE series uses the public
 team, environment, model-inspection, and profile-tool interfaces from this
 complete OC series.

@@ -354,8 +354,13 @@ async def test_noop_reset_does_not_hide_a_committed_candidate(local_docker, tmp_
         await env.cleanup()
 
 
-async def test_locked_container_worktree_reports_failure_and_can_retry(local_docker, tmp_path):
+@pytest.mark.parametrize("symlink_root", [False, True])
+async def test_locked_container_worktree_reports_failure_and_can_retry(local_docker, tmp_path, symlink_root):
     repo = _repo(tmp_path / 'testbed')
+    if symlink_root:
+        physical = tmp_path / "physical worktrees\n\u5de5\u4f5c"
+        physical.mkdir()
+        (tmp_path / "worktrees").symlink_to(physical, target_is_directory=True)
     env = _env(repo, tmp_path, 'candidate-locked')
     await env.setup()
     _git(repo, 'worktree', 'lock', env.workspace)
@@ -363,6 +368,8 @@ async def test_locked_container_worktree_reports_failure_and_can_retry(local_doc
         with pytest.raises(OSError, match='worktree'):
             await env.cleanup()
         assert Path(env.workspace).exists()
+        assert env._worktree_registered
+        assert 'candidate-locked' in _git(repo, 'branch', '--list')
     finally:
         _git(repo, 'worktree', 'unlock', env.workspace)
         await env.cleanup()
@@ -383,3 +390,26 @@ def test_redundant_slashes_do_not_bypass_repository_boundaries(repository, workt
         ContainerWorktreeEnvironment(
             container_id=CONTAINER_ID, repository_root=repository, worktree_root=worktrees,
         )
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="requires enforced POSIX permissions")
+async def test_container_permission_failure_can_retry_after_git_unregisters(local_docker, tmp_path):
+    repo = _repo(tmp_path / "testbed")
+    env = _env(repo, tmp_path, "permission-recovery")
+    workspace = Path(await env.setup())
+    protected = workspace / "protected"
+    protected.mkdir()
+    (protected / "output.txt").write_text("output\n", encoding="utf-8")
+    protected.chmod(0o500)
+    try:
+        with pytest.raises(OSError, match="Permission denied"):
+            await env.cleanup()
+        assert f"worktree {workspace}" not in _git(repo, "worktree", "list", "--porcelain", "-z").split("\0")
+        assert protected.is_dir()
+        assert not env._worktree_registered
+        assert "permission-recovery" not in _git(repo, "branch", "--list")
+    finally:
+        protected.chmod(0o700)
+        await env.cleanup()
+    assert not workspace.exists()
+    await env.cleanup()

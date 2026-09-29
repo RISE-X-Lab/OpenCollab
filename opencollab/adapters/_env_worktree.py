@@ -669,6 +669,16 @@ class WorktreeEnvironment(Environment):
             removed = await self._git("worktree", "remove", "--force", self._worktree_dir)
             if removed.returncode != 0:
                 failures.append(RuntimeError(f"git worktree remove failed: {removed.stderr.strip()}"))
+                # Git can unregister a worktree even when deleting its files
+                # fails. Reconcile the lease before retrying directory cleanup.
+                listed = await self._git("worktree", "list", "--porcelain", "-z")
+                if listed.returncode == 0 and not listed.stdout_truncated and not listed.stderr_truncated:
+                    registered_paths = {
+                        os.path.realpath(field.removeprefix("worktree "))
+                        for field in listed.stdout.split("\0")
+                        if field.startswith("worktree ")
+                    }
+                    self._worktree_registered = os.path.realpath(self._worktree_dir) in registered_paths
             else:
                 self._worktree_registered = False
         if not self._worktree_registered and self._worktree_dir is not None:
@@ -689,7 +699,7 @@ class WorktreeEnvironment(Environment):
                 failures.append(exc)
             else:
                 self._copy_baseline_dir = None
-        if self._git_mode and self._branch_owned and self._worktree_dir is None:
+        if self._git_mode and self._branch_owned and not self._worktree_registered:
             expected_oid = self._owned_branch_oid
             if expected_oid is None:
                 self._branch_owned = False
