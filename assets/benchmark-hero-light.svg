@@ -1,70 +1,70 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="980" height="420" viewBox="0 0 980 420" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="444" viewBox="0 0 980 444" role="img" aria-labelledby="title description">
   <title id="title">Pass@1 on SWE-bench Pro, Terminal-Bench 2.1, and DeepSWE</title>
   <desc id="description">Five harnesses with the same model, GPT-5.6-Luna. OpenCollab (Duo) has the highest Pass@1 on all three benchmarks. OpenCollab (Duo): SWE-bench Pro 64.25%, Terminal-Bench 2.1 83.15%, DeepSWE 69.91%; OpenCollab (Base): SWE-bench Pro 63.21%, Terminal-Bench 2.1 79.78%, DeepSWE 55.75%; Claude Code: SWE-bench Pro 58.03%, Terminal-Bench 2.1 77.53%, DeepSWE 56.64%; Codex CLI: SWE-bench Pro 63.73%, Terminal-Bench 2.1 80.90%, DeepSWE 47.79%; Mini-SWE-Agent: SWE-bench Pro 61.66%, Terminal-Bench 2.1 76.40%, DeepSWE 61.95%.</desc>
-  <rect width="980" height="420" rx="12" fill="#ffffff"/>
+  <rect width="980" height="444" rx="12" fill="#ffffff"/>
   <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, Liberation Sans, sans-serif" fill="#1f2328">
-    <text x="28" y="42" font-size="18" font-weight="600">Pass@1 on three agentic coding benchmarks</text>
-    <text x="28" y="66" font-size="13" fill="#656d76">Five harnesses, one model: GPT-5.6-Luna at max reasoning effort. Higher is better.</text>
-    <rect x="16" y="142" width="948" height="40" rx="8" fill="#f4f0ff"/>
-    <text x="190.0" y="104" font-size="15" font-weight="600">SWE-bench Pro</text>
-    <text x="190.0" y="124" font-size="12" fill="#656d76">193 tasks</text>
-    <path d="M190.0 136V344" stroke="#d8dee4" stroke-width="1"/>
-    <text x="190.0" y="360" font-size="11" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">0</text>
-    <path d="M285.0 136V344" stroke="#d8dee4" stroke-width="1"/>
-    <text x="285.0" y="360" font-size="11" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">50</text>
-    <path d="M380.0 136V344" stroke="#d8dee4" stroke-width="1"/>
-    <text x="380.0" y="360" font-size="11" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">100</text>
-    <text x="444.0" y="104" font-size="15" font-weight="600">Terminal-Bench 2.1</text>
-    <text x="444.0" y="124" font-size="12" fill="#656d76">89 tasks</text>
-    <path d="M444.0 136V344" stroke="#d8dee4" stroke-width="1"/>
-    <text x="444.0" y="360" font-size="11" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">0</text>
-    <path d="M539.0 136V344" stroke="#d8dee4" stroke-width="1"/>
-    <text x="539.0" y="360" font-size="11" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">50</text>
-    <path d="M634.0 136V344" stroke="#d8dee4" stroke-width="1"/>
-    <text x="634.0" y="360" font-size="11" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">100</text>
-    <text x="698.0" y="104" font-size="15" font-weight="600">DeepSWE</text>
-    <text x="698.0" y="124" font-size="12" fill="#656d76">113 tasks</text>
-    <path d="M698.0 136V344" stroke="#d8dee4" stroke-width="1"/>
-    <text x="698.0" y="360" font-size="11" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">0</text>
-    <path d="M793.0 136V344" stroke="#d8dee4" stroke-width="1"/>
-    <text x="793.0" y="360" font-size="11" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">50</text>
-    <path d="M888.0 136V344" stroke="#d8dee4" stroke-width="1"/>
-    <text x="888.0" y="360" font-size="11" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">100</text>
-    <text x="28" y="167.0" font-size="14" font-weight="600">OpenCollab (Duo)</text>
-    <path d="M190.0 152.0h118.1a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-118.1z" fill="#6d28d9"/>
-    <text x="320.1" y="167.0" font-size="13" font-weight="600" stroke="#f4f0ff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">64.25</text>
-    <path d="M444.0 152.0h154.0a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-154.0z" fill="#6d28d9"/>
-    <text x="610.0" y="167.0" font-size="13" font-weight="600" stroke="#f4f0ff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">83.15</text>
-    <path d="M698.0 152.0h128.8a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-128.8z" fill="#6d28d9"/>
-    <text x="838.8" y="167.0" font-size="13" font-weight="600" stroke="#f4f0ff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">69.91</text>
-    <text x="28" y="207.0" font-size="14">OpenCollab (Base)</text>
-    <path d="M190.0 192.0h116.1a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-116.1z" fill="#a78bfa"/>
-    <text x="318.1" y="207.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">63.21</text>
-    <path d="M444.0 192.0h147.6a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-147.6z" fill="#a78bfa"/>
-    <text x="603.6" y="207.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">79.78</text>
-    <path d="M698.0 192.0h101.9a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-101.9z" fill="#a78bfa"/>
-    <text x="811.9" y="207.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">55.75</text>
-    <text x="28" y="247.0" font-size="14">Claude Code</text>
-    <path d="M190.0 232.0h106.3a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-106.3z" fill="#afb8c1"/>
-    <text x="308.3" y="247.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">58.03</text>
-    <path d="M444.0 232.0h143.3a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-143.3z" fill="#afb8c1"/>
-    <text x="599.3" y="247.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">77.53</text>
-    <path d="M698.0 232.0h103.6a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-103.6z" fill="#afb8c1"/>
-    <text x="813.6" y="247.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">56.64</text>
-    <text x="28" y="287.0" font-size="14">Codex CLI</text>
-    <path d="M190.0 272.0h117.1a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-117.1z" fill="#afb8c1"/>
-    <text x="319.1" y="287.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">63.73</text>
-    <path d="M444.0 272.0h149.7a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-149.7z" fill="#afb8c1"/>
-    <text x="605.7" y="287.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">80.90</text>
-    <path d="M698.0 272.0h86.8a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-86.8z" fill="#afb8c1"/>
-    <text x="796.8" y="287.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">47.79</text>
-    <text x="28" y="327.0" font-size="14">Mini-SWE-Agent</text>
-    <path d="M190.0 312.0h113.2a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-113.2z" fill="#afb8c1"/>
-    <text x="315.2" y="327.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">61.66</text>
-    <path d="M444.0 312.0h141.2a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-141.2z" fill="#afb8c1"/>
-    <text x="597.2" y="327.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">76.40</text>
-    <path d="M698.0 312.0h113.7a4 4 0 0 1 4 4v12.0a4 4 0 0 1 -4 4h-113.7z" fill="#afb8c1"/>
-    <text x="823.7" y="327.0" font-size="13" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">61.95</text>
-    <text x="28" y="398" font-size="12" fill="#656d76">Duo runs two isolated coders and adopts one patch. Base is a single agent. Pass@1 in percent; tokens and cost are in the table below.</text>
+    <text x="28" y="44" font-size="21" font-weight="600">Pass@1 on three agentic coding benchmarks</text>
+    <text x="28" y="70" font-size="15" fill="#656d76">Five harnesses, one model: GPT-5.6-Luna at max reasoning effort. Higher is better.</text>
+    <rect x="16" y="150" width="948" height="42" rx="8" fill="#f4f0ff"/>
+    <text x="200.0" y="110" font-size="17" font-weight="600">SWE-bench Pro</text>
+    <text x="200.0" y="131" font-size="13" fill="#656d76">193 tasks</text>
+    <path d="M200.0 144V362" stroke="#d8dee4" stroke-width="1"/>
+    <text x="200.0" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">0</text>
+    <path d="M295.0 144V362" stroke="#d8dee4" stroke-width="1"/>
+    <text x="295.0" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">50</text>
+    <path d="M390.0 144V362" stroke="#d8dee4" stroke-width="1"/>
+    <text x="390.0" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">100</text>
+    <text x="450.7" y="110" font-size="17" font-weight="600">Terminal-Bench 2.1</text>
+    <text x="450.7" y="131" font-size="13" fill="#656d76">89 tasks</text>
+    <path d="M450.7 144V362" stroke="#d8dee4" stroke-width="1"/>
+    <text x="450.7" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">0</text>
+    <path d="M545.7 144V362" stroke="#d8dee4" stroke-width="1"/>
+    <text x="545.7" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">50</text>
+    <path d="M640.7 144V362" stroke="#d8dee4" stroke-width="1"/>
+    <text x="640.7" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">100</text>
+    <text x="701.3" y="110" font-size="17" font-weight="600">DeepSWE</text>
+    <text x="701.3" y="131" font-size="13" fill="#656d76">113 tasks</text>
+    <path d="M701.3 144V362" stroke="#d8dee4" stroke-width="1"/>
+    <text x="701.3" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">0</text>
+    <path d="M796.3 144V362" stroke="#d8dee4" stroke-width="1"/>
+    <text x="796.3" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">50</text>
+    <path d="M891.3 144V362" stroke="#d8dee4" stroke-width="1"/>
+    <text x="891.3" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">100</text>
+    <text x="28" y="176.5" font-size="16" font-weight="600">OpenCollab (Duo)</text>
+    <path d="M200.0 160.0h118.1a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-118.1z" fill="#6d28d9"/>
+    <text x="330.1" y="176.5" font-size="15" font-weight="600" stroke="#f4f0ff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">64.25</text>
+    <path d="M450.7 160.0h154.0a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-154.0z" fill="#6d28d9"/>
+    <text x="616.7" y="176.5" font-size="15" font-weight="600" stroke="#f4f0ff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">83.15</text>
+    <path d="M701.3 160.0h128.8a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-128.8z" fill="#6d28d9"/>
+    <text x="842.2" y="176.5" font-size="15" font-weight="600" stroke="#f4f0ff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">69.91</text>
+    <text x="28" y="218.5" font-size="16">OpenCollab (Base)</text>
+    <path d="M200.0 202.0h116.1a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-116.1z" fill="#a78bfa"/>
+    <text x="328.1" y="218.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">63.21</text>
+    <path d="M450.7 202.0h147.6a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-147.6z" fill="#a78bfa"/>
+    <text x="610.2" y="218.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">79.78</text>
+    <path d="M701.3 202.0h101.9a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-101.9z" fill="#a78bfa"/>
+    <text x="815.3" y="218.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">55.75</text>
+    <text x="28" y="260.5" font-size="16">Claude Code</text>
+    <path d="M200.0 244.0h106.3a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-106.3z" fill="#afb8c1"/>
+    <text x="318.3" y="260.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">58.03</text>
+    <path d="M450.7 244.0h143.3a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-143.3z" fill="#afb8c1"/>
+    <text x="606.0" y="260.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">77.53</text>
+    <path d="M701.3 244.0h103.6a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-103.6z" fill="#afb8c1"/>
+    <text x="816.9" y="260.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">56.64</text>
+    <text x="28" y="302.5" font-size="16">Codex CLI</text>
+    <path d="M200.0 286.0h117.1a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-117.1z" fill="#afb8c1"/>
+    <text x="329.1" y="302.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">63.73</text>
+    <path d="M450.7 286.0h149.7a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-149.7z" fill="#afb8c1"/>
+    <text x="612.4" y="302.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">80.90</text>
+    <path d="M701.3 286.0h86.8a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-86.8z" fill="#afb8c1"/>
+    <text x="800.1" y="302.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">47.79</text>
+    <text x="28" y="344.5" font-size="16">Mini-SWE-Agent</text>
+    <path d="M200.0 328.0h113.2a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-113.2z" fill="#afb8c1"/>
+    <text x="325.2" y="344.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">61.66</text>
+    <path d="M450.7 328.0h141.2a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-141.2z" fill="#afb8c1"/>
+    <text x="603.8" y="344.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">76.40</text>
+    <path d="M701.3 328.0h113.7a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-113.7z" fill="#afb8c1"/>
+    <text x="827.0" y="344.5" font-size="15" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">61.95</text>
+    <text x="28" y="420" font-size="14" fill="#656d76">Duo runs two isolated coders and adopts one patch; Base is a single agent. Tokens and cost are in the table below.</text>
   </g>
 </svg>
