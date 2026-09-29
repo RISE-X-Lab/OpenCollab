@@ -167,3 +167,57 @@ def test_unified_diff_count_normalization_is_explicit(tmp_path):
     })
     assert result.startswith("Applied unified_diff")
     assert target.read_text(encoding="utf-8") == "a\nx\nc\n"
+
+
+def test_relocation_counts_a_terminated_line_once_and_keeps_following_blank(tmp_path):
+    ws, target = _file(tmp_path, "zero\na\n\ntail\n")
+    result = _apply(ws, {
+        "path": "f.py", "mode": "line_replace", "relocate_expected": True,
+        "start_line": 1, "end_line": 1, "expected_str": "a\n", "new_str": "B",
+    })
+    assert result.startswith("Applied line_replace")
+    assert "matched lines 2-2 uniquely" in result
+    assert target.read_text() == "zero\nB\n\ntail\n"
+
+
+def test_relocation_preserves_an_explicit_blank_line_in_the_requested_range(tmp_path):
+    ws, target = _file(tmp_path, "zero\na\n\ntail\n")
+    result = _apply(ws, {
+        "path": "f.py", "mode": "line_replace", "relocate_expected": True,
+        "start_line": 1, "end_line": 2, "expected_str": "a\n", "new_str": "B",
+    })
+    assert result.startswith("Applied line_replace")
+    assert "matched lines 2-3 uniquely" in result
+    assert target.read_text() == "zero\nB\ntail\n"
+
+
+def test_relocation_keeps_a_blank_line_quoted_with_its_terminator(tmp_path):
+    ws, target = _file(tmp_path, "zero\na\n\ntail\n")
+    result = _apply(ws, {
+        "path": "f.py", "mode": "line_replace", "relocate_expected": True,
+        "start_line": 1, "end_line": 2, "expected_str": "a\n\n", "new_str": "B",
+    })
+    assert result.startswith("Applied line_replace")
+    assert target.read_text() == "zero\nB\ntail\n"
+
+
+def test_relocation_still_rejects_two_distinct_terminated_matches(tmp_path):
+    source = "zero\na\n\na\ntail\n"
+    ws, target = _file(tmp_path, source)
+    result = _apply(ws, {
+        "path": "f.py", "mode": "line_replace", "relocate_expected": True,
+        "start_line": 1, "end_line": 1, "expected_str": "a\n", "new_str": "B",
+    })
+    assert "appears 2 times" in result
+    assert target.read_text() == source
+
+
+def test_relocation_with_a_terminator_keeps_crlf_bytes(tmp_path):
+    ws, target = _file(tmp_path, "zero\na\n\ntail\n")
+    target.write_bytes(b"zero\r\na\r\n\r\ntail\r\n")
+    result = _apply(ws, {
+        "path": "f.py", "mode": "line_replace", "relocate_expected": True,
+        "start_line": 1, "end_line": 1, "expected_str": "a\r\n", "new_str": "B",
+    })
+    assert result.startswith("Applied line_replace")
+    assert target.read_bytes() == b"zero\r\nB\r\n\r\ntail\r\n"

@@ -70,20 +70,21 @@ def _summary(path: str, mode: str, before: str, after: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _locate_expected(lines: list[str], expected: str) -> list[tuple[int, int]]:
+def _locate_expected(lines: list[str], expected: str, *, line_count: int) -> list[tuple[int, int]]:
     """Locate exact text, preserving blank lines and one optional terminator."""
-    variants = [expected]
-    if expected.endswith("\n"):
-        variants.append(expected[:-1])
-    hits: set[tuple[int, int]] = set()
-    for variant in variants:
-        if not variant:
-            continue
-        block = variant.split("\n")
-        for start in range(len(lines) - len(block) + 1):
-            if lines[start:start + len(block)] == block:
-                hits.add((start, start + len(block)))
-    return sorted(hits)
+    if not expected:
+        return []
+    block, _ = _split_lines(expected)
+    # The quoted range distinguishes a final blank line from its optional
+    # terminator. Search one interpretation, so a following blank line cannot
+    # turn a unique position into two matches or be removed accidentally.
+    if expected.endswith("\n") and line_count == len(block) + 1:
+        block.append("")
+    return [
+        (start, start + len(block))
+        for start in range(len(lines) - len(block) + 1)
+        if lines[start:start + len(block)] == block
+    ]
 
 
 def _apply_line_replace(
@@ -144,7 +145,7 @@ def _apply_line_replace(
                     f"{start_line}-{end_line}.\n--- expected ---\n{expected}\n"
                     f"--- actual ---\n{actual}"
                 )
-            hits = _locate_expected(lines, expected)
+            hits = _locate_expected(lines, expected, line_count=end_idx - start_idx)
             if len(hits) != 1:
                 whereabouts = (
                     "does not appear anywhere in the file" if not hits

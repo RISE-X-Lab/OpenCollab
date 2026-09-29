@@ -113,7 +113,7 @@ result = await OpenCollab(workspace).team(
 ### Evaluation
 
 ```bash
-gen_prediction_batch --arm team --team-config configs/team.collab.yaml ...
+python -m opencollab_eval.generation.gen_prediction_batch --arm team --team-config configs/team.collab.yaml ...
 ```
 
 That path already passes `prebuild_team=True`, `use_worktrees=True`,
