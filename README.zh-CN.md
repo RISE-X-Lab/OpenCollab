@@ -1,20 +1,23 @@
 <p align="center">
-  <img src="assets/banner-dark.svg" alt="OpenCollab 标志与字标" width="600">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/lockup-horizontal-white.svg">
+    <img src="assets/lockup-horizontal.svg" alt="OpenCollab" width="340">
+  </picture>
+</p>
+
+<h3 align="center">用代码编排 coding agent 的协作，<br>用运行记录验证协作确实发生。</h3>
+
+<p align="center">
+  一个协作可编程、运行时可控的多智能体编程框架。
 </p>
 
 <p align="center">
-  <a href="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml"><img src="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/RISE-X-Lab/OpenCollab/releases/latest"><img src="https://img.shields.io/github/v/release/RISE-X-Lab/OpenCollab?color=7C3AED" alt="最新版本"></a>
-  <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg" alt="License: MulanPSL-2.0"></a>
-  <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg" alt="Python 3.10 至 3.14">
-</p>
-
-<h3 align="center">用代码编排 coding agent 的协作，用运行记录验证协作确实发生。</h3>
-
-<p align="center">
-  OpenCollab 是一个多智能体编程框架。它让每一种协作都跑在同一个受控的 runtime 上，并记录协作是否真的发生。
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/releases/latest"><img src="https://img.shields.io/github/v/release/RISE-X-Lab/OpenCollab?style=flat-square&amp;color=7C3AED&amp;labelColor=0F172A" alt="最新版本"></a>
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg?style=flat-square&amp;color=5556EC&amp;labelColor=0F172A" alt="License: MulanPSL-2.0"></a>
+  <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg?style=flat-square&amp;color=2563EB&amp;labelColor=0F172A" alt="Python 3.10 至 3.14">
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/RISE-X-Lab/OpenCollab/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=0F172A" alt="CI"></a>
   <br>
-  <a href="README.md">English</a> · <b>简体中文</b>
+  <sub><a href="README.md">English</a> · <b>简体中文</b></sub>
 </p>
 
 <p align="center">

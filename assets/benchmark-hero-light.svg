@@ -31,11 +31,11 @@
     <path d="M891.3 144V362" stroke="#d8dee4" stroke-width="1"/>
     <text x="891.3" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">100</text>
     <text x="28" y="176.5" font-size="16" font-weight="600">OpenCollab (Duo)</text>
-    <path d="M200.0 160.0h118.1a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-118.1z" fill="#6d28d9"/>
+    <path d="M200.0 160.0h118.1a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-118.1z" fill="#7C3AED"/>
     <text x="330.1" y="176.5" font-size="15" font-weight="600" stroke="#f4f0ff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">64.25</text>
-    <path d="M450.7 160.0h154.0a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-154.0z" fill="#6d28d9"/>
+    <path d="M450.7 160.0h154.0a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-154.0z" fill="#7C3AED"/>
     <text x="616.7" y="176.5" font-size="15" font-weight="600" stroke="#f4f0ff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">83.15</text>
-    <path d="M701.3 160.0h128.8a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-128.8z" fill="#6d28d9"/>
+    <path d="M701.3 160.0h128.8a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-128.8z" fill="#7C3AED"/>
     <text x="842.2" y="176.5" font-size="15" font-weight="600" stroke="#f4f0ff" stroke-width="5" stroke-linejoin="round" paint-order="stroke">69.91</text>
     <text x="28" y="218.5" font-size="16">OpenCollab (Base)</text>
     <path d="M200.0 202.0h116.1a4 4 0 0 1 4 4v14.0a4 4 0 0 1 -4 4h-116.1z" fill="#a78bfa"/>

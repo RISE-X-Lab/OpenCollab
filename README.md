@@ -1,21 +1,21 @@
 <p align="center">
-  <img src="assets/banner-dark.svg" alt="OpenCollab mark and wordmark" width="600">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/readme-hero-dark.svg">
+    <img src="assets/readme-hero-light.svg" alt="OpenCollab. Program how coding agents collaborate. Verify that they did." width="880">
+  </picture>
 </p>
 
 <p align="center">
-  <a href="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml"><img src="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/RISE-X-Lab/OpenCollab/releases/latest"><img src="https://img.shields.io/github/v/release/RISE-X-Lab/OpenCollab?color=7C3AED" alt="Latest release"></a>
-  <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg" alt="License: MulanPSL-2.0"></a>
-  <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg" alt="Python 3.10 through 3.14">
+  A multi-agent coding framework with programmable collaboration and a controllable runtime.
 </p>
 
-<h3 align="center">Program how coding agents collaborate. Verify that they did.</h3>
-
 <p align="center">
-  OpenCollab is a multi-agent coding framework. It runs every collaboration on one
-  controlled runtime and records whether the collaboration actually happened.
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/releases/latest"><img src="https://img.shields.io/github/v/release/RISE-X-Lab/OpenCollab?style=flat-square&amp;color=7C3AED&amp;labelColor=0F172A" alt="Latest release"></a>
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg?style=flat-square&amp;color=5556EC&amp;labelColor=0F172A" alt="License: MulanPSL-2.0"></a>
+  <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg?style=flat-square&amp;color=2563EB&amp;labelColor=0F172A" alt="Python 3.10 through 3.14">
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/RISE-X-Lab/OpenCollab/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=0F172A" alt="CI"></a>
   <br>
-  <b>English</b> · <a href="README.zh-CN.md">Chinese</a>
+  <sub><b>English</b> · <a href="README.zh-CN.md">Chinese</a></sub>
 </p>
 
 <p align="center">
