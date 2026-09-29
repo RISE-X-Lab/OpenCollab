@@ -85,35 +85,31 @@ def _task_text(args: argparse.Namespace) -> str:
 
 
 def _handoff_summary(result: RunResult[str]) -> str:
-    """One line answering the question this team file exists for: did the work
-    actually get handed over?
+    """Summarize seats, lead steps, and recorded message attempts by role.
 
-    A team's metrics carry only agent 0's step count and how many seats existed,
-    so "did anyone delegate" is not in them -- and a run where the Analyst did
-    everything alone looks, from the outside, exactly like one where it did not.
-    The trajectories have the answer, so when the caller kept them (--artifacts)
-    the messages are counted per role from the saved transcripts.
+    Saved tool calls count attempts. The scheduler's delivery events record
+    successful handoffs separately.
     """
     metrics = result.metrics or {}
     parts = [f"seats={metrics.get('sessions', '?')}", f"lead steps={metrics.get('steps', '?')}"]
     if result.artifacts is None:
-        parts.append("handoffs=unknown (pass --artifacts to count them)")
+        parts.append("message attempts=unknown (pass --artifacts to count them)")
         return " ".join(parts)
-    sent: dict[str, int] = {}
+    attempts: dict[str, int] = {}
     for path in sorted(Path(result.artifacts).glob("agent_*.json")):
         role = path.stem.split("_", 2)[-1].rsplit("-", 1)[0]
         try:
             transcript = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        sent[role] = sum(
+        attempts[role] = sum(
             1
             for message in transcript.get("messages") or []
             for call in message.get("tool_calls") or []
             if (call.get("function") or {}).get("name") == "message_agent"
         )
-    if sent:
-        parts.append("messages sent: " + ", ".join(f"{r}={n}" for r, n in sorted(sent.items())))
+    if attempts:
+        parts.append("message attempts: " + ", ".join(f"{r}={n}" for r, n in sorted(attempts.items())))
     return " ".join(parts)
 
 

@@ -285,10 +285,8 @@ def test_the_runner_does_not_override_a_caller_who_set_them(monkeypatch, tmp_pat
     assert os.environ["PYTEST_ADDOPTS"] == "-x"
 
 
-def test_the_runner_reports_whether_work_was_handed_over(tmp_path):
-    """A solo run and a delegating run are indistinguishable in a team's
-    metrics, which carry only agent 0's steps and a seat count. The line the
-    runner prints has to come from the transcripts or it says nothing."""
+def test_the_runner_reports_recorded_message_attempts(tmp_path):
+    """Per-role tool calls count attempts while delivery is measured separately."""
     module = _runner_module()
     (tmp_path / "agent_0_analyst-aaa.json").write_text(
         json.dumps(
@@ -317,7 +315,7 @@ def test_the_runner_reports_whether_work_was_handed_over(tmp_path):
     assert "coder=0" in line
 
 
-def test_the_runner_says_so_when_it_cannot_count_handoffs(tmp_path):
+def test_the_runner_says_so_when_it_cannot_count_message_attempts(tmp_path):
     """Silence and zero are different answers; reporting zero without evidence
     is the failure this avoids."""
     module = _runner_module()
@@ -326,7 +324,7 @@ def test_the_runner_says_so_when_it_cannot_count_handoffs(tmp_path):
         metrics = {"sessions": 3, "steps": 12}
         artifacts = None
 
-    assert "handoffs=unknown" in module._handoff_summary(_Result())
+    assert "message attempts=unknown" in module._handoff_summary(_Result())
 
 
 def test_the_file_is_self_contained(tmp_path):
@@ -349,3 +347,23 @@ def test_the_analyst_is_told_a_teammates_commit_is_not_in_its_own_log(team):
     card = " ".join(team.roles["analyst"].prompt.split())
     assert "The sha you were sent is enough on its own: check it out." in card
     assert "only `git log --all` reaches it" in card
+
+
+def test_refused_message_is_reported_as_an_attempt_not_a_delivery(tmp_path):
+    module = _runner_module()
+    (tmp_path / "agent_0_analyst-aaa.json").write_text(json.dumps({
+        "messages": [
+            {"role": "assistant", "tool_calls": [
+                {"id": "call-1", "function": {"name": "message_agent"}},
+            ]},
+            {"role": "tool", "tool_call_id": "call-1", "content": "Error: no agent has the role 'missing'"},
+        ],
+    }), encoding="utf-8")
+
+    class Result:
+        metrics = {"sessions": 2, "steps": 1}
+        artifacts = tmp_path
+
+    line = module._handoff_summary(Result())
+    assert "message attempts: analyst=1" in line
+    assert "messages sent" not in line
