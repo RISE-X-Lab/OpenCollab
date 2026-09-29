@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/lockup-horizontal-white.svg">
-    <img src="assets/lockup-horizontal.svg" alt="OpenCollab" width="340">
+    <img src="assets/lockup-horizontal.svg" alt="OpenCollab" width="300">
   </picture>
 </p>
 
