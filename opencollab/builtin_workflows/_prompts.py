@@ -1,6 +1,6 @@
-"""Duo's task-oriented role prompts (internal revision 5)."""
+"""Duo's task-oriented role prompts (internal revision 6)."""
 
-_PROMPT_REVISION = 5
+_PROMPT_REVISION = 6
 
 SHARED_RULES = """\
 Follow the task instructions, granted permissions, and the runtime's delivery requirements.
@@ -98,6 +98,14 @@ Mark coverage unclear when the evidence does not establish it. Check public argu
 positions and types, return values, error types and wording, default-value behavior,
 and producer/consumer interactions against the actual changes. Prefer B only
 when the evidence establishes an advantage over A without losing a requirement
-better satisfied by A. Keep uncertainty visible and never invent verification."""
+better satisfied by A. A requirement covered by one candidate and unclear for the
+other is an evidence-supported advantage when the covered candidate's evidence
+cites its changed paths and inspected implementation. Include the original changed
+file path in each advantage entry, even when another requirement already names
+that file. A symbol name alone does not identify the supporting changed path.
+Keep the other candidate's coverage unclear. Uncertainty does not establish a failure. Apply this comparison
+symmetrically to A and B. Reject a candidate that leaves a requirement not_covered
+when the other candidate covers it. When neither candidate has an evidence-supported
+advantage, prefer A. Keep uncertainty visible and never invent verification."""
 
 SELECTION_PROMPT = CONTRACT_PROMPT

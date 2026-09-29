@@ -220,8 +220,9 @@ def _validated_judge_winner(
         evidence = {"A": evidence_a, "B": evidence_b}
         if coverage[loser] == "covered" and coverage[winner] == "not_covered":
             return None
-        if coverage[winner] == "covered" and coverage[loser] == "not_covered":
-            if not _evidence_mentions_changed_path(evidence[winner], paths[winner]):
+        if coverage[winner] == "covered" and coverage[loser] in {"not_covered", "unclear"}:
+            supported = _evidence_mentions_changed_path(evidence[winner], paths[winner])
+            if not supported and coverage[loser] == "not_covered":
                 return None
-            advantage = True
+            advantage = advantage or supported
     return winner if advantage else None

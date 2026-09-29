@@ -7,6 +7,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Duo V6 accepts a changed-path-supported coverage advantage over an unclear
+  alternative, so a supported adjudicator recommendation reaches candidate
+  adoption. Explicit coverage losses, incomplete inventories, missing evidence,
+  and ties retain their existing rejection or fallback behavior.
+
 ## [0.8.2] - 2026-09-28
 
 ### Fixed
