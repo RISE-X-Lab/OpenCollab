@@ -58,6 +58,20 @@ the new idea and turn it into a working system with a fraction of the
 engineering effort. The same OpenCollab runtime can carry many more
 collaboration designs. The example includes a bilingual guide and tests.
 
+## Benchmark results
+
+Five harnesses evaluated with **GPT-5.6-Luna** at `max` reasoning effort.
+[OC (Base)](docs/single2.md) uses a single agent.
+[OC (Duo)](docs/duo.md) generates two candidates and selects one through its
+dual-coder workflow, achieving the highest reported Pass@1 in each comparison.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-results-dark.svg">
+    <img src="assets/benchmark-results-light.svg" alt="Cross-harness benchmark results. OC Duo leads Pass@1 with 64.25% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 69.91% on DeepSWE. Columns show Pass@1, average tokens, estimated average cost, and cache hit." width="980">
+  </picture>
+</p>
+
 ## Quick start
 
 ```bash
@@ -164,3 +178,14 @@ If you find this project useful, please consider giving it a ⭐ and citing our 
   year         = {2024}
 }
 ```
+
+## Star History
+
+<p align="center">
+  <a href="https://www.star-history.com/?repos=RISE-X-Lab%2FOpenCollab&amp;type=date">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date&amp;theme=dark">
+      <img src="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date" alt="OpenCollab star history chart" width="600">
+    </picture>
+  </a>
+</p>

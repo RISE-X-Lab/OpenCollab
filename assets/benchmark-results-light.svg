@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="688" viewBox="0 0 980 688" role="img" aria-labelledby="title description">
+  <title id="title">Cross-harness benchmark results</title>
+  <desc id="description">Five harnesses on SWE-bench Pro, Terminal-Bench 2.1, and DeepSWE. OC Duo has the highest reported Pass@1 in each group. Columns show Pass@1, average tokens, estimated average cost, and cache hit.</desc>
+  <rect width="980" height="688" rx="12" fill="#ffffff"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" fill="#1f2328">
+    <text x="24" y="43" text-anchor="start" font-size="15" font-weight="600">Dataset</text>
+    <text x="250" y="43" text-anchor="start" font-size="15" font-weight="600">Harness</text>
+    <text x="552" y="32" text-anchor="end" font-size="15" font-weight="600">Pass@1</text>
+    <text x="552" y="55" text-anchor="end" font-size="13" fill="#656d76">(%) ↑</text>
+    <text x="684" y="32" text-anchor="end" font-size="15" font-weight="600">Tokens</text>
+    <text x="684" y="55" text-anchor="end" font-size="13" fill="#656d76">Avg. (M) ↓</text>
+    <text x="814" y="32" text-anchor="end" font-size="15" font-weight="600">Cost</text>
+    <text x="814" y="55" text-anchor="end" font-size="13" fill="#656d76">Avg. ($) ↓</text>
+    <text x="948" y="32" text-anchor="end" font-size="15" font-weight="600">Cache hit</text>
+    <text x="948" y="55" text-anchor="end" font-size="13" fill="#656d76">(%) ↑</text>
+    <path d="M24 76H956" stroke="#d8dee4" stroke-width="1.5"/>
+    <text x="24" y="182" text-anchor="start" font-weight="600">SWE-bench Pro</text>
+    <text x="250" y="113" text-anchor="start" >Mini-SWE-Agent</text>
+    <text x="552" y="113" text-anchor="end" style="font-variant-numeric:tabular-nums">61.66</text>
+    <text x="684" y="113" text-anchor="end" style="font-variant-numeric:tabular-nums">4.16</text>
+    <text x="814" y="113" text-anchor="end" style="font-variant-numeric:tabular-nums">0.90</text>
+    <text x="948" y="113" text-anchor="end" style="font-variant-numeric:tabular-nums">36.65</text>
+    <text x="250" y="147" text-anchor="start" >Codex CLI</text>
+    <text x="552" y="147" text-anchor="end" style="font-variant-numeric:tabular-nums">63.73</text>
+    <text x="684" y="147" text-anchor="end" style="font-variant-numeric:tabular-nums">7.31</text>
+    <text x="814" y="147" text-anchor="end" style="font-variant-numeric:tabular-nums">0.73</text>
+    <text x="948" y="147" text-anchor="end" style="font-variant-numeric:tabular-nums">90.27</text>
+    <text x="250" y="181" text-anchor="start" >Claude Code</text>
+    <text x="552" y="181" text-anchor="end" style="font-variant-numeric:tabular-nums">58.03</text>
+    <text x="684" y="181" text-anchor="end" style="font-variant-numeric:tabular-nums">9.38</text>
+    <text x="814" y="181" text-anchor="end" style="font-variant-numeric:tabular-nums">2.54</text>
+    <text x="948" y="181" text-anchor="end" style="font-variant-numeric:tabular-nums">12.50</text>
+    <text x="250" y="215" text-anchor="start" >OC (Base)</text>
+    <text x="552" y="215" text-anchor="end" style="font-variant-numeric:tabular-nums">63.21</text>
+    <text x="684" y="215" text-anchor="end" style="font-variant-numeric:tabular-nums">3.89</text>
+    <text x="814" y="215" text-anchor="end" style="font-variant-numeric:tabular-nums">0.41</text>
+    <text x="948" y="215" text-anchor="end" style="font-variant-numeric:tabular-nums">88.03</text>
+    <rect x="234" y="226" width="728" height="32" rx="6" fill="#f4f0ff"/>
+    <text x="250" y="249" text-anchor="start" font-weight="650" fill="#6d28d9">OC (Duo)</text>
+    <text x="552" y="249" text-anchor="end" style="font-variant-numeric:tabular-nums" font-weight="700" fill="#6d28d9">64.25</text>
+    <text x="684" y="249" text-anchor="end" style="font-variant-numeric:tabular-nums">6.50</text>
+    <text x="814" y="249" text-anchor="end" style="font-variant-numeric:tabular-nums">0.73</text>
+    <text x="948" y="249" text-anchor="end" style="font-variant-numeric:tabular-nums">84.95</text>
+    <path d="M24 274H956" stroke="#d8dee4"/>
+    <text x="24" y="378" text-anchor="start" font-weight="600">Terminal-Bench 2.1</text>
+    <text x="250" y="309" text-anchor="start" >Mini-SWE-Agent</text>
+    <text x="552" y="309" text-anchor="end" style="font-variant-numeric:tabular-nums">76.40</text>
+    <text x="684" y="309" text-anchor="end" style="font-variant-numeric:tabular-nums">2.97</text>
+    <text x="814" y="309" text-anchor="end" style="font-variant-numeric:tabular-nums">0.45</text>
+    <text x="948" y="309" text-anchor="end" style="font-variant-numeric:tabular-nums">67.36</text>
+    <text x="250" y="343" text-anchor="start" >Codex CLI</text>
+    <text x="552" y="343" text-anchor="end" style="font-variant-numeric:tabular-nums">80.90</text>
+    <text x="684" y="343" text-anchor="end" style="font-variant-numeric:tabular-nums">2.86</text>
+    <text x="814" y="343" text-anchor="end" style="font-variant-numeric:tabular-nums">0.26</text>
+    <text x="948" y="343" text-anchor="end" style="font-variant-numeric:tabular-nums">93.88</text>
+    <text x="250" y="377" text-anchor="start" >Claude Code</text>
+    <text x="552" y="377" text-anchor="end" style="font-variant-numeric:tabular-nums">77.53</text>
+    <text x="684" y="377" text-anchor="end" style="font-variant-numeric:tabular-nums">21.95</text>
+    <text x="814" y="377" text-anchor="end" style="font-variant-numeric:tabular-nums">2.73</text>
+    <text x="948" y="377" text-anchor="end" style="font-variant-numeric:tabular-nums">79.32</text>
+    <text x="250" y="411" text-anchor="start" >OC (Base)</text>
+    <text x="552" y="411" text-anchor="end" style="font-variant-numeric:tabular-nums">79.78</text>
+    <text x="684" y="411" text-anchor="end" style="font-variant-numeric:tabular-nums">1.54</text>
+    <text x="814" y="411" text-anchor="end" style="font-variant-numeric:tabular-nums">0.19</text>
+    <text x="948" y="411" text-anchor="end" style="font-variant-numeric:tabular-nums">78.38</text>
+    <rect x="234" y="422" width="728" height="32" rx="6" fill="#f4f0ff"/>
+    <text x="250" y="445" text-anchor="start" font-weight="650" fill="#6d28d9">OC (Duo)</text>
+    <text x="552" y="445" text-anchor="end" style="font-variant-numeric:tabular-nums" font-weight="700" fill="#6d28d9">83.15</text>
+    <text x="684" y="445" text-anchor="end" style="font-variant-numeric:tabular-nums">4.60</text>
+    <text x="814" y="445" text-anchor="end" style="font-variant-numeric:tabular-nums">0.60</text>
+    <text x="948" y="445" text-anchor="end" style="font-variant-numeric:tabular-nums">76.47</text>
+    <path d="M24 470H956" stroke="#d8dee4"/>
+    <text x="24" y="574" text-anchor="start" font-weight="600">DeepSWE</text>
+    <text x="250" y="505" text-anchor="start" >Mini-SWE-Agent</text>
+    <text x="552" y="505" text-anchor="end" style="font-variant-numeric:tabular-nums">61.95</text>
+    <text x="684" y="505" text-anchor="end" style="font-variant-numeric:tabular-nums">19.36</text>
+    <text x="814" y="505" text-anchor="end" style="font-variant-numeric:tabular-nums">3.27</text>
+    <text x="948" y="505" text-anchor="end" style="font-variant-numeric:tabular-nums">58.81</text>
+    <text x="250" y="539" text-anchor="start" >Codex CLI</text>
+    <text x="552" y="539" text-anchor="end" style="font-variant-numeric:tabular-nums">47.79</text>
+    <text x="684" y="539" text-anchor="end" style="font-variant-numeric:tabular-nums">15.01</text>
+    <text x="814" y="539" text-anchor="end" style="font-variant-numeric:tabular-nums">1.30</text>
+    <text x="948" y="539" text-anchor="end" style="font-variant-numeric:tabular-nums">96.47</text>
+    <text x="250" y="573" text-anchor="start" >Claude Code</text>
+    <text x="552" y="573" text-anchor="end" style="font-variant-numeric:tabular-nums">56.64</text>
+    <text x="684" y="573" text-anchor="end" style="font-variant-numeric:tabular-nums">77.90</text>
+    <text x="814" y="573" text-anchor="end" style="font-variant-numeric:tabular-nums">7.66</text>
+    <text x="948" y="573" text-anchor="end" style="font-variant-numeric:tabular-nums">91.16</text>
+    <text x="250" y="607" text-anchor="start" >OC (Base)</text>
+    <text x="552" y="607" text-anchor="end" style="font-variant-numeric:tabular-nums">55.75</text>
+    <text x="684" y="607" text-anchor="end" style="font-variant-numeric:tabular-nums">11.95</text>
+    <text x="814" y="607" text-anchor="end" style="font-variant-numeric:tabular-nums">1.19</text>
+    <text x="948" y="607" text-anchor="end" style="font-variant-numeric:tabular-nums">90.53</text>
+    <rect x="234" y="618" width="728" height="32" rx="6" fill="#f4f0ff"/>
+    <text x="250" y="641" text-anchor="start" font-weight="650" fill="#6d28d9">OC (Duo)</text>
+    <text x="552" y="641" text-anchor="end" style="font-variant-numeric:tabular-nums" font-weight="700" fill="#6d28d9">69.91</text>
+    <text x="684" y="641" text-anchor="end" style="font-variant-numeric:tabular-nums">26.11</text>
+    <text x="814" y="641" text-anchor="end" style="font-variant-numeric:tabular-nums">2.67</text>
+    <text x="948" y="641" text-anchor="end" style="font-variant-numeric:tabular-nums">89.36</text>
+  </g>
+</svg>

@@ -62,6 +62,13 @@ The five node dots use colors sampled along the gradient (`#713AED`, `#2A53EB`,
   <img src="app-icon.svg" alt="app icon" width="88">
 </p>
 
+## Benchmark table
+
+`benchmark-results-light.svg` and `benchmark-results-dark.svg` display the
+benchmark results in a fixed-column layout. Both keep text editable and
+support the corresponding GitHub color scheme. Keep the values synchronized
+between the two themes when updating the results.
+
 ## Terminal splash
 
 [`opencollab/adapters/tui/brand_motion.py`](../opencollab/adapters/tui/brand_motion.py)

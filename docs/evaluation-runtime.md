@@ -1,6 +1,6 @@
 # Configured evaluation runtime
 
-This development version contains the candidate-workspace and unbounded-session changes integrated into the current 0.6 main API from the evaluation runtime. Explicit `OPENCOLLAB_UNBOUNDED_LIMITS=true` carries unbounded token and step settings through public agents, workflow roles, and candidate sub-workflows. Finite settings continue to use the normal budget reservations when that switch is absent.
+This version contains the candidate-workspace and unbounded-session changes integrated into the 0.8 API from the evaluation runtime. Explicit `OPENCOLLAB_UNBOUNDED_LIMITS=true` carries unbounded token and step settings through public agents, workflow roles, and candidate sub-workflows. Finite settings continue to use the normal budget reservations when that switch is absent.
 
 Structured exploration, structured correction, and final synthesis inherit the configured reasoning policy. Correction uses the caller's remaining role time. The provider adapter retains typed output-limit responses with a `length` finish reason, retries declared transient provider failures, and preserves stream/terminal consistency checks. `OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION=1` keeps external failures within one logical call while the caller still owns cancellation and the configured request timeout.
 

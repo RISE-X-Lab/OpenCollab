@@ -78,13 +78,32 @@ checks and remaining limitations.
 The adjudicator compares the explicit task requirements with the results and
 verification evidence. Model-written reports are identified as claims. Test
 records are comparable when their target, runner and command agree. Unclear or
-unsupported coverage remains unclear. The existing conservative choice and
-fallback rules continue to apply.
+unsupported coverage remains unclear. A covered requirement has an evidence
+advantage over either `not_covered` or `unclear` when its evidence cites the
+recommended candidate's changed paths. This comparison applies symmetrically
+to A and B. An explicit `not_covered` requirement that the other candidate covers
+still rejects the recommendation. An advantage over `unclear` without changed-path
+evidence contributes no support, while other supported advantages remain valid.
+Claims of an advantage over `not_covered` still require changed-path evidence.
+Incomplete inventories and recommendations with no supported advantage retain
+the default-A fallback.
 
 The current prompt text is kept together in
 [`_prompts.py`](../opencollab/builtin_workflows/_prompts.py). Its internal revision
-is 4 and is recorded as `prompt_revision` in the result. Callers use `duo`
+is 6 and is recorded as `prompt_revision` in the result. Callers use `duo`
 without a prompt-version suffix.
+
+`requirements_complete` means that the adjudicator has accounted for every
+explicit requirement. It does not mean that either candidate satisfies every
+requirement. Shared gaps remain visible as `not_covered` or `unclear` entries
+while the adjudicator compares concrete differences between the candidates.
+
+Set `submission_mode="working_tree"` when the caller captures the chosen diff
+and owns subsequent commits or submission. Both coders leave their intended
+changes available for capture, and the adjudicator treats the absent candidate
+commit as part of that delegated delivery process. This mode does not establish
+test success. The default `submission_mode="task"` follows the task-specific
+delivery instructions. The result records the mode used for that workflow call.
 
 ## Complete evidence for selection
 

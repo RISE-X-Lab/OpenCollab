@@ -438,30 +438,25 @@ def test_tool_execution_use_case_detects_cyclic_loop_spread_across_window():
     assert "Loop detected" in result.messages_to_append[0]["content"]
 
 
-def test_tool_execution_use_case_catches_same_file_reread_with_shifting_ranges():
-    # Regression (sympy-11400): a model thrashed by re-reading ONE file ~135 times
-    # with SHIFTING line ranges. Each exact-arg hash was unique, so the
-    # MAX_SIMILAR_CALLS=3 counter never tripped. Read tools now key on the PATH
-    # alone, so the re-reads collide and trip at MAX_SAME_FILE_READS (8).
+def test_tool_execution_use_case_catches_same_file_and_range_reread():
+    # Re-reading the same slice still trips the existing read threshold.
     state = SessionState(messages=[])
     use_case, _ = build_use_case(state=state)
-    # Seven prior reads of the same file at DIFFERENT ranges collapse to one
-    # path-only hash (range args are ignored for file_read).
-    path_hash = use_case.tool_call_hash("file_read", {"path": "x/ccode.py"})
-    state.replace_recent_tool_hashes([path_hash] * 7)
+    read_hash = use_case.tool_call_hash("file_read", {"path": "x/ccode.py", "offset": 900, "limit": 50})
+    state.replace_recent_tool_hashes([read_hash] * 7)
     call = tool_call(
         name="file_read",
-        arguments='{"path": "x/ccode.py", "start": 900, "limit": 50}',
+        arguments='{"path": "x/ccode.py", "offset": 900, "limit": 50}',
     )
 
     result = run(use_case.process([call]))
 
     assert result.loop_detections == [LoopDetection(tool="file_read", count=8)]
-    assert "on the same file" in result.messages_to_append[0]["content"]
+    assert "on the same file and line range" in result.messages_to_append[0]["content"]
 
 
 def test_tool_execution_use_case_allows_a_few_legitimate_rereads():
-    # Three reads of one file (varying ranges) is normal distill-as-you-read and
+    # Three reads of one range is normal distill-as-you-read and
     # must NOT trip — the read threshold is more lenient than the exact-arg loop,
     # so the third read executes the tool instead of short-circuiting.
     state = SessionState(messages=[])
@@ -471,7 +466,7 @@ def test_tool_execution_use_case_allows_a_few_legitimate_rereads():
     use_case, _ = build_use_case(state=state, agent=agent)
     path_hash = use_case.tool_call_hash("file_read", {"path": "x/ccode.py"})
     state.replace_recent_tool_hashes([path_hash] * 2)  # two prior reads
-    call = tool_call(name="file_read", arguments='{"path": "x/ccode.py", "start": 1}')
+    call = tool_call(name="file_read", arguments='{"path": "x/ccode.py", "offset": 1}')
 
     result = run(use_case.process([call]))
 

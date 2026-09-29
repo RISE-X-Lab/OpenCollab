@@ -479,13 +479,13 @@ class SessionState:
 
         ``intrinsic_low_yield`` flags an empty read or a "No matches"-class result
         (low-yield regardless of novelty). A result is INFORMATIVE only when it is
-        not intrinsically low-yield AND at least one of its hashes is novel (an
-        unseen result content OR an unseen (tool, normalized-args) call key). An
+        not intrinsically low-yield AND both its result content and its
+        (tool, normalized-args) call key are unseen. An
         informative result resets ``low_yield_since_progress`` and increments
         ``distinct_evidence_count``; a low-yield result increments
         ``low_yield_since_progress``. Both hashes are remembered, so a later exact
-        re-issue — or a re-read of the same file at a shifted range, caught by the
-        path-normalized call hash — scores zero gain. Observational only: STEP 1
+        re-issue of a known read range or result content scores zero gain.
+        A different read range can contribute new evidence. Observational only: STEP 1
         wires no behavior to these counters.
 
         STEP 2: the SAME novelty + intrinsic decision determines the ledger

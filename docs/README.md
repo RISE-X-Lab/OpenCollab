@@ -6,8 +6,7 @@ API, and architecture boundary.
 
 ## Current documentation
 
-The [SDK 0.4 visual guide](sdk-0.4-explainer.html) explains the public research
-interfaces. The [configuration guide](../configs/README.md) covers providers,
+The [Base and Single2 guide](single2.md) explains the default agent profile and its implementation. The [configuration guide](../configs/README.md) covers providers,
 models, and team files. The [skills guide](../skills/README.md) explains
 on-demand agent skills. Contribution checks and vulnerability reporting are in
 [CONTRIBUTING.md](../CONTRIBUTING.md) and [SECURITY.md](../SECURITY.md).
@@ -17,10 +16,14 @@ candidate selection, and patch adoption through the CLI and SDK.
 The [Chinese guide](duo/README.zh-CN.md) provides the same instructions in Chinese.
 The [native test evidence guide](test-evidence.md) explains Bash observation
 and the public Git patch parser.
-The [0.6.0 migration guide](migrations/0.6.0.md) lists the public API,
-team/workflow, evidence, lifecycle, and budget-contract changes in the current
-release candidate. The [0.5.0 migration guide](migrations/0.5.0.md) remains
-available for upgrades from the previous release.
+
+## Migration guides
+
+- The [0.8.0 migration guide](migrations/0.8.0.md) covers Base profile introduction and Single2 as default
+- The [0.7.0 migration guide](migrations/0.7.0.md) covers Duo workflow, evaluation runtime, and native Bash testing
+- The [remove-run-tests migration guide](migrations/remove-run-tests.md) explains the transition to native Bash testing
+- The [0.6.0 migration guide](migrations/0.6.0.md) covers public API, team/workflow, evidence, lifecycle, and budget-contract changes (historical)
+- The [0.5.0 migration guide](migrations/0.5.0.md) remains available for historical reference
 
 [The collaborating team](2026-08-31-collab-team.md) documents
 `configs/team.collab.yaml`: what the three-role team is, the three ways to run

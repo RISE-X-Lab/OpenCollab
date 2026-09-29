@@ -59,14 +59,11 @@ def _require_positive_finite_timeout(value: Any, *, name: str) -> float:
         raise ValueError(f"{name} must be a finite positive number")
     return timeout
 
-# Read-only, range-parameterized tools whose loop key is the FILE PATH alone, not
-# the full args. A model thrashing on one file re-reads it with SHIFTING line
-# ranges (sympy-11400 read ccode.py ~135 times), so each exact-arg hash is unique
-# and the MAX_SIMILAR_CALLS counter never trips. Collapsing these tools to a
-# path-only hash makes the re-reads collide so the loop is caught — at the more
-# lenient MAX_SAME_FILE_READS, since a file is legitimately re-read a handful of
-# times during distill-as-you-read but dozens of times is a stall.
-_PATH_NORMALIZED_TOOLS = frozenset({"file_read"})
+# File reads share a repeat counter only for the same path AND line range.
+# Pagination can legitimately read many sections of a large file, including
+# several sections in one batch. Keep the existing, more lenient read threshold
+# for revisits to each range, including cycles across several ranges.
+_RANGED_READ_TOOLS = frozenset({"file_read"})
 MAX_SAME_FILE_READS = 8
 
 # Read-only vs edit tools, for the reads-without-write steering signal. Reads
@@ -85,7 +82,7 @@ TERMINAL_CAPTURE_SKIP_MESSAGE = (
 # Information-gain sensor (STEP 1). Each EXECUTED tool result is classified as
 # informative vs low-yield so later brakes can key on information GAIN, not raw
 # tokens. Low-yield = an exact duplicate (same result CONTENT hash OR same
-# path-normalized (tool, args) call hash seen before — novelty is the PRIMARY
+# normalized (tool, args) call hash seen before — novelty is the PRIMARY
 # signal), an empty/zero-byte read, or a "No matches found"-class result. Keying
 # on the content/call HASH (not the literal "No matches" string) means a model
 # re-reading a known file to dodge a string match still scores zero gain. Novelty
@@ -425,17 +422,16 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 recent_call_hashes = recent_call_hashes[-MAX_CALL_HASH_WINDOW:]
 
             recent_same = self.count_recent_similar_calls(recent_call_hashes, call_hash)
-            # Read tools collide on the path alone, so they get a more lenient
-            # threshold than the exact-arg loop limit (a few re-reads are normal).
+            # A few revisits to a read range are normal during implementation.
             limit = (
                 MAX_SAME_FILE_READS
-                if tool_name in _PATH_NORMALIZED_TOOLS
+                if tool_name in _RANGED_READ_TOOLS
                 else MAX_SIMILAR_CALLS
             )
             if recent_same >= limit:
                 detail = (
-                    "on the same file (any line range)"
-                    if tool_name in _PATH_NORMALIZED_TOOLS
+                    "on the same file and line range"
+                    if tool_name in _RANGED_READ_TOOLS
                     else "with identical arguments"
                 )
                 warning = (
@@ -521,7 +517,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
 
             # Information-gain sensor (STEP 1): record this result's novelty
             # signals for the caller to fold into SessionState's counters. The
-            # call hash (path-normalized for re-reads) and the content hash both
+            # call hash (including the read range) and the content hash both
             # gate novelty; an empty read / "No matches"-class result is
             # intrinsically low-yield. Observational — no behavior change here.
             result.evidence_signals.append(
@@ -696,11 +692,11 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
         return args
 
     def tool_call_hash(self, tool_name: str, args: dict) -> str:
-        # Path-normalized read tools key on the file path alone so re-reads of one
-        # file with different line ranges collide (see _PATH_NORMALIZED_TOOLS);
-        # every other tool keys on its full args.
+        # Normalize the built-in file_read defaults so explicitly supplying them
+        # cannot evade repeat detection. Other tools retain their full args.
         key_args = (
-            {"path": args.get("path")} if tool_name in _PATH_NORMALIZED_TOOLS else args
+            {"path": args.get("path"), "offset": args.get("offset", 1), "limit": args.get("limit", 500)}
+            if tool_name in _RANGED_READ_TOOLS else args
         )
         return hashlib.md5(
             json.dumps({"name": tool_name, "args": key_args}, sort_keys=True).encode()

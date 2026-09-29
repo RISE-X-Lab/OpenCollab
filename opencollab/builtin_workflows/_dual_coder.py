@@ -10,7 +10,12 @@ from opencollab.workflows import CandidateRun
 
 from . import _candidate_records as dual
 from . import _selection as contract
-from ._prompts import CONTRACT_PROMPT, CROSS_COMPONENT_CODER_PROMPT, MINIMAL_CODER_PROMPT
+from ._prompts import (
+    CONTRACT_PROMPT,
+    CROSS_COMPONENT_CODER_PROMPT,
+    MINIMAL_CODER_PROMPT,
+    WORKING_TREE_SUBMISSION_RULES,
+)
 from ._rules import SHARED_RULES, _complete_goal, coder_role_timeout_seconds, structured_role_timeout_seconds
 
 
@@ -114,6 +119,12 @@ async def run_dual_coder(
     if not isinstance(allow_unisolated_shell, bool):
         raise ValueError("allow_unisolated_shell must be a boolean")
 
+    submission_mode = args.get("submission_mode", "task")
+    if submission_mode not in ("task", "working_tree"):
+        raise ValueError("submission_mode must be task or working_tree")
+    if submission_mode == "working_tree":
+        role_rules = f"{role_rules}\n\n{WORKING_TREE_SUBMISSION_RULES}"
+
     prompts = coder_prompts or (MINIMAL_CODER_PROMPT, CROSS_COMPONENT_CODER_PROMPT)
     source_before = await ctx.diff()
 
@@ -171,6 +182,7 @@ async def run_dual_coder(
     )
     return {
         "status": "done" if adopted is not None else "incomplete",
+        "submission_mode": submission_mode,
         "winner": winner,
         "selection_reason": reason,
         "judge_used": needs_judge,
