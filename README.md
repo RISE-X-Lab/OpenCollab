@@ -19,6 +19,8 @@
 </p>
 
 <p align="center">
+  <b>English</b> · <a href="README.zh-CN.md">Chinese</a>
+  <br>
   <a href="#benchmark-results">Results</a> ·
   <a href="#does-your-team-actually-collaborate">Adherence</a> ·
   <a href="#how-it-works">How it works</a> ·
@@ -27,23 +29,45 @@
   <a href="https://github.com/RISE-X-Lab/OpenCollab-Eval">OpenCollab-Eval</a>
 </p>
 
-## Highlights
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-hero-dark.svg">
+    <img src="assets/benchmark-hero-light.svg" alt="Pass@1 of five harnesses that all use GPT-5.6-Luna. OpenCollab (Duo) is highest on all three benchmarks: 64.25% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 69.91% on DeepSWE, ahead of OpenCollab (Base), Claude Code, Codex CLI, and Mini-SWE-Agent." width="980">
+  </picture>
+</p>
 
-- **Beats Claude Code, Codex CLI, and mini-SWE-agent with the same model.**
-  With GPT-5.6-Luna in every harness, OpenCollab (Duo) has the highest Pass@1
-  on SWE-bench Pro (64.25%), Terminal-Bench 2.1 (83.15%), and DeepSWE (69.91%).
-- **The cheapest harness in the comparison.** OpenCollab (Base), the single
-  agent, uses the fewest tokens and has the lowest cost on all three
-  benchmarks. Duo costs less than Claude Code on each of them.
-- **Collaboration as code.** Declare roles, tools, and who may message whom in
-  a YAML team file, or script every handoff in Python.
-  [Mini Edict](examples/mini-edict/) reproduces the core protocol of a
-  roughly 24,000-line multi-agent system in 239 lines.
-- **Collaboration you can check.** Every model call, tool call, message, and
-  refusal lands in a role-stamped event stream. From it we measure
-  **Adherence**, the share of runs in which the declared organization actually
-  happened. In our experiments, changing a single setting moved Adherence from
-  47.2% to 97.2%.
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>🏆 Highest Pass@1 with the same model</h4>
+      With GPT-5.6-Luna in every harness, OpenCollab (Duo) beats Claude Code,
+      Codex CLI, and Mini-SWE-Agent on SWE-bench Pro, Terminal-Bench 2.1, and
+      DeepSWE.
+    </td>
+    <td width="50%" valign="top">
+      <h4>💰 The cheapest harness in the comparison</h4>
+      OpenCollab (Base), the single agent, uses the fewest tokens and costs the
+      least on all three benchmarks. Duo costs less than Claude Code on each of
+      them.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>🧩 Collaboration as code</h4>
+      Declare roles, tools, and who may message whom in a YAML team file, or
+      script every handoff in Python. <a href="examples/mini-edict/">Mini Edict</a>
+      reproduces the core protocol of a roughly 24,000-line multi-agent system
+      in 239 lines.
+    </td>
+    <td width="50%" valign="top">
+      <h4>🔍 Collaboration you can check</h4>
+      Every model call, tool call, message, and refusal lands in a role-stamped
+      event stream. From it we measure <b>Adherence</b>, the share of runs in
+      which the declared organization actually happened. Changing one setting
+      moved it from 47.2% to 97.2%.
+    </td>
+  </tr>
+</table>
 
 ## News
 
@@ -57,10 +81,12 @@
 
 ## Benchmark results
 
-Five harnesses run GPT-5.6-Luna at `max` reasoning effort on SWE-bench Pro
-(193 tasks), Terminal-Bench 2.1 (89 tasks), and DeepSWE (113 tasks).
-[OC (Base)](docs/single2.md) is a single agent. [OC (Duo)](docs/duo.md)
-produces two isolated solutions, compares their evidence, and adopts one.
+The full comparison adds average tokens, estimated average cost, and cache hit
+rate. All five harnesses run GPT-5.6-Luna at `max` reasoning effort on
+SWE-bench Pro (193 tasks), Terminal-Bench 2.1 (89 tasks), and DeepSWE
+(113 tasks). [OC (Base)](docs/single2.md) is a single agent.
+[OC (Duo)](docs/duo.md) produces two isolated solutions, compares their
+evidence, and adopts one.
 
 <p align="center">
   <picture>
@@ -69,11 +95,12 @@ produces two isolated solutions, compares their evidence, and adopts one.
   </picture>
 </p>
 
-**When collaboration is guaranteed, the team beats its own single agent.** Duo
-is a Workflow: its code issues every handoff, so both coders work on every task. Paired task by task with Base on
-DeepSWE, Duo solves 21 tasks that Base fails and fails 5 that Base solves, a
-gain of 14.2 points (exact sign test, p = 0.0025). On Terminal-Bench 2.1 the
-gain is 3.4 points.[^tb]
+> [!TIP]
+> **When collaboration is guaranteed, the team beats its own single agent.**
+> Duo is a Workflow: its code issues every handoff, so both coders work on
+> every task. Paired task by task with Base on DeepSWE, Duo solves 21 tasks
+> that Base fails and fails 5 that Base solves, a gain of 14.2 points (exact
+> sign test, p = 0.0025). On Terminal-Bench 2.1 the gain is 3.4 points.[^tb]
 
 ## Does your team actually collaborate?
 
