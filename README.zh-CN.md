@@ -12,8 +12,7 @@
 <h3 align="center">用代码编排 coding agent 的协作，用运行记录验证协作确实发生。</h3>
 
 <p align="center">
-  OpenCollab 是一个多智能体编程框架。它让每一种协作都跑在同一个受控的 runtime 上，
-  并记录协作是否真的发生。
+  OpenCollab 是一个多智能体编程框架。它让每一种协作都跑在同一个受控的 runtime 上，并记录协作是否真的发生。
   <br>
   <a href="README.md">English</a> · <b>简体中文</b>
 </p>
@@ -25,8 +24,7 @@
   </picture>
 </p>
 <p align="center">
-  <sub>Duo 生成两个相互隔离的解，采纳其中一个。Base 是单 agent，token 用量在五个 harness 里最少。
-  <a href="docs/results.md">完整结果（英文）</a></sub>
+  <sub>Duo 生成两个相互隔离的解，采纳其中一个。Base 是单 agent，token 用量在五个 harness 里最少。<a href="docs/results.md">完整结果（英文）</a></sub>
 </p>
 
 ## 动态
@@ -46,8 +44,7 @@ cp configs/.env.example configs/.env   # 然后设置 OPENCOLLAB_API_KEY
 uv run opencollab --workspace .
 ```
 
-`configs/.env` 可以指向任何 OpenAI 兼容端点或 Anthropic 端点；不要提交真实的 API key。
-这条命令启动内置的 `lead` agent，它可以按需派生专职 agent。在一个 Git 仓库上运行 Duo：
+`configs/.env` 可以指向任何 OpenAI 兼容端点或 Anthropic 端点；不要提交真实的 API key。这条命令启动内置的 `lead` agent，它可以按需派生专职 agent。在一个 Git 仓库上运行 Duo：
 
 ```bash
 uv run opencollab workflow run duo --workspace /path/to/repository \
@@ -64,28 +61,26 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
   </picture>
 </p>
 
-- **Team。** 把 [`configs/team.example.yaml`](configs/team.example.yaml) 复制为
-  `configs/team.yaml`，在里面声明每个角色的 prompt、模型和工具，以及谁可以给谁发消息，然后运行
-  `uv run opencollab --team-config configs/team.yaml --workspace .`
-- **Workflow。** 把交接写成一个 Python 模块（见
-  [Workflow authoring](opencollab/README.md#workflow-authoring)），用
-  `uv run opencollab workflow run NAME` 运行。Duo 就是一个内置的 workflow。
+- **Team。** 一个 YAML 文件声明每个角色的 prompt、模型和工具，以及谁可以给谁发消息。从示例开始：
 
-[Mini Edict](examples/mini-edict/) 用 239 行 team 与 workflow 代码重新实现了
-[Edict](https://github.com/cft0808/edict) 的核心协议，而 Edict 是一个约 24,000 行的多智能体系统。
+  ```bash
+  cp configs/team.example.yaml configs/team.yaml   # 编辑角色、工具和拓扑
+  uv run opencollab --team-config configs/team.yaml --workspace .
+  ```
+
+- **Workflow。** 一个 Python 模块发出每一次交接。Duo 就是一个 workflow；也可以[自己写一个](opencollab/README.md#workflow-authoring)，用 `opencollab workflow run NAME` 运行。
+
+[Mini Edict](examples/mini-edict/) 用 239 行 team 与 workflow 代码重新实现了 [Edict](https://github.com/cft0808/edict) 的核心协议，而 Edict 是一个约 24,000 行的多智能体系统。
 
 ## 验证协作确实发生
 
-在 Team 里，交接由 agent 自己决定，声明了团队并不保证交接真的发生。在我们的运行里，
-lead agent 常常给队友布置完任务后自己把活干了。OpenCollab 强制执行声明，并记录每个 agent 做了什么：
+在 Team 里，交接由 agent 自己决定，声明了团队并不保证交接真的发生。在我们的运行里，lead agent 常常给队友布置完任务后自己把活干了。OpenCollab 强制执行声明，并记录每个 agent 做了什么：
 
 - 沿未声明的边发送的消息会被拒绝，拒绝本身也会被记录；
 - 每次模型调用前都会检查该 agent 的 token 预算；
 - `--trace` 为每一步写一条 JSONL 记录，带有 run、agent、角色、事件类型和 token 用量。
 
-我们根据这些记录计算 **Adherence**：声明的组织在多少比例的 run 里真的发生了。
-对同一个团队只改一个设置，它就从 47.2% 升到最高 97.2%。
-详见 [Adherence 的测量方法](docs/adherence.md)（英文）。
+我们根据这些记录计算 **Adherence**：声明的组织在多少比例的 run 里真的发生了。对同一个团队只改一个设置，它就从 47.2% 升到最高 97.2%。详见 [Adherence 的测量方法](docs/adherence.md)（英文）。
 
 ## 更多文档
 
@@ -105,8 +100,7 @@ lead agent 常常给队友布置完任务后自己把活干了。OpenCollab 强�
 ## 引用
 
 如果 OpenCollab 对你有帮助，欢迎点一个 ⭐ 并引用我们的工作。论文 *OpenCollab: A Multi-Agent Coding
-Framework with Programmable Collaboration and Controllable Runtime* 即将公开。OpenCollab 建立在
-[Self-Collaboration](https://arxiv.org/abs/2304.07590) 之上：
+Framework with Programmable Collaboration and Controllable Runtime* 即将公开。OpenCollab 建立在 [Self-Collaboration](https://arxiv.org/abs/2304.07590) 之上：
 
 ```bibtex
 @article{dong2023self,
@@ -122,8 +116,7 @@ Framework with Programmable Collaboration and Controllable Runtime* 即将公开
 
 ## 许可证
 
-OpenCollab 采用[木兰宽松许可证第 2 版](https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE)
-（`MulanPSL-2.0`）。
+OpenCollab 采用[木兰宽松许可证第 2 版](https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE)（`MulanPSL-2.0`）。
 
 ## Star History
 

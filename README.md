@@ -66,13 +66,17 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
   </picture>
 </p>
 
-- **Team.** Copy [`configs/team.example.yaml`](configs/team.example.yaml) to
-  `configs/team.yaml`, declare each role's prompt, model, and tools and who may
-  message whom, then run
-  `uv run opencollab --team-config configs/team.yaml --workspace .`
-- **Workflow.** Write the handoffs as a Python module
-  ([workflow authoring](opencollab/README.md#workflow-authoring)) and run it
-  with `uv run opencollab workflow run NAME`. Duo is a built-in workflow.
+- **Team.** A YAML file declares each role's prompt, model, and tools, and who
+  may message whom. Start from the example:
+
+  ```bash
+  cp configs/team.example.yaml configs/team.yaml   # edit roles, tools, and topology
+  uv run opencollab --team-config configs/team.yaml --workspace .
+  ```
+
+- **Workflow.** A Python module issues every handoff. Duo is one;
+  [write your own](opencollab/README.md#workflow-authoring) and run it with
+  `opencollab workflow run NAME`.
 
 [Mini Edict](examples/mini-edict/) reimplements the core protocol of
 [Edict](https://github.com/cft0808/edict), a multi-agent system of roughly
