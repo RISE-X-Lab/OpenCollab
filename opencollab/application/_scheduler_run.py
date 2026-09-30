@@ -285,6 +285,7 @@ class SchedulerRunMixin:
             for message in table.ordered_results():
                 scb.state.append_message(message)
             table.clear()
+            scb.state.consume_queued_external_user_turn()
             scb.state.clear_active_turn()
             if not scb.state.phase.is_terminal():
                 scb.state.cancel(

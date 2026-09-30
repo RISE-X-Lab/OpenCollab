@@ -306,6 +306,12 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
     def _prepare_turn(self) -> None:
         """Set the answer cursor and resume the phase appropriate to this call."""
         entry_phase = self.state.phase
+        if not self.state.pending_events.is_empty() and (
+            entry_phase is SessionPhase.IDLE or entry_phase.is_terminal()
+        ):
+            self.state.resume_to_idle()
+            self.state.set_phase(SessionPhase.AWAITING_EVENTS)
+            entry_phase = SessionPhase.AWAITING_EVENTS
         if entry_phase is SessionPhase.IDLE:
             self.state.consume_queued_external_user_turn()
         if entry_phase is SessionPhase.AWAITING_EVENTS:
@@ -412,6 +418,13 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         for message in table.ordered_results():
             self.state.append_message(message)
         table.clear()
+        queued_turn = self.state.pending_external_user_turn
+        if queued_turn is not None:
+            self.state.consume_queued_external_user_turn()
+            self._turn_start_message_index = len(self.state.messages)
+            self.state.start_active_turn(self._turn_start_message_index)
+            self._empty_stop_retried = False
+            self._submitted_summary = None
         self.state.transition_to(SessionPhase.AUTOSAVING)
 
     async def advance(self, cancel_event: asyncio.Event | None = None) -> None:

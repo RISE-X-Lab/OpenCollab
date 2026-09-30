@@ -363,7 +363,9 @@ class Session:
         ):
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            self.state.append_queued_external_user_turn(content)
+            self.state.append_queued_external_user_turn(
+                content, defer=not self.state.pending_events.is_empty()
+            )
             self.state.reset_for_user_turn()
             self.runner.reset_runtime_for_user_turn()
             await self.event_bus.emit(SessionEvent(type="user_message_appended"))
@@ -534,6 +536,12 @@ class Session:
         if restored.phase is SessionPhase.AWAITING_EVENTS:
             restored.active_turn_start_message_index = restored_turn_start
         if phase is not SessionPhase.AWAITING_EVENTS:
+            if not restored.pending_events.is_empty():
+                self._complete_missing_pending_rows(restored)
+            open_ids = set(self._open_tool_call_ids(restored))
+            for message in restored.pending_events.ordered_results():
+                if message["tool_call_id"] in open_ids:
+                    restored.append_message(message)
             self._append_restore_results_for_open_tool_calls(restored)
             # Rows from an interrupted non-awaiting phase have no live producer
             # after process restart. The explicit tool results above close the
@@ -651,10 +659,20 @@ class Session:
     ) -> None:
         """Close assistant tool calls whose process-local execution was lost."""
         restored_state = state or self.state
-        for tool_call_id in self._open_tool_call_ids(restored_state):
+        for order, tool_call_id in enumerate(self._open_tool_call_ids(restored_state)):
             # Cancellation must retain rows whose delegated work still has a
             # producer. Restore has no surviving producer and closes all calls.
             if exclude_ids is not None and tool_call_id in exclude_ids:
+                continue
+            if exclude_ids is not None and not restored_state.pending_events.is_empty():
+                restored_state.pending_events.add(PendingRow(
+                    tool_call_id=tool_call_id,
+                    kind=RowKind.IMMEDIATE,
+                    order=order,
+                    status=RowStatus.FAILED,
+                    result=content,
+                    error=content,
+                ))
                 continue
             restored_state.append_message(
                 {

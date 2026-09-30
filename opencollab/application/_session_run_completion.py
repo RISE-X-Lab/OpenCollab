@@ -305,18 +305,18 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
         table = self.state.pending_events
         order = {tc["id"]: i for i, tc in enumerate(original_tool_calls)}
-        completed_messages = list(blocked_messages)
+        self._buffer_completed_rows(table, order, blocked_messages)
         observations = ToolProcessingResult()
         terminal_capture_accepted = False
         for tc in tool_calls:
             if terminal_capture_accepted:
-                completed_messages.append(
+                self._buffer_completed_rows(table, order, [
                     {
                         "role": "tool",
                         "tool_call_id": tc["id"],
                         "content": TERMINAL_CAPTURE_SKIP_MESSAGE,
                     }
-                )
+                ])
                 continue
             if tc.get("function", {}).get("name") in self.deferrable_tool_names:
                 await self._execute_deferred_tools(table, order, [tc])
@@ -331,13 +331,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             observations.evidence_cards.extend(proc.evidence_cards)
             observations.loop_detections.extend(proc.loop_detections)
             observations.tool_step_attempted |= proc.tool_step_attempted
-            completed_messages.extend(proc.messages_to_append)
+            self._buffer_completed_rows(table, order, proc.messages_to_append)
             terminal_capture_accepted = proc.terminal_capture_accepted
             self._record_submission(proc)
 
         observations.apply_read_write_counter_to(self.state)
         observations.apply_evidence_counter_to(self.state)
-        self._buffer_completed_rows(table, order, completed_messages)
 
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None

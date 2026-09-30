@@ -122,7 +122,8 @@ async def test_cancellation_keeps_deferred_result_with_a_live_producer():
         assert row.ref == 7
         assert row.status is RowStatus.PENDING
         assert producer.producer is not None and not producer.producer.done()
-        assert session._open_tool_call_ids() == ["child"]
+        assert session._open_tool_call_ids() == ["child", "waiting"]
+        assert session.state.pending_events.rows["waiting"].status is RowStatus.FAILED
         assert all(
             message.get("tool_call_id") != "child" for message in session.messages
         )

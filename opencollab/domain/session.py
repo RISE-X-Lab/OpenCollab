@@ -291,7 +291,7 @@ class SessionState:
     def enriched_pending_user_messages(self) -> list[dict[str, Any]]:
         return [dict(message) for message in self.pending_user_messages]
 
-    def append_queued_external_user_turn(self, content: str) -> None:
+    def append_queued_external_user_turn(self, content: str, *, defer: bool = False) -> None:
         """Atomically mark and append a public user turn awaiting its driver."""
         pending = {
             "turn_id": uuid.uuid4().hex,
@@ -299,12 +299,16 @@ class SessionState:
             "content": content,
         }
         self.pending_external_user_turn = pending
+        if defer:
+            return
         self.append_message({"role": "user", "content": content})
         pending["message_index"] = len(self.messages) - 1
 
     def consume_queued_external_user_turn(self) -> None:
         """Mark a queued external turn as claimed by the current runner."""
         if self.pending_external_user_turn is not None:
+            if "message_index" not in self.pending_external_user_turn:
+                self.append_message({"role": "user", "content": self.pending_external_user_turn["content"]})
             self.pending_external_user_turn = None
 
     def start_active_turn(self, message_index: int) -> None:

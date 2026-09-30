@@ -39,6 +39,8 @@ def _restore_queued_external_user_turn(
     content = value.get("content")
     turn_id = value.get("turn_id")
     index = value.get("message_index")
+    if isinstance(content, str) and isinstance(turn_id, str) and turn_id and index is None:
+        return {"turn_id": turn_id, "status": "queued", "content": content}
     if (
         not isinstance(content, str)
         or not isinstance(turn_id, str)
