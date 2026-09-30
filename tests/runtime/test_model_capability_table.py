@@ -51,8 +51,10 @@ def test_qwen_thinking_request_uses_supported_tool_choice(choice):
 
 
 def test_deepseek_v41_retains_unmeasured_capability_defaults():
+    capabilities = model_capabilities("deepseek-v4.1-flash")
+    assert capabilities.requires_chat_reasoning_content is True
     assert dataclasses.replace(
-        model_capabilities("deepseek-v4.1-flash"), context_window=None
+        capabilities, context_window=None, requires_chat_reasoning_content=False
     ) == ModelCapabilities()
 
 
@@ -68,4 +70,3 @@ def test_other_models_retain_their_own_windows_and_thinking_policy():
     assert flash.honors_workflow_thinking_override is False
     assert model_capabilities("deepseek-v4-pro").context_window == 64_000
     assert model_capabilities("qwen-unmeasured").context_window == 131_072
-

@@ -156,11 +156,10 @@ def test_deepseek_v41_flash_trigger_clears_the_history_this_roster_produces():
 
 
 def test_deepseek_v41_flash_leaves_every_unprobed_dimension_at_its_default():
-    """Only the context window was read from the endpoint on 2026-09-21.
+    """The endpoint reported the context window on 2026-09-21.
 
-    The neighbouring `deepseek-v4-flash` row asserts four more dimensions. None
-    of them was probed for this model, so copying them would read as measurement
-    and be invention.
+    Chat reasoning replay follows the thinking tool continuation protocol.
+    The dimensions checked below retain their existing defaults.
     """
     capabilities = model_capabilities("deepseek-v4.1-flash")
     default = ModelCapabilities()

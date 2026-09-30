@@ -218,9 +218,11 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     ),
     # The endpoint's model_info payload on 2026-09-21 reported 1,000,000 for
     # context_window, max_input_tokens and reasoning_max_input_tokens. This
-    # entry records that input window; other dimensions retain their defaults.
+    # entry records that input window. Thinking tool continuations also need
+    # the recorded Chat reasoning returned with the assistant tool call.
     "deepseek-v4.1-flash": ModelCapabilities(
         context_window=1_000_000,
+        requires_chat_reasoning_content=True,
     ),
     "deepseek-v4-flash": ModelCapabilities(
         context_window=1_048_576,
