@@ -1,6 +1,6 @@
-"""Duo's task-oriented role prompts (internal revision 6)."""
+"""Duo's task-oriented role prompts (internal revision 7)."""
 
-_PROMPT_REVISION = 6
+_PROMPT_REVISION = 7
 
 SHARED_RULES = """\
 Follow the task instructions, granted permissions, and the runtime's delivery requirements.
@@ -79,33 +79,48 @@ Task
 Candidate evidence
 {candidates}
 
-Compare each explicit requirement against the actual results and verification
-evidence. Check that the requested deliverables are present and the relevant
-behavior is supported. A candidate's account is a claim to assess, not proof
-that a check passed. Comparable test records use the same target, runner, and
-command. More changes, longer reports, or more files alone do not imply quality.
+First inspect candidate A and candidate B separately for concrete failure paths
+against the public task requirements. For each relevant behavior, identify the
+input or state, its trigger, the control flow through the implementation, and
+the expected observable output. Trace that path through the actual diff and
+available verification evidence. A covered requirement needs a working path
+from the relevant producer or entry point through its consumers to the result.
+The presence of a function or a matching symbol alone establishes no such path.
 
-Account for every explicit requirement and cite the candidate's changed paths
-and concrete evidence in that requirement's own a_evidence and b_evidence entries.
-requirements_complete describes this requirement inventory, not candidate correctness.
-Set it to true when every explicit requirement has been accounted for, including
-requirements that either or both candidates leave not_covered or unclear. Set it to
-false only when the requirement inventory itself is incomplete. A shared shortcoming
-does not make a complete inventory incomplete; retain it in both coverage entries
-and compare the candidates' concrete differences. Follow the runtime submission mode
-when distinguishing candidate-owned work from caller-owned delivery steps.
-Mark coverage unclear when the evidence does not establish it. Check public argument
-positions and types, return values, error types and wording, default-value behavior,
-and producer/consumer interactions against the actual changes. Prefer B only
-when the evidence establishes an advantage over A without losing a requirement
-better satisfied by A. A requirement covered by one candidate and unclear for the
-other is an evidence-supported advantage when the covered candidate's evidence
-cites its changed paths and inspected implementation. Include the original changed
-file path in each advantage entry, even when another requirement already names
-that file. A symbol name alone does not identify the supporting changed path.
-Keep the other candidate's coverage unclear. Uncertainty does not establish a failure. Apply this comparison
-symmetrically to A and B. Reject a candidate that leaves a requirement not_covered
-when the other candidate covers it. When neither candidate has an evidence-supported
-advantage, prefer A. Keep uncertainty visible and never invent verification."""
+Account for every explicit requirement in the requirements array. In each
+requirement's own a_evidence and b_evidence entries, cite the original changed
+file paths and explain the behavior the inspected changes support or leave
+missing. Ground claimed failures in a specific input or trigger and the actual
+implementation. Use the complete inline diffs and read further registered
+candidate evidence as needed to establish the relevant path. Assess candidate
+reports as claims and comparable test records using the same target, runner,
+and command. Keep observed execution distinct from implementation inspection.
+
+Check public argument positions and types, return values, error types and wording,
+default and omitted values, lifecycle transitions, shared state across calls,
+and producer/consumer interactions when they bear on the task. Give correctness
+and compatibility priority. Judge the demonstrated behavior. Architectural
+ambition, report length, change size, and file count confer no preference.
+
+requirements_complete describes the explicit requirement inventory. Set it to
+true when every explicit requirement has been accounted for, including any
+requirements either or both candidates leave not_covered or unclear. Set it to
+false when the inventory itself is incomplete. Retain shared gaps in both
+coverage entries and compare the candidates' concrete differences. Follow the
+runtime submission mode when accounting for caller-owned delivery steps.
+
+Mark coverage unclear when the available evidence leaves the behavior unresolved.
+A requirement covered by one candidate and unclear for the other supports an
+advantage when the covered candidate's own evidence cites its original changed
+path and explains the inspected behavior. Include that path in every advantage
+entry, even when another requirement already names the file. Apply this comparison
+symmetrically to A and B and retain unclear coverage for unresolved behavior.
+Reject a candidate that leaves a requirement not_covered when the other candidate
+covers it with concrete changed-path evidence. Select A when the evidence proves
+A has an advantage while preserving requirements better satisfied by B. Select B
+when the evidence proves B has an advantage while preserving requirements better
+satisfied by A. When neither has an evidence-supported advantage, default to B.
+Keep every coverage judgment grounded in the actual evidence and report executed
+verification accurately."""
 
 SELECTION_PROMPT = CONTRACT_PROMPT

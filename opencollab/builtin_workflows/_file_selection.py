@@ -10,13 +10,18 @@ from opencollab.workflows import CandidateRun
 
 from . import _selection as contract
 from ._candidate_evidence_files import CandidateEvidenceFiles, ReadCandidateEvidence
+from ._dual_coder import _review_and_select
 from ._prompts import SELECTION_PROMPT
-from ._rules import SHARED_RULES, structured_role_timeout_seconds
+from ._rules import SHARED_RULES
+
+_INLINE_EVIDENCE_MAX_BYTES = 128_000
 
 FILE_EVIDENCE_INSTRUCTIONS = """
 The candidate evidence above is a directory of complete saved files. Use
 read_candidate_evidence to read each candidate's index and public evidence,
 then read the result reports and diff ranges needed to assess the task requirements.
+When inline_comparison is present, it contains both exact candidate diffs and
+shared public test records for direct comparison. The saved files remain available.
 Each index entry identifies original changed paths, a diff file, and character
 offset and length. Large binary patches remain fully available in those files.
 Every read returns next_offset and eof; continue reading whenever needed.
@@ -38,7 +43,7 @@ async def adjudicate_candidate_files(
     evidence_parent: str | None = None,
     rules: str = SHARED_RULES,
 ) -> tuple[str, Any, str]:
-    """Use the original selection rules with complete, paged file evidence."""
+    """Compare complete small diffs directly and retain paged evidence for all sizes."""
     files = CandidateEvidenceFiles(evidence_parent)
     evidence = {
         "A": files.add_candidate("A", candidate_a),
@@ -49,22 +54,11 @@ async def adjudicate_candidate_files(
     }
     await ctx.log(f"Duo complete adjudication evidence directory: {files.directory}")
     paths = {"A": patch_paths(candidate_a.diff), "B": patch_paths(candidate_b.diff)}
-    try:
-        result = await ctx.agent(
-            selector_prompt.format(
-                rules=rules, goal=goal,
-                candidates=json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
-            ) + FILE_EVIDENCE_INSTRUCTIONS,
-            schema=contract.CONTRACT_SCHEMA,
-            label="dual-coder-contract-adjudicator",
-            tools=[ReadCandidateEvidence(files)],
-            budget=None,
-            timeout=structured_role_timeout_seconds(),
-        )
-    except Exception as exc:  # noqa: BLE001
-        await ctx.log(f"dual coder file adjudicator unavailable after {type(exc).__name__}")
-        result = None
-    winner = contract._validated_judge_winner(result, paths)
-    if winner is None:
-        return "A", result, "contract-evidence-insufficient-default-a"
-    return winner, result, "contract-adjudicated"
+    comparison, _, _ = contract._judge_input(candidate_a, candidate_b)
+    if len(comparison.encode("utf-8")) <= _INLINE_EVIDENCE_MAX_BYTES:
+        evidence["inline_comparison"] = json.loads(comparison)
+    prompt = selector_prompt.format(
+        rules=rules, goal=goal,
+        candidates=json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+    ) + FILE_EVIDENCE_INSTRUCTIONS
+    return await _review_and_select(ctx, prompt=prompt, paths=paths, tools=[ReadCandidateEvidence(files)])

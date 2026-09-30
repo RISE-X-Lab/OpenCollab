@@ -50,11 +50,19 @@ async def test_large_complete_evidence_reaches_adjudicator():
     (("", ""), None, "both-empty"),
     (("a", ""), "A", "only-a-nonempty"),
     (("", "b"), "B", "only-b-nonempty"),
-    (("same", "same"), "A", "identical-diff"),
+    (("same", "same"), "B", "identical-diff"),
 ])
 def test_mechanical_choice_handles_empty_and_identical_candidates(diffs, expected, reason):
     a, b = (with_records(label, [], diff) for label, diff in zip("AB", diffs))
     assert selection._mechanical_choice(a, b) == (expected, reason, False)
+
+
+@pytest.mark.parametrize("passing", ["A", "B"])
+def test_verified_public_result_precedes_identical_diff_preference(passing):
+    shared = {"target": "test_public.py", "runner": "pytest", "command": "pytest test_public.py"}
+    runs = [with_records(label, [{**shared, "exit_code": 0 if label == passing else 1,
+                                 "verified": label == passing}], diff="same patch") for label in "AB"]
+    assert selection._mechanical_choice(*runs) == (passing, "same-command-public-red", False)
 
 
 async def test_adoption_falls_back_and_reports_actual_candidate():
@@ -70,12 +78,16 @@ async def test_adoption_falls_back_and_reports_actual_candidate():
     assert result["status"] == "done"
 
 
-async def test_failed_judge_uses_a_and_candidate_mutation_blocks_adoption():
+async def test_failed_judge_uses_b_and_candidate_mutation_blocks_adoption():
     class Unavailable(Context):
         async def agent(self, prompt, **options):
+            self.selector_calls.append((prompt, options))
             raise RuntimeError("provider unavailable")
-    result = await duo(Unavailable(), {"goal": "Repair behavior"})
-    assert result["winner"] == result["adopted"] == "A"
+    unavailable = Unavailable()
+    result = await duo(unavailable, {"goal": "Repair behavior"})
+    assert result["winner"] == result["adopted"] == "B"
+    assert result["selection_reason"] == "contract-evidence-insufficient-default-b"
+    assert len(unavailable.selector_calls) == 1
     class Changed(Context):
         async def diff(self):
             return "changed" if self.coder_calls else "clean"
