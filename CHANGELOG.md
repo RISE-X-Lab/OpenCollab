@@ -9,10 +9,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Duo V6 accepts a changed-path-supported coverage advantage over an unclear
-  alternative, so a supported adjudicator recommendation reaches candidate
-  adoption. Explicit coverage losses, incomplete inventories, missing evidence,
-  and ties retain their existing rejection or fallback behavior.
+Duo V7 compares each candidate's concrete behavior against public requirements,
+with changed-path evidence for the input, trigger, control flow and expected
+output. Equivalent evidence and identical diffs select B, while demonstrated
+coverage advantages and explicit missing requirements can still select A.
+Unusable adjudications receive at most one targeted review before the default-B
+choice, preserving A when the evidence establishes a requirement missing in B.
+Comparison payloads within 128,000 UTF-8 bytes provide both full diffs, all
+individual and shared public-test records, and reports marked as model-supplied
+inline for a complete structured decision. Larger payloads use complete paged
+evidence reads. Original evidence files are retained in both modes.
 
 ## [0.8.2] - 2026-09-28
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from opencollab.patches import patch_paths
@@ -78,27 +79,55 @@ async def _contract_adjudicate(
 ) -> tuple[str, Any, str]:
     evidence, paths, truncated = contract._judge_input(candidate_a, candidate_b)
     if truncated:
-        return "A", None, "contract-evidence-incomplete-default-a"
-    try:
-        result = await ctx.agent(
-            selector_prompt.format(
-                rules=rules,
-                goal=goal,
-                candidates=evidence,
-            ),
-            schema=contract.CONTRACT_SCHEMA,
-            label="dual-coder-contract-adjudicator",
-            tools=[],
-            budget=None,
-            timeout=structured_role_timeout_seconds(),
-        )
-    except Exception as exc:  # noqa: BLE001
-        await ctx.log(f"dual coder contract adjudicator unavailable after {type(exc).__name__}")
-        result = None
-    winner = contract._validated_judge_winner(result, paths)
-    if winner is None:
-        return "A", result, "contract-evidence-insufficient-default-a"
-    return winner, result, "contract-adjudicated"
+        return "B", None, "contract-evidence-incomplete-default-b"
+    prompt = selector_prompt.format(rules=rules, goal=goal, candidates=evidence)
+    return await _review_and_select(ctx, prompt=prompt, paths=paths, tools=[])
+
+
+async def _review_and_select(
+    ctx: Any, *, prompt: str, paths: dict[str, list[str]], tools: list[Any],
+) -> tuple[str, Any, str]:
+    """Reconcile inconsistent public evidence once, retaining explicit losses."""
+    decisions: list[Any] = []
+    current_prompt = prompt
+    for attempt in range(2):
+        try:
+            result = await ctx.agent(
+                current_prompt,
+                schema=contract.CONTRACT_SCHEMA,
+                label="dual-coder-contract-adjudicator" + ("-recheck" if attempt else ""),
+                tools=tools,
+                budget=None,
+                timeout=structured_role_timeout_seconds(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            await ctx.log(f"Duo adjudicator unavailable after {type(exc).__name__}")
+            break
+        decisions.append(result)
+        issue = contract._judge_issue(result, paths)
+        if issue is None:
+            reason = "contract-adjudicated-after-recheck" if attempt else "contract-adjudicated"
+            return result["winner"], result, reason
+        if issue == "tie":
+            break
+        if attempt == 0:
+            await ctx.log(f"Duo selection requires one evidence recheck: {issue}")
+            current_prompt = (
+                prompt + "\n\nSelection recheck\n"
+                "The previous recommendation could not be justified by its requirement evidence.\n"
+                f"Validation finding: {issue}\n"
+                "Previous decision\n" + json.dumps(result, ensure_ascii=False) + "\n"
+                "Reinspect the relevant original changed paths and trace the public behavior. "
+                "Correct the coverage entries or recommendation using that evidence. "
+                "Preserve genuine uncertainty and explicit missing behavior. Cite the changed path "
+                "inside each decisive evidence entry. Return a complete replacement decision. "
+                "If neither candidate has a supported advantage, choose B and explain the tie. "
+                "Use only the supplied public task and candidate evidence."
+            )
+    winner = contract._fallback_winner(*decisions)
+    reason = ("contract-b-regression-default-a" if winner == "A"
+              else "contract-evidence-insufficient-default-b")
+    return winner, decisions[-1] if decisions else None, reason
 
 
 async def run_dual_coder(

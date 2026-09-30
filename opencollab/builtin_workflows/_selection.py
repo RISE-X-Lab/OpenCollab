@@ -97,11 +97,11 @@ def _mechanical_choice(
         return "B", "only-b-nonempty", False
     if not nonempty_a and not nonempty_b:
         return None, "both-empty", False
-    if candidate_a.diff == candidate_b.diff:
-        return "A", "identical-diff", False
     public_winner = dual._public_red_winner(candidate_a, candidate_b)
     if public_winner is not None:
         return public_winner, "same-command-public-red", False
+    if candidate_a.diff == candidate_b.diff:
+        return "B", "identical-diff", False
     return None, "contract-adjudication", True
 
 
@@ -188,41 +188,67 @@ def _evidence_mentions_changed_path(
     return False
 
 
-def _validated_judge_winner(
+def _judge_issue(
     result: Any,
     paths: dict[str, list[str]],
 ) -> str | None:
-    if not isinstance(result, dict) or result.get("requirements_complete") is not True:
-        return None
+    """Explain an unusable recommendation so a bounded review can reconcile it."""
+    if not isinstance(result, dict):
+        return "invalid_decision"
+    if result.get("requirements_complete") is not True:
+        return "incomplete_requirement_inventory"
     winner = result.get("winner")
     requirements = result.get("requirements")
-    if winner not in {"A", "B"} or not isinstance(requirements, list):
-        return None
+    if not isinstance(winner, str) or winner not in {"A", "B"} or not isinstance(requirements, list):
+        return "invalid_decision"
     if not 1 <= len(requirements) <= MAX_REQUIREMENTS:
-        return None
+        return "invalid_requirement_count"
     loser = "B" if winner == "A" else "A"
     advantage = False
-    for item in requirements:
-        if not isinstance(item, dict) or not str(item.get("requirement") or "").strip():
-            return None
+    tied = True
+    for index, item in enumerate(requirements, 1):
+        if (not isinstance(item, dict) or not isinstance(item.get("requirement"), str)
+                or not item["requirement"].strip()):
+            return f"invalid_requirement_{index}"
         coverage_a = item.get("a_coverage")
         coverage_b = item.get("b_coverage")
         evidence_a = item.get("a_evidence")
         evidence_b = item.get("b_evidence")
         if (
-            coverage_a not in COVERAGE_VALUES
-            or coverage_b not in COVERAGE_VALUES
+            not isinstance(coverage_a, str) or coverage_a not in COVERAGE_VALUES
+            or not isinstance(coverage_b, str) or coverage_b not in COVERAGE_VALUES
             or not isinstance(evidence_a, list)
             or not isinstance(evidence_b, list)
+            or any(not isinstance(value, str) for value in evidence_a + evidence_b)
         ):
-            return None
+            return f"invalid_requirement_evidence_{index}"
         coverage = {"A": coverage_a, "B": coverage_b}
         evidence = {"A": evidence_a, "B": evidence_b}
+        tied = tied and coverage_a == coverage_b
         if coverage[loser] == "covered" and coverage[winner] == "not_covered":
-            return None
+            return f"recommended_{winner}_misses_requirement_{index}"
         if coverage[winner] == "covered" and coverage[loser] in {"not_covered", "unclear"}:
             supported = _evidence_mentions_changed_path(evidence[winner], paths[winner])
             if not supported and coverage[loser] == "not_covered":
-                return None
+                return f"missing_changed_path_for_requirement_{index}"
             advantage = advantage or supported
-    return winner if advantage else None
+    if advantage:
+        return None
+    return "tie" if tied else "recommendation_has_no_supported_advantage"
+
+
+def _validated_judge_winner(result: Any, paths: dict[str, list[str]]) -> str | None:
+    return result["winner"] if _judge_issue(result, paths) is None else None
+
+
+def _fallback_winner(*results: Any) -> str:
+    """Prefer B without overriding an already reported explicit B regression."""
+    for result in results:
+        requirements = result.get("requirements") if isinstance(result, dict) else None
+        if not isinstance(requirements, list):
+            continue
+        for item in requirements:
+            if (isinstance(item, dict) and item.get("a_coverage") == "covered"
+                    and item.get("b_coverage") == "not_covered"):
+                return "A"
+    return "B"

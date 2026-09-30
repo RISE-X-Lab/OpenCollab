@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from opencollab.builtin_workflows import _file_selection as new
+from opencollab.builtin_workflows import _selection as contract
 from opencollab.builtin_workflows import duo
 from opencollab.builtin_workflows._candidate_evidence_files import CandidateEvidenceFiles, ReadCandidateEvidence
 from opencollab.workflows import CandidateRun
@@ -78,6 +79,8 @@ class ReadingContext(Context):
 
     async def agent(self, prompt, **options):
         self.selector_calls.append((prompt, options))
+        if not options["tools"]:
+            return self.result
         tool, = options["tools"]
         for label in ["A", "B"]:
             index = json.loads(await tool.execute_with_runtime({"path": f"{label}/index.jsonl"}, None))
@@ -101,6 +104,7 @@ async def test_real_oversize_trigger_is_moved_to_files_and_remains_readable(tmp_
     prompt, options = ctx.selector_calls[0]
     assert len(prompt) < 10000
     assert "B" * 100 not in prompt
+    assert '"inline_comparison":' not in prompt
     tool, = options["tools"]
     result = json.loads(await tool.execute_with_runtime(
         {"path": "B/candidate.diff", "offset": len(large) - 40000, "limit": 32768}, None,
@@ -112,6 +116,7 @@ async def test_real_oversize_trigger_is_moved_to_files_and_remains_readable(tmp_
 @pytest.mark.asyncio
 async def test_duo_uses_file_evidence_and_retains_the_actual_selected_candidate(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION", "1")
+    monkeypatch.setattr(new, "_INLINE_EVIDENCE_MAX_BYTES", 0)
     ctx = ReadingContext()
     result = await duo(ctx, {"goal": "Preserve behavior", "candidate_evidence_dir": str(tmp_path)})
     assert result["winner"] == result["adopted"] == "B"
@@ -126,13 +131,126 @@ async def test_duo_uses_file_evidence_and_retains_the_actual_selected_candidate(
 
 
 @pytest.mark.asyncio
-async def test_duo_keeps_default_a_when_original_evidence_validation_fails(tmp_path):
+async def test_duo_defaults_to_b_when_original_evidence_validation_fails(tmp_path):
     ctx = ReadingContext(result=decision("unsupported claim without original changed path"))
     result = await duo(
         ctx, {"goal": "Public behavior", "candidate_evidence_dir": str(tmp_path)},
     )
-    assert result["winner"] == "A"
-    assert result["selection_reason"] == "contract-evidence-insufficient-default-a"
+    assert result["winner"] == "B"
+    assert result["selection_reason"] == "contract-evidence-insufficient-default-b"
+    assert len(ctx.selector_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_small_inline_comparison_retains_complete_diffs_and_shared_public_records(tmp_path):
+    public_record = {
+        "target": "tests/test_handler.py", "runner": "pytest",
+        "command": "pytest tests/test_handler.py", "exit_code": 0, "verified": True,
+    }
+    a, b = [
+        CandidateRun(
+            label=label,
+            output={
+                "coder_output": f"Candidate {label} repair completed",
+                "public_test_records": [public_record, {
+                    **public_record, "target": f"tests/test_{label.lower()}.py",
+                    "command": f"pytest tests/test_{label.lower()}.py",
+                }],
+            },
+            diff=candidate(label, value).diff,
+            test_records=(), verified_targets=(),
+        ) for label, value in [("A", "\u8fd4\u56de A"), ("B", "\u8fd4\u56de B")]
+    ]
+    ctx = ReadingContext()
+    winner, result, reason = await new.adjudicate_candidate_files(
+        ctx, goal="Preserve public behavior", candidate_a=a, candidate_b=b,
+        selector_prompt="{candidates}", evidence_parent=str(tmp_path),
+    )
+    assert winner == "B" and result == ctx.result and reason == "contract-adjudicated"
+    prompt, options = ctx.selector_calls[0]
+    payload, _ = json.JSONDecoder().raw_decode(prompt)
+    expected = json.loads(contract._judge_input(a, b)[0])
+    for label, source in [("A", a), ("B", b)]:
+        expected[label].update(
+            public_test_records=source.output["public_test_records"],
+            candidate_report=source.output["coder_output"], report_is_model_supplied=True,
+        )
+    assert payload["inline_comparison"] == expected
+    assert payload["inline_comparison"]["A"]["diff"] == a.diff
+    assert payload["inline_comparison"]["B"]["diff"] == b.diff
+    assert len(payload["inline_comparison"]["shared_public_test_records"]) == 1
+    assert options["tools"] == []
+    assert len(ctx.selector_calls) == 1
+    for label, source in [("A", a), ("B", b)]:
+        assert payload[label]["index_path"] == f"{label}/index.jsonl"
+        assert (ctx.evidence_directories[0] / payload[label]["diff_path"]).read_bytes() == source.diff.encode()
+        inline = payload["inline_comparison"][label]
+        assert len(inline["public_test_records"]) == 2
+        assert inline["candidate_report"] == source.output["coder_output"]
+        assert inline["report_is_model_supplied"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("large_field", ["candidate_report", "public_test_records"])
+async def test_inline_limit_includes_reports_and_individual_public_records(tmp_path, large_field):
+    a, source = candidate("A", "a"), candidate("B", "b")
+    output = {"coder_output": "finished", "public_test_records": []}
+    if large_field == "candidate_report":
+        output["coder_output"] = "report detail " * 10000
+    else:
+        output["public_test_records"] = [{
+            "target": "test_public.py", "runner": "pytest", "command": "argument " * 16000,
+            "exit_code": 0, "verified": True,
+        }]
+    b = CandidateRun(label="B", output=output, diff=source.diff, test_records=(), verified_targets=())
+    assert len(contract._judge_input(a, b)[0].encode("utf-8")) < 128000
+    ctx = ReadingContext()
+    await new.adjudicate_candidate_files(
+        ctx, goal="Preserve public behavior", candidate_a=a, candidate_b=b,
+        selector_prompt="{candidates}", evidence_parent=str(tmp_path),
+    )
+    prompt, options = ctx.selector_calls[0]
+    payload, _ = json.JSONDecoder().raw_decode(prompt)
+    assert "inline_comparison" not in payload
+    tool, = options["tools"]
+    assert tool.name == "read_candidate_evidence"
+    saved_path = payload["B"]["result_path" if large_field == "candidate_report" else "public_evidence_path"]
+    chunks, offset = [], 0
+    while True:
+        page = json.loads(await tool.execute_with_runtime({"path": saved_path, "offset": offset, "limit": 32768}, None))
+        chunks.append(page["content"])
+        if page["eof"]:
+            break
+        offset = page["next_offset"]
+    saved = json.loads("".join(chunks))
+    assert saved[large_field] == output["coder_output" if large_field == "candidate_report" else large_field]
+
+
+@pytest.mark.asyncio
+async def test_inline_size_uses_utf8_bytes_and_complete_large_evidence_stays_readable(tmp_path):
+    a = candidate("A", "a")
+    b = candidate("B", "\u4f60" * 45000)
+    encoded, _, _ = contract._judge_input(a, b)
+    assert len(encoded) < 128000 < len(encoded.encode("utf-8"))
+    ctx = ReadingContext()
+    await new.adjudicate_candidate_files(
+        ctx, goal="Preserve public behavior", candidate_a=a, candidate_b=b,
+        selector_prompt="{candidates}", evidence_parent=str(tmp_path),
+    )
+    prompt, options = ctx.selector_calls[0]
+    payload, _ = json.JSONDecoder().raw_decode(prompt)
+    assert "inline_comparison" not in payload
+    tool, = options["tools"]
+    chunks, offset = [], 0
+    while True:
+        page = json.loads(await tool.execute_with_runtime({
+            "path": payload["B"]["diff_path"], "offset": offset, "limit": 32768,
+        }, None))
+        chunks.append(page["content"])
+        if page["eof"]:
+            break
+        offset = page["next_offset"]
+    assert "".join(chunks) == b.diff
 
 
 @pytest.mark.asyncio
@@ -149,5 +267,3 @@ async def test_identical_candidates_skip_judge_and_concurrent_runs_keep_separate
         ) for ctx in [left, right]
     ])
     assert left.evidence_directories[0] != right.evidence_directories[0]
-
-

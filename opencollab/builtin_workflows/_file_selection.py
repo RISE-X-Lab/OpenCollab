@@ -8,10 +8,14 @@ from typing import Any
 from opencollab.patches import patch_paths
 from opencollab.workflows import CandidateRun
 
+from . import _candidate_records as records
 from . import _selection as contract
 from ._candidate_evidence_files import CandidateEvidenceFiles, ReadCandidateEvidence
+from ._dual_coder import _review_and_select
 from ._prompts import SELECTION_PROMPT
-from ._rules import SHARED_RULES, structured_role_timeout_seconds
+from ._rules import SHARED_RULES
+
+_INLINE_EVIDENCE_MAX_BYTES = 128_000
 
 FILE_EVIDENCE_INSTRUCTIONS = """
 The candidate evidence above is a directory of complete saved files. Use
@@ -27,6 +31,15 @@ b_evidence, not the evidence storage paths. File existence or a claimed test
 success alone does not establish that a requirement is covered.
 """
 
+_INLINE_EVIDENCE_INSTRUCTIONS = """
+The inline_comparison above contains both complete candidate diffs, all individual
+public test records, shared comparable records, and the model-supplied reports.
+Assess this evidence directly. The index paths identify retained originals for
+the caller. Produce the structured decision using the complete supplied content.
+Treat model-supplied reports as claims and execution records according to their
+verified status. Cite original changed paths and concrete behavior in each entry.
+"""
+
 
 async def adjudicate_candidate_files(
     ctx: Any,
@@ -38,7 +51,7 @@ async def adjudicate_candidate_files(
     evidence_parent: str | None = None,
     rules: str = SHARED_RULES,
 ) -> tuple[str, Any, str]:
-    """Use the original selection rules with complete, paged file evidence."""
+    """Compare complete small diffs directly and retain paged evidence for all sizes."""
     files = CandidateEvidenceFiles(evidence_parent)
     evidence = {
         "A": files.add_candidate("A", candidate_a),
@@ -49,22 +62,25 @@ async def adjudicate_candidate_files(
     }
     await ctx.log(f"Duo complete adjudication evidence directory: {files.directory}")
     paths = {"A": patch_paths(candidate_a.diff), "B": patch_paths(candidate_b.diff)}
-    try:
-        result = await ctx.agent(
-            selector_prompt.format(
-                rules=rules, goal=goal,
-                candidates=json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
-            ) + FILE_EVIDENCE_INSTRUCTIONS,
-            schema=contract.CONTRACT_SCHEMA,
-            label="dual-coder-contract-adjudicator",
-            tools=[ReadCandidateEvidence(files)],
-            budget=None,
-            timeout=structured_role_timeout_seconds(),
+    comparison_text, _, _ = contract._judge_input(candidate_a, candidate_b)
+    comparison = json.loads(comparison_text)
+    for label, candidate in (("A", candidate_a), ("B", candidate_b)):
+        comparison[label].update(
+            public_test_records=records._candidate_records(candidate),
+            candidate_report=(records._candidate_output(candidate).get("coder_output")
+                              if isinstance(candidate.output, dict) else candidate.output),
+            report_is_model_supplied=True,
         )
-    except Exception as exc:  # noqa: BLE001
-        await ctx.log(f"dual coder file adjudicator unavailable after {type(exc).__name__}")
-        result = None
-    winner = contract._validated_judge_winner(result, paths)
-    if winner is None:
-        return "A", result, "contract-evidence-insufficient-default-a"
-    return winner, result, "contract-adjudicated"
+    comparison_size = len(json.dumps(comparison, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    if comparison_size <= _INLINE_EVIDENCE_MAX_BYTES:
+        evidence["inline_comparison"] = comparison
+        instructions = _INLINE_EVIDENCE_INSTRUCTIONS
+        tools: list[Any] = []
+    else:
+        instructions = FILE_EVIDENCE_INSTRUCTIONS
+        tools = [ReadCandidateEvidence(files)]
+    prompt = selector_prompt.format(
+        rules=rules, goal=goal,
+        candidates=json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+    ) + instructions
+    return await _review_and_select(ctx, prompt=prompt, paths=paths, tools=tools)

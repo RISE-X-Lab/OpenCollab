@@ -1,76 +1,43 @@
 <p align="center">
-  <img src="assets/banner-dark.svg" alt="OpenCollab mark and wordmark" width="600">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/readme-hero-dark.svg">
+    <img src="assets/readme-hero-light.svg" alt="OpenCollab. Program how coding agents collaborate. Verify that they did." width="880">
+  </picture>
 </p>
 
 <p align="center">
-  <a href="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml"><img src="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg" alt="License: MulanPSL-2.0"></a>
-  <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg" alt="Python 3.10 through 3.14">
-  <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/assets/README.md"><img src="https://img.shields.io/badge/brand-assets-7C3AED.svg" alt="Brand assets"></a>
-  <a href="https://github.com/RISE-X-Lab/OpenCollab"><img src="https://img.shields.io/badge/GitHub-View%20on%20GitHub-181717.svg?logo=github&logoColor=white" alt="View on GitHub"></a>
+  A multi-agent coding framework with programmable collaboration and a controllable runtime.
 </p>
 
 <p align="center">
-  <b>An Operating Theory of Organized Intelligence.</b>
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/releases/latest"><img src="https://img.shields.io/github/v/release/RISE-X-Lab/OpenCollab?style=flat-square&amp;color=7C3AED&amp;labelColor=0F172A" alt="Latest release"></a>
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg?style=flat-square&amp;color=5556EC&amp;labelColor=0F172A" alt="License: MulanPSL-2.0"></a>
+  <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg?style=flat-square&amp;color=2563EB&amp;labelColor=0F172A" alt="Python 3.10 through 3.14">
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/RISE-X-Lab/OpenCollab/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;labelColor=0F172A" alt="CI"></a>
+  <br>
+  <sub><b>English</b> · <a href="README.zh-CN.md">Chinese</a></sub>
 </p>
 
 <p align="center">
-  OpenCollab is inspired by <a href="https://arxiv.org/abs/2304.07590" title="Self-collaboration Code Generation via ChatGPT — Dong, Jiang, Jin, Li (2023)"><b>Self-Collaboration</b></a>.
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-hero-dark.svg">
+    <img src="assets/benchmark-hero-light.svg" alt="Pass@1 of five harnesses that all use GPT-5.6-Luna. OpenCollab (Duo) is highest on all three benchmarks: 64.25% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 69.91% on DeepSWE, ahead of OpenCollab (Base), Claude Code, Codex CLI, and Mini-SWE-Agent." width="980">
+  </picture>
+</p>
+<p align="center">
+  <sub>Duo produces two isolated solutions and adopts one. Base, a single agent, uses the fewest tokens of the five.
+  <a href="docs/results.md">Full results</a></sub>
 </p>
 
 ## News
 
-- 🎉 **Congratulations!** OpenCollab has been selected for support by the **Seed Program of the Youth Open Source Special Fund**.
-
-## What you can run
-
-<p align="center">
-  <picture>
-    <source srcset="assets/oc-hero-dark.svg" media="(prefers-color-scheme: dark)">
-    <source srcset="assets/oc-hero-light.svg" media="(prefers-color-scheme: light)">
-    <img src="assets/oc-hero-light.svg" alt="OpenCollab Team and Workflow modes" width="1200">
-  </picture>
-</p>
-
-OpenCollab supports two forms of collaboration on the same agent runtime.
-
-| Mode | Command | What it is |
-| --- | --- | --- |
-| **Team** | `opencollab [--team-config FILE] --workspace .` | A lead plans the work and spawns specialists that collaborate until the task is done. The agents decide the division of labor. |
-| **Workflow** | `opencollab workflow run NAME` | Python defines fan-out, pipeline, loop, and verification behavior while agents complete each step. |
-
-Model access, context handling, tool execution, orchestration, and environments
-have separate extension points. An experiment can change one component at a
-time.
-
-OpenCollab turns ambitious multi-agent ideas into small, runnable extensions.
-Researchers describe the collaboration protocol while the framework provides
-the reusable infrastructure needed to run it.
-
-[Edict](https://github.com/cft0808/edict) implements the Three
-Departments and Six Ministries as a standalone system with roughly 24,000
-source lines. [Mini Edict](examples/mini-edict/) implements Edict's core
-review-and-dispatch protocol in 239 lines of team and workflow code on the
-OpenCollab runtime. This roughly hundredfold reduction makes OpenCollab's value
-concrete. A substantial collaboration design becomes a compact, readable
-protocol when it runs on shared infrastructure. Researchers can concentrate on
-the new idea and turn it into a working system with a fraction of the
-engineering effort. The same OpenCollab runtime can carry many more
-collaboration designs. The example includes a bilingual guide and tests.
-
-## Benchmark results
-
-Five harnesses evaluated with **GPT-5.6-Luna** at `max` reasoning effort.
-[OC (Base)](docs/single2.md) uses a single agent.
-[OC (Duo)](docs/duo.md) generates two candidates and selects one through its
-dual-coder workflow, achieving the highest reported Pass@1 in each comparison.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-results-dark.svg">
-    <img src="assets/benchmark-results-light.svg" alt="Cross-harness benchmark results. OC Duo leads Pass@1 with 64.25% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 69.91% on DeepSWE. Columns show Pass@1, average tokens, estimated average cost, and cache hit." width="980">
-  </picture>
-</p>
+- **2026-09** — Our paper, *OpenCollab: A Multi-Agent Coding Framework with
+  Programmable Collaboration and Controllable Runtime*, is coming soon.
+- **2026-09-27** — [OpenCollab 0.8](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.8.0)
+  ships [Duo](docs/duo.md) built in and makes [Single2](docs/single2.md) the
+  default Base agent.
+- 🎉 **Congratulations!** OpenCollab has been selected for support by the
+  **Seed Program of the Youth Open Source Special Fund**.
 
 ## Quick start
 
@@ -80,93 +47,78 @@ cp configs/.env.example configs/.env   # then set OPENCOLLAB_API_KEY
 uv run opencollab --workspace .
 ```
 
-Point `configs/.env` at an OpenAI-compatible or Anthropic endpoint. The command
-starts with the built-in single `lead`, which may spawn ad-hoc specialists.
-Never commit real API keys. To use declared roles and a fixed topology, select a
-team file explicitly.
+`configs/.env` accepts any OpenAI-compatible or Anthropic endpoint; never commit
+real API keys. The command starts the built-in `lead` agent, which may spawn
+specialists as needed. To run Duo on a Git repository:
 
 ```bash
-cp configs/team.example.yaml configs/team.yaml
-uv run opencollab --team-config configs/team.yaml --workspace .
-```
-
-Run [Duo](docs/duo.md), the built-in dual-coder workflow, in a local Git
-repository. Its two isolated coders compare public evidence and apply a
-selected patch. Local shell execution is an explicit workflow input.
-
-```bash
-uv run opencollab workflow list --workspace /path/to/repository
 uv run opencollab workflow run duo --workspace /path/to/repository \
   --args '{"goal":"Fix the public issue described here.","allow_unisolated_shell":true}'
 ```
 
-The [Duo guide](docs/duo.md) covers SDK calls, the Single2 profile, the explicit
-complete file evidence, and task-oriented role instructions.
-The [Chinese guide](docs/duo/README.zh-CN.md) is available alongside the canonical guide.
-See [Workflow authoring](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md#workflow-authoring)
-to define another collaboration protocol as a Python module.
+## Program the collaboration
 
-## Evaluate with OpenCollab-Eval
+<p align="center">
+  <picture>
+    <source srcset="assets/oc-hero-dark.svg" media="(prefers-color-scheme: dark)">
+    <source srcset="assets/oc-hero-light.svg" media="(prefers-color-scheme: light)">
+    <img src="assets/oc-hero-light.svg" alt="OpenCollab Team and Workflow modes" width="1200">
+  </picture>
+</p>
 
-[OpenCollab-Eval](https://github.com/RISE-X-Lab/OpenCollab-Eval) is a downstream
-application built on OpenCollab's public Python API. It exercises agents, teams,
-workflows, tools, and environments from outside this repository.
+- **Team.** A YAML file declares each role's prompt, model, and tools, and who
+  may message whom. Start from the example:
 
-The default [OC Base agent](docs/single2.md) maps to Single2 through the public
-`agent(...)` entry. Named profiles remain available for explicit selection.
+  ```bash
+  cp configs/team.example.yaml configs/team.yaml   # edit roles, tools, and topology
+  uv run opencollab --team-config configs/team.yaml --workspace .
+  ```
 
-Duo's role execution, public test evidence, candidate selection, and patch
-adoption are part of OpenCollab. For a complete collaborative evaluation, follow the
-[Duo with Single2 quick start](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start).
-It covers matching OC/OCE 0.8 installations, benchmark images, a Responses
-model endpoint, and one-task official evaluation with
-`oc-eval g22 --config /path/to/g22.json --indices 1 --workers 1`.
-The same configuration runs a batch and keeps per-task patches, trajectories,
-and official test reports together.
+- **Workflow.** A Python module issues every handoff. Duo is one;
+  [write your own](opencollab/README.md#workflow-authoring) and run it with
+  `opencollab workflow run NAME`.
 
-OpenCollab-Eval runs agents on software-engineering benchmarks. It creates an
-isolated workspace for each task and records the Solver's patch. It then runs
-the official tests and keeps the commands and reports needed to inspect the
-result. It currently supports SWE-bench Pro-Lite and provides a generic task
-runner for other evaluation workloads.
+[Mini Edict](examples/mini-edict/) reimplements the core protocol of
+[Edict](https://github.com/cft0808/edict), a multi-agent system of roughly
+24,000 lines, in 239 lines of team and workflow code.
 
-Datasets, Docker integration, benchmark adapters, experiment reports, and their
-execution records live in OpenCollab-Eval. This repository contains the
-collaboration framework.
+## Verify it happened
 
-The [evaluation guide](https://github.com/RISE-X-Lab/OpenCollab-Eval#supported-environment)
-explains how to run it. The [integrity guide](https://github.com/RISE-X-Lab/OpenCollab-Eval/blob/main/docs/evaluation-integrity.md)
-explains how results are checked. [MIGRATION.md](https://github.com/RISE-X-Lab/OpenCollab-Eval/blob/main/MIGRATION.md)
-records the boundary between the repositories.
+In a Team, the agents decide the handoffs, and a declared team does not
+guarantee that they happen. In our runs, the lead agent often briefed its
+teammates and then did the work itself. OpenCollab enforces the declaration and
+records what each agent did:
 
-## Documentation
+- a message along an undeclared edge is refused, and the refusal is recorded;
+- each agent's token budget is checked before every model call;
+- `--trace` writes one JSONL record per step, stamped with the run, agent, role,
+  event type, and token usage.
 
-The [package guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md)
-covers installation, the CLI, the Python API, architecture, and runtime
-behavior. The [configuration guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/configs/README.md)
-covers providers, models, and teams.
+From these records we measure **Adherence**, the share of runs in which the
+declared organization actually happened. Changing one setting of the same team
+raised it from 47.2% to as much as 97.2%.
+See [how Adherence is measured](docs/adherence.md).
 
-[Mini Edict](https://github.com/RISE-X-Lab/OpenCollab/tree/main/examples/mini-edict)
-shows a nine-role institutional workflow. The [skills guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/skills/README.md)
-documents on-demand instructions. The [scripts guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/scripts/README.md)
-documents launchers and provider diagnostics.
+## Learn more
 
-Repository development is documented in [CONTRIBUTING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md).
-The [testing guide](docs/testing.md) covers suite commands and the
-[test directory guide](tests/README.md) maps behavior to test topics.
-Maintainers can follow [RELEASING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/RELEASING.md)
-when preparing a release.
-The [documentation index](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/README.md)
-links design records and research notes. Benchmark users should begin with the
-[OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme).
-
-## License
-
-OpenCollab is licensed under the [Mulan Permissive Software License v2](https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE)
-(`MulanPSL-2.0`).
+| Guide | What it covers |
+| --- | --- |
+| [Package guide](opencollab/README.md) | CLI, Python API, architecture, and runtime behavior |
+| [Configuration guide](configs/README.md) | Providers, models, and team files |
+| [Duo guide](docs/duo.md) · [Chinese](docs/duo/README.zh-CN.md) | Running the dual-coder workflow from the CLI and SDK |
+| [Benchmark results](docs/results.md) | Tokens, cost, the paired Duo–Base test, and how to run an evaluation |
+| [Adherence](docs/adherence.md) | What the runtime records, and how we measure Adherence |
+| [OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme) | Running agents on software-engineering benchmarks |
+| [Documentation index](docs/README.md) | Skills, migration guides, and design records |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development checks, [testing](docs/testing.md), and [releases](RELEASING.md) |
 
 ## Citation
-If you find this project useful, please consider giving it a ⭐ and citing our paper. Our technical paper is also coming soon.
+
+If you find OpenCollab useful, please give it a ⭐ and cite our work. Our paper,
+*OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and
+Controllable Runtime*, is coming soon. OpenCollab builds on
+[Self-Collaboration](https://arxiv.org/abs/2304.07590):
+
 ```bibtex
 @article{dong2023self,
   author={Dong, Yihong and Jiang, Xue and Jin, Zhi and Li, Ge},
@@ -178,6 +130,11 @@ If you find this project useful, please consider giving it a ⭐ and citing our 
   year         = {2024}
 }
 ```
+
+## License
+
+OpenCollab is licensed under the [Mulan Permissive Software License v2](https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE)
+(`MulanPSL-2.0`).
 
 ## Star History
 

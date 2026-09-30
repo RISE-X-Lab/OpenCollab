@@ -28,6 +28,7 @@ generated brand board converts that copy to paths.
 | [`lockup-horizontal.svg`](lockup-horizontal.svg) | Mark and "OpenCollab" wordmark side by side in dark ink | **Light** backgrounds |
 | [`lockup-horizontal-tagline.svg`](lockup-horizontal-tagline.svg) | Horizontal lockup and tagline in dark ink | **Light** backgrounds and hero placements |
 | [`lockup-stacked.svg`](lockup-stacked.svg) | Mark above the wordmark (dark ink) | **Light** backgrounds, square-ish space |
+| [`lockup-horizontal-white.svg`](lockup-horizontal-white.svg) | Horizontal lockup with the wordmark in white ink and a transparent background | **Dark** backgrounds |
 | [`banner-dark.svg`](banner-dark.svg) | Mark and white wordmark on a dark rounded panel | README headers on any theme |
 | [`app-icon.svg`](app-icon.svg) | Mark on a dark rounded square (512×512) | App or launcher icon on any theme |
 | [`app-icon-mono.svg`](app-icon-mono.svg) | Monochrome rounded-square icon | One-colour app icon |
@@ -53,7 +54,7 @@ The five node dots use colors sampled along the gradient (`#713AED`, `#2A53EB`,
 | --- | --- |
 | Clear space | Keep at least one node diameter (*x*) of empty space on all four sides of the mark. |
 | Minimum size | Use the full-detail mark at about 48 px or larger. At 32 px and below, use the simplified `favicon` crop. |
-| Background | The gradient `mark`, `banner-dark`, and `app-icon` work across themes. Use dark-ink lockups on light backgrounds and `mark-mono-white` on dark backgrounds. |
+| Background | The gradient `mark`, `banner-dark`, and `app-icon` work across themes. Use dark-ink lockups on light backgrounds, and `lockup-horizontal-white` or `mark-mono-white` on dark backgrounds. |
 | Alterations | Keep the supplied gradient, proportions, orientation, and stroke treatment. Do not recolour, stretch, rotate, add shadows or outlines, or use a low-contrast mark on a busy background. |
 
 <p align="center">
@@ -68,6 +69,18 @@ The five node dots use colors sampled along the gradient (`#713AED`, `#2A53EB`,
 benchmark results in a fixed-column layout. Both keep text editable and
 support the corresponding GitHub color scheme. Keep the values synchronized
 between the two themes when updating the results.
+
+`benchmark-hero-light.svg` and `benchmark-hero-dark.svg` show the Pass@1 column
+of the same table as bars in the README header. Update them together with the
+table.
+
+## README hero
+
+`readme-hero-light.svg` and `readme-hero-dark.svg` place the horizontal lockup
+above the README tagline on a transparent background. The light file uses the
+dark-ink wordmark and the brand gradient for the second line; the dark file uses
+the white wordmark and a lighter violet-to-blue gradient that stays legible on
+dark themes. The tagline is SVG text in the Liberation Sans font stack.
 
 ## Terminal splash
 
@@ -87,6 +100,10 @@ about 0.38. The generator preserves that geometry and produces these files.
 - `lockup-horizontal-tagline.svg`
 - `lockup-stacked.svg`
 - `brand-guidelines.svg`, including its wordmark and explanatory text paths
+
+`lockup-horizontal-white.svg` and the two README hero files copy the mark and
+wordmark paths from `lockup-horizontal.svg` and change only the wordmark fill.
+Update them whenever the lockups are regenerated.
 
 The wordmark uses **Liberation Sans 2.1.5 Bold** and the tagline uses
 **Liberation Sans 2.1.5 Regular**. The inputs came from Debian package
