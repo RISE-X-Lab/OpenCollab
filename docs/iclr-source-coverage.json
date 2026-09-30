@@ -1565,7 +1565,7 @@
     {
       "source_change": "M",
       "source_path": "opencollab/domain/token_estimation.py",
-      "disposition": "source_identical",
+      "disposition": "adapted",
       "target_paths": [
         "opencollab/domain/token_estimation.py"
       ]
@@ -1741,7 +1741,7 @@
     {
       "source_change": "A",
       "source_path": "tests/test_llm_chat_streaming.py",
-      "disposition": "relocated",
+      "disposition": "adapted",
       "target_paths": [
         "tests/runtime/test_llm_chat_streaming.py"
       ]
