@@ -1782,7 +1782,7 @@
     {
       "source_change": "A",
       "source_path": "tests/test_model_capability_table.py",
-      "disposition": "relocated",
+      "disposition": "adapted",
       "target_paths": [
         "tests/runtime/test_model_capability_table.py",
         "tests/runtime/test_model_capability_table_iclr.py"
