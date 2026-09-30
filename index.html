@@ -1,0 +1,1042 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style>
+<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="OpenCollab">
+<meta property="og:title" content="OpenCollab: do your agents really collaborate?">
+<meta property="og:description" content="OpenCollab is an open-source multi-agent coding framework. Declare a team, run it on one controlled runtime, and check whether the team you declared is the team that ran.">
+<meta property="og:url" content="https://rise-x-lab.github.io/OpenCollab/">
+<meta property="og:image" content="https://rise-x-lab.github.io/OpenCollab/fig/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<title>OpenCollab</title>
+<meta name="description" content="OpenCollab is an open-source multi-agent coding framework. Declare a team, run it on one controlled runtime, and check whether the team you declared is the team that ran.">
+<link rel="icon" href="fig/mark.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Noto+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Castoro:ital@0;1&family=Google+Sans+Code:wght@400;500&display=swap" media="print" onload="this.media='all'"><noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Noto+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Castoro:ital@0;1&family=Google+Sans+Code:wght@400;500&display=swap"></noscript>
+<style>
+/* Light page (deliberately single-theme); the runtime itself is drawn dark: hero console, terminal, closing band.
+   One visual rule everywhere: dashed = declared, solid = realized (dots, diagram edges, button borders). */
+:root{
+  color-scheme:light;
+  --bg:#F7F7FC; --bg-2:#F0EEFA; --surface:#FFFFFF;
+  --ink:#0E1330; --ink-2:#333A56; --muted:#5F6682;
+  --line:rgba(46,38,120,.10); --line-2:rgba(46,38,120,.22);
+  --violet:#7C3AED; --violet-deep:#5B21B6; --blue:#2563EB; --lav:#EFEAFE; --lav-2:#E3DAFD;
+  --hollow:#C3C8DD; --mark-2:#A3A8BF;
+  --run:#0B1030; --run-2:#141A45; --run-ink:#ECEAFB; --run-muted:#A09EC9; --run-line:rgba(196,181,253,.16); --run-lilac:#C4B5FD;
+  --yes:#0E8F63; --part:#8D93AC; --no:#C63F3F;
+  --grad:linear-gradient(90deg,#7C3AED,#2563EB);
+  --code-bg:#F4F2FC; --code-ink:#1F2446; --code-key:#6D28D9; --code-str:#1D4ED8; --code-com:#7B82A0;
+  --shadow:0 1px 2px rgba(20,16,70,.05),0 18px 40px -22px rgba(40,24,120,.28);
+  --f-display:"Google Sans","Noto Sans",system-ui,sans-serif;
+  --f-body:"Noto Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-serif:"Castoro",Georgia,"Times New Roman",serif;
+  --f-mono:"Google Sans Code",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --maxw:1120px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;background:var(--bg)}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}*,*::before,*::after{transition:none!important;animation:none!important}}
+body{background:var(--bg);color:var(--ink);font:400 16.5px/1.75 var(--f-body);-webkit-font-smoothing:antialiased;padding-inline:20px}
+a{color:var(--violet-deep);text-decoration-thickness:1px;text-underline-offset:3px}
+a:hover{color:var(--violet)}
+:focus-visible{outline:2px solid var(--violet);outline-offset:3px;border-radius:8px}
+.wrap{max-width:var(--maxw);margin-inline:auto}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;color:var(--ink)}
+h2{font-size:clamp(28px,3.4vw,40px);line-height:1.14;font-weight:700;letter-spacing:-.012em}
+h3{font-size:20px;line-height:1.3;font-weight:700}
+p{margin:0}
+.num{font-variant-numeric:tabular-nums}
+.bleed{margin-inline:-20px;padding-inline:20px}
+
+/* ---- labels: an event record, the way OpenCollab logs a step ---- */
+.ev{display:inline-flex;align-items:center;gap:10px;font:500 12.5px/1 var(--f-mono);color:var(--muted);letter-spacing:.02em}
+.ev .node{width:10px;height:10px;border-radius:50%;background:var(--grad);box-shadow:0 0 0 4px var(--lav);flex:none}
+.ev b{color:var(--violet-deep);font-weight:500}
+
+/* ---- buttons: dashed until you act on them ---- */
+.btn{display:inline-flex;align-items:center;gap:10px;padding:12px 20px;border-radius:999px;font:500 15px/1 var(--f-display);text-decoration:none;color:var(--ink);background:var(--surface);border:1.5px dashed var(--line-2);transition:transform .18s,box-shadow .18s,border-color .18s,background .18s;white-space:nowrap}
+.btn svg{width:18px;height:18px;flex:none}
+.btn:hover{color:var(--ink);border-style:solid;border-color:var(--violet);transform:translateY(-1px);box-shadow:var(--shadow)}
+.btn.primary{background:var(--ink);color:#FFFFFF;border:1.5px solid var(--ink)}
+.btn.primary:hover{color:#FFFFFF;background:#1B2152;border-color:#1B2152}
+.btn.sm{padding:8px 14px;font-size:14px;gap:8px}
+.btn.sm svg{width:16px;height:16px}
+.btn .arrow{transition:transform .18s}
+.btn:hover .arrow{transform:translateX(3px)}
+.btn[aria-disabled="true"]{opacity:.55;pointer-events:none}
+.btn small{font:400 11.5px/1 var(--f-mono);opacity:.8}
+
+/* ---- nav ---- */
+.nav{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;margin-inline:-20px;padding:10px 20px;background:rgba(247,247,252,.88);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px);border-bottom:1px solid var(--line)}
+.nav .wrap{display:flex;align-items:center;gap:14px}
+.brand{display:flex;align-items:center;gap:9px;font:700 17px/1 var(--f-display);color:var(--ink);text-decoration:none}
+.brand:hover{color:var(--ink)}
+.brand img{width:24px;height:24px}
+.nav ul{display:flex;gap:2px;list-style:none;margin:0 0 0 auto;padding:0}
+.nav ul a{display:block;padding:8px 12px;border-radius:999px;font:500 14px/1 var(--f-display);color:var(--muted);text-decoration:none;white-space:nowrap;transition:background .15s,color .15s}
+.nav ul a:hover{background:var(--lav);color:var(--violet-deep)}
+.nav .gh{margin-left:6px}
+@media (max-width:920px){.nav ul{display:none}.nav .gh{margin-left:auto}}
+
+/* ---- hero ---- */
+.hero{position:relative;overflow:hidden;padding-block:48px 92px;background:var(--bg)}
+.hero::after{content:"";position:absolute;inset:0;background:
+  radial-gradient(50% 62% at 6% 0%,rgba(124,58,237,.17),transparent 70%),
+  radial-gradient(44% 56% at 96% 62%,rgba(37,99,235,.14),transparent 70%);
+  -webkit-mask-image:linear-gradient(180deg,#000 70%,transparent);mask-image:linear-gradient(180deg,#000 70%,transparent);pointer-events:none}
+.hero::before{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(46,38,120,.15) 1px,transparent 1.3px);background-size:24px 24px;-webkit-mask-image:linear-gradient(180deg,#000,#000 50%,transparent);mask-image:linear-gradient(180deg,#000,#000 50%,transparent);pointer-events:none}
+.hero-grid{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:56px;align-items:center}
+@media (max-width:940px){.hero-grid{grid-template-columns:minmax(0,1fr);gap:40px}}
+.pill{display:inline-flex;align-items:center;gap:10px;max-width:100%;padding:5px 14px 5px 5px;border-radius:999px;background:rgba(255,255,255,.8);border:1px solid var(--line-2);font:500 13.5px/1.35 var(--f-display);color:var(--ink-2);text-decoration:none;box-shadow:0 1px 2px rgba(20,16,70,.05)}
+.pill b{flex:none;font:500 11.5px/1 var(--f-mono);color:#FFFFFF;background:var(--grad);padding:6px 9px;border-radius:999px;letter-spacing:.02em}
+.pill:hover{border-color:var(--violet);color:var(--ink)}
+.kicker{display:flex;align-items:center;gap:12px;margin-top:28px;font:italic 400 clamp(24px,2.6vw,30px)/1 var(--f-serif);color:var(--violet-deep)}
+.kicker img{width:34px;height:34px}
+.hero h1{margin-top:14px;font-size:clamp(34px,4.6vw,62px);line-height:1.03;font-weight:700;letter-spacing:-.03em}
+.hero h1 .ln{display:inline-block}
+.hl{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.lede{margin-top:22px;font-size:clamp(17px,1.45vw,19px);line-height:1.65;color:var(--ink-2);max-width:54ch}
+.btns{display:flex;flex-wrap:wrap;gap:12px;margin-top:30px}
+.sublinks{display:flex;flex-wrap:wrap;gap:6px 20px;margin-top:18px;font:400 13px/1.4 var(--f-mono);color:var(--muted)}
+.sublinks a{color:var(--muted)}
+.sublinks a:hover{color:var(--violet-deep)}
+
+/* hero console: the audit, drawn as the runtime sees it */
+.console{position:relative;min-width:0;background:linear-gradient(180deg,var(--run-2),var(--run));color:var(--run-ink);border-radius:24px;border:1px solid rgba(167,139,250,.24);padding:20px 24px 18px;box-shadow:0 1px 0 rgba(255,255,255,.06) inset,0 44px 90px -40px rgba(64,30,160,.7)}
+.console::before{content:"";position:absolute;inset:0 24px auto 24px;height:1px;background:linear-gradient(90deg,transparent,rgba(167,139,250,.8),rgba(96,165,250,.8),transparent)}
+.con-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font:500 12.5px/1.3 var(--f-mono);color:var(--run-muted)}
+.con-head .node{width:9px;height:9px;border-radius:50%;background:var(--grad);box-shadow:0 0 0 4px rgba(124,58,237,.25)}
+.con-head b{color:var(--run-lilac);font-weight:500}
+.replay{all:unset;cursor:pointer;margin-left:auto;display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;font:500 12px/1 var(--f-mono);color:var(--run-muted);border:1px dashed rgba(196,181,253,.35)}
+.replay:hover{color:#FFFFFF;border-style:solid;border-color:var(--run-lilac)}
+.replay:focus-visible{outline:2px solid var(--run-lilac);outline-offset:2px}
+.replay svg{width:13px;height:13px}
+.con-row{display:grid;grid-template-columns:minmax(0,auto) minmax(0,1fr);gap:12px 22px;align-items:center;padding-block:18px}
+.con-row+.con-row{border-top:1px solid var(--run-line)}
+.con-lab{grid-column:1 / -1;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.con-lab .tag{font:500 12.5px/1 var(--f-mono);color:var(--run-lilac);background:rgba(124,58,237,.2);padding:5px 8px;border-radius:6px}
+.con-lab .what{font-size:13.5px;line-height:1.4;color:var(--run-muted)}
+.dots{--d:clamp(10px,1.3vw,15px);display:grid;grid-template-columns:repeat(12,var(--d));gap:calc(var(--d)*.45)}
+.dot{width:var(--d);height:var(--d);border-radius:50%;border:1.5px dashed rgba(196,181,253,.4);transition:background .3s,border-color .3s,box-shadow .3s,transform .3s}
+.dot.on{border:1.5px solid transparent;background:var(--grad) border-box;box-shadow:0 0 12px rgba(139,92,246,.6);transform:scale(1.04)}
+.con-num{min-width:0}
+.con-num b{display:block;min-width:4.3ch;font:700 clamp(34px,3.5vw,46px)/1 var(--f-display);letter-spacing:-.02em;color:#FFFFFF}
+.con-num small{display:block;margin-top:7px;font:400 12px/1.2 var(--f-mono);color:var(--run-muted)}
+.con-foot{display:grid;gap:10px;padding-top:14px;border-top:1px solid var(--run-line)}
+.con-foot .say{font:500 15px/1.45 var(--f-display);color:#FFFFFF}
+.con-foot .say em{font-style:normal;color:var(--run-lilac)}
+.legend{display:flex;gap:8px 16px;flex-wrap:wrap;align-items:center;font-size:12.5px;color:var(--run-muted)}
+.legend span{display:inline-flex;align-items:center;gap:7px}
+.legend i{width:10px;height:10px;border-radius:50%;display:inline-block}
+.legend i.on{background:var(--grad)}
+.legend i.off{border:1.5px dashed rgba(196,181,253,.5)}
+
+/* ---- proof strip ---- */
+.proof{position:relative;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:-44px;background:var(--surface);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow)}
+.stat{display:grid;gap:6px;align-content:start;padding:20px 22px}
+.stat+.stat{border-left:1px solid var(--line)}
+.stat i{font-style:normal;font:500 11.5px/1 var(--f-mono);color:var(--violet-deep);letter-spacing:.02em}
+.stat b{font:700 22px/1.2 var(--f-display);letter-spacing:-.01em;color:var(--ink)}
+.stat span{font-size:13.5px;line-height:1.5;color:var(--muted)}
+@media (max-width:900px){.proof{grid-template-columns:repeat(2,minmax(0,1fr))}.stat:nth-child(3){border-left:0}.stat:nth-child(n+3){border-top:1px solid var(--line)}}
+@media (max-width:520px){.proof{grid-template-columns:minmax(0,1fr)}.stat+.stat{border-left:0;border-top:1px solid var(--line)}}
+
+/* ---- sections ---- */
+section{padding-block:80px;scroll-margin-top:64px}
+.sec-head{display:grid;gap:14px;margin-bottom:36px;max-width:820px}
+.sec-head p{color:var(--ink-2);max-width:70ch}
+.band{background:var(--bg-2)}
+
+/* problem */
+.problem{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);gap:48px;align-items:center}
+@media (max-width:900px){.problem{grid-template-columns:minmax(0,1fr);gap:28px}}
+.prose p{color:var(--ink-2)}
+.prose p+p{margin-top:14px}
+.term-i{font:italic 400 1.08em var(--f-serif);color:var(--violet-deep)}
+.diagram{margin:0;background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:18px 18px 16px;box-shadow:var(--shadow);min-width:0}
+.diagram svg{display:block;width:100%;height:auto}
+.adds{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:28px;margin-top:52px}
+@media (max-width:900px){.adds{grid-template-columns:minmax(0,1fr);gap:20px}}
+.add{border-top:2px solid var(--violet);border-image:var(--grad) 1;padding-top:16px}
+.add i{font-style:normal;font:500 12px/1 var(--f-mono);color:var(--violet-deep)}
+.add b{display:block;margin-top:9px;font:700 17px/1.35 var(--f-display);color:var(--ink)}
+.add p{margin-top:6px;font-size:15px;line-height:1.65;color:var(--ink-2)}
+
+/* figures */
+figure{margin:0}
+.plate{background:#FFFFFF;border:1px solid var(--line);border-radius:20px;padding:clamp(12px,2.2vw,26px);overflow-x:auto;box-shadow:var(--shadow)}
+.plate img{display:block;width:100%;height:auto;min-width:640px}
+figcaption{font-size:14.5px;color:var(--muted);margin-top:14px;max-width:84ch;line-height:1.65}
+figcaption b{color:var(--ink);font-weight:600;font-family:var(--f-display)}
+
+/* method */
+.pillars{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}
+@media (max-width:940px){.pillars{grid-template-columns:minmax(0,1fr)}}
+.pillar{display:flex;flex-direction:column;gap:12px;min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:22px}
+.pillar p{font-size:15px;color:var(--ink-2);line-height:1.7}
+pre.code{margin:4px 0 0;background:var(--code-bg);color:var(--code-ink);border-radius:12px;padding:14px 16px;font:400 12px/1.65 var(--f-mono);overflow-x:auto;flex:1}
+pre.code .k{color:var(--code-key)} pre.code .s{color:var(--code-str)} pre.code .c{color:var(--code-com)}
+/* hold and record: one icon per concept */
+.ico{flex:none;display:grid;place-items:center;width:34px;height:34px;border-radius:10px;background:var(--lav)}
+.ico svg{width:19px;height:19px;fill:none;stroke:var(--violet-deep);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.gates,.evts{list-style:none;margin:4px 0 0;padding:0;display:grid}
+.gates{gap:14px}
+.gates li{display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px;align-items:start;font-size:14px;line-height:1.5;color:var(--ink-2)}
+.gates li b{display:block;font:500 13px/1.4 var(--f-mono);color:var(--violet-deep)}
+.rec-h{font:500 12px/1.4 var(--f-mono);color:var(--muted);margin-top:2px}
+.rec-fields{display:flex;flex-wrap:wrap;gap:6px}
+.rec-fields span{font:500 12px/1 var(--f-mono);color:var(--code-ink);background:var(--code-bg);border-radius:6px;padding:6px 8px}
+.evts{gap:8px}
+.evts li{display:flex;align-items:center;gap:12px;font:500 14.5px/1.3 var(--f-display);color:var(--ink)}
+.evts .ico{width:30px;height:30px;border-radius:9px}
+.evts .ico svg{width:17px;height:17px}
+.adh{margin-top:24px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:32px;align-items:center;background:var(--lav);border-radius:20px;padding:26px}
+@media (max-width:880px){.adh{grid-template-columns:minmax(0,1fr)}}
+.adh p{color:var(--ink-2);font-size:15px;margin-top:8px}
+.axes{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.axes span{font:500 12.5px/1 var(--f-mono);padding:8px 11px;border-radius:999px;background:var(--surface);color:var(--violet-deep);border:1px solid var(--lav-2)}
+.formula{font:400 clamp(14px,1.8vw,17px)/1.6 var(--f-mono);color:var(--ink);background:var(--surface);border-radius:12px;padding:13px 18px;overflow-x:auto;white-space:nowrap}
+.formula+.formula{margin-top:10px}
+.formula .v{color:var(--violet)}
+.formula-note{font-size:14px!important;margin-top:12px!important}
+.loc{margin-top:24px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:28px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:24px 26px}
+@media (max-width:760px){.loc{grid-template-columns:minmax(0,1fr);gap:12px}}
+.loc .big{font:700 46px/1 var(--f-display);letter-spacing:-.02em;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.loc .big-cap{font-size:14.5px;color:var(--ink-2);margin-top:10px;line-height:1.55}
+.loc .big-cap a{font-family:var(--f-mono);font-size:13px}
+.loc-row{display:grid;grid-template-columns:120px minmax(0,1fr) 72px;gap:14px;align-items:center;padding-block:8px}
+.loc-row .n{font:500 14px/1.3 var(--f-display)}
+.loc-row .bar{height:14px;border-radius:7px;background:var(--bg-2);overflow:hidden}
+.loc-row .bar i{display:block;height:100%;background:var(--mark-2);border-radius:7px}
+.loc-row .bar i.oc{background:var(--grad);min-width:4px}
+.loc-row .v{font:500 13px/1 var(--f-mono);text-align:right}
+.loc .times{margin-top:6px;font:500 12.5px/1.4 var(--f-mono);color:var(--violet-deep)}
+
+/* tabs */
+.tabs{display:inline-flex;flex-wrap:wrap;gap:4px;margin-bottom:18px;padding:4px;border-radius:999px;background:var(--surface);border:1px solid var(--line)}
+.tabs button{all:unset;cursor:pointer;padding:8px 16px;border-radius:999px;font:500 14px/1 var(--f-display);color:var(--muted)}
+.tabs button:hover{color:var(--violet-deep)}
+.tabs button[aria-selected="true"]{background:var(--ink);color:#FFFFFF}
+.tabs button:focus-visible{outline:2px solid var(--violet);outline-offset:2px}
+
+/* results: benchmarks */
+.bench{background:var(--surface);border:1px solid var(--line);border-radius:20px;overflow-x:auto;box-shadow:var(--shadow)}
+table{border-collapse:collapse;width:100%}
+table.bt{min-width:740px;font-size:14.5px}
+.bt th,.bt td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums}
+.bt th:first-child,.bt td:first-child{text-align:left;white-space:nowrap;padding-left:22px}
+.bt thead th{font:500 12.5px/1.3 var(--f-display);color:var(--muted)}
+.bt td{font:400 13.5px var(--f-mono)}
+.bt td:first-child{font:500 14.5px var(--f-display)}
+.bt tr.oc td:first-child{color:var(--violet-deep)}
+.bt tr.best td{background:var(--lav)}
+.bt tr:last-child td{border-bottom:0}
+.bt .strip{width:40%;min-width:220px;padding-inline:18px}
+.strip-in{position:relative;height:18px}
+.strip-in .ax{position:absolute;left:0;right:0;top:8px;height:1px;background:var(--line-2)}
+.strip-in .d{position:absolute;top:2px;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:var(--mark-2);box-shadow:0 0 0 2px var(--surface)}
+.bt tr.best .strip-in .d{box-shadow:0 0 0 2px var(--lav)}
+.bt tr.oc .strip-in .d{background:var(--grad)}
+.strip-scale{display:flex;justify-content:space-between;font:400 11px/1 var(--f-mono);color:var(--muted);margin-top:6px}
+.note{margin-top:16px;font-size:15px;color:var(--ink-2);max-width:84ch}
+.bench-notes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;margin-top:22px}
+@media (max-width:760px){.bench-notes{grid-template-columns:minmax(0,1fr)}}
+.bench-notes div{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:22px}
+.bench-notes b{display:block;font:700 30px/1.1 var(--f-display);letter-spacing:-.015em;color:var(--ink)}
+.bench-notes p{font-size:15px;color:var(--ink-2);margin-top:8px;line-height:1.7}
+
+/* results: five dimensions */
+.dim-card{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:8px 22px 18px;box-shadow:var(--shadow)}
+.dim-row{display:grid;grid-template-columns:170px minmax(0,1fr) 64px 64px 64px;gap:16px;align-items:center;padding-block:15px;border-bottom:1px solid var(--line)}
+.dim-row.head{font:500 12px/1.3 var(--f-mono);color:var(--muted);padding-block:14px 10px}
+.dim-row.head span:nth-child(n+3){text-align:right}
+.dim-row .nm{font:500 15.5px/1.3 var(--f-display)}
+.dim-row .nm small{display:block;font:400 11.5px/1.3 var(--f-mono);color:var(--violet);margin-top:3px}
+.dim-row .v{font:400 14px/1 var(--f-mono);text-align:right;font-variant-numeric:tabular-nums}
+.track{position:relative;height:26px}
+.track .axis{position:absolute;inset:12px 0 auto 0;height:1px;background:var(--line-2)}
+.track .ci{position:absolute;top:7px;height:12px;border-radius:6px;background:var(--lav-2)}
+.track .pt{position:absolute;top:4px;width:18px;height:18px;margin-left:-9px;border-radius:50%;background:var(--grad);border:3px solid #FFFFFF;box-shadow:0 0 0 1px var(--violet)}
+.track .lab{position:absolute;top:-1px;font:500 13px/1 var(--f-mono);color:var(--ink);transform:translateX(14px);background:rgba(255,255,255,.88);padding:2px 3px;border-radius:4px}
+.track .lab.left{transform:translateX(calc(-100% - 14px))}
+.scale{display:grid;grid-template-columns:170px minmax(0,1fr) 64px 64px 64px;gap:16px;padding-top:8px}
+.scale .ticks{position:relative;height:14px;font:400 11px/1 var(--f-mono);color:var(--muted)}
+.scale .ticks span{position:absolute;transform:translateX(-50%)}
+@media (max-width:720px){
+  .dim-row,.scale{grid-template-columns:minmax(0,1fr) 56px 56px;gap:10px}
+  .dim-row .nm{grid-column:1 / -1}
+  .dim-row .track,.scale .ticks{grid-column:1 / -1}
+  .dim-row.head span:nth-child(2),.scale>span:first-child{display:none}
+  .dim-row .v.tok,.dim-row.head .tok,.scale .tok{display:none}
+}
+
+/* results: causal validity */
+.itt{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:28px;align-items:start}
+@media (max-width:940px){.itt{grid-template-columns:minmax(0,1fr)}}
+.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:20px;background:var(--surface);box-shadow:var(--shadow);min-width:0}
+table.plain{font-size:14.5px;min-width:540px}
+.plain th,.plain td{padding:12px 14px;text-align:right;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.plain th:first-child,.plain td:first-child{text-align:left;white-space:nowrap;padding-left:20px}
+.plain thead th{font:500 12.5px/1.3 var(--f-display);color:var(--muted);vertical-align:bottom}
+.plain tbody td{font:400 13.5px var(--f-mono)}
+.plain tbody td:first-child{font:500 14.5px var(--f-display)}
+.plain td small{display:block;margin-top:2px;white-space:nowrap;color:var(--muted);font-size:11.5px}
+.plain tr:last-child td{border-bottom:0}
+.tnote{font-size:13px;color:var(--muted);padding:12px 20px;border-top:1px solid var(--line);line-height:1.55}
+.split{background:var(--run);color:var(--run-ink);border-radius:20px;padding:26px;box-shadow:var(--shadow);min-width:0}
+.split .ev{color:var(--run-muted)}
+.split .ev b{color:var(--run-lilac)}
+.split .ev .node{box-shadow:0 0 0 4px rgba(124,58,237,.25)}
+.split p{font-size:15px;color:#CFCDE4;line-height:1.7}
+.split p b{color:#FFFFFF}
+.split-bars{display:grid;gap:16px;margin:20px 0}
+.sb{display:grid;grid-template-columns:96px minmax(0,1fr);gap:12px;align-items:center;font:500 14px/1.3 var(--f-display);color:#FFFFFF}
+.sb small{display:block;color:var(--run-muted);font:400 12px var(--f-mono)}
+.sb .lane{position:relative;height:30px;border-radius:8px;background:rgba(255,255,255,.06)}
+.sb .lane .zero{position:absolute;left:50%;top:-4px;bottom:-4px;width:1px;background:rgba(255,255,255,.5)}
+.sb .lane i{position:absolute;top:5px;height:20px;border-radius:5px}
+.sb .lane b{position:absolute;top:6px;font:500 13px/18px var(--f-mono);color:#FFFFFF}
+.split .foot{font-size:13px;color:var(--run-muted);margin-top:12px}
+
+/* results: audit */
+table.audit{min-width:740px;font-size:14.5px;table-layout:fixed}
+.audit th:first-child,.audit td:first-child{width:200px}
+.audit th,.audit td{padding:11px 12px;text-align:center;border-bottom:1px solid var(--line)}
+.audit thead th{font:500 12.5px/1.3 var(--f-display);color:var(--muted);vertical-align:bottom}
+.audit thead tr:first-child th{font:500 12px/1 var(--f-mono);color:var(--violet-deep);padding-top:16px}
+.audit th:first-child,.audit td:first-child{text-align:left;padding-left:20px;white-space:nowrap}
+.audit td:first-child{font-family:var(--f-display);font-weight:500}
+.audit .grp td{font:500 12px/1 var(--f-mono);color:var(--muted);background:#FAFAFE;padding-block:9px;text-align:left}
+.audit .sep{border-left:1px solid var(--line-2)}
+.audit tr.ours td{background:var(--lav);font-weight:700;border-bottom:0}
+.m{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;font:700 13px/1 var(--f-body);font-style:normal}
+.m.y{color:var(--yes);background:rgba(14,143,99,.11)}
+.m.p{color:var(--part)}
+.m.n{color:var(--no)}
+.audit tr.ours .m.y{color:#FFFFFF;background:var(--grad)}
+.key-row{display:flex;flex-wrap:wrap;gap:18px;font-size:13.5px;color:var(--muted);margin-top:14px}
+.key-row span{display:inline-flex;align-items:center;gap:6px}
+
+/* build with us */
+.build-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:28px;align-items:start}
+@media (max-width:960px){.build-grid{grid-template-columns:minmax(0,1fr)}}
+.term{min-width:0;background:linear-gradient(180deg,var(--run-2),var(--run));border-radius:20px;border:1px solid rgba(167,139,250,.24);box-shadow:0 40px 80px -44px rgba(64,30,160,.6);overflow:hidden}
+.term-bar{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--run-line)}
+.term-bar .t{all:unset;cursor:pointer;padding:8px 12px;border-radius:999px;font:500 13.5px/1 var(--f-display);color:var(--run-muted)}
+.term-bar .t:hover{color:#FFFFFF}
+.term-bar .t[aria-selected="true"]{background:rgba(196,181,253,.16);color:#FFFFFF}
+.term-bar .t:focus-visible{outline:2px solid var(--run-lilac);outline-offset:2px}
+.copy{all:unset;cursor:pointer;margin-left:auto;display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border-radius:999px;font:500 12.5px/1 var(--f-mono);color:var(--run-muted);border:1px dashed rgba(196,181,253,.4)}
+.copy:hover{color:#FFFFFF;border-style:solid;border-color:var(--run-lilac)}
+.copy:focus-visible{outline:2px solid var(--run-lilac);outline-offset:2px}
+.copy svg{width:14px;height:14px}
+.term pre{margin:0;padding:20px 22px 14px;font:400 13.5px/1.8 var(--f-mono);color:var(--run-ink);overflow-x:auto;white-space:pre;tab-size:2}
+.term pre .c{color:#8C8ABA}
+.term pre .p{color:var(--run-lilac);user-select:none}
+.term .tnote2{padding:0 22px 20px;font-size:13.5px;line-height:1.6;color:var(--run-muted)}
+.health{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:22px 24px;box-shadow:var(--shadow)}
+.health h3{font-size:18px}
+.health dl{margin:12px 0 18px}
+.health dl div{display:grid;grid-template-columns:112px minmax(0,1fr);gap:12px;padding-block:9px;border-bottom:1px solid var(--line)}
+.health dt{font:500 12.5px/1.5 var(--f-mono);color:var(--muted)}
+.health dd{margin:0;font-size:14.5px;line-height:1.5;color:var(--ink)}
+.health dd b{font-weight:600;color:var(--violet-deep)}
+.help-h{margin:48px 0 16px;font-size:22px}
+.ways{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;min-width:0}
+@media (max-width:760px){.ways{grid-template-columns:minmax(0,1fr)}}
+.way{display:grid;grid-template-columns:42px minmax(0,1fr);gap:14px;align-items:start;padding:16px 18px;background:var(--surface);border:1.5px dashed var(--line-2);border-radius:16px;text-decoration:none;color:var(--ink-2);transition:border-color .18s,box-shadow .18s,transform .18s}
+.way:hover{border-style:solid;border-color:var(--violet);box-shadow:var(--shadow);transform:translateY(-1px);color:var(--ink-2)}
+.way .ic{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;background:var(--lav);color:var(--violet-deep)}
+.way .ic svg{width:20px;height:20px}
+.way b{display:block;font:700 16px/1.35 var(--f-display);color:var(--ink)}
+.way p{margin-top:4px;font-size:14.5px;line-height:1.6}
+.way .go{display:inline-block;margin-top:6px;font:500 12.5px/1.3 var(--f-mono);color:var(--violet-deep)}
+
+/* FAQ */
+.qa{display:grid;gap:14px;max-width:900px}
+.qa details{background:var(--surface);border:1px solid var(--line);border-radius:20px;transition:border-color .2s,box-shadow .2s}
+.qa details[open]{border-color:var(--lav-2);box-shadow:var(--shadow)}
+.qa summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:40px 1fr 28px;gap:14px;align-items:center;padding:20px 22px}
+.qa summary::-webkit-details-marker{display:none}
+.qa .qk{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;font:italic 400 20px/1 var(--f-serif);color:var(--violet-deep);background:var(--lav)}
+.qa .qt{font:500 17.5px/1.4 var(--f-display);color:var(--ink)}
+.qa .chev{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--line-2);color:var(--muted);transition:transform .2s}
+.qa details[open] .chev{transform:rotate(45deg);color:var(--violet)}
+.qa .ans{padding:0 22px 22px 76px;font-size:15.5px;color:var(--ink-2);line-height:1.8}
+.qa .ans code{font:400 .92em var(--f-mono);background:var(--code-bg);padding:1px 5px;border-radius:5px}
+@media (max-width:560px){.qa .ans{padding-left:22px}}
+
+/* paper */
+.abstract{margin-top:28px;background:var(--surface);border:1px solid var(--line);border-radius:24px;padding:clamp(24px,4vw,44px);box-shadow:var(--shadow);display:grid;grid-template-columns:220px minmax(0,1fr);gap:40px}
+@media (max-width:780px){.abstract{grid-template-columns:minmax(0,1fr);gap:16px}}
+.abstract h3{font-size:26px}
+.abstract .pull{font:italic 400 19px/1.45 var(--f-serif);color:var(--violet-deep);margin-top:12px}
+.abstract .btns{margin-top:22px}
+.abstract p.t{font-size:16.5px;line-height:1.85;color:var(--ink-2);max-width:74ch}
+.abstract p.t+p.t{margin-top:14px}
+
+/* closing band */
+.concl{position:relative;background:var(--ink);color:#FFFFFF;border-radius:28px;padding:clamp(28px,5vw,56px);overflow:hidden}
+.concl::after{content:"";position:absolute;right:-80px;top:-80px;width:320px;height:320px;border-radius:50%;border:26px solid transparent;background:var(--grad) border-box;-webkit-mask:linear-gradient(#000 0 0) padding-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;opacity:.35;pointer-events:none}
+.concl .ev{color:var(--run-muted)}.concl .ev b{color:var(--run-lilac)}.concl .ev .node{box-shadow:0 0 0 4px rgba(124,58,237,.25)}
+.concl h2{position:relative;z-index:1;color:#FFFFFF;margin-top:14px;max-width:22ch}
+.concl p{position:relative;z-index:1;margin-top:16px;font-size:17px;line-height:1.8;color:#D4D2E8;max-width:62ch}
+.concl .btns{position:relative;z-index:1}
+.concl .btn{background:rgba(255,255,255,.06);color:#FFFFFF;border-color:rgba(255,255,255,.34)}
+.concl .btn:hover{color:#FFFFFF;border-color:var(--run-lilac);box-shadow:none}
+.concl .btn.primary{background:#FFFFFF;color:var(--ink);border:1.5px solid #FFFFFF}
+.concl .btn.primary:hover{color:var(--ink);background:#EDE9FE;border-color:#EDE9FE}
+
+footer{padding-block:40px 56px;font-size:13.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:12px 28px;justify-content:space-between;align-items:center}
+footer .brand{font-size:15px}
+footer nav{display:flex;flex-wrap:wrap;gap:8px 20px}
+footer a{color:var(--muted)}
+</style>
+</head>
+<body>
+
+<nav class="nav" aria-label="Sections">
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="fig/mark.svg" alt="">OpenCollab</a>
+    <ul>
+      <li><a href="#problem">Problem</a></li>
+      <li><a href="#method">How it works</a></li>
+      <li><a href="#benchmarks">Results</a></li>
+      <li><a href="#start">Build with us</a></li>
+      <li><a href="#faq">FAQ</a></li>
+      <li><a href="#paper">Paper</a></li>
+    </ul>
+    <a class="btn sm gh" href="https://github.com/RISE-X-Lab/OpenCollab" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.69 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero bleed" id="top">
+  <div class="wrap hero-grid">
+    <div>
+      <a class="pill" href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/duo.md" target="_blank" rel="noopener"><b>new in v0.8</b>Duo, the two-coder workflow, ships built in <span aria-hidden="true">→</span></a>
+      <p class="kicker"><img src="fig/mark.svg" alt="">OpenCollab</p>
+      <h1><span class="ln">Do your agents</span> <span class="ln hl">really collaborate?</span></h1>
+      <p class="lede">OpenCollab is an open-source multi-agent coding framework. Declare a team in one file, run it on a runtime that holds everything else fixed, and check in the event stream whether the team you declared is the team that ran.</p>
+      <div class="btns">
+        <a class="btn primary" href="#start">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l6-6-6-6M12 19h8"/></svg>
+          Run it in three commands
+        </a>
+        <a class="btn" href="https://github.com/RISE-X-Lab/OpenCollab" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.8l2.8 5.8 6.3.9-4.6 4.4 1.1 6.3L12 17.2l-5.6 3 1.1-6.3L2.9 9.5l6.3-.9z"/></svg>
+          Star on GitHub
+        </a>
+      </div>
+      <p class="sublinks"><span>Paper · coming soon</span><span>MulanPSL-2.0</span></p>
+    </div>
+
+    <aside class="console" aria-label="Adherence under two tool sets: 47.2% of runs realized the declared team with all tools, 94.4% with a read-only adopter">
+      <div class="con-head">
+        <span class="node"></span><span>audit</span><span>·</span><b>Qwen3.8-Flash</b><span>·</span><span>SWE-bench Pro</span>
+      </div>
+      <div class="con-row" data-k="17">
+        <div class="con-lab"><span class="tag">tools = all</span><span class="what">Reference team: every role may edit files.</span></div>
+        <div class="dots" aria-hidden="true"></div>
+        <div class="con-num"><b>47.2%</b><small>Adherence</small></div>
+      </div>
+      <div class="con-row" data-k="34">
+        <div class="con-lab"><span class="tag">tools = read-only</span><span class="what">Only change: the adopter cannot edit files.</span></div>
+        <div class="dots" aria-hidden="true"></div>
+        <div class="con-num"><b>94.4%</b><small>Adherence</small></div>
+      </div>
+      <div class="con-foot">
+        <p class="say">One change to the tool set <em>doubles Adherence</em>, the share of runs that realize the declared team.</p>
+        <div class="legend"><span><i class="on"></i>run realized the declared team</span><span><i class="off"></i>declared, not realized</span>
+          <button class="replay" id="replay" type="button" aria-label="Replay the audit animation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>replay</button></div>
+      </div>
+    </aside>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+
+<!-- ============ PROOF ============ -->
+<div class="proof" role="list" aria-label="At a glance">
+  <div class="stat" role="listitem"><i>3 benchmarks</i><b>Highest Pass@1</b><span>Duo, a two-coder workflow, against Mini-SWE-agent, Codex CLI and Claude Code</span></div>
+  <div class="stat" role="listitem"><i>cost</i><b>Fewest tokens</b><span>Base, the single agent, also costs the least on all three benchmarks</span></div>
+  <div class="stat" role="listitem"><i>code</i><b>239 lines</b><span>rebuild the core pattern of edict, a system of about 24k lines</span></div>
+  <div class="stat" role="listitem"><i>open source</i><b>MulanPSL-2.0</b><span>v0.8.2 · Seed Program of the Youth Open Source Special Fund</span></div>
+</div>
+
+<!-- ============ PROBLEM ============ -->
+<section id="problem">
+  <div class="sec-head">
+    <span class="ev"><span class="node"></span>the problem</span>
+    <h2>The illusion of collaboration</h2>
+  </div>
+  <div class="problem">
+    <div class="prose">
+      <p>Multi-agent teams on repository-level tasks usually begin by configuring roles such as an Analyst, a Coder and a Tester. Left to decide on their own, models rarely delegate. Mostly the lead agent bypasses its teammates and resolves the issue alone; in other cases it spends its token allowance before issuing any handoff. Adherence, the rate at which the declared organization is realized, frequently falls below half as the system collapses into a single-agent loop. The paper calls this the <span class="term-i">illusion of collaboration</span>.</p>
+      <p>Prompts and log filters do not fix it. Mandating delegation in the prompt makes Adherence swing with the phrasing. Keeping only the runs where agents collaborated biases the comparison: agents solve easy tasks alone and ask for help when stuck, so that subset skews toward harder tasks.</p>
+    </div>
+    <figure class="diagram">
+      <svg viewBox="0 0 600 262" role="img" aria-labelledby="dvr-t dvr-d">
+        <title id="dvr-t">Declared team versus what often runs</title>
+        <desc id="dvr-d">Left: a lead connected by dashed declared edges to an analyst, a coder and a tester. Right: the same team where only the lead acts and the teammates are bypassed.</desc>
+        <defs>
+          <linearGradient id="dvr-g" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#7C3AED"/><stop offset="1" stop-color="#2563EB"/></linearGradient>
+          <marker id="dvr-a" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#7C3AED"/></marker>
+          <marker id="dvr-a2" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5B21B6"/></marker>
+        </defs>
+        <text x="140" y="16" text-anchor="middle" font-family="Google Sans Code, ui-monospace, monospace" font-size="12.5" fill="#5F6682">declared</text>
+        <text x="460" y="16" text-anchor="middle" font-family="Google Sans Code, ui-monospace, monospace" font-size="12.5" fill="#5F6682">what often runs</text>
+        <line x1="300" y1="30" x2="300" y2="248" stroke="rgba(46,38,120,.10)" stroke-width="1"/>
+        <!-- left: declared -->
+        <g fill="none" stroke="#7C3AED" stroke-width="1.6" stroke-dasharray="5 4">
+          <path d="M122 80 L62 168" marker-end="url(#dvr-a)"/>
+          <path d="M140 80 L140 168" marker-end="url(#dvr-a)"/>
+          <path d="M158 80 L218 168" marker-end="url(#dvr-a)"/>
+          <path d="M60 206 Q98 244 128 208" marker-end="url(#dvr-a)"/>
+          <path d="M152 206 Q190 244 220 208" marker-end="url(#dvr-a)"/>
+        </g>
+        <g font-family="Google Sans, Noto Sans, sans-serif" font-size="14" font-weight="500" text-anchor="middle" fill="#0E1330">
+          <rect x="98" y="46" width="84" height="34" rx="17" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.6"/><text x="140" y="68">Lead</text>
+          <rect x="8" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.6"/><text x="48" y="193">Analyst</text>
+          <rect x="100" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.6"/><text x="140" y="193">Coder</text>
+          <rect x="192" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.6"/><text x="232" y="193">Tester</text>
+        </g>
+        <!-- right: what often runs -->
+        <g fill="none" stroke="#C3C8DD" stroke-width="1.4" stroke-dasharray="4 5">
+          <path d="M442 80 L382 168"/>
+          <path d="M460 80 L460 168"/>
+          <path d="M478 80 L538 168"/>
+        </g>
+        <path d="M502 52 C540 30 552 86 504 72" fill="none" stroke="#5B21B6" stroke-width="1.8" marker-end="url(#dvr-a2)"/>
+        <text x="552" y="60" font-family="Noto Sans, sans-serif" font-size="12.5" fill="#333A56">works</text>
+        <text x="552" y="76" font-family="Noto Sans, sans-serif" font-size="12.5" fill="#333A56">alone</text>
+        <g font-family="Google Sans, Noto Sans, sans-serif" font-size="14" font-weight="500" text-anchor="middle">
+          <rect x="418" y="46" width="84" height="34" rx="17" fill="url(#dvr-g)"/><text x="460" y="68" fill="#FFFFFF">Lead</text>
+          <rect x="328" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#C3C8DD" stroke-width="1.5" stroke-dasharray="4 4"/><text x="368" y="193" fill="#8D93AC">Analyst</text>
+          <rect x="420" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#C3C8DD" stroke-width="1.5" stroke-dasharray="4 4"/><text x="460" y="193" fill="#8D93AC">Coder</text>
+          <rect x="512" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#C3C8DD" stroke-width="1.5" stroke-dasharray="4 4"/><text x="552" y="193" fill="#8D93AC">Tester</text>
+        </g>
+        <text x="460" y="236" text-anchor="middle" font-family="Google Sans Code, ui-monospace, monospace" font-size="12" fill="#8D93AC">teammates bypassed</text>
+      </svg>
+      <figcaption>Declared edges are dashed. In many runs only the lead acts, and the team collapses into a single-agent loop.</figcaption>
+    </figure>
+  </div>
+  <div class="adds">
+    <div class="add"><i>shared runtime</i><b>One gate before every model call</b><p>Every role runs through the same session loop, and pre-call admission enforces each role's token allowance, so no lead agent silently spends the run before it could delegate.</p></div>
+    <div class="add"><i>event stream</i><b>Records instead of prose logs</b><p>Every action and every token is bound to the role that produced it, so scripts can reconstruct who did what without parsing natural language.</p></div>
+    <div class="add"><i>adherence</i><b>A verdict for every run</b><p>From the stream we measure whether each run realized the declared organization, which is what lets a gain be attributed to it.</p></div>
+  </div>
+</section>
+
+<!-- ============ METHOD ============ -->
+<section id="method" style="padding-top:24px">
+  <div class="sec-head">
+    <span class="ev"><span class="node"></span>how it works</span>
+    <h2>Declare the organization, hold everything else, record what ran</h2>
+    <p>OpenCollab separates orchestration from execution. Every role runs as a session through one ten-state loop that handles context, model calls and tools. Controllers above it govern topology, lifecycle and message routing: a model-directed Team, a scripted Workflow, or a Single agent.</p>
+  </div>
+
+  <div class="pillars">
+    <div class="pillar">
+      <span class="ev"><span class="node"></span><b>declare</b></span>
+      <h3>One file states the team</h3>
+      <p>Role prompts, per-role toolsets and a directed topology of who may address whom. A Workflow is a short Python module that fixes call order, fan-out and termination.</p>
+<pre class="code"><span class="c"># configs/team.example.yaml (excerpt)</span>
+<span class="k">entry</span>: lead
+<span class="k">roles</span>:
+  <span class="k">analyst</span>:
+    <span class="k">tools</span>: [bash, file_read, grep]
+  <span class="k">coder</span>:
+    <span class="k">tools</span>: [bash, file_read,
+            file_write, apply_patch,
+            grep, message_agent]
+  <span class="k">reviewer</span>:
+    <span class="k">tools</span>: [bash, file_read,
+            git_diff, grep]
+  <span class="c"># lead and all prompts omitted</span>
+<span class="k">topology</span>:
+  <span class="k">lead</span>: [analyst, coder, reviewer]
+  <span class="k">analyst</span>: [coder]
+  <span class="k">coder</span>: [reviewer]
+  <span class="k">reviewer</span>: [coder]</pre>
+    </div>
+    <div class="pillar">
+      <span class="ev"><span class="node"></span><b>hold</b></span>
+      <h3>Runtime gates, not post-hoc filters</h3>
+      <p>Five non-organizational factors are held identical across configurations at invocation time.</p>
+      <ul class="gates">
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9.5 2.5V6M14.5 2.5V6M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5"/></svg></span><div><b>model</b>one base model for every role</div></li>
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7.5 9.5l3 2.5-3 2.5M12.5 15h4"/></svg></span><div><b>tools</b>a call outside the role's toolset is refused and recorded</div></li>
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19a8.5 8.5 0 1 1 12 0"/><path d="M12 13.5l3.6-3.6"/><circle cx="12" cy="13.5" r="1.4"/></svg></span><div><b>budget</b>pre-call admission against a per-role token ceiling; an overrun halts the session with a termination record</div></li>
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 3.5l6.5 6.5M10 4v6H4M20.5 20.5L14 14M14 20v-6h6"/></svg></span><div><b>context</b>one compaction policy for every configuration</div></li>
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="12" r="2.5"/><circle cx="18.5" cy="5.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/><path d="M7.8 10.9l8.4-4.2M7.8 13.1l8.4 4.2"/></svg></span><div><b>topology</b>a message off a declared edge is refused and recorded</div></li>
+      </ul>
+    </div>
+    <div class="pillar">
+      <span class="ev"><span class="node"></span><b>record</b></span>
+      <h3>An event stream, not prose logs</h3>
+      <p>Every step appends a typed record stamped with its role, so scripts reconstruct the realized topology and each role's cost.</p>
+      <div class="rec-h">each record</div>
+      <div class="rec-fields"><span>step</span><span>timestamp</span><span>run</span><span>role</span><span>type</span><span>payload</span></div>
+      <div class="rec-h">seven event types</div>
+      <ul class="evts">
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9.5 2.5V6M14.5 2.5V6M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5"/></svg></span>Model call</li>
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7.5 9.5l3 2.5-3 2.5M12.5 15h4"/></svg></span>Tool execution</li>
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.3 12.3l2.5 2.5 5-5.2"/></svg></span>Agent finish</li>
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg></span>Session termination</li>
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9.5" cy="8" r="3.5"/><path d="M3 20c0-3.6 2.9-6.2 6.5-6.2s6.5 2.6 6.5 6.2"/><path d="M17 8.5l4 4M21 8.5l-4 4"/></svg></span>Refused spawn</li>
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5"/><path d="M2.5 12h6M15.5 12h6"/></svg></span>Worktree change</li>
+        <li><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 3.5l6.5 6.5M10 4v6H4M20.5 20.5L14 14M14 20v-6h6"/></svg></span>Context shaping</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="adh">
+    <div>
+      <h3>Structural adherence</h3>
+      <p>For each applicable axis a run gets a verdict: adherent, deviant, or unverifiable. A run is adherent only if every applicable axis passes.</p>
+      <div class="axes"><span>participation</span><span>delegation</span><span>role boundary</span><span>budget sharing</span><span>information flow</span><span>context policy</span></div>
+    </div>
+    <div>
+      <div class="formula">adh(r) = ∏<sub>x ∈ 𝒳(Z<sub>r</sub>)</sub> 1[ <span class="v">v<sub>x</sub>(r)</span> = adherent ]</div>
+      <div class="formula">CACE = ITT / α̂<sub>adh</sub> = ΔPass@1 / α̂<sub>adh</sub></div>
+      <p class="formula-note">α̂<sub>adh</sub> is the share of a configuration's runs with adh(r) = 1; a run in which only one of two required teammates acts has adh(r) = 0. Under mean exclusion, ITT / α̂<sub>adh</sub> identifies the configuration-level complier effect.</p>
+    </div>
+  </div>
+
+  <div class="loc">
+    <div>
+      <div class="big">239 lines</div>
+      <p class="big-cap">reproduce the core multi-agent pattern of edict on OpenCollab. The same protocol ships as <a href="https://github.com/RISE-X-Lab/OpenCollab/tree/main/examples/mini-edict" target="_blank" rel="noopener">examples/mini-edict</a>.</p>
+    </div>
+    <div>
+      <div class="loc-row"><span class="n">edict</span><span class="bar"><i style="width:100%"></i></span><span class="v num">~24k</span></div>
+      <div class="loc-row"><span class="n">on OpenCollab</span><span class="bar"><i class="oc" style="width:1%"></i></span><span class="v num">239</span></div>
+      <p class="times">about 100× less code for the same organization</p>
+    </div>
+  </div>
+
+  <figure style="margin-top:44px">
+    <div class="plate"><img src="fig/overview.webp" alt="OpenCollab overview: a specification of task, model, role prompts, topology and policies feeds Single, Team or Workflow control; all run on a shared session runtime with isolated worktrees and a common session loop; an event stream is audited to give assigned Z, realized A, result Y and cost C." width="3667" height="1895" loading="lazy"></div>
+    <figcaption><b>OpenCollab overview.</b> Single, Team, and Workflow controllers share a session runtime. Configuration and execution traces support Adherence and resource cost auditing.</figcaption>
+  </figure>
+</section>
+
+<!-- ============ RESULTS: BENCHMARKS ============ -->
+<section id="benchmarks">
+  <div class="sec-head">
+    <span class="ev"><span class="node"></span>results · <b>system-level performance</b></span>
+    <h2>A two-coder workflow sets the highest Pass@1 on all three benchmarks</h2>
+    <p>Five harnesses run with GPT-5.6-Luna on SWE-bench Pro, Terminal-Bench 2.1 and DeepSWE. OpenCollab (Base) is the single agent. OpenCollab (Duo) is a Workflow in which code issues every handoff, so both Coders run on every task.</p>
+  </div>
+  <div class="tabs" role="tablist" id="benchTabs" aria-label="Benchmark"></div>
+  <div class="bench" role="tabpanel">
+    <table class="bt">
+      <thead><tr><th>Harness</th><th class="strip">Pass@1 (%)</th><th></th><th>Avg. tokens (M)</th><th>Avg. cost ($)</th><th>Cache hit (%)</th></tr></thead>
+      <tbody id="benchBody"></tbody>
+    </table>
+  </div>
+  <p class="note" id="benchNote"></p>
+  <div class="bench-notes">
+    <div><b>Widest gain on DeepSWE</b><p>Duo 69.91% against Base 55.75%. Paired by task, Duo solves far more tasks the single agent fails than the other way round.</p></div>
+    <div><b>Fewest tokens</b><p>OpenCollab (Base) uses the fewest tokens and the lowest cost on all three benchmarks. Duo spends more, since it runs two complete solving processes and selects between their candidates, yet costs less than Claude Code on each.</p></div>
+  </div>
+</section>
+
+<!-- ============ RESULTS: ADHERENCE ============ -->
+<section id="adherence" style="padding-top:24px">
+  <div class="sec-head">
+    <span class="ev"><span class="node"></span>results · <b>dimensions of adherence</b></span>
+    <h2>Changing any single dimension shifts Adherence from 47.2% to as high as 97.2%</h2>
+    <p>A model-directed team is audited through its event stream while one dimension changes at a time. The reference team uses Qwen3.8-Flash, open prompt cards, unrestricted tools and 2M tokens per role, on a random sample of SWE-bench Pro tasks. Unconstrained defaults yield 47.2% Adherence; restricting tool boundaries prevents isolated execution and lifts it above 90%, so collaboration can be controlled systematically.</p>
+  </div>
+  <div class="tabs" role="tablist" id="dimTabs" aria-label="Dimension"></div>
+  <div class="dim-card" role="tabpanel">
+    <div class="dim-row head"><span>variant</span><span>adherence · 95% Clopper–Pearson CI</span><span>unverif.</span><span>pass@1</span><span class="tok">tokens</span></div>
+    <div id="dimRows"></div>
+    <div class="scale"><span></span><div class="ticks" id="dimTicks"></div><span></span><span></span><span class="tok"></span></div>
+  </div>
+  <p class="note" id="dimNote"></p>
+
+  <figure style="margin-top:52px">
+    <div class="plate"><img src="fig/traces.webp" alt="Two timelines on a shared time axis. (a) Read-only variant: the adopter delegates to Coders and adopts Coder A's patch; graded code passes. (b) Reference team: the adopter briefs Coders but keeps executing until it exhausts its budget, never submitting teammate work; graded code fails." width="2200" height="648" loading="lazy"></div>
+    <figcaption><b>Two execution trajectories on a shared time axis.</b> Lanes denote agents; blocks represent model calls colored by tool usage. (a) Read-only variant: restricting the adopter to read-only tools removes its ability to edit files, compelling delegation to Coders and the adoption of Coder A's patch. (b) Reference team: the adopter briefs both coders but monopolizes execution until exhausting its token budget, never submitting teammate work.</figcaption>
+  </figure>
+</section>
+
+<!-- ============ RESULTS: CAUSAL ============ -->
+<section id="causal" style="padding-top:24px">
+  <div class="sec-head">
+    <span class="ev"><span class="node"></span>results · <b>causal validity</b></span>
+    <h2>Adherence decides how far a gain can be credited to the organization</h2>
+    <p>Each configuration runs the same tasks once and is paired task by task with the Single agent. ITT is the Pass@1 difference from Single; CACE divides it by Adherence.</p>
+  </div>
+  <div class="itt">
+    <div class="table-wrap">
+      <table class="plain">
+        <thead><tr><th>Configuration</th><th>Adherence (%)</th><th>Pass@1 (%)</th><th>ITT</th><th>CACE</th></tr></thead>
+        <tbody>
+          <tr><td>Single</td><td>–</td><td>69.4</td><td>–</td><td>–</td></tr>
+          <tr><td>Open card (reference)</td><td>47.2 <small>[47.2, 61.1]</small></td><td>75.0</td><td>+5.6</td><td>+11.8 <small>[+9.1, +11.8]</small></td></tr>
+          <tr><td>Mandatory card</td><td>91.7 <small>[91.7, 100.0]</small></td><td>72.2</td><td>+2.8</td><td>+3.0 <small>[+2.8, +3.0]</small></td></tr>
+          <tr><td>Budget stated, 2M</td><td>75.0 <small>[75.0, 83.3]</small></td><td>69.4</td><td>0.0</td><td>0.0 <small>[0.0, 0.0]</small></td></tr>
+          <tr><td>Read-only</td><td>94.4 <small>[94.4, 97.2]</small></td><td>52.8</td><td>−16.7</td><td>−17.6 <small>[−17.6, −17.1]</small></td></tr>
+        </tbody>
+      </table>
+      <p class="tnote">Brackets show sensitivity to the labeling rule for unverifiable verdicts and are not confidence intervals.</p>
+    </div>
+    <div class="split">
+      <span class="ev"><span class="node"></span>open card · <b>split by A<sub>r</sub></b></span>
+      <div class="split-bars" aria-label="Team minus Single in Pass@1 points, by whether the organization was realized: plus 15.8 on the tasks where it was not, minus 5.9 on the tasks where it was">
+        <div class="sb"><span>A<sub>r</sub> = 0<small>not realized</small></span><div class="lane"><span class="zero"></span><i style="left:50%;width:24.7%;background:var(--mark-2)"></i><b style="left:calc(74.7% + 8px)">+15.8</b></div></div>
+        <div class="sb"><span>A<sub>r</sub> = 1<small>realized</small></span><div class="lane"><span class="zero"></span><i style="left:40.8%;width:9.2%;background:var(--grad)"></i><b style="right:calc(59.2% + 8px)">−5.9</b></div></div>
+      </div>
+      <p>Under the Open card, 47.2% Adherence rescales an ITT of <b>+5.6</b> to a CACE of <b>+11.8</b>. The +5.6 arises on the tasks where the team did not form; the adherent tasks show <b>−5.9</b>, so +11.8 should not be read as the complier effect. Under the Mandatory card, the paired estimate over adherent runs coincides with CACE (+3.0).</p>
+      <p class="foot">Team minus Single in Pass@1 points; axis from −32 to +32. OpenCollab records A<sub>r</sub> for every run on tasks also run by Single, so this contrast is computed rather than assumed.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ RESULTS: AUDIT ============ -->
+<section id="audit" style="padding-top:24px">
+  <div class="sec-head">
+    <span class="ev"><span class="node"></span>results · <b>controlled comparison</b></span>
+    <h2>Seven conditions for a controlled comparison</h2>
+    <p>Five conditions hold non-organizational factors fixed; two verify what ran. The paper audits ten artifacts: none satisfies all seven, and OpenCollab meets all seven.</p>
+  </div>
+  <div class="table-wrap">
+    <table class="audit">
+      <thead>
+        <tr><th></th><th colspan="5">held · can the factor be set explicitly?</th><th colspan="2" class="sep">verified · can the run be checked?</th></tr>
+        <tr><th>Artifact</th><th>Model</th><th>Tools</th><th>Budget</th><th>Context</th><th>Topology</th><th class="sep">Realized</th><th>Compared</th></tr>
+      </thead>
+      <tbody id="auditBody"></tbody>
+    </table>
+  </div>
+  <div class="key-row">
+    <span><i class="m y">✓</i>by the artifact's own settings and records</span>
+    <span><i class="m p">–</i>only through the researcher's code, or in part</span>
+    <span><i class="m n">×</i>not met</span>
+  </div>
+</section>
+
+</div>
+
+<!-- ============ BUILD WITH US ============ -->
+<section id="start" class="band bleed">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="ev"><span class="node"></span>build with us</span>
+      <h2>Start in three commands, then bring your own organization</h2>
+      <p>OpenCollab works with any OpenAI-compatible or Anthropic endpoint. Everything below runs from a clone of the repository.</p>
+    </div>
+    <div class="build-grid">
+      <div class="term">
+        <div class="term-bar">
+          <div role="tablist" aria-label="Example" id="termTabs" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+          <button class="copy" id="copyBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>copy</span></button>
+        </div>
+        <pre id="termCode" role="tabpanel" tabindex="0" aria-live="polite"></pre>
+        <p class="tnote2" id="termNote"></p>
+      </div>
+      <aside class="health" aria-label="Project status">
+        <h3>The project today</h3>
+        <dl>
+          <div><dt>latest release</dt><dd><b>v0.8.2</b>, Sep 28, 2026</dd></div>
+          <div><dt>tests</dt><dd>2,921 test cases</dd></div>
+          <div><dt>CI</dt><dd>ruff, pytest and import-contract checks</dd></div>
+          <div><dt>commits</dt><dd>Conventional Commits, in English</dd></div>
+          <div><dt>python</dt><dd>3.10 to 3.14</dd></div>
+          <div><dt>license</dt><dd>MulanPSL-2.0</dd></div>
+        </dl>
+        <a class="btn sm" href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Read CONTRIBUTING.md <span class="arrow" aria-hidden="true">→</span></a>
+      </aside>
+    </div>
+    <h3 class="help-h">Where you can help</h3>
+    <div class="ways">
+        <a class="way" href="https://github.com/RISE-X-Lab/OpenCollab/tree/main/examples/mini-edict" target="_blank" rel="noopener">
+          <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.4 8.2l3.4 7.6M16.6 8.2l-3.4 7.6M8.5 6h7"/></svg></span>
+          <span><b>Port an organization</b><p>Debates, reviewer loops, SOP pipelines: write yours as a team file or a Python workflow. Mini Edict fits a nine-role court into 239 lines and is the template to copy.</p><span class="go">examples/mini-edict →</span></span>
+        </a>
+        <a class="way" href="https://github.com/RISE-X-Lab/OpenCollab-Eval" target="_blank" rel="noopener">
+          <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg></span>
+          <span><b>Add a benchmark</b><p>OpenCollab-Eval is the evaluation framework behind our results, kept in its own repository. It runs agents on software-engineering benchmarks and keeps each task's patch, trajectory and official test report together. Add an adapter for the suite you care about.</p><span class="go">OpenCollab-Eval →</span></span>
+        </a>
+        <a class="way" href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">
+          <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg></span>
+          <span><b>Extend the runtime</b><p>Model access, context handling, tool execution, orchestration and environments each have their own extension point, and CI enforces the layer boundaries between them.</p><span class="go">CONTRIBUTING.md →</span></span>
+        </a>
+        <a class="way" href="https://github.com/RISE-X-Lab/OpenCollab/issues/new" target="_blank" rel="noopener">
+          <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/></svg></span>
+          <span><b>Tell us what your team did</b><p>When a run surprises you, open an issue with the team file and the trace. Runs where the declared team never formed are the cases we most want to study.</p><span class="go">open an issue →</span></span>
+        </a>
+    </div>
+  </div>
+</section>
+
+<div class="wrap">
+
+<!-- ============ FAQ ============ -->
+<section id="faq">
+  <div class="sec-head">
+    <span class="ev"><span class="node"></span>faq</span>
+    <h2>Questions a reader usually asks</h2>
+  </div>
+  <div class="qa">
+    <details open>
+      <summary><span class="qk">Q</span><span class="qt">If a team scores higher than a single agent, did collaboration cause the gain?</span><span class="chev" aria-hidden="true">+</span></summary>
+      <div class="ans"><p>Not necessarily. Under the Open card the team scores 5.6 points above Single. Split by the recorded A<sub>r</sub>, that gain comes from the tasks where the team never formed (+15.8), while the adherent tasks show −5.9. Reading the +11.8 CACE as the complier effect requires the A<sub>r</sub> = 0 Team-versus-Single contrast to have mean zero, and only per-run Adherence lets you check it.</p></div>
+    </details>
+    <details>
+      <summary><span class="qk">Q</span><span class="qt">Why not keep only the runs where agents actually collaborated?</span><span class="chev" aria-hidden="true">+</span></summary>
+      <div class="ans"><p>That filter introduces post-treatment selection bias. Agents solve easy tasks alone and seek help only when stuck, so the collaborating subset skews toward harder tasks. It penalizes the multi-agent configuration and invalidates causal claims.</p></div>
+    </details>
+    <details>
+      <summary><span class="qk">Q</span><span class="qt">Can a prompt simply make the agents delegate?</span><span class="chev" aria-hidden="true">+</span></summary>
+      <div class="ans"><p>The prompt card moves Adherence from 47.2% (open) to 63.9% (optional) to 91.7% (mandatory), which shows collaboration is sensitive to phrasing. Other dimensions move it as much: with the prompt card fixed, the model alone takes it from 47.2% to 97.2%, and read-only tools for the adopter take it to 94.4%.</p></div>
+    </details>
+    <details>
+      <summary><span class="qk">Q</span><span class="qt">Is OpenCollab a weak harness that makes team gains look larger?</span><span class="chev" aria-hidden="true">+</span></summary>
+      <div class="ans"><p>The paper checks this directly. Five harnesses run with GPT-5.6-Luna on SWE-bench Pro, Terminal-Bench 2.1 and DeepSWE. OpenCollab (Duo) has the highest Pass@1 on all three, and OpenCollab (Base) uses the fewest tokens and the lowest cost on all three.</p></div>
+    </details>
+    <details>
+      <summary><span class="qk">Q</span><span class="qt">Which models can I use?</span><span class="chev" aria-hidden="true">+</span></summary>
+      <div class="ans"><p>Point <code>configs/.env</code> at an OpenAI-compatible or Anthropic endpoint. A team file can also override the model for each role.</p></div>
+    </details>
+    <details>
+      <summary><span class="qk">Q</span><span class="qt">Where do the benchmarks live?</span><span class="chev" aria-hidden="true">+</span></summary>
+      <div class="ans"><p>In <a href="https://github.com/RISE-X-Lab/OpenCollab-Eval" target="_blank" rel="noopener">OpenCollab-Eval</a>, a separate repository built on OpenCollab's public Python API. It creates an isolated workspace for each task, records the patch, runs the official tests, and keeps patches, trajectories and test reports together.</p></div>
+    </details>
+  </div>
+</section>
+
+<!-- ============ PAPER ============ -->
+<section id="paper" style="padding-top:24px">
+  <div class="sec-head">
+    <span class="ev"><span class="node"></span>the paper</span>
+    <h2>OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and Controllable Runtime</h2>
+  </div>
+  <figure>
+    <div class="plate"><img src="fig/teaser.webp" alt="Four panels: (a) organizations in existing frameworks, (b) single versus team under shared tasks, model and tools, (c) a configured analyst-coder-tester topology versus the observed event timeline, (d) auditing a trace against its policy." width="3667" height="1437" loading="lazy"></div>
+    <figcaption><b>Perspectives on multi-agent collaboration:</b> (a) organization, (b) benefit and cost, (c) configured versus observed execution, and (d) collaboration auditing.</figcaption>
+  </figure>
+  <div class="abstract">
+    <div>
+      <h3>Abstract</h3>
+      <p class="pull">Is the declared organization actually realized?</p>
+      <div class="btns">
+        <a class="btn sm" href="#" aria-disabled="true" tabindex="-1">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>
+          Paper <small>soon</small>
+        </a>
+      </div>
+    </div>
+    <div>
+      <p class="t">Multi-agent coding systems are designed to tackle complex software engineering tasks through collaboration. However, existing evaluations typically assume configured organizations are followed faithfully, whereas reality differs. This behavioral gap, combined with differences in underlying system components, prevents clear attribution of observed gains.</p>
+      <p class="t">To this end, we introduce OpenCollab, a multi-agent coding framework that provides a unified infrastructure for programmable collaboration and controllable runtime. Specifically, OpenCollab unifies organization design, enforces experimental control on a shared runtime, and tracks execution through fine-grained event streams. On this basis, we define Adherence to quantify whether the declared organization is actually realized.</p>
+      <p class="t">Our experiments reveal that agents collaborate very differently across configurations: changing any single dimension shifts Adherence, from 47.2% to as high as 97.2%. Furthermore, extensive agentic coding benchmarks show that a two-coder workflow built on OpenCollab establishes new SOTA performance compared to the mainstream harnesses such as Mini-SWE-agent, Codex CLI, and Claude Code, showing that a well-designed organization can outperform strong existing harnesses, while OpenCollab's single-agent configuration uses the fewest tokens across all evaluated suites. OpenCollab establishes a unified multi-agent infrastructure for easy programmable collaboration and controlled causal evaluation.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CLOSING ============ -->
+<section id="join" style="padding-top:24px">
+  <div class="concl">
+    <span class="ev"><span class="node"></span>your turn</span>
+    <h2>Declare the team. Check that it ran.</h2>
+    <p>OpenCollab is open source under MulanPSL-2.0. Run the quick start, port the organization you care about, and tell us what your agents actually did.</p>
+    <div class="btns">
+      <a class="btn primary" href="https://github.com/RISE-X-Lab/OpenCollab" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.8l2.8 5.8 6.3.9-4.6 4.4 1.1 6.3L12 17.2l-5.6 3 1.1-6.3L2.9 9.5l6.3-.9z"/></svg>
+        Star on GitHub
+      </a>
+      <a class="btn" href="#start">Quick start <span class="arrow" aria-hidden="true">→</span></a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <a class="brand" href="#top"><img src="fig/mark.svg" alt="">OpenCollab</a>
+  <span>RISE-X Lab, Shanghai Jiao Tong University</span>
+  <nav aria-label="Links">
+    <a href="https://github.com/RISE-X-Lab/OpenCollab" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/duo.md" target="_blank" rel="noopener">Duo guide</a>
+    <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a>
+    <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE" target="_blank" rel="noopener">MulanPSL-2.0</a>
+  </nav>
+</footer>
+
+</div>
+</main>
+<script>
+(function(){
+  var reduce=false;
+  try{reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;}catch(e){}
+
+  /* hero console: Table five-factors, one dot per run; data-k is the number of adherent runs */
+  var rows=[].map.call(document.querySelectorAll('.con-row'),function(r){
+    var k=+r.getAttribute('data-k'),box=r.querySelector('.dots'),num=r.querySelector('.con-num b'),dots=[];
+    for(var i=0;i<36;i++){var d=document.createElement('span');d.className='dot'+(i<k?' on':'');box.appendChild(d);dots.push(d);}
+    return {k:k,dots:dots,num:num,final:num.textContent};
+  });
+  var timers=[];
+  function play(){
+    timers.forEach(clearTimeout);timers=[];
+    if(reduce){rows.forEach(function(r){r.dots.forEach(function(d,i){d.classList.toggle('on',i<r.k);});r.num.textContent=r.final;});return;}
+    rows.forEach(function(r){r.dots.forEach(function(d){d.classList.remove('on');});r.num.textContent='0.0%';});
+    var maxk=Math.max.apply(null,rows.map(function(r){return r.k;}));
+    for(var s=0;s<maxk;s++){(function(s){timers.push(setTimeout(function(){
+      rows.forEach(function(r){if(s<r.k){r.dots[s].classList.add('on');r.num.textContent=((s+1)/36*100).toFixed(1)+'%';}});
+    },300+s*55));})(s);}
+    timers.push(setTimeout(function(){rows.forEach(function(r){r.num.textContent=r.final;});},300+maxk*55+60));
+  }
+  document.getElementById('replay').addEventListener('click',play);
+  setTimeout(play,250);
+
+  /* tabs helper (arrow keys move between tabs) */
+  function tabs(host,names,onPick,init){
+    var btns=names.map(function(n,i){
+      var b=document.createElement('button');b.type='button';b.setAttribute('role','tab');b.textContent=n;
+      if(host.getAttribute('data-cls')) b.className=host.getAttribute('data-cls');
+      b.addEventListener('click',function(){pick(i);});
+      b.addEventListener('keydown',function(e){if(e.key==='ArrowRight'||e.key==='ArrowLeft'){var j=(i+(e.key==='ArrowRight'?1:names.length-1))%names.length;pick(j);btns[j].focus();}});
+      host.appendChild(b);return b;
+    });
+    function pick(i){btns.forEach(function(b,j){b.setAttribute('aria-selected',i===j?'true':'false');b.tabIndex=i===j?0:-1;});onPick(i);}
+    pick(init||0);
+  }
+
+  /* benchmarks (Table cross-harness): [harness, pass, tokens, cost, cache] */
+  var B=[
+    ['SWE-bench Pro',[['Mini-SWE-Agent',61.66,4.16,0.90,36.65],['Codex CLI',63.73,7.31,0.73,90.27],['Claude Code',58.03,9.38,2.54,12.50],['OpenCollab (Base)',63.21,3.89,0.41,88.03],['OpenCollab (Duo)',64.25,6.50,0.73,84.95]],
+      'Duo reaches 64.25%, the highest of the five harnesses; Base uses the fewest tokens (3.89M) at the lowest cost ($0.41).'],
+    ['Terminal-Bench 2.1',[['Mini-SWE-Agent',76.40,2.97,0.45,67.36],['Codex CLI',80.90,2.86,0.26,93.88],['Claude Code',77.53,21.95,2.73,79.32],['OpenCollab (Base)',79.78,1.54,0.19,78.38],['OpenCollab (Duo)',83.15,4.60,0.60,76.47]],
+      'Duo 83.15% against Base 79.78%; paired by task, too few tasks differ to separate the two.'],
+    ['DeepSWE',[['Mini-SWE-Agent',61.95,19.36,3.27,58.81],['Codex CLI',47.79,15.01,1.30,96.47],['Claude Code',56.64,77.90,7.66,91.16],['OpenCollab (Base)',55.75,11.95,1.19,90.53],['OpenCollab (Duo)',69.91,26.11,2.67,89.36]],
+      'Duo 69.91% against Base 55.75%; paired by task, it solves far more tasks the single agent fails than the other way round.']
+  ];
+  var bb=document.getElementById('benchBody');
+  tabs(document.getElementById('benchTabs'),B.map(function(b){return b[0];}),function(i){
+    var rs=B[i][1],lo=40,hi=90;
+    var best=Math.max.apply(null,rs.map(function(r){return r[1];}));
+    var minTok=Math.min.apply(null,rs.map(function(r){return r[2];}));
+    var minCost=Math.min.apply(null,rs.map(function(r){return r[3];}));
+    bb.innerHTML='';
+    rs.forEach(function(r,j){
+      var tr=document.createElement('tr');
+      tr.className=(r[0].indexOf('OpenCollab')===0?'oc':'')+(r[1]===best?' best':'');
+      tr.innerHTML='<td>'+r[0]+'</td><td class="strip"><div class="strip-in"><span class="ax"></span><span class="d" title="'+r[0]+': '+r[1].toFixed(2)+'%" style="left:'+((r[1]-lo)/(hi-lo)*100)+'%"></span></div>'+(j===rs.length-1?'<div class="strip-scale"><span>40</span><span>50</span><span>60</span><span>70</span><span>80</span><span>90</span></div>':'')+'</td>'+
+        '<td>'+(r[1]===best?'<b>'+r[1].toFixed(2)+'</b>':r[1].toFixed(2))+'</td>'+
+        '<td>'+(r[2]===minTok?'<b>'+r[2].toFixed(2)+'</b>':r[2].toFixed(2))+'</td>'+
+        '<td>'+(r[3]===minCost?'<b>'+r[3].toFixed(2)+'</b>':r[3].toFixed(2))+'</td><td>'+r[4].toFixed(2)+'</td>';
+      bb.appendChild(tr);
+    });
+    document.getElementById('benchNote').textContent=B[i][2]+' Bold marks the best value in a column; the Pass@1 axis runs from 40 to 90.';
+  });
+
+  /* five dimensions (Table five-factors): [variant, adherence, ciLo, ciHi, unverified, pass, tokens, reference?] */
+  var D=[
+    ['Model',[['Qwen3.8-Flash',47.2,30.4,64.5,13.9,75.0,3.05,1],['DeepSeek-V4.1-Flash',66.7,49.0,81.4,22.2,72.2,3.65],['GPT-5.6-Luna',97.2,85.5,99.9,2.8,61.1,5.79]]],
+    ['Tools',[['All tools',47.2,30.4,64.5,13.9,75.0,3.05,1],['No edit tools',86.1,70.5,95.3,0.0,66.7,3.24],['Read-only',94.4,81.3,99.3,2.8,52.8,4.24]]],
+    ['Budget',[['0.5M / role',47.2,30.4,64.5,2.8,44.4,0.88],['2M / role',75.0,57.8,87.9,8.3,69.4,4.17],['4M / role',77.8,60.8,89.9,2.8,75.0,5.20]]],
+    ['Context',[['Open card',47.2,30.4,64.5,13.9,75.0,3.05,1],['Optional card',63.9,46.2,79.2,16.7,61.1,3.58],['Mandatory card',91.7,77.5,98.2,8.3,72.2,4.04]]],
+    ['Topology',[['Star',47.2,30.4,64.5,13.9,75.0,3.05,1],['Ring + shortcut',66.7,49.0,81.4,13.9,66.7,3.92],['Ring',91.7,77.5,98.2,8.3,63.9,4.21]]]
+  ];
+  var notes=[
+    'Same team, three base models: Adherence runs from 47.2% with Qwen3.8-Flash to 97.2% with GPT-5.6-Luna.',
+    'Restricting the adopter to read-only tools removes its ability to edit files and compels delegation to the Coders: Adherence rises from 47.2% to 94.4%.',
+    'Budget variants state each role’s token budget in the prompt and set its allowance to that value: 0.5M gives 47.2% Adherence, 2M gives 75.0% and 4M gives 77.8%.',
+    'The closing section of the prompt card, from open to optional to mandatory delegation, moves Adherence from 47.2% to 63.9% to 91.7%.',
+    'Ring variants deploy analyst, coder and tester under the Mandatory card. The ring without a shortcut reaches 91.7%.'
+  ];
+  var dimRows=document.getElementById('dimRows');
+  var ticks=document.getElementById('dimTicks');
+  [0,25,50,75,100].forEach(function(t){var s=document.createElement('span');s.style.left=t+'%';s.textContent=t+'%';ticks.appendChild(s);});
+  tabs(document.getElementById('dimTabs'),D.map(function(d){return d[0];}),function(i){
+    dimRows.innerHTML='';
+    D[i][1].forEach(function(r){
+      var left=r[1]>80;
+      var el=document.createElement('div');el.className='dim-row';
+      el.innerHTML='<span class="nm">'+r[0]+(r[7]?'<small>reference</small>':'')+'</span>'+
+        '<div class="track" role="img" aria-label="Adherence '+r[1].toFixed(1)+'%, 95% CI '+r[2]+' to '+r[3]+'" title="Adherence '+r[1].toFixed(1)+'% [95% CI '+r[2]+', '+r[3]+']"><span class="axis"></span>'+
+        '<span class="ci" style="left:'+r[2]+'%;width:'+(r[3]-r[2])+'%"></span>'+
+        '<span class="pt" style="left:'+r[1]+'%"></span>'+
+        '<span class="lab'+(left?' left':'')+'" style="left:'+r[1]+'%">'+r[1].toFixed(1)+'</span></div>'+
+        '<span class="v">'+r[4].toFixed(1)+'</span><span class="v">'+r[5].toFixed(1)+'</span><span class="v tok">'+r[6].toFixed(2)+'M</span>';
+      dimRows.appendChild(el);
+    });
+    document.getElementById('dimNote').textContent=notes[i];
+  });
+
+  /* audit table (Table: seven controlled evaluation conditions) */
+  var A=[['Multi-agent frameworks'],['AutoGen','yypyynn'],['AG2','ppnpppn'],['LangGraph','ppnppnn'],
+    ['Coding agents'],['SWE-agent','yypynyn'],['OpenHands','yyppppn'],['Claude Code','yypnppn'],['Codex CLI','ypnnppn'],['DeepSeek Harness','yynpppn'],
+    ['Evaluation frameworks'],['Inspect AI','yyppypp'],['HAL','pnnnnpn'],['OpenCollab (ours)','yyyyyyy']];
+  var sym={y:['y','✓','met'],p:['p','–','partly'],n:['n','×','not met']};
+  var tb=document.getElementById('auditBody');
+  A.forEach(function(row){
+    var tr=document.createElement('tr');
+    if(row.length===1){tr.className='grp';tr.innerHTML='<td colspan="8">'+row[0]+'</td>';}
+    else{
+      if(row[0].indexOf('ours')>-1) tr.className='ours';
+      var h='<td>'+row[0]+'</td>';
+      row[1].split('').forEach(function(c,i){var s=sym[c];h+='<td'+(i===5?' class="sep"':'')+'><i class="m '+s[0]+'" title="'+s[2]+'" aria-label="'+s[2]+'">'+s[1]+'</i></td>';});
+      tr.innerHTML=h;
+    }
+    tb.appendChild(tr);
+  });
+
+  /* quick start (commands as in the repository README, docs/duo.md and examples/mini-edict) */
+  var Q=[
+    ['Quick start',
+     '# in a clone of RISE-X-Lab/OpenCollab\nuv sync --locked\ncp configs/.env.example configs/.env\n# set OPENCOLLAB_API_KEY in configs/.env, then\nuv run opencollab --workspace .',
+     'Starts the built-in single lead, which may spawn ad-hoc specialists. Never commit real API keys.'],
+    ['Declared team',
+     'cp configs/team.example.yaml configs/team.yaml\nuv run opencollab --team-config configs/team.yaml --workspace .',
+     'Roles, per-role tools and the topology come from the team file; edit the copy to declare your own team.'],
+    ['Duo workflow',
+     'uv run opencollab workflow list --workspace /path/to/repo\nuv run opencollab workflow run duo --workspace /path/to/repo \\\n  --args \'{"goal": "Fix the public issue described here.",\n           "allow_unisolated_shell": true}\'',
+     'Two isolated coders each produce a solution; Duo compares their evidence and adopts one. The flag allows shell execution in a trusted local workspace; by default the shell requires process isolation.'],
+    ['Mini Edict',
+     'uv run opencollab \\\n  --team-config examples/mini-edict/team.yaml \\\n  --workspace .',
+     'Edict’s review-and-dispatch protocol with nine roles, in 239 lines of team and workflow code.']
+  ];
+  var code=document.getElementById('termCode'),tnote=document.getElementById('termNote'),cur=0;
+  function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+  function render(src){
+    return src.split('\n').map(function(line){
+      if(/^\s*#/.test(line)) return '<span class="c">'+esc(line)+'</span>';
+      var m=line.match(/^(.*?)(\s{2,}#.*)$/);
+      var body=m?m[1]:line,tail=m?m[2]:'';
+      var cont=/^\s/.test(line);
+      return (cont?'':'<span class="p" aria-hidden="true">$ </span>')+esc(body)+(tail?'<span class="c">'+esc(tail)+'</span>':'');
+    }).join('\n');
+  }
+  var th=document.getElementById('termTabs');th.setAttribute('data-cls','t');
+  tabs(th,Q.map(function(q){return q[0];}),function(i){cur=i;code.innerHTML=render(Q[i][1]);tnote.textContent=Q[i][2];});
+  var copyBtn=document.getElementById('copyBtn'),copyLabel=copyBtn.querySelector('span');
+  function selectCode(){try{var r=document.createRange();r.selectNodeContents(code);var s=window.getSelection();s.removeAllRanges();s.addRange(r);}catch(e){}}
+  copyBtn.addEventListener('click',function(){
+    var text=Q[cur][1];
+    function done(msg){copyLabel.textContent=msg;setTimeout(function(){copyLabel.textContent='copy';},1600);}
+    try{
+      navigator.clipboard.writeText(text).then(function(){done('copied');},function(){selectCode();done('selected');});
+    }catch(e){selectCode();done('selected');}
+  });
+})();
+</script>
+
+</body>
+</html>
