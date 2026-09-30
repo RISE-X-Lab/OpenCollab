@@ -300,6 +300,13 @@ class Session:
                 primary_error = exc
                 if not self.state.phase.is_terminal():
                     self.state.cancel()
+                self._append_restore_results_for_open_tool_calls(
+                    content=(
+                        "Tool execution interrupted by session cancellation. "
+                        "The execution outcome is unknown."
+                    ),
+                    exclude_ids=set(self.state.pending_events.rows),
+                )
                 raise
             except BaseException as exc:
                 primary_error = exc
@@ -638,15 +645,22 @@ class Session:
     def _append_restore_results_for_open_tool_calls(
         self,
         state: SessionState | None = None,
+        *,
+        content: str = "Tool execution interrupted by session restore.",
+        exclude_ids: set[str] | None = None,
     ) -> None:
         """Close assistant tool calls whose process-local execution was lost."""
         restored_state = state or self.state
         for tool_call_id in self._open_tool_call_ids(restored_state):
+            # Cancellation must retain rows whose delegated work still has a
+            # producer. Restore has no surviving producer and closes all calls.
+            if exclude_ids is not None and tool_call_id in exclude_ids:
+                continue
             restored_state.append_message(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call_id,
-                    "content": "Tool execution interrupted by session restore.",
+                    "content": content,
                 }
             )
 
