@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 
+from packaging.requirements import Requirement
+
 import opencollab
 from tests.support.paths import REPO_ROOT
 
@@ -65,3 +67,20 @@ def test_distribution_does_not_claim_package_wide_typing() -> None:
 
     assert '"Typing :: Typed"' not in pyproject
     assert not (_PACKAGE_ROOT / "py.typed").exists()
+
+
+def test_anthropic_requirement_keeps_the_supported_sampling_api() -> None:
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    declaration = next(
+        line.strip().rstrip(",").strip('"')
+        for line in pyproject.splitlines()
+        if line.strip().startswith('"anthropic')
+    )
+    requirement = Requirement(declaration)
+    assert "0.78.0" in requirement.specifier
+    assert "0.102.0" in requirement.specifier
+    assert "0.125.0" in requirement.specifier
+    # SDK 1.x removed temperature/top_p from AsyncMessages.create. The runtime
+    # still forwards explicit sampling settings through that public method.
+    assert "1.0.0" not in requirement.specifier
+    assert "1.9.0" not in requirement.specifier

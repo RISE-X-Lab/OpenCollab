@@ -1,0 +1,1953 @@
+{
+  "main_base": "7e83256f",
+  "iclr_source": "53506fdb",
+  "entries": [
+    {
+      "source_change": "M",
+      "source_path": "configs/.env.example",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/.env.example"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "configs/README.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/README.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/adopter.dual-bare.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/adopter.dual-bare.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/adopter.dual-judge.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/adopter.dual-judge.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/adopter.dual-optout.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/adopter.dual-optout.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/adopter.dual-plain.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/adopter.dual-plain.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/adopter.dual-prohibit.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/adopter.dual-prohibit.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/blocks/bare.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/blocks/bare.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/blocks/judge.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/blocks/judge.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/blocks/optout.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/blocks/optout.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/blocks/plain.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/blocks/plain.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/blocks/prohibit.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/blocks/prohibit.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/capabilities/full.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/capabilities/full.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/coder-a.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/coder-a.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/coder-b.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/coder-b.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/shared.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/shared.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/dual-candidate/variants.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/dual-candidate/variants.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/g22-mirror/adopter.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/g22-mirror/adopter.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/g22-mirror/coder-a.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/g22-mirror/coder-a.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/g22-mirror/coder-b.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/g22-mirror/coder-b.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.cmd-bare.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.cmd-bare.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.cmd-optout.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.cmd-optout.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.cmd-plain.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.cmd-plain.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.cmd-prohibit.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.cmd-prohibit.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.cmd-propose.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.cmd-propose.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.cmd-propose2.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.cmd-propose2.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.cmd-verify.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.cmd-verify.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.decide-first.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.decide-first.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.facts-v2.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.facts-v2.md"
+      ]
+    },
+    {
+      "source_change": "D",
+      "source_path": "configs/handoff-experiment/analyst.md",
+      "disposition": "main_retained",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.opt-out-message.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.opt-out-message.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.role-identity.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.role-identity.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/analyst.starved.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/analyst.starved.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/blocks/cmd-bare.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/blocks/cmd-bare.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/blocks/cmd-optout.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/blocks/cmd-optout.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/blocks/cmd-plain.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/blocks/cmd-plain.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/blocks/cmd-prohibit.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/blocks/cmd-prohibit.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/blocks/cmd-propose.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/blocks/cmd-propose.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/blocks/cmd-propose2.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/blocks/cmd-propose2.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/blocks/cmd-verify.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/blocks/cmd-verify.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/blocks/decide-first.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/blocks/decide-first.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/blocks/judge.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/blocks/judge.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/blocks/opt-out-message.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/blocks/opt-out-message.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/blocks/role-identity.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/blocks/role-identity.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/capabilities/full.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/capabilities/full.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/capabilities/no-write.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/capabilities/no-write.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/legacy/analyst.default.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/legacy/analyst.default.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/legacy/analyst.instructed.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/legacy/analyst.instructed.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/legacy/analyst.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/legacy/analyst.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/legacy/analyst.norm.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/legacy/analyst.norm.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/legacy/analyst.pool-disclosed.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/legacy/analyst.pool-disclosed.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/legacy/analyst.salience.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/legacy/analyst.salience.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/legacy/analyst.strong.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/legacy/analyst.strong.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/legacy/analyst.weak.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/legacy/analyst.weak.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/shared.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/shared.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/handoff-experiment/variants.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/handoff-experiment/variants.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/adopter.s2dual-bare.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/adopter.s2dual-bare.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/adopter.s2dual-judge.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/adopter.s2dual-judge.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/adopter.s2dual-judgeinfo-05m.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/adopter.s2dual-judgeinfo-05m.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/adopter.s2dual-judgeinfo-1m.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/adopter.s2dual-judgeinfo-1m.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/adopter.s2dual-judgeinfo-2m.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/adopter.s2dual-judgeinfo-2m.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/adopter.s2dual-judgeinfo-4m.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/adopter.s2dual-judgeinfo-4m.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/adopter.s2dual-optout.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/adopter.s2dual-optout.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/adopter.s2dual-plain.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/adopter.s2dual-plain.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/adopter.s2dual-prohibit.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/adopter.s2dual-prohibit.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/blocks/bare.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/blocks/bare.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/blocks/judge.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/blocks/judge.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/blocks/optout.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/blocks/optout.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/blocks/plain.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/blocks/plain.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/blocks/prohibit.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/blocks/prohibit.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/capabilities/full.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/capabilities/full.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/capabilities/informed-05m.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/capabilities/informed-05m.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/capabilities/informed-1m.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/capabilities/informed-1m.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/capabilities/informed-2m.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/capabilities/informed-2m.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/capabilities/informed-4m.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/capabilities/informed-4m.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/coder-a.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/coder-a.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/coder-b.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/coder-b.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/shared.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/shared.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2dual/variants.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2dual/variants.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/analyst.s2sc-judge-bypass.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/analyst.s2sc-judge-bypass.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/analyst.s2sc-judge-pipeline.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/analyst.s2sc-judge-pipeline.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/analyst.s2sc-plain-bypass.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/analyst.s2sc-plain-bypass.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/analyst.s2sc-plain-pipeline.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/analyst.s2sc-plain-pipeline.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/blocks/judge.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/blocks/judge.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/blocks/plain.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/blocks/plain.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/capabilities/full.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/capabilities/full.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/coder.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/coder.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/coder.s2sc-judge-bypass.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/coder.s2sc-judge-bypass.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/coder.s2sc-judge-pipeline.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/coder.s2sc-judge-pipeline.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/coder.s2sc-plain-bypass.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/coder.s2sc-plain-bypass.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/coder.s2sc-plain-pipeline.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/coder.s2sc-plain-pipeline.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/shared.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/shared.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/tester.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/tester.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/tester.s2sc-judge-bypass.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/tester.s2sc-judge-bypass.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/tester.s2sc-judge-pipeline.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/tester.s2sc-judge-pipeline.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/tester.s2sc-plain-bypass.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/tester.s2sc-plain-bypass.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/tester.s2sc-plain-pipeline.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/tester.s2sc-plain-pipeline.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/topology/bypass.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/topology/bypass.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/topology/pipeline.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/topology/pipeline.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2sc/variants.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2sc/variants.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2tools/adopter.s2tools-adopt.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2tools/adopter.s2tools-adopt.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2tools/adopter.s2tools-noedit.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2tools/adopter.s2tools-noedit.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2tools/adoption/adopt.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2tools/adoption/adopt.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2tools/adoption/checkout.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2tools/adoption/checkout.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2tools/blocks/judge.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2tools/blocks/judge.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2tools/capabilities/adopt.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2tools/capabilities/adopt.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2tools/capabilities/noedit.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2tools/capabilities/noedit.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2tools/shared.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2tools/shared.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2tools/tools/adopt.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2tools/tools/adopt.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2tools/tools/noedit.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2tools/tools/noedit.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/s2tools/variants.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/s2tools/variants.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.collab.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.collab.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.dual-bare.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.dual-bare.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.dual-judge.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.dual-judge.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.dual-optout.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.dual-optout.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.dual-plain.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.dual-plain.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.dual-prohibit.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.dual-prohibit.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.g22-mirror.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.g22-mirror.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.cmd-bare.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.cmd-bare.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.cmd-optout.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.cmd-optout.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.cmd-plain.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.cmd-plain.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.cmd-prohibit.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.cmd-prohibit.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.cmd-propose.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.cmd-propose.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.cmd-propose2.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.cmd-propose2.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.cmd-verify.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.cmd-verify.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.decide-first.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.decide-first.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.default.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.default.yaml"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "configs/team.handoff.experiment.yaml",
+      "disposition": "current_main_retained",
+      "target_paths": [
+        "configs/team.handoff.experiment.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.facts-v2.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.facts-v2.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.instructed.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.instructed.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.norm.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.norm.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.opt-out-message.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.opt-out-message.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.pool-disclosed.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.pool-disclosed.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.role-identity.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.role-identity.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.salience.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.salience.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.starved.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.starved.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.strong.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.strong.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.handoff.weak.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.handoff.weak.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2dual-bare.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2dual-bare.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2dual-judge.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2dual-judge.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2dual-judgeinfo-05m.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2dual-judgeinfo-05m.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2dual-judgeinfo-1m.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2dual-judgeinfo-1m.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2dual-judgeinfo-2m.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2dual-judgeinfo-2m.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2dual-judgeinfo-4m.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2dual-judgeinfo-4m.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2dual-optout.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2dual-optout.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2dual-plain.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2dual-plain.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2dual-prohibit.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2dual-prohibit.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2sc-judge-bypass.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2sc-judge-bypass.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2sc-judge-pipeline.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2sc-judge-pipeline.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2sc-plain-bypass.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2sc-plain-bypass.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2sc-plain-pipeline.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2sc-plain-pipeline.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2tools-adopt.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2tools-adopt.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "configs/team.s2tools-noedit.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "configs/team.s2tools-noedit.yaml"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "docs/2026-08-31-collab-team.md",
+      "disposition": "adapted",
+      "target_paths": [
+        "docs/2026-08-31-collab-team.md"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "docs/README.md",
+      "disposition": "adapted",
+      "target_paths": [
+        "docs/README.md"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "docs/single2.md",
+      "disposition": "adapted",
+      "target_paths": [
+        "docs/single2.md"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/llm/anthropic_provider.py",
+      "disposition": "source_identical",
+      "target_paths": [
+        "opencollab/adapters/llm/anthropic_provider.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/llm/client.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/adapters/llm/client.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/llm/errors.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/adapters/llm/errors.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "opencollab/adapters/llm/first_token.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/adapters/llm/first_token.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/llm/openai_provider.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/adapters/llm/openai_provider.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/llm/responses_provider.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/adapters/llm/responses_provider.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/llm/retry.py",
+      "disposition": "current_main_retained",
+      "target_paths": [
+        "opencollab/adapters/llm/retry.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/llm/types.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/adapters/llm/types.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/llm/usage_ledger.py",
+      "disposition": "source_identical",
+      "target_paths": [
+        "opencollab/adapters/llm/usage_ledger.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "opencollab/adapters/tools/adopt.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/adapters/tools/adopt.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/tools/apply_patch.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/adapters/tools/apply_patch.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/tools/apply_patch_engine.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/adapters/tools/apply_patch_engine.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/tools/message.py",
+      "disposition": "current_main_retained",
+      "target_paths": [
+        "opencollab/adapters/tools/message.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/adapters/tools/submit.py",
+      "disposition": "current_main_retained",
+      "target_paths": [
+        "opencollab/adapters/tools/submit.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "opencollab/application/_scheduler_delivery_tree.py",
+      "disposition": "source_identical",
+      "target_paths": [
+        "opencollab/application/_scheduler_delivery_tree.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/_scheduler_team.py",
+      "disposition": "current_main_retained",
+      "target_paths": [
+        "opencollab/application/_scheduler_team.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/_session_run_completion.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/application/_session_run_completion.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/_session_run_shared.py",
+      "disposition": "source_identical",
+      "target_paths": [
+        "opencollab/application/_session_run_shared.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/_session_run_trace.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/application/_session_run_trace.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/ports.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/application/ports.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/scheduler.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/application/scheduler.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/scheduler_lifecycle.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/application/scheduler_lifecycle.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/scheduler_messaging.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/application/scheduler_messaging.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/scheduler_types.py",
+      "disposition": "current_main_retained",
+      "target_paths": [
+        "opencollab/application/scheduler_types.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/session_run.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/application/session_run.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/shaping/pipeline.py",
+      "disposition": "source_identical",
+      "target_paths": [
+        "opencollab/application/shaping/pipeline.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/steering.py",
+      "disposition": "source_identical",
+      "target_paths": [
+        "opencollab/application/steering.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/application/workflow_structured.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/application/workflow_structured.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/bootstrap/_workflow_runtime_session.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/bootstrap/_workflow_runtime_session.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/bootstrap/config.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/bootstrap/config.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/bootstrap/container.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/bootstrap/container.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/bootstrap/context_builder.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/bootstrap/context_builder.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/bootstrap/programmatic.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/bootstrap/programmatic.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/bootstrap/programmatic_team.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/bootstrap/programmatic_team.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/bootstrap/scheduler_factory.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/bootstrap/scheduler_factory.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/bootstrap/session_factory.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/bootstrap/session_factory.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/bootstrap/team_config.py",
+      "disposition": "source_identical",
+      "target_paths": [
+        "opencollab/bootstrap/team_config.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/bootstrap/tool_registry.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/bootstrap/tool_registry.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/domain/agent.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/domain/agent.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/domain/token_estimation.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/domain/token_estimation.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/sdk/client.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "opencollab/sdk/client.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "opencollab/teams.py",
+      "disposition": "source_identical",
+      "target_paths": [
+        "opencollab/teams.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "scripts/README.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "scripts/README.md"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "scripts/analyst_cards.py",
+      "disposition": "source_identical",
+      "target_paths": [
+        "scripts/analyst_cards.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "scripts/run_collab_team.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "scripts/run_collab_team.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "skills/team-config/SKILL.md",
+      "disposition": "source_identical",
+      "target_paths": [
+        "skills/team-config/SKILL.md"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "skills/team-config/template.team.yaml",
+      "disposition": "source_identical",
+      "target_paths": [
+        "skills/team-config/template.team.yaml"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/session_run_loop_test_support.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/support/session_run_loop_test_support.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_adopt_tool.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/tools/test_adopt_tool.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_analyst_card_assembly.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_analyst_card_assembly.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_bash_test_execution.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/tools/test_bash_test_execution.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_collab_team_config.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_collab_team_config.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_delivery_tree_attribution.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/runtime/test_delivery_tree_attribution.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_dual_candidate_cards.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_dual_candidate_cards.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_edit_tool.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/tools/test_edit_tool.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_g22_mirror_cards.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_g22_mirror_cards.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_handoff_command_ladder.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_handoff_command_ladder.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_handoff_experiment_team.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_handoff_experiment_team.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_handoff_facts_v2_card.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_handoff_facts_v2_card.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_handoff_forced_action_cards.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_handoff_forced_action_cards.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_handoff_starved_analyst.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_handoff_starved_analyst.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_llm_chat_streaming.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "tests/runtime/test_llm_chat_streaming.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_llm_first_token_latency.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/runtime/test_llm_first_token_latency.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_llm_provider_requests.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/runtime/test_llm_provider_requests.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_llm_retry.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/runtime/test_llm_retry.py",
+        "tests/runtime/test_llm_retry_iclr.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_message_ack_under_serialized_turns.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/agents/test_message_ack_under_serialized_turns.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_model_capability_table.py",
+      "disposition": "adapted",
+      "target_paths": [
+        "tests/runtime/test_model_capability_table.py",
+        "tests/runtime/test_model_capability_table_iclr.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_public_teams_module.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/interfaces/test_public_teams_module.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_repository_ownership.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/packaging/test_repository_ownership.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_s2dual_budget_cards.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_s2dual_budget_cards.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_s2dual_cards.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_s2dual_cards.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_s2sc_cards.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_s2sc_cards.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_s2tools_cards.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_s2tools_cards.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_sdk_api.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/interfaces/test_sdk_api.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_sdk_team_runtime.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/interfaces/test_sdk_team_runtime.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_session_characterization.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/agents/test_session_characterization.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_session_run_loop.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/agents/test_session_run_loop.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_shaping.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/runtime/test_shaping.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_steering_budget_cadence.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/agents/test_steering_budget_cadence.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_steering_write_nudge_switch.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/agents/test_steering_write_nudge_switch.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_stop_notice.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_stop_notice.py",
+        "tests/agents/test_stop_notice_iclr.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_team_role_profile.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/agents/test_team_role_profile.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_team_status_under_serialized_turns.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/agents/test_team_status_under_serialized_turns.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_trace_history_compaction.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/runtime/test_trace_history_compaction.py"
+      ]
+    },
+    {
+      "source_change": "A",
+      "source_path": "tests/test_trace_request_tools.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/runtime/test_trace_request_tools.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_workflow_runtime.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_workflow_runtime.py"
+      ]
+    },
+    {
+      "source_change": "M",
+      "source_path": "tests/test_workflow_structured_output.py",
+      "disposition": "relocated",
+      "target_paths": [
+        "tests/workflows/test_workflow_structured_output.py"
+      ]
+    }
+  ]
+}
