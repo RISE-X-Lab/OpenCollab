@@ -186,6 +186,7 @@ def test_cleanup_does_not_release_pool_while_session_owned_task_survives():
 @pytest.mark.parametrize("target_aid", [0, 1, 2])
 def test_cleanup_finalizes_the_actual_active_public_turn_owner(target_aid):
     started = asyncio.Event()
+    pool_released = asyncio.Event()
 
     async def blocked_turn(sess: ScriptedSession) -> str:
         started.set()
@@ -193,6 +194,13 @@ def test_cleanup_finalizes_the_actual_active_public_turn_owner(target_aid):
 
     lead = ScriptedSession("lead", [blocked_turn] if target_aid == 0 else [])
     scheduler, _ = build_scheduler(lead, [])
+    release_pool = scheduler._worktree_pool.release
+
+    async def record_pool_release():
+        await release_pool()
+        pool_released.set()
+
+    scheduler._worktree_pool.release = record_pool_release
     if target_aid:
         target = ScriptedSession("coder", [blocked_turn])
         target.state.aid = target_aid
@@ -210,7 +218,13 @@ def test_cleanup_finalizes_the_actual_active_public_turn_owner(target_aid):
     async def scenario():
         turn = asyncio.create_task(scheduler.run_turn(target_aid, "block"))
         await started.wait()
-        await scheduler.cleanup(cleanup_timeout=0.01)
+        driver = scheduler._tasks[target_aid]
+        # Successful cleanup may require several event-loop turns on CI.
+        await asyncio.wait_for(scheduler.cleanup(cleanup_timeout=0.25), timeout=1)
+        assert driver.done() and driver.cancelled()
+        assert turn.done() and turn.cancelled()
+        assert pool_released.is_set()
+        assert scheduler._quiescent()
         with pytest.raises(asyncio.CancelledError):
             await turn
 
