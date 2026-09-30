@@ -68,7 +68,6 @@ limitations."""
 
 CONTRACT_PROMPT = """\
 You are the read-only adjudicator for two independent solutions to the same task.
-Candidate A pursued a focused solution. Candidate B checked end-to-end completeness.
 Select one candidate using the supplied evidence. Do not modify or combine them.
 
 {rules}

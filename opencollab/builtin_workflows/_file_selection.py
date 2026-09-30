@@ -8,6 +8,7 @@ from typing import Any
 from opencollab.patches import patch_paths
 from opencollab.workflows import CandidateRun
 
+from . import _candidate_records as records
 from . import _selection as contract
 from ._candidate_evidence_files import CandidateEvidenceFiles, ReadCandidateEvidence
 from ._dual_coder import _review_and_select
@@ -20,8 +21,6 @@ FILE_EVIDENCE_INSTRUCTIONS = """
 The candidate evidence above is a directory of complete saved files. Use
 read_candidate_evidence to read each candidate's index and public evidence,
 then read the result reports and diff ranges needed to assess the task requirements.
-When inline_comparison is present, it contains both exact candidate diffs and
-shared public test records for direct comparison. The saved files remain available.
 Each index entry identifies original changed paths, a diff file, and character
 offset and length. Large binary patches remain fully available in those files.
 Every read returns next_offset and eof; continue reading whenever needed.
@@ -30,6 +29,15 @@ is separate from the workflow host. No shell access or candidate modifications a
 Cite original changed paths and inspected diff details in a_evidence and
 b_evidence, not the evidence storage paths. File existence or a claimed test
 success alone does not establish that a requirement is covered.
+"""
+
+_INLINE_EVIDENCE_INSTRUCTIONS = """
+The inline_comparison above contains both complete candidate diffs, all individual
+public test records, shared comparable records, and the model-supplied reports.
+Assess this evidence directly. The index paths identify retained originals for
+the caller. Produce the structured decision using the complete supplied content.
+Treat model-supplied reports as claims and execution records according to their
+verified status. Cite original changed paths and concrete behavior in each entry.
 """
 
 
@@ -54,11 +62,25 @@ async def adjudicate_candidate_files(
     }
     await ctx.log(f"Duo complete adjudication evidence directory: {files.directory}")
     paths = {"A": patch_paths(candidate_a.diff), "B": patch_paths(candidate_b.diff)}
-    comparison, _, _ = contract._judge_input(candidate_a, candidate_b)
-    if len(comparison.encode("utf-8")) <= _INLINE_EVIDENCE_MAX_BYTES:
-        evidence["inline_comparison"] = json.loads(comparison)
+    comparison_text, _, _ = contract._judge_input(candidate_a, candidate_b)
+    comparison = json.loads(comparison_text)
+    for label, candidate in (("A", candidate_a), ("B", candidate_b)):
+        comparison[label].update(
+            public_test_records=records._candidate_records(candidate),
+            candidate_report=(records._candidate_output(candidate).get("coder_output")
+                              if isinstance(candidate.output, dict) else candidate.output),
+            report_is_model_supplied=True,
+        )
+    comparison_size = len(json.dumps(comparison, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    if comparison_size <= _INLINE_EVIDENCE_MAX_BYTES:
+        evidence["inline_comparison"] = comparison
+        instructions = _INLINE_EVIDENCE_INSTRUCTIONS
+        tools: list[Any] = []
+    else:
+        instructions = FILE_EVIDENCE_INSTRUCTIONS
+        tools = [ReadCandidateEvidence(files)]
     prompt = selector_prompt.format(
         rules=rules, goal=goal,
         candidates=json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
-    ) + FILE_EVIDENCE_INSTRUCTIONS
-    return await _review_and_select(ctx, prompt=prompt, paths=paths, tools=[ReadCandidateEvidence(files)])
+    ) + instructions
+    return await _review_and_select(ctx, prompt=prompt, paths=paths, tools=tools)

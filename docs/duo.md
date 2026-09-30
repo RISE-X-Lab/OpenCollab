@@ -97,7 +97,7 @@ no supported advantage.
 
 An incomplete, contradictory or insufficiently anchored adjudication receives
 at most one additional adjudication session focused on the unresolved evidence.
-Each session may use several file-tool reads. If the review still leaves the
+A session with paged evidence may use several file-tool reads. If the review still leaves the
 adjudication unusable, selection defaults to B. A provider exception goes
 directly to the same fallback. When the inspected evidence explicitly
 establishes a missing requirement in B that A covers, selection retains A,
@@ -125,15 +125,18 @@ delivery instructions. The result records the mode used for that workflow call.
 ## Complete evidence for selection
 
 When mechanical selection leaves a choice open, Duo saves the complete candidate
-evidence and gives the read-only adjudicator `read_candidate_evidence`.
-Both complete diffs and the shared public-test records are supplied inline when
-their combined selection payload fits within 128,000 UTF-8 bytes. Larger diffs
-remain available in full through paged reads. The original evidence files are
-retained in both cases. Indexes describe original changed paths and character
-ranges. Text and binary diffs remain complete. Public test evidence and
-model-supplied result reports are separate files. The tool returns `next_offset`
-and `eof` for continued reads and exposes only files registered for the current
-adjudication.
+evidence. When the complete comparison payload fits within 128,000 UTF-8 bytes,
+the read-only adjudicator receives both full diffs, each candidate's full public
+test records, the shared comparable records and both candidate reports inline.
+The reports are marked as model-supplied claims. The adjudicator compares this
+complete package directly through the structured-output interface.
+
+Larger comparison payloads give the adjudicator `read_candidate_evidence` for
+complete paged reads. The original evidence files are retained in both modes.
+Indexes describe original changed paths and character ranges. Text and binary
+diffs remain complete. Public test evidence and model-supplied result reports
+are separate files. The tool returns `next_offset` and `eof` for continued reads
+and exposes only files registered for the current adjudication.
 
 `candidate_evidence_dir` selects a host-side parent directory. Every adjudication
 creates an independent child and records its location in workflow logs. The
