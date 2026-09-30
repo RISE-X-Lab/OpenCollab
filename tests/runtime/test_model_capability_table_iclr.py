@@ -79,7 +79,7 @@ def test_qwen_flash_leaves_every_unprobed_dimension_at_its_default():
 
 
 def test_adding_qwen_leaves_deepseek_byte_for_byte_unchanged():
-    """The deepseek arm's 240 recorded runs must still resolve to this row.
+    """The recorded DeepSeek settings and its Chat replay protocol stay explicit.
 
     Every field is spelled out rather than compared to the live table, so the
     test fails if the row is edited as well as if the lookup is.
@@ -93,6 +93,7 @@ def test_adding_qwen_leaves_deepseek_byte_for_byte_unchanged():
         "supports_responses_sampling": True,
         "supports_responses_reasoning": True,
         "supports_responses_tools": True,
+        "requires_chat_reasoning_content": True,
     }
 
 
@@ -175,7 +176,7 @@ def test_deepseek_v41_flash_leaves_every_unprobed_dimension_at_its_default():
 
 
 def test_adding_deepseek_v41_leaves_deepseek_v4_flash_byte_for_byte_unchanged():
-    """The v4-flash runs already on disk must still resolve to their own row."""
+    """Keep the v4-flash settings and its required Chat reasoning replay explicit."""
     assert dataclasses.asdict(model_capabilities("deepseek-v4-flash")) == {
         "context_window": 1_048_576,
         "supports_forced_tool_choice": False,
@@ -185,6 +186,7 @@ def test_adding_deepseek_v41_leaves_deepseek_v4_flash_byte_for_byte_unchanged():
         "supports_responses_sampling": True,
         "supports_responses_reasoning": True,
         "supports_responses_tools": True,
+        "requires_chat_reasoning_content": True,
     }
 
 
