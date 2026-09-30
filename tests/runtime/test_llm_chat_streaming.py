@@ -585,9 +585,7 @@ async def test_the_reasoning_spelling_stays_locked_for_the_whole_turn():
     assert streamed.reasoning == "step one"
 
 
-async def test_streaming_does_not_send_recorded_reasoning_back():
-    """Recording chain-of-thought must not turn into resending it: that inflates
-    input tokens and some endpoints reject it outright."""
+async def test_streaming_without_thinking_omits_recorded_reasoning():
     history = [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "ok", "reasoning_content": "private thought"},
@@ -598,16 +596,62 @@ async def test_streaming_does_not_send_recorded_reasoning_back():
     assert all("reasoning_content" not in m for m in client.calls[0]["messages"])
 
 
-async def test_non_streaming_still_sends_recorded_reasoning_back():
-    """The off path keeps today's behaviour, including this one."""
+async def test_non_streaming_thinking_preserves_recorded_reasoning():
     history = [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "ok", "reasoning_content": "private thought"},
     ]
 
-    kwargs = _build_request_kwargs(MODEL, history, None, 0.0)
+    kwargs = _build_request_kwargs(MODEL, history, None, 0.0, thinking=True)
 
     assert kwargs["messages"][1]["reasoning_content"] == "private thought"
+
+
+@pytest.mark.parametrize("model", ["gpt-4o", "gateway/unknown-model"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("thinking", "params", "keep"),
+    [
+        (False, None, False),
+        (True, {"thinking": {"type": "enabled"}}, True),
+        (True, {"thinking": {"type": "disabled"}}, False),
+        (True, {"enable_thinking": False}, False),
+    ],
+)
+async def test_reasoning_replay_follows_thinking_configuration(model, stream, thinking, params, keep):
+    history = [{"role": "assistant", "content": "ok", "reasoning_content": "thought"}]
+    script = text_script() if stream else ChatCompletion.model_validate({
+        "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": model,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "done"},
+                     "finish_reason": "stop"}],
+        "usage": USAGE,
+    })
+    client = FakeClient([script])
+    await complete_openai(
+        client, model, history, None, 0.0, 0, stream=stream,
+        thinking=thinking, thinking_params=params,
+    )
+    assert ("reasoning_content" in client.calls[0]["messages"][0]) is keep
+
+
+@pytest.mark.parametrize("model", [
+    "deepseek-reasoner", "deepseek/deepseek-reasoner", "deepseek-flash",
+    "deepseek-pro", "deepseek-v4-flash", "deepseek-v4-pro",
+])
+def test_intrinsic_thinking_model_preserves_reasoning_without_extra_body(model):
+    history = [{"role": "assistant", "content": "ok", "reasoning_content": "thought"}]
+    kwargs = _build_request_kwargs(model, history, None, 0.0)
+    assert kwargs["messages"][0]["reasoning_content"] == "thought"
+    assert "extra_body" not in kwargs
+
+
+@pytest.mark.parametrize("model", ["deepseek-flash", "deepseek-v4-flash"])
+def test_explicit_disabled_thinking_overrides_intrinsic_replay(model):
+    history = [{"role": "assistant", "content": "ok", "reasoning_content": "thought"}]
+    kwargs = _build_request_kwargs(
+        model, history, None, 0.0, thinking=True, thinking_params={"thinking": {"type": "disabled"}}
+    )
+    assert "reasoning_content" not in kwargs["messages"][0]
 
 
 async def test_reasoning_only_turn_is_rescued_into_content():

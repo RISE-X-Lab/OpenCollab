@@ -145,6 +145,7 @@ class ModelCapabilities:
     supports_responses_sampling: bool = True
     supports_responses_reasoning: bool = False
     supports_responses_tools: bool = True
+    requires_chat_reasoning_content: bool = False
 
 
 # Best-effort context-window sizes (tokens), keyed by a model family. Used to
@@ -166,6 +167,18 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "deepseek-flash": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
+    ),
+    "deepseek-pro": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
+    ),
+    "deepseek-reasoner": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
+    ),
     "o1-pro": ModelCapabilities(
         context_window=200_000,
         supports_responses_streaming=False,
@@ -215,6 +228,11 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_responses_json_schema=True,
         supports_responses_reasoning=True,
         honors_workflow_thinking_override=False,
+        requires_chat_reasoning_content=True,
+    ),
+    "deepseek-v4-pro": ModelCapabilities(
+        context_window=64_000,
+        requires_chat_reasoning_content=True,
     ),
     "k3": ModelCapabilities(
         context_window=1_048_576,

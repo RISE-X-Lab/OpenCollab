@@ -15,7 +15,7 @@ import openai
 
 from opencollab.adapters.llm.anthropic_provider import complete_anthropic
 from opencollab.adapters.llm.first_token import recording
-from opencollab.adapters.llm.openai_provider import complete_openai
+from opencollab.adapters.llm.openai_provider import _build_request_kwargs, complete_openai
 from opencollab.adapters.llm.providers import (
     RESPONSES,
     is_anthropic,
@@ -26,6 +26,7 @@ from opencollab.adapters.llm.responses_provider import complete_responses
 from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
+from opencollab.domain.token_estimation import estimate_request_tokens
 
 _ledger_lock = threading.Lock()
 
@@ -144,6 +145,22 @@ class LLMClient:
                 openai_kwargs["default_headers"] = {"User-Agent": resolved_user_agent}
             self._openai = openai.AsyncOpenAI(**openai_kwargs)
             self._anthropic = None
+
+    def estimate_request_tokens(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        *,
+        thinking: bool = False,
+        thinking_params: dict | None = None,
+    ) -> int:
+        """Reserve input from the message payload this client will send."""
+        if not is_anthropic(self.provider) and self.wire_protocol != RESPONSES:
+            request = _build_request_kwargs(
+                self.model, messages, tools, 0.0, thinking, thinking_params
+            )
+            return estimate_request_tokens(request["messages"], request.get("tools"))
+        return estimate_request_tokens(messages, tools)
 
     async def close(self) -> None:
         """Close the owned provider transport exactly once."""

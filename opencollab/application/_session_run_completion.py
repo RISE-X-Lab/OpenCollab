@@ -19,7 +19,7 @@ from opencollab.application._session_run_shared import (
 )
 from opencollab.application._session_run_trace import _SessionRunTraceMixin
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
-from opencollab.application.ports import CompletionResponse
+from opencollab.application.ports import CompletionResponse, RequestTokenEstimatorPort
 from opencollab.application.shaping import forced_shape
 from opencollab.application.steering import (
     build_steering_block,
@@ -546,17 +546,18 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             remaining_budget = int(self.max_budget_tokens) - int(
                 self.state.used_tokens
             )
-            # Reserve what the request will actually carry. The outbound
-            # normalizer strips ``reasoning_content`` on every streaming call
-            # (openai_provider._build_request_kwargs passes
-            # ``keep_reasoning_content=not stream``), so counting recorded
-            # reasoning here reserved input the provider never billed and
-            # stopped sessions that still held most of their budget.
-            reserved_input_tokens = estimate_request_tokens(
-                messages,
-                tools,
-                keep_reasoning_content=not getattr(self.agent, "llm_stream_chat", False),
-            )
+            # The provider owns history adaptation, including thinking replay.
+            # Injected clients without that optional capability use the common
+            # estimate with all continuation fields included.
+            if isinstance(self.llm, RequestTokenEstimatorPort):
+                reserved_input_tokens = self.llm.estimate_request_tokens(
+                    messages,
+                    tools,
+                    thinking=getattr(self.agent, "thinking", False),
+                    thinking_params=getattr(self.agent, "thinking_params", None),
+                )
+            else:
+                reserved_input_tokens = estimate_request_tokens(messages, tools)
             output_budget = remaining_budget - reserved_input_tokens
             if output_budget < 1:
                 raise _TokenBudgetStop(

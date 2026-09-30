@@ -160,11 +160,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # (None|'soft'|'hard'). Drives _maybe_trace_steering to log only UPWARD
         # crossings, re-arming on a write reset. Never persisted.
         self._last_steering_level: str | None = None
-        # Spend seen the last time a steering block was built, so the
-        # ``thresholds`` cadence can fire on the CROSSING of a band rather than
-        # on every turn above it. ``None`` means "no previous turn in this
-        # process": the first build then compares spend against itself and
-        # crosses nothing, which is also what a resumed session wants.
+        # Previous steering spend drives threshold crossings. ``None`` makes
+        # the first build compare spend against itself, including after restore.
         self._steering_prev_used_tokens: int | None = None
         # One ``session_terminal`` row per session, not per turn: ``run_loop``
         # can be re-entered on an already-finished session as a read-only query
@@ -217,6 +214,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._empty_stop_retried = False
         self._submitted_summary = None
         self._last_steering_level = None
+        self._steering_prev_used_tokens = None
         self._turn_start_message_index = None
         self._llm_step_started = False
         self._late_provider_usage = ()

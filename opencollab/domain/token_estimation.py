@@ -27,11 +27,8 @@ _REQUEST_MESSAGE_FIELDS = frozenset({
     "role", "content", "reasoning_content", "tool_calls", "tool_call_id", "name",
 })
 _REQUEST_ESTIMATE_MESSAGE_FIELDS = _REQUEST_MESSAGE_FIELDS | {"provider_state"}
-# The fields an outbound request actually carries when recorded chain-of-thought
-# is not resent: ``openai_provider._normalize_request_messages`` drops
-# ``reasoning_content`` whenever streaming is on, so counting it would reserve
-# input the request never sends. ``provider_state`` stays — Anthropic replays
-# its native thinking blocks as real request input.
+# Provider history policies can omit recorded reasoning. ``provider_state``
+# remains available because Anthropic replays native thinking blocks as input.
 _REQUEST_ESTIMATE_MESSAGE_FIELDS_NO_REASONING = (
     _REQUEST_ESTIMATE_MESSAGE_FIELDS - {"reasoning_content"}
 )
@@ -99,10 +96,8 @@ def estimate_request_tokens(
     (~19% over the bare estimate on realistic histories), so do not trim them
     without replacing the margin.
 
-    ``keep_reasoning_content=False`` mirrors the outbound normalizer used for
-    streaming calls, which strips ``reasoning_content`` before the request
-    leaves. Recorded reasoning dominated these histories, so counting it made
-    the reservation ~3.5x the input the provider actually billed.
+    ``keep_reasoning_content`` follows the selected provider history policy.
+    Callers with an already-normalized request can use the default field set.
     """
     total = _REQUEST_PROTOCOL_TOKEN_OVERHEAD + estimate_request_message_tokens(
         messages, keep_reasoning_content=keep_reasoning_content

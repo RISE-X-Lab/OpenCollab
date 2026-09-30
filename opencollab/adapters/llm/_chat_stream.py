@@ -197,19 +197,23 @@ def _finalize_tool_calls(
         if isinstance(function, dict) and isinstance(function.get("name"), str):
             registered.add(function["name"])
 
+    # A provider-limit finish can interrupt any field, including the tool name
+    # or id. Retain those fragments for usage and tracing; Session stops these
+    # responses before persisting or executing their tool calls.
+    validate = state.finish_reason not in {"length", "max_tokens"}
     finalized: list[dict[str, Any]] = []
     for index in state.tool_order:
         slot = state.tool_slots[index]
         name = "".join(slot.name_parts)
-        if not name:
+        if validate and not name:
             raise TransientProviderError(
                 f"streamed tool_call {index} never carried a name"
             )
-        if registered and name not in registered:
+        if validate and registered and name not in registered:
             raise TransientProviderError(
                 f"streamed tool_call {index} assembled an unregistered name {name!r}"
             )
-        if not slot.call_id:
+        if validate and not slot.call_id:
             raise TransientProviderError(
                 f"streamed tool_call {index} never carried an id"
             )
@@ -217,15 +221,16 @@ def _finalize_tool_calls(
         # Repair the '{}{' prefix first, then validate: the other order would
         # condemn a response the shared repair can still rescue.
         arguments = _normalize_tool_arguments("".join(slot.argument_parts))
-        try:
-            json.loads(arguments)
-        except (TypeError, ValueError) as exc:
-            raise TransientProviderError(
-                f"streamed tool_call {slot.call_id!r} assembled invalid JSON arguments"
-            ) from exc
+        if validate:
+            try:
+                json.loads(arguments)
+            except (TypeError, ValueError) as exc:
+                raise TransientProviderError(
+                    f"streamed tool_call {slot.call_id!r} assembled invalid JSON arguments"
+                ) from exc
 
         finalized.append({
-            "id": slot.call_id,
+            "id": slot.call_id or "",
             "type": "function",
             "function": {"name": name, "arguments": arguments},
         })

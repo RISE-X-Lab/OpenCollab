@@ -77,6 +77,23 @@ def _openai_tool_choice(choice: NormalizedToolChoice | None) -> Any:
     return choice.mode
 
 
+def _keeps_reasoning_content(
+    model: str, thinking: bool, thinking_params: dict | None
+) -> bool:
+    """Resolve Chat history replay from the configured thinking protocol.
+
+    Thinking tool continuations can require the recorded reasoning on every
+    assistant message. The same history policy applies to both wire shapes.
+    """
+    if thinking and isinstance(thinking_params, dict):
+        mode = thinking_params.get("thinking")
+        if isinstance(mode, dict) and mode.get("type") == "disabled":
+            return False
+        if thinking_params.get("enable_thinking") is False:
+            return False
+    return thinking or model_capabilities(model).requires_chat_reasoning_content
+
+
 def _build_request_kwargs(
     model: str,
     messages: list[dict],
@@ -88,9 +105,11 @@ def _build_request_kwargs(
     top_p: float | None = None,
     max_output_tokens: int | None = None,
     reasoning_effort: str | None = None,
-    keep_reasoning_content: bool = True,
+    keep_reasoning_content: bool | None = None,
 ) -> dict[str, Any]:
     reasoning_model = _uses_reasoning_request_fields(model)
+    if keep_reasoning_content is None:
+        keep_reasoning_content = _keeps_reasoning_content(model, thinking, thinking_params)
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": _normalize_request_messages(
@@ -151,12 +170,8 @@ def _normalize_request_messages(
 ) -> list[dict]:
     """Make message payloads acceptable to stricter OpenAI-compatible gateways.
 
-    ``keep_reasoning_content=False`` drops recorded chain-of-thought from the
-    outbound history. Streaming turns this on: streaming is what makes
-    ``reasoning_content`` non-empty in the first place, and echoing it back
-    would both inflate input tokens and diverge the request from the
-    non-streaming baseline by more than the two streaming keys. The reasoning
-    still reaches the trajectory — it is recorded, just not resent.
+    ``keep_reasoning_content`` selects provider-native thinking continuation
+    fields. Strict endpoints receive only their supported message fields.
     """
     dropped = frozenset() if keep_reasoning_content else frozenset({"reasoning_content"})
     allowed = _REQUEST_MESSAGE_FIELDS - dropped
@@ -195,11 +210,9 @@ async def complete_openai(
 ) -> LLMResponse:
     """Single-shot completion against an OpenAI-compatible endpoint.
 
-    ``stream`` is OFF by default and, when off, this function executes exactly
-    the code it always has: no streaming keys are built, so the SDK sends the
-    same JSON body as before and the same parser reads the reply. Turning it on
-    is the only way to capture ``reasoning_content``, which several endpoints
-    (DeepSeek among them) return solely over the streamed wire format.
+    ``stream`` is OFF by default. Both paths use the same request history and
+    response fields. Streaming additionally captures first-token timing and
+    provider reasoning deltas.
     """
     kwargs = _build_request_kwargs(
         model,
@@ -212,9 +225,6 @@ async def complete_openai(
         top_p,
         max_output_tokens,
         reasoning_effort,
-        # Streaming is what makes reasoning non-empty; recording it must not
-        # turn into resending it on the next turn.
-        keep_reasoning_content=not stream,
     )
     if not stream:
 

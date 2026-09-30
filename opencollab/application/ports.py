@@ -474,6 +474,21 @@ class LLMPort(Protocol):
         ...
 
 
+@runtime_checkable
+class RequestTokenEstimatorPort(Protocol):
+    """Optional provider-aware input reservation for adapted request history."""
+
+    def estimate_request_tokens(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        thinking: bool = False,
+        thinking_params: dict[str, Any] | None = None,
+    ) -> int:
+        ...
+
+
 class SessionStorePort(Protocol):
     """Message persistence surface (structured JSON per agent)."""
 
