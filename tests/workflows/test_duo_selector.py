@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import copy
 import importlib
+import json
 
 import pytest
 
-from opencollab.builtin_workflows import _prompts, _selection
+from opencollab.builtin_workflows import _file_selection, _prompts, _selection
 from tests.support.duo_test_support import (
     Context,
     decision,
@@ -269,6 +270,7 @@ async def test_g22_identical_candidates_keep_mechanical_selection():
 
 async def test_parallel_duo_calls_keep_task_and_evidence_isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION", "1")
+    monkeypatch.setattr(_file_selection, "_INLINE_EVIDENCE_MAX_BYTES", 0)
     ready = asyncio.Event()
     entered = 0
 
@@ -398,7 +400,16 @@ async def test_sqlite_recommendation_inconsistent_with_coverage_is_corrected_onc
     assert requirement in initial_prompt and requirement in recheck_prompt
     assert "recheck" in recheck_prompt.lower()
     assert recheck_options["schema"] == initial_options["schema"]
-    assert recheck_options["tools"][0].files.directory == initial_options["tools"][0].files.directory
+    assert recheck_options["tools"] == initial_options["tools"] == []
+    initial_evidence, _ = json.JSONDecoder().raw_decode(initial_prompt.split("\nCandidate evidence\n", 1)[1])
+    recheck_evidence, _ = json.JSONDecoder().raw_decode(recheck_prompt.split("\nCandidate evidence\n", 1)[1])
+    assert recheck_evidence["inline_comparison"] == initial_evidence["inline_comparison"]
+    for label, value in [("A", "a"), ("B", "b")]:
+        inline = initial_evidence["inline_comparison"][label]
+        assert f"-old\n+{value}\n" in inline["diff"]
+        assert inline["public_test_records"] == []
+        assert inline["candidate_report"] == "Public repair completed"
+        assert inline["report_is_model_supplied"] is True
 
 
 async def test_two_different_invalid_decisions_stop_after_one_recheck(tmp_path):

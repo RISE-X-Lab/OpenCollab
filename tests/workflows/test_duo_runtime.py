@@ -16,6 +16,7 @@ from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.bootstrap import _workflow_runtime_session as workflow_session
 from opencollab.bootstrap.single2_prompt import SINGLE2_SYSTEM_PROMPT
 from opencollab.bootstrap.workflow_runtime import run_workflow
+from opencollab.builtin_workflows import _file_selection
 
 
 def _git(path, *args):
@@ -131,11 +132,14 @@ def _script_sessions(monkeypatch, source, command):
 
 @pytest.mark.parametrize("profile", [None, "single2"])
 @pytest.mark.parametrize("flow_name,both_pass", [("duo", False), ("duo", True)])
+@pytest.mark.parametrize("file_evidence", [False, True])
 async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
-    tmp_path, monkeypatch, profile, flow_name, both_pass,
+    tmp_path, monkeypatch, profile, flow_name, both_pass, file_evidence,
 ):
     monkeypatch.delenv("OPENCOLLAB_WORKFLOWS_DIR", raising=False)
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
+    if file_evidence:
+        monkeypatch.setattr(_file_selection, "_INLINE_EVIDENCE_MAX_BYTES", 0)
     repo = _repository(tmp_path / "repo", both_pass=both_pass)
     command = f"{shlex.quote(sys.executable)} -m pytest -q -rA -p no:cacheprovider test_public.py"
     sessions = _script_sessions(monkeypatch, repo / "source.py", command)
@@ -180,9 +184,23 @@ async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
     if both_pass:
         judge, _, scripted = sessions[2]
         names = [tool.name for tool in judge.agent.tools]
-        assert set(names) == {"read_candidate_evidence", "structured_output"}
-        assert "return 2" in _last_tool_result(scripted.calls[1])
-        assert "return 3" in _last_tool_result(scripted.calls[2])
+        if file_evidence:
+            assert set(names) == {"read_candidate_evidence", "structured_output"}
+            assert len(scripted.calls) == 3
+            assert "return 2" in _last_tool_result(scripted.calls[1])
+            assert "return 3" in _last_tool_result(scripted.calls[2])
+        else:
+            assert names == ["structured_output"]
+            assert len(scripted.calls) == 1
+            prompt = next(message["content"] for message in scripted.calls[0]
+                          if "\nCandidate evidence\n" in message.get("content", ""))
+            payload, _ = json.JSONDecoder().raw_decode(prompt.split("\nCandidate evidence\n", 1)[1])
+            for role, value in [("A", "2"), ("B", "3")]:
+                inline = payload["inline_comparison"][role]
+                assert f"return {value}" in inline["diff"]
+                assert inline["candidate_report"] == f"Candidate {role} finished"
+                assert inline["public_test_records"] == result.output["candidates"][role]["public_test_records"]
+                assert inline["report_is_model_supplied"] is True
         directories = list(evidence.glob("duo-evidence-*"))
         assert len(directories) == 1
         assert "return 3" in (directories[0] / "B/candidate.diff").read_text()
