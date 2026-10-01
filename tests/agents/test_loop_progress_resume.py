@@ -252,3 +252,39 @@ async def test_cancel_after_reserved_dispatch_restores_prefix_and_never_reissues
         assert (tmp_path / "observed.txt").read_text() == "PASS\n"
     finally:
         await environment.cleanup()
+
+
+async def test_completed_retry_before_later_cancellation_restores_a_completed_owner(tmp_path):
+    class CancelTool:
+        name = "cancel_tool"
+
+        async def execute_with_runtime(self, args, runtime):
+            raise asyncio.CancelledError
+
+    environment = _RecordingEnvironment(tmp_path)
+    path = tmp_path / "later-cancel.json"
+    agent = FakeAgent(tools=[BashTool(), FileWriteTool(), CancelTool()])
+    session = Session(agent=agent, llm=FakeLLMClient(), env=environment, auto_save_path=str(path))
+    (tmp_path / "observed.txt").write_text("FAIL\n")
+    try:
+        for index in range(2):
+            await _execute(session, _read(f"prime-{index}"))
+        session.state.set_phase(SessionPhase.EXECUTING_TOOLS)
+        edit = _call(
+            "file_write", {"path": "observed.txt", "mode": "create", "content": "PASS\n", "overwrite": True}, "edit",
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await _execute(session, edit, _read("completed-retry"), _call("cancel_tool", {}, "later-cancel"))
+        session.state.cancel()
+        await session._checkpoint_terminal_snapshot()
+        restored = load_session(str(path), agent=agent, llm=FakeLLMClient(), env=environment)
+        results = [m for m in restored.messages if m.get("tool_call_id") == "completed-retry"]
+        assert len(results) == 1 and "PASS" in results[0]["content"]
+        operation = next(
+            item for key, item in restored.state.turn.loop_state.operations.items()
+            if key == restored.tool_execution.tool_call_hash("bash", {"command": "cat observed.txt", "timeout": 10})
+        )
+        assert operation.inflight_tool_call_id is None
+        assert operation.last_exit_kind == "completed"
+    finally:
+        await environment.cleanup()

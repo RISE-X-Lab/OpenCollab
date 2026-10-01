@@ -580,6 +580,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 )
 
             result.messages_to_append.append(self.tool_result_message(tool_id, tool_output))
+            loop_batch.sync_completed_prefix()
             await self._emit_observation(
                 lambda: self.event_factory.tool_end(
                     tool_name, tool_latency, tool_id

@@ -35,6 +35,7 @@ class _LoopBatch:
         self.recent = list(executor.state.turn.recent_call_hashes)
         self.loops = None
         self.evicted: set[str] = set()
+        self.checkpointed = False
 
     def append(self, key: str) -> int:
         self.recent.append(key)
@@ -84,7 +85,7 @@ class _LoopBatch:
             active_keys=self.recent,
         )
 
-    async def checkpoint(self) -> None:
+    def _apply_completed_prefix(self) -> None:
         # Publish the ordered prefix before the Session freezes its snapshot.
         # The result tracks that prefix so its final application is idempotent.
         prefix_progress = self.result.write_succeeded or self.result.current_progress
@@ -111,9 +112,17 @@ class _LoopBatch:
             turn.steps_since_progress = 0
             turn.last_progress_unknown = False
         # Evidence and the model-step marker still fold once when the batch ends.
+
+    async def checkpoint(self) -> None:
+        self.checkpointed = True
+        self._apply_completed_prefix()
         callback = getattr(self.executor, "loop_reservation_checkpoint", None)
         if callback is not None:
             await callback(self.result.messages_to_append)
+
+    def sync_completed_prefix(self) -> None:
+        if self.checkpointed:
+            self._apply_completed_prefix()
 
     def finish(
         self, key: str, name: str, tool: Any, tool_id: str, facts: ToolFacts,
