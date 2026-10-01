@@ -17,6 +17,7 @@ from opencollab.application._session_run_shared import (
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_trace import _SessionRunTraceMixin
+from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import CompletionResponse
 from opencollab.application.shaping import forced_shape
@@ -303,7 +304,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         table = self.state.pending_events
         order = {tc["id"]: i for i, tc in enumerate(original_tool_calls)}
         completed_messages = list(blocked_messages)
-        observations = ToolProcessingResult()
+        observations = ToolProcessingResult(
+            model_step=self.state.step_count if self.state.step_count > 0 else None,
+        )
         terminal_capture_accepted = False
         for tc in tool_calls:
             if terminal_capture_accepted:
@@ -321,18 +324,25 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
             proc = await self.tool_execution.process([tc])
             proc.apply_hashes_to(self.state)
+            proc.apply_read_write_counter_to(self.state)
+            self._buffer_completed_rows(table, order, proc.messages_to_append)
             observations.reads_executed += proc.reads_executed
             observations.write_succeeded |= proc.write_succeeded
             observations.read_write_signals.extend(proc.read_write_signals)
+            observations.current_progress |= proc.current_progress
+            observations.effect_unknown |= proc.effect_unknown
+            observations.evidence_neutral.extend(proc.evidence_neutral)
             observations.evidence_signals.extend(proc.evidence_signals)
             observations.evidence_cards.extend(proc.evidence_cards)
             observations.loop_detections.extend(proc.loop_detections)
             observations.tool_step_attempted |= proc.tool_step_attempted
             completed_messages.extend(proc.messages_to_append)
+            _apply_completed_prefix_progress(self.state, observations)
             terminal_capture_accepted = proc.terminal_capture_accepted
             self._record_submission(proc)
 
-        observations.apply_read_write_counter_to(self.state)
+        # Immediate results have folded their ordered read/write prefix already.
+        observations.read_write_applied_count = len(observations.read_write_signals)
         observations.apply_evidence_counter_to(self.state)
         self._buffer_completed_rows(table, order, completed_messages)
 
@@ -360,6 +370,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     ) -> None:
         for message in messages:
             tool_call_id = message["tool_call_id"]
+            previous = table.rows.get(tool_call_id)
+            if previous is not None and previous.status is RowStatus.DONE and previous.result == message["content"]:
+                continue
             table.add(
                 PendingRow(
                     tool_call_id=tool_call_id,
@@ -398,7 +411,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             max_budget_tokens=self.max_budget_tokens,
             step_count=self.state.step_count + 1,
             max_steps=self.max_steps,
-            reads=self.state.turn.reads_since_last_edit,
+            reads=0 if self.state.turn.write_effect_unknown else self.state.turn.reads_since_last_edit,
             has_write=bool(tool_names & _WRITE_TOOLS),
             has_structured_output=_STRUCTURED_OUTPUT_TOOL in tool_names,
             structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),

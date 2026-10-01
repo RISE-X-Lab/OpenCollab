@@ -9,6 +9,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+Loop detection records native execution and edit facts separately from rendered
+tool output. Confirmed edits permit a bounded revalidation of older operations,
+and real timeouts permit one longer retry within the retained call window.
+Unchanged overwrites preserve their physical write behavior while contributing
+no content-change progress. Three unproductive blocked model batches stop a
+session, allowing feedback between batches while retaining per-call blocking.
+Consumed retry permissions and completed prefix results survive session saves.
+
 Candidate subworkflows inherit the budget approved by the parent allocator,
 including remaining-pool caps and concurrent shares. Explicit unbounded mode
 continues to propagate unlimited token and step budgets.

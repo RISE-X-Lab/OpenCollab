@@ -37,6 +37,7 @@ from opencollab.domain.agent import Agent
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
+from opencollab.domain.tool_loops import LoopState
 
 if TYPE_CHECKING:
     from opencollab.application.scheduler import LaunchSpec
@@ -109,6 +110,7 @@ class Session:
         self._llm = runtime.llm
         self.store = runtime.store
         self.tool_execution = runtime.tool_execution
+        self.tool_execution.loop_reservation_checkpoint = self._checkpoint_loop_reservation
         self.runner = runtime.runner
         self._auto_save_subscriber = runtime.auto_save_subscriber
         self._owns_llm = runtime.owns_llm
@@ -120,6 +122,9 @@ class Session:
         self._auto_save_rewrite_from: int | None = 0
         self._auto_save_seen_result_hashes: set[str] = set()
         self._next_auto_save_checkpoint = 1
+        self._loop_checkpoint_results: list[dict] = []
+        self._loop_checkpoint_prefix: list[dict] = []
+        self._loop_checkpoint_step = -1
         # The env attribute mirrors the runtime's tool_execution env so
         # downstream readers (snapshot, characterization tests) still see
         # the same Environment instance.
@@ -504,6 +509,13 @@ class Session:
         restored.turn.loop_blocked_since_progress = _snapshot_nonnegative_int(
             raw_state.get("loop_blocked_since_progress")
         )
+        restored.turn.loop_state = LoopState.from_dict(
+            raw_state.get("loop_state"),
+            legacy_blocked_calls=restored.turn.loop_blocked_since_progress,
+            active_keys=restored.turn.recent_call_hashes,
+        )
+        restored.turn.write_effect_unknown = raw_state.get("write_effect_unknown") is True
+        restored.turn.last_progress_unknown = raw_state.get("last_progress_unknown") is True
         rows = raw_state.get("pending_events", [])
         if isinstance(rows, list):
             for value in rows:
@@ -527,7 +539,9 @@ class Session:
         if restored.phase is SessionPhase.AWAITING_EVENTS:
             restored.active_turn_start_message_index = restored_turn_start
         if phase is not SessionPhase.AWAITING_EVENTS:
-            self._append_restore_results_for_open_tool_calls(restored)
+            self._append_restore_results_for_open_tool_calls(
+                restored, completed_results=raw_state.get("loop_checkpoint_results"),
+            )
             # Rows from an interrupted non-awaiting phase have no live producer
             # after process restart. The explicit tool results above close the
             # provider protocol; keeping the stale sidecar rows would make the
@@ -580,6 +594,9 @@ class Session:
         self.runner.reset_for_restore()
         self.state.__dict__.clear()
         self.state.__dict__.update(restored.__dict__)
+        self._loop_checkpoint_results = []
+        self._loop_checkpoint_prefix = []
+        self._loop_checkpoint_step = -1
 
     def _open_tool_call_ids(
         self,
@@ -638,15 +655,22 @@ class Session:
     def _append_restore_results_for_open_tool_calls(
         self,
         state: SessionState | None = None,
+        *,
+        completed_results: object = None,
     ) -> None:
         """Close assistant tool calls whose process-local execution was lost."""
         restored_state = state or self.state
+        receipts = {
+            item["tool_call_id"]: item["content"]
+            for item in completed_results if isinstance(item, dict)
+            and isinstance(item.get("tool_call_id"), str) and isinstance(item.get("content"), str)
+        } if isinstance(completed_results, list) else {}
         for tool_call_id in self._open_tool_call_ids(restored_state):
             restored_state.append_message(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call_id,
-                    "content": "Tool execution interrupted by session restore.",
+                    "content": receipts.get(tool_call_id, "Tool execution interrupted by session restore."),
                 }
             )
 
@@ -695,6 +719,9 @@ class Session:
                 "wind_down_token_mark": self.state.wind_down_token_mark,
                 "budget_reserve_consumed": self.state.budget_reserve_consumed,
                 "loop_blocked_since_progress": self.state.turn.loop_blocked_since_progress,
+                "loop_state": self.state.turn.loop_state.to_dict(),
+                "write_effect_unknown": self.state.turn.write_effect_unknown,
+                "last_progress_unknown": self.state.turn.last_progress_unknown,
                 "phase": self.state.phase.value,
                 "terminal_reason": self.state.terminal_reason,
                 "pending_events": [_serialize_pending_row(row) for row in self.state.pending_events.rows.values()],
@@ -705,6 +732,15 @@ class Session:
                 "pending_step_latency": self.state.pending_step_latency,
             },
         }
+        if self.state.step_count != self._loop_checkpoint_step or self.state.phase in {
+            SessionPhase.AUTOSAVING, SessionPhase.AWAITING_EVENTS, SessionPhase.DONE,
+        }:
+            self._loop_checkpoint_results = []
+            self._loop_checkpoint_prefix = []
+        if self._loop_checkpoint_results or self._loop_checkpoint_prefix:
+            meta["session_state"]["loop_checkpoint_results"] = [
+                dict(row) for row in (*self._loop_checkpoint_prefix, *self._loop_checkpoint_results)
+            ]
         if self.state.pending_user_messages:
             meta["pending_messages"] = self.state.enriched_pending_user_messages()
         return (
@@ -779,6 +815,31 @@ class Session:
         if self._auto_save_subscriber is None:
             return None
         return self._auto_save_subscriber.enqueue()
+
+    async def _checkpoint_loop_reservation(self, completed_results: list[dict]) -> None:
+        """Persist a consumed extra dispatch through the existing save owner."""
+        if self._auto_save_path is None:
+            return
+        pending = [
+            {"role": "tool", "tool_call_id": row.tool_call_id, "content": row.result or ""}
+            for row in self.state.pending_events.rows.values() if row.status is not RowStatus.PENDING
+        ]
+        # Retain the live prefix until this model batch finishes. A cancellation
+        # or failed tool can trigger a later terminal save of the same step.
+        self._loop_checkpoint_prefix = pending
+        self._loop_checkpoint_results = completed_results
+        self._loop_checkpoint_step = self.state.step_count
+        subscriber = self._auto_save_subscriber
+        failures = subscriber.failure_count if subscriber is not None else 0
+        owner = self.enqueue_auto_save()
+        if owner is not None:
+            await await_owned_operation(owner, propagate_cancellation=True)
+            if subscriber.failure_count != failures:
+                raise RuntimeError("loop retry reservation could not be persisted") from subscriber.last_error
+        else:
+            await await_owned_operation(
+                asyncio.to_thread(self.save, self._auto_save_path), propagate_cancellation=True,
+            )
 
     def _auto_save(self) -> None:
         if self._auto_save_path:

@@ -173,6 +173,22 @@ class LocalEnvironment(Environment):
             max_bytes=LOCAL_FILE_WRITE_LIMIT_BYTES,
         )
 
+    async def write_file_with_change(self, path: str, content: str) -> bool | None:
+        """Publish the same atomic write and report a bounded content comparison."""
+        self._ensure_active()
+        payload = content.encode("utf-8")
+        if len(payload) > LOCAL_FILE_WRITE_LIMIT_BYTES:
+            raise OSError(f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}")
+        return await self._run_file_operation(
+            write_regular_bytes_atomic,
+            self._root_fd(),
+            self.workspace,
+            self._relative_path(path),
+            payload,
+            max_bytes=LOCAL_FILE_WRITE_LIMIT_BYTES,
+            observe_change=True,
+        )
+
     async def write_temp_file(
         self,
         content: str,

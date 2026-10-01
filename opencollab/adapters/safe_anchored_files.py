@@ -321,6 +321,66 @@ def _current_regular_at(
     return info
 
 
+def _content_identity(info: os.stat_result | None) -> tuple[int, ...] | None:
+    if info is None:
+        return None
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _observe_content_change(
+    parent_fd: int, name: str, temporary: BinaryIO, current: os.stat_result | None, payload: bytes | None = None
+) -> bool | None:
+    """Compare the old regular file without changing whether publication is allowed."""
+    fd = -1
+    try:
+        latest = _current_regular_at(parent_fd, name, context="content observation")
+        if _content_identity(latest) != _content_identity(current):
+            return None
+        if current is None:
+            return True
+        fd = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        opened = os.fstat(fd)
+        if _content_identity(opened) != _content_identity(current):
+            return None
+        size = os.fstat(temporary.fileno()).st_size
+        changed = opened.st_size != size
+        if not changed:
+            materialized = payload is not None and len(payload) == size
+            if not materialized:
+                temporary.seek(0)
+            remaining = size
+            while remaining:
+                length = min(_READ_CHUNK_BYTES, remaining)
+                actual = os.read(fd, length)
+                if len(actual) != length:
+                    return None
+                if materialized:
+                    offset = size - remaining
+                    equal = payload.startswith(actual, offset, offset + length)
+                else:
+                    expected = temporary.read(length)
+                    if len(expected) != length:
+                        return None
+                    equal = actual == expected
+                if not equal:
+                    changed = True
+                    break
+                remaining -= length
+        if _content_identity(os.fstat(fd)) != _content_identity(current):
+            return None
+        latest = _current_regular_at(parent_fd, name, context="content observation")
+        return changed if _content_identity(latest) == _content_identity(current) else None
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def write_regular_file_atomic_at(
     root_fd: int,
     root_path: str | os.PathLike[str],
@@ -331,7 +391,9 @@ def write_regular_file_atomic_at(
     mode: int = 0o600,
     context: str = "atomic output",
     create_only: bool = False,
-) -> None:
+    observe_change: bool = False,
+    observed_payload: bytes | None = None,
+) -> bool | None:
     """Atomically publish one file beneath a pinned directory descriptor."""
     limit = _require_limit(max_bytes)
     parent_fd, name = _open_parent_beneath(
@@ -362,6 +424,17 @@ def write_regular_file_atomic_at(
             if os.fstat(handle.fileno()).st_size > limit:
                 raise ValueError(f"{context} exceeds {limit}-byte limit: {path}")
             os.fsync(handle.fileno())
+            changed = (
+                _observe_content_change(parent_fd, name, handle, current, observed_payload)
+                if observe_change else None
+            )
+        if changed is not None:
+            try:
+                latest = _current_regular_at(parent_fd, name, context=context)
+                if _content_identity(latest) != _content_identity(current):
+                    changed = None
+            except OSError:
+                changed = None
         if create_only:
             os.link(
                 temporary,
@@ -379,6 +452,7 @@ def write_regular_file_atomic_at(
                 dst_dir_fd=parent_fd,
             )
         os.fsync(parent_fd)
+        return changed
     finally:
         try:
             if fd >= 0:
@@ -401,19 +475,22 @@ def write_regular_bytes_atomic_at(
     *,
     max_bytes: int | None = None,
     mode: int = 0o600,
-) -> None:
+    observe_change: bool = False,
+) -> bool | None:
     if not isinstance(payload, bytes):
         raise TypeError("atomic payload must be bytes")
     limit = len(payload) if max_bytes is None else _require_limit(max_bytes)
     if len(payload) > limit:
         raise ValueError(f"atomic payload exceeds {limit}-byte limit: {path}")
-    write_regular_file_atomic_at(
+    return write_regular_file_atomic_at(
         root_fd,
         root_path,
         path,
         lambda handle: handle.write(payload),
         max_bytes=limit,
         mode=mode,
+        observe_change=observe_change,
+        observed_payload=payload,
     )
 
 

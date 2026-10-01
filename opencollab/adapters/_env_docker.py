@@ -555,6 +555,12 @@ class DockerEnvironment(Environment):
         )
 
     async def write_file(self, path: str, content: str) -> None:
+        await self._write_file(path, content, observe_change=False)
+
+    async def write_file_with_change(self, path: str, content: str) -> bool | None:
+        return await self._write_file(path, content, observe_change=True)
+
+    async def _write_file(self, path: str, content: str, *, observe_change: bool) -> bool | None:
         self._ensure_active()
         await self._bind_attached()
         container_id = self._container_id
@@ -564,7 +570,7 @@ class DockerEnvironment(Environment):
         lock = _WRITE_LOCKS.setdefault(f"{container_id}\0{target}", asyncio.Lock())
         async with lock:
             self._ensure_active()
-            await self._write_file_atomic(target, content)
+            return await self._write_file_atomic(target, content, observe_change=observe_change)
 
     @staticmethod
     def _normalize_container_path(path: str) -> str:
@@ -575,7 +581,24 @@ class DockerEnvironment(Environment):
             raise ValueError("container file path must name a file")
         return normalized
 
-    async def _write_file_atomic(self, target: str, content: str) -> None:
+    @staticmethod
+    def _content_comparison_command() -> str:
+        # A comparison error is unknown and must never prevent the original mv.
+        return (
+            'change=unknown; identity() { stat -c "%d:%i:%s:%y:%z" -- "$target" 2>/dev/null || '
+            'stat -f "%d:%i:%z:%Fm:%Fc" -- "$target" 2>/dev/null; }; '
+            'if [ -f "$target" ] && [ ! -L "$target" ]; then '
+            'before=$(identity); '
+            'target_bytes=$(stat -c %s -- "$target" 2>/dev/null || stat -f %z -- "$target" 2>/dev/null); '
+            'case "$target_bytes" in ""|*[!0-9]*) ;; *) '
+            'if [ "$target_bytes" != "$expected_bytes" ]; then change=different; '
+            'elif cmp -s -- "$temporary" "$target"; then change=equal; '
+            'else comparison_status=$?; [ "$comparison_status" -ne 1 ] || change=different; fi ;; esac; '
+            'after=$(identity); [ -n "$before" ] && [ "$before" = "$after" ] || change=unknown; '
+            'elif [ ! -e "$target" ] && [ ! -L "$target" ]; then change=different; fi; :; '
+        )
+
+    async def _write_file_atomic(self, target: str, content: str, *, observe_change: bool = False) -> bool | None:
         payload = content.encode("utf-8")
         if len(payload) > ENV_FILE_WRITE_LIMIT_BYTES:
             raise OSError(
@@ -587,6 +610,10 @@ class DockerEnvironment(Environment):
             directory or ".",
             f".{filename}.opencollab-write-{uuid.uuid4().hex}.tmp",
         )
+        comparison = '{ ' + self._content_comparison_command() + '} && ' if observe_change else ''
+        confirmation = (
+            'printf "%s\\t%s\\t%s\\n" "$bytes" "$digest" "$change"'
+            if observe_change else 'printf "%s\\t%s\\n" "$bytes" "$digest"')
         command = (
             'target=$1; temporary=$2; expected_bytes=$3; expected_digest=$4; '
             'cleanup() { rm -f -- "$temporary"; }; trap cleanup EXIT HUP INT TERM; '
@@ -599,9 +626,9 @@ class DockerEnvironment(Environment):
             'bytes=$(wc -c < "$temporary" | tr -d \'[:space:]\') && '
             'digest=$(sha256sum -- "$temporary" 2>/dev/null | awk \'{print $1}\' || '
             'shasum -a 256 -- "$temporary" | awk \'{print $1}\') && '
-            '[ "$bytes" = "$expected_bytes" ] && [ "$digest" = "$expected_digest" ] && '
+            '[ "$bytes" = "$expected_bytes" ] && [ "$digest" = "$expected_digest" ] && ' + comparison +
             'mv -f -- "$temporary" "$target" && '
-            'trap - EXIT HUP INT TERM && printf "%s\\t%s\\n" "$bytes" "$digest"'
+            'trap - EXIT HUP INT TERM && ' + confirmation
         )
         wrapped = (
             f"bash -c {shlex.quote(command)} opencollab-write {shlex.quote(target)} "
@@ -615,9 +642,14 @@ class DockerEnvironment(Environment):
                 input_bytes=payload,
             )
             expected = f"{len(payload)}\t{digest}"
-            if result.returncode != 0 or result.stdout.strip() != expected:
+            fields = result.stdout.strip().split("\t")
+            valid = (len(fields) == 3 and fields[2] in {"equal", "different", "unknown"}
+                and "\t".join(fields[:2]) == expected
+            ) if observe_change else result.stdout.strip() == expected
+            if result.returncode != 0 or not valid:
                 raise OSError(f"docker write verification failed for {target}")
             committed = True
+            return {"equal": False, "different": True}.get(fields[2]) if observe_change else None
         finally:
             if not committed:
                 await await_owned_operation(
