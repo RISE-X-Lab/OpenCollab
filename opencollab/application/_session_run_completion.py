@@ -17,6 +17,7 @@ from opencollab.application._session_run_shared import (
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_trace import _SessionRunTraceMixin
+from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import CompletionResponse
 from opencollab.application.shaping import forced_shape
@@ -336,6 +337,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             observations.loop_detections.extend(proc.loop_detections)
             observations.tool_step_attempted |= proc.tool_step_attempted
             completed_messages.extend(proc.messages_to_append)
+            _apply_completed_prefix_progress(self.state, observations)
             terminal_capture_accepted = proc.terminal_capture_accepted
             self._record_submission(proc)
 

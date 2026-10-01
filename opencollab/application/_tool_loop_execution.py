@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from opencollab.domain.session import SessionState
 from opencollab.domain.tool_facts import ToolFacts
 from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, ToolProcessingResult
 
@@ -26,6 +27,30 @@ def _controlled_timeout(tool: Any, args: dict) -> float | None:
     except (ValueError, OverflowError):
         return None
     return timeout if math.isfinite(timeout) and timeout > 0 else None
+
+
+def _apply_completed_prefix_progress(state: SessionState, result: ToolProcessingResult) -> bool:
+    """Publish confirmed prefix progress without folding the unfinished model step."""
+    prefix_progress = result.write_succeeded or result.current_progress
+    if not prefix_progress:
+        seen = state.turn.seen_result_hashes
+        prefix_seen: set[str] = set()
+        for content_key, call_key, low_yield in result.evidence_signals:
+            if (
+                not low_yield
+                and content_key not in seen and call_key not in seen
+                and content_key not in prefix_seen and call_key not in prefix_seen
+            ):
+                prefix_progress = True
+                break
+            prefix_seen.update((content_key, call_key))
+    if prefix_progress:
+        turn = state.turn
+        turn.loop_state.blocked_rounds = 0
+        turn.loop_blocked_since_progress = 0
+        turn.steps_since_progress = 0
+        turn.last_progress_unknown = False
+    return prefix_progress
 
 
 class _LoopBatch:
@@ -88,29 +113,11 @@ class _LoopBatch:
     def _apply_completed_prefix(self) -> None:
         # Publish the ordered prefix before the Session freezes its snapshot.
         # The result tracks that prefix so its final application is idempotent.
-        prefix_progress = self.result.write_succeeded or self.result.current_progress
-        if not prefix_progress:
-            seen = self.executor.state.turn.seen_result_hashes
-            prefix_seen: set[str] = set()
-            for content_key, call_key, low_yield in self.result.evidence_signals:
-                if (
-                    not low_yield
-                    and content_key not in seen and call_key not in seen
-                    and content_key not in prefix_seen and call_key not in prefix_seen
-                ):
-                    prefix_progress = True
-                    break
-                prefix_seen.update((content_key, call_key))
-        if prefix_progress:
-            self._policy().blocked_rounds = 0
         self.publish()
         self.result.apply_hashes_to(self.executor.state)
         self.result.apply_read_write_counter_to(self.executor.state)
-        if prefix_progress:
-            turn = self.executor.state.turn
-            turn.loop_blocked_since_progress = 0
-            turn.steps_since_progress = 0
-            turn.last_progress_unknown = False
+        if _apply_completed_prefix_progress(self.executor.state, self.result):
+            self._policy().blocked_rounds = 0
         # Evidence and the model-step marker still fold once when the batch ends.
 
     async def checkpoint(self) -> None:

@@ -18,6 +18,11 @@ slots are occupied instead of dropping an unresolved owner or an active recovery
 permission. Restored interrupted calls retain their explicit result and spent
 permission; a stopped snapshot remains stopped.
 
+Batches containing deferred tools also publish completed-prefix progress before
+a later repeat reservation is saved. Confirmed edits and fresh evidence reset
+the preceding warning count, while unknown duplicate effects retain it. The
+complete model batch still folds its evidence and step marker once.
+
 The native-tool regressions use temporary workspaces and real subprocesses. They
 exercise edits followed by validation, unchanged physical overwrites, repeated
 timeout adjustments, actual timeout recovery, output noise, quoted shell
