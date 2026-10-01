@@ -57,3 +57,13 @@ hygiene, and the same four architecture checks. Earlier stage results are
 recorded in their pull request descriptions. The OCE series uses the public
 team, environment, model-inspection, and profile-tool interfaces from this
 complete OC series.
+
+The October 1, 2026 synchronization merges main through `86cfe810` for release
+0.8.4. It brings execution-fact loop handling, bounded validation recovery,
+and actual budget inheritance for candidate workflows into the integration
+branch. The merged implementation retains ICLR's optional patch relocation
+notes, ordered pending-tool results, and cancellation recovery. Merge commits
+preserve both the current main and original ICLR source ancestry. The runtime
+merge passed 4065 tests, whole-repository Ruff, dependency hygiene, and the four
+existing architecture checks. The final 0.8.4 metadata and SDK validation
+passed 19 targeted tests.
