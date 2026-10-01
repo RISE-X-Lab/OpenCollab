@@ -1,4 +1,4 @@
-"""Single2 selection, behavior, and isolation on the OpenCollab 0.7 runtime."""
+"""Single2 selection, task instructions, behavior, and isolation."""
 
 from __future__ import annotations
 
@@ -35,18 +35,35 @@ class ReplyLLM:
         )
 
 
-def test_single2_prompt_matches_the_evaluated_static_source():
-    assert len(SINGLE2_SYSTEM_PROMPT) == 3_120
-    assert "DO NOT MODIFY: Tests, configuration files" in SINGLE2_SYSTEM_PROMPT
+def test_single2_prompt_obeys_task_permissions_and_preserves_validation():
+    assert "only as needed for the task and within granted permissions" in SINGLE2_SYSTEM_PROMPT
+    assert "Keep existing tests unchanged unless the task explicitly requests a test change" in SINGLE2_SYSTEM_PROMPT
+    assert "Do not alter protected validation or obtain withheld reference answers" in SINGLE2_SYSTEM_PROMPT
+    assert "Do not weaken checks to manufacture success" in SINGLE2_SYSTEM_PROMPT
     assert "Run project tests through `bash`." in SINGLE2_SYSTEM_PROMPT
-    assert "The evaluator extracts the patch from the working tree" in SINGLE2_SYSTEM_PROMPT
-    assert "Do NOT run `git commit`." in SINGLE2_SYSTEM_PROMPT
+    assert "Follow the runtime's tool and network permissions" in SINGLE2_SYSTEM_PROMPT
+    assert "A final response without tool calls ends the agent session." in SINGLE2_SYSTEM_PROMPT
+
+
+def test_single2_prompt_keeps_caller_owned_submission_and_required_services():
+    assert "If the runtime captures a working-tree patch" in SINGLE2_SYSTEM_PROMPT
+    assert "leave the changes for the caller to capture, commit, and submit" in SINGLE2_SYSTEM_PROMPT
+    assert "only when the task or runtime explicitly requires you to do so" in SINGLE2_SYSTEM_PROMPT
+    assert "When the runtime assigns these steps to the caller, leave them to the caller" in SINGLE2_SYSTEM_PROMPT
+    assert "Preserve files and running services required for delivery" in SINGLE2_SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("task_prompt", [
+    "Fix the parser's handling of empty input and leave the working-tree patch for the evaluator.",
+    "Update the project's Python requirement in pyproject.toml while preserving its existing tests.",
+    "Configure the HTTP service using the assigned environment and leave it running for verification.",
+    "Create the Git commit requested by the task after verifying the configuration change.",
+])
 async def test_default_base_and_single2_use_the_same_model_configuration(
     tmp_path,
     monkeypatch,
+    task_prompt,
 ):
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
     sessions = {}
@@ -76,10 +93,10 @@ async def test_default_base_and_single2_use_the_same_model_configuration(
     alias_llm = ReplyLLM()
     results = await asyncio.gather(
         *(
-            client.agent("inspect", name=name, llm=llm, trace=False, **kwargs)
+            client.agent(task_prompt, name=name, llm=llm, trace=False, **kwargs)
             for (name, kwargs), llm in zip(variants, llms, strict=True)
         ),
-        client.agent2("inspect", name="agent2-alias", llm=alias_llm, trace=False),
+        client.agent2(task_prompt, name="agent2-alias", llm=alias_llm, trace=False),
     )
 
     assert len(sessions) == len(results) == 6
@@ -89,6 +106,11 @@ async def test_default_base_and_single2_use_the_same_model_configuration(
     for llm in [*llms, alias_llm]:
         assert len(llm.calls) == 1
         assert llm.calls == llms[0].calls
+        messages = llm.calls[0][0]
+        assert messages[0] == {"role": "system", "content": SINGLE2_SYSTEM_PROMPT}
+        user_content = next(message["content"] for message in messages if message["role"] == "user")
+        # Runtime budget guidance may follow the intact task as a new paragraph.
+        assert user_content == task_prompt or user_content.startswith(task_prompt + "\n\n")
     for session in sessions.values():
         assert [tool.name for tool in session.agent.tools] == [
             "bash", "file_read", "file_write", "apply_patch", "git_diff", "grep",

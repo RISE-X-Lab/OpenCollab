@@ -7,6 +7,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+Single2 follows the task's permissions and delivery requirements instead of
+assuming every task is a sealed code-repair evaluation. Task-required
+configuration changes and service delivery coexist with existing-test
+protection. Explicit caller-owned working-tree capture continues to delegate
+commit and submission steps to the caller.
+
 ## [0.9.0] - 2026-10-02
 
 ### Added

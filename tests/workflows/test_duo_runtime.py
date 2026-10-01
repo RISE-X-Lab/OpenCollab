@@ -175,12 +175,14 @@ async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
     assert all(workspace != repo and not workspace.exists() for workspace in coder_workspaces)
     assert "return 1" in _last_tool_result(sessions[1][2].calls[1])
     assert command in str(sessions[1][2].calls[0])
-    for session, kwargs, _ in sessions:
+    for session, kwargs, scripted in sessions:
         actual_profile = kwargs["agent_profile"]
         assert (None if actual_profile is None else actual_profile.name) == profile
         if profile == "single2":
             assert session.agent.system_prompt.startswith(SINGLE2_SYSTEM_PROMPT)
             assert "They take precedence over the general software-repair duties" in session.agent.system_prompt
+            assert "following the runtime's permissions and delivery requirements" in scripted.calls[0][0]["content"]
+            assert "Do not alter protected validation" in scripted.calls[0][0]["content"]
     if both_pass:
         judge, _, scripted = sessions[2]
         names = [tool.name for tool in judge.agent.tools]
@@ -231,11 +233,12 @@ async def test_runtime_resolves_cli_profile_name_in_composition_root(tmp_path, m
     assert [profile.name for profile in observed] == ["single2"]
 
 
+@pytest.mark.parametrize("profile", [None, "single2"])
 @pytest.mark.parametrize(("filename", "desired"), [
     ("app.conf", "enabled=true\n"),
     ("report.csv", "item,count\nready,3\n"),
 ])
-async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monkeypatch, filename, desired):
+async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monkeypatch, profile, filename, desired):
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
     repo = tmp_path / "artifacts"
     repo.mkdir()
@@ -267,6 +270,10 @@ async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monk
             self.step += 1
             if self.step == 1:
                 assert "configuration, dependencies" in str(messages)
+                if profile == "single2":
+                    system = messages[0]["content"]
+                    assert system.startswith(SINGLE2_SYSTEM_PROMPT)
+                    assert "Modify source, configuration, or other delivery files" in system
                 return _tool_response("file_write", {
                     "path": filename, "mode": "create",
                     "content": "partial\n" if self.role == "A" else desired,
@@ -283,7 +290,7 @@ async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monk
     monkeypatch.setattr(workflow_session, "build_session", build)
     result = await OpenCollab(repo, provider="openai", model="scripted-model").workflow(
         "duo", {"goal": f"Produce {filename} with the requested content", "allow_unisolated_shell": True},
-        budget=10_000, max_steps=5, trace=False,
+        agent_profile=profile, budget=10_000, max_steps=5, trace=False,
     )
     assert result.ok and result.output["status"] == "done"
     assert result.output["selection_reason"] == "same-command-public-red"
