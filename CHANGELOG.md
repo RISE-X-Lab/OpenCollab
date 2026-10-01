@@ -7,6 +7,38 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-02
+
+### Added
+
+Optional Chat Completions streaming assembles text, reasoning, and tool-call
+fragments with first-event and stream-idle timeouts. Request observations expose
+transport timing and retry counts. Public model inspection supports offline
+configuration queries.
+
+Team roles can select explicit agent profiles, use unbounded step limits, and
+inspect their declared tools and prompts through public APIs. Optional delivery
+snapshots record the worktree associated with each role's execution. The adopt
+tool is available to explicitly configured roles. Patch application offers
+opt-in hunk normalization and unique expected-text relocation.
+
+The complete ICLR integration adds team, handoff, dual-candidate, and research
+configurations with their supporting scripts, tests, and source documentation.
+
+### Fixed
+
+Session restoration preserves completed tool results and maintains message
+ordering across cancellation, pending child tasks, and new user input. Request
+budget estimates follow the actual transmitted history and its model-specific
+reasoning fields.
+
+### Changed
+
+The integration retains the Base profile, Duo V7 workflow, and the execution-fact
+loop detection and candidate budget inheritance released in 0.8.4. Streaming,
+delivery-tree recording, and patch normalization remain explicit opt-ins.
+Anthropic SDK compatibility is constrained to supported pre-1.0 releases.
+
 ## [0.8.4] - 2026-10-01
 
 ### Fixed
@@ -281,7 +313,8 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.4...HEAD
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.4...v0.9.0
 [0.8.4]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.1...v0.8.2
