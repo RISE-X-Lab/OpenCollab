@@ -225,6 +225,9 @@ class FileWriteTool(Tool):
         path = params["path"]
         mode = params["mode"]
         env = runtime.environment
+        observations = getattr(runtime, "observations", None)
+        if observations is not None:
+            observations.record_write(completed=False, changed=False)
 
         if env is None:
             return "Error: no execution environment available."
@@ -247,9 +250,10 @@ class FileWriteTool(Tool):
                         path,
                         params.get("content", ""),
                         overwrite=params.get("overwrite", False),
+                        observations=observations,
                     )
                 if mode == "str_replace":
-                    return await self._str_replace(env, path, params)
+                    return await self._str_replace(env, path, params, observations=observations)
                 return f"Error: unknown mode '{mode}'. Use 'create' or 'str_replace'."
         except PermissionError as e:
             return f"Error: {e}"
@@ -257,7 +261,7 @@ class FileWriteTool(Tool):
             return f"Error: refusing to edit non-UTF-8 file: invalid UTF-8 at byte {e.start}."
 
     async def _create(
-        self, env: Any, path: str, content: str, *, overwrite: bool = False
+        self, env: Any, path: str, content: str, *, overwrite: bool = False, observations: Any = None
     ) -> str:
         """Write ``content`` to ``path``, creating parent directories as needed.
 
@@ -265,6 +269,7 @@ class FileWriteTool(Tool):
         is refused unless ``overwrite`` is set — that shape is almost always a
         model accidentally writing a truncated copy, not an intentional rewrite.
         """
+        current = None
         if not overwrite:
             try:
                 current = await env.read_file(path)
@@ -282,10 +287,22 @@ class FileWriteTool(Tool):
                     "intentionally replace the whole file, retry with "
                     "overwrite: true."
                 )
-        await env.write_file(path, content)
+        if observations is not None:
+            observations.record_write(completed=False, changed=None)
+        observed_write = getattr(env, "write_file_with_change", None) if overwrite else None
+        if callable(observed_write):
+            changed = await observed_write(path, content)
+            changed = changed if type(changed) is bool else None
+        else:
+            await env.write_file(path, content)
+            changed = current != content if not overwrite else None
+        if observations is not None:
+            observations.record_write(completed=True, changed=changed, path=path)
+        if changed is False:
+            return f"Created/wrote {path} ({len(content)} chars, content unchanged)"
         return f"Created/wrote {path} ({len(content)} chars)"
 
-    async def _str_replace(self, env: Any, path: str, params: dict[str, Any]) -> str:
+    async def _str_replace(self, env: Any, path: str, params: dict[str, Any], *, observations: Any = None) -> str:
         """Replace a unique occurrence of ``old_str`` with ``new_str`` in ``path``."""
         old_str = params.get("old_str", "")
         new_str = params.get("new_str", "")
@@ -346,7 +363,11 @@ class FileWriteTool(Tool):
                 f"Error: str_replace produced no change in {path} — the file "
                 "content is identical after the replacement."
             )
+        if observations is not None:
+            observations.record_write(completed=False, changed=None)
         await env.write_file(path, updated)
+        if observations is not None:
+            observations.record_write(completed=True, changed=True, path=path)
         return f"Replaced in {path}: {len(old_str)} chars → {len(new_str)} chars (content changed)"
 
 

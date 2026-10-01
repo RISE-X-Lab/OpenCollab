@@ -330,7 +330,7 @@ def timed_out_result(
     notice = f"Command timed out after {timeout:g}s"
     partial = getattr(exc, "partial", None)
     if partial is None:
-        return ExecResult(returncode, "", notice)
+        return ExecResult(returncode, "", notice, timed_out=True)
     result = partial.to_exec_result()
     stderr = f"{notice}\n{result.stderr}" if result.stderr else notice
     return ExecResult(
@@ -341,6 +341,7 @@ def timed_out_result(
         result.stderr_truncated,
         result.stdout_dropped_bytes,
         result.stderr_dropped_bytes,
+        timed_out=True,
     )
 
 

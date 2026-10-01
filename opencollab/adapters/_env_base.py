@@ -16,6 +16,7 @@ class ExecResult:
     stderr_truncated: bool = False
     stdout_dropped_bytes: int = 0
     stderr_dropped_bytes: int = 0
+    timed_out: bool = False
 
 
 @dataclass(slots=True)
