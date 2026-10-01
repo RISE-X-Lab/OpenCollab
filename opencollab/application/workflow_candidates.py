@@ -267,7 +267,7 @@ class WorkflowCandidatesMixin:
                     tracer=self._tracer,
                     max_concurrency=self._max_concurrency,
                     task_concurrency=self._task_concurrency,
-                    budget_total=_candidate_budget_total(budget),
+                    budget_total=_candidate_budget_total(budget_lease.total),
                     tree_probe=_CandidateLeaseTreeProbe(lease),
                     candidate_workspace=None,
                     deadline_monotonic=self._deadline_monotonic,
