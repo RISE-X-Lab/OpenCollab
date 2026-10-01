@@ -72,10 +72,19 @@ def test_pagination_cycle_still_reaches_the_loop_stop():
     assert [item.count for item in result.loop_detections] == [8, 8, 8]
     assert state.turn.distinct_evidence_count == 3
     assert state.turn.loop_blocked_since_progress == 3
+    assert state.turn.loop_state.blocked_rounds == 1
     state.transition_to(SessionPhase.PRECHECK)
     asyncio.run(build_runner(state=state).precheck(None))
+    assert state.phase is SessionPhase.CALLING_LLM
+    for batch in range(8, 10):
+        result = asyncio.run(executor.process(reads([(1, 100), (101, 100), (201, 100)], batch=batch)))
+        result.apply_to(state)
+    assert len(read.runtime_calls) == 21
+    assert state.turn.loop_state.blocked_rounds == 3
+    state.set_phase(SessionPhase.PRECHECK)
+    asyncio.run(build_runner(state=state).precheck(None))
     assert state.phase is SessionPhase.STOPPED
-    assert state.terminal_reason == "loop block limit reached: 3 repeated tool calls"
+    assert state.terminal_reason == "loop block limit reached: 3 unproductive tool batches"
 
 
 def test_omitted_and_explicit_read_defaults_share_the_repeat_count():

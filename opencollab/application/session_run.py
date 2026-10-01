@@ -598,8 +598,13 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         if self.max_budget_tokens is not None:
             explore_threshold = self.max_budget_tokens - self._commit_reserve
             budget_spent = self.state.used_tokens >= explore_threshold
-        watchdog_tripped = self._brake_on() and self.state.turn.steps_since_progress >= self._watchdog_k
-        low_yield_tripped = self._brake_on() and self.state.turn.low_yield_since_progress >= self._low_yield_m
+        progress_known = not self.state.turn.last_progress_unknown
+        watchdog_tripped = (
+            progress_known and self._brake_on() and self.state.turn.steps_since_progress >= self._watchdog_k
+        )
+        low_yield_tripped = (
+            progress_known and self._brake_on() and self.state.turn.low_yield_since_progress >= self._low_yield_m
+        )
         brake = budget_spent or watchdog_tripped or low_yield_tripped
         if not brake or not self.state.pending_events.is_empty():
             return False
@@ -650,8 +655,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             await self._stop_precheck("execution environment has been revoked")
             return
 
-        if self.state.turn.loop_blocked_since_progress >= DEFAULT_LOOP_BLOCKED_LIMIT:
-            reason = f"loop block limit reached: {self.state.turn.loop_blocked_since_progress} repeated tool calls"
+        if self.state.turn.loop_state.blocked_rounds >= DEFAULT_LOOP_BLOCKED_LIMIT:
+            reason = f"loop block limit reached: {self.state.turn.loop_state.blocked_rounds} unproductive tool batches"
             await self._stop_precheck(reason)
             return
 

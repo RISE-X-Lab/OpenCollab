@@ -639,6 +639,13 @@ class WorktreeEnvironment(Environment):
         assert self._local_env is not None
         await self._local_env.write_file(path, content)
 
+    async def write_file_with_change(self, path: str, content: str) -> bool | None:
+        self._ensure_active()
+        if self._local_env is None:
+            await self.setup()
+        assert self._local_env is not None
+        return await self._local_env.write_file_with_change(path, content)
+
     async def write_temp_file(
         self,
         content: str,

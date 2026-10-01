@@ -525,6 +525,7 @@ def test_run_loop_loop_block_limit_stops_before_next_llm_call():
         messages=[{"role": "system", "content": "sys"}],
         turn=TurnEnforcementState(loop_blocked_since_progress=3),
     )
+    state.turn.loop_state.blocked_rounds = 3
     llm = FakeLLM()
     runner = build_runner(state=state, llm=llm, event_bus=bus)
 
@@ -533,8 +534,8 @@ def test_run_loop_loop_block_limit_stops_before_next_llm_call():
     assert result == ""
     assert llm.calls == []
     assert state.phase is SessionPhase.STOPPED
-    assert state.terminal_reason == "loop block limit reached: 3 repeated tool calls"
-    assert events == [("error", {"reason": "loop block limit reached: 3 repeated tool calls", "aid": -1})]
+    assert state.terminal_reason == "loop block limit reached: 3 unproductive tool batches"
+    assert events == [("error", {"reason": "loop block limit reached: 3 unproductive tool batches", "aid": -1})]
 
 def test_run_loop_llm_step_events_trace_and_message_shape():
     events, bus = collect_events()

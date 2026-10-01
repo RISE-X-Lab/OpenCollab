@@ -116,6 +116,9 @@ class ApplyPatchTool(Tool):
         path = params["path"]
         mode = params["mode"]
         env = runtime.environment
+        observations = getattr(runtime, "observations", None)
+        if observations is not None:
+            observations.record_write(completed=False, changed=False)
 
         if env is None:
             return "Error: no execution environment available."
@@ -153,7 +156,11 @@ class ApplyPatchTool(Tool):
                     return (
                         f"Error applying patch to {path}: patch produced no changes."
                     )
+                if observations is not None:
+                    observations.record_write(completed=False, changed=None)
                 await env.write_file(path, updated)
+                if observations is not None:
+                    observations.record_write(completed=True, changed=True, path=path)
                 summary = _summary(path, mode, current, updated)
                 if notes:
                     summary += "\nNote: " + ". ".join(notes) + "."

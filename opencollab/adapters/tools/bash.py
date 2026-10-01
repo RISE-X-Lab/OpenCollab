@@ -64,6 +64,9 @@ class BashTool(Tool):
     """
 
     name = "bash"
+    loop_timeout_is_control = True
+    loop_workspace_observer = True
+    loop_default_timeout = DEFAULT_TIMEOUT
     default_timeout = DEFAULT_TIMEOUT
     description = (
         "Execute a shell command in the workspace. Returns stdout and stderr. "
@@ -129,6 +132,12 @@ class BashTool(Tool):
             await safety_policy.check_cmd_interactive(cmd, runtime.confirm_fn())
 
         result = await env.exec_cmd(cmd, timeout=timeout)
+        observations = getattr(runtime, "observations", None)
+        if observations is not None:
+            observations.record_execution(
+                exit_code=result.returncode,
+                timed_out=getattr(result, "timed_out", None),
+            )
 
         # Format output with truncation (ref: user blind spot #1)
         stdout = _format_captured_stream(

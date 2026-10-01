@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any
 
 from opencollab.domain.pending import PendingEventTable
+from opencollab.domain.tool_loops import LoopState
 
 MAX_SCOUT_LEDGER_CARDS = 256
 
@@ -133,6 +134,10 @@ class TurnEnforcementState:
     # Loop-detection window: path-normalized (tool, args) hashes of recent tool
     # calls; drives the repeated-call loop block.
     recent_call_hashes: list[str] = field(default_factory=list)
+    loop_state: LoopState = field(default_factory=LoopState)
+    # Unknown write outcomes avoid steering that assumes a known unchanged workspace.
+    write_effect_unknown: bool = False
+    last_progress_unknown: bool = False
     # Closed-loop steering signal: read-only tool calls (file_read/grep) since
     # the last successful edit. Drives the reads-without-write nudge/escalation;
     # reset to 0 on a successful write.
@@ -529,7 +534,13 @@ class SessionState:
     def remember_tool_call_hash(self, call_hash: str, max_window: int | None = None) -> None:
         self.turn.recent_call_hashes.append(call_hash)
         if max_window is not None and len(self.turn.recent_call_hashes) > max_window:
+            expired = self.turn.recent_call_hashes[:-max_window]
             self.turn.recent_call_hashes = self.turn.recent_call_hashes[-max_window:]
+            for key in expired:
+                if key in self.turn.loop_state.operations and key not in self.turn.recent_call_hashes:
+                    operation = self.turn.loop_state.operations.get(key)
+                    if operation is not None and operation.inflight_tool_call_id is None:
+                        self.turn.loop_state.operations.pop(key, None)
 
     def replace_recent_tool_hashes(self, call_hashes: list[str]) -> None:
         self.turn.recent_call_hashes = call_hashes

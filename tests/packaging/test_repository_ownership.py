@@ -145,6 +145,7 @@ def test_framework_scripts_contain_no_evaluation_entrypoints() -> None:
     assert sorted(path.name for path in scripts.iterdir() if path.is_file() and not path.name.startswith(".")) == [
         "README.md",
         "analyst_cards.py",
+        "benchmark_tool_loop.py",
         "check_added_files.py",
         "check_conventional_title.py",
         "check_dashscope.py",

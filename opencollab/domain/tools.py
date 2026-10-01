@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from opencollab.domain.session import SessionState
+from opencollab.domain.tool_loops import LoopState
 
 MAX_CALL_HASH_WINDOW = 200
 
@@ -83,6 +84,13 @@ class ToolProcessingResult:
     messages_to_append: list[dict[str, Any]] = field(default_factory=list)
     recent_hash_updates: list[str] = field(default_factory=list)
     loop_detections: list[LoopDetection] = field(default_factory=list)
+    loop_state_update: LoopState | None = None
+    history_applied_count: int = 0
+    read_write_applied_count: int = 0
+    current_progress: bool = False
+    effect_unknown: bool = False
+    evidence_neutral: list[bool] = field(default_factory=list)
+    model_step: int | None = None
     # Closed-loop steering counters for this batch: how many read-only tool calls
     # executed, and whether a write landed. A successful write RESETS
     # ``reads_since_last_edit``; otherwise the reads accumulate onto it.
@@ -135,15 +143,20 @@ class ToolProcessingResult:
         model keeps reading without writing.
         """
         if self.read_write_signals:
-            for signal in self.read_write_signals:
+            for signal in self.read_write_signals[self.read_write_applied_count:]:
                 if signal == "write":
                     state.turn.reads_since_last_edit = 0
                     state.turn.has_landed_write = True
+                    state.turn.write_effect_unknown = False
+                elif signal == "unknown":
+                    state.turn.write_effect_unknown = True
                 elif signal == "read":
                     state.turn.reads_since_last_edit += 1
+            self.read_write_applied_count = len(self.read_write_signals)
             return
         if self.write_succeeded:
             state.turn.reads_since_last_edit = 0
+            state.turn.write_effect_unknown = False
             state.turn.has_landed_write = True
         else:
             state.turn.reads_since_last_edit += self.reads_executed
@@ -171,26 +184,41 @@ class ToolProcessingResult:
         the counters above this is maintained ALWAYS — only the precheck brake that
         reads it is gated, so the off path is unchanged.
         """
+        loops = state.turn.loop_state
+        if self.model_step is not None and loops.last_counted_step == self.model_step:
+            return
         distinct_before = state.turn.distinct_evidence_count
-        made_progress = self.write_succeeded
+        made_progress = self.write_succeeded or self.current_progress
         for i, (content_hash, call_hash, intrinsic_low_yield) in enumerate(self.evidence_signals):
             card = self.evidence_cards[i] if i < len(self.evidence_cards) else None
+            previous_low_yield = state.turn.low_yield_since_progress
             state.record_evidence_signal(
                 content_hash, call_hash, intrinsic_low_yield, card=card
             )
+            if i < len(self.evidence_neutral) and self.evidence_neutral[i]:
+                state.turn.low_yield_since_progress = min(
+                    previous_low_yield, state.turn.low_yield_since_progress,
+                )
         if self.evidence_signals:
             made_progress = (
                 self.write_succeeded
+                or self.current_progress
                 or state.turn.distinct_evidence_count > distinct_before
             )
+        uncertain_batch = self.effect_unknown and not self.loop_detections
+        state.turn.last_progress_unknown = uncertain_batch and not made_progress
         if made_progress:
             state.turn.steps_since_progress = 0
-        elif self.evidence_signals or self.tool_step_attempted:
+        elif not uncertain_batch and (self.evidence_signals or self.tool_step_attempted):
             state.turn.steps_since_progress += 1
         if made_progress:
             state.turn.loop_blocked_since_progress = 0
+            loops.blocked_rounds = 0
         elif self.loop_detections:
             state.turn.loop_blocked_since_progress += len(self.loop_detections)
+            loops.blocked_rounds += 1
+        if self.model_step is not None:
+            loops.last_counted_step = self.model_step
 
     def apply_hashes_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         """Apply only the loop-detection hashes, not the result messages.
@@ -199,8 +227,12 @@ class ToolProcessingResult:
         buffered into the pending table (to keep the whole batch's tool-result
         block contiguous on resume) while their call hashes still record now.
         """
-        for call_hash in self.recent_hash_updates:
+        for call_hash in self.recent_hash_updates[self.history_applied_count:]:
             state.remember_tool_call_hash(call_hash, max_window=max_window)
+        self.history_applied_count = len(self.recent_hash_updates)
+        if self.loop_state_update is not None:
+            state.turn.loop_state = self.loop_state_update.clone()
+            self.loop_state_update = None
 
 
 __all__ = [
