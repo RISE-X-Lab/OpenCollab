@@ -140,15 +140,6 @@ p{margin:0}
 .legend i.on{background:var(--grad)}
 .legend i.off{border:1.5px dashed rgba(196,181,253,.5)}
 
-/* ---- proof strip ---- */
-.proof{position:relative;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:-44px;background:var(--surface);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow)}
-.stat{display:grid;gap:6px;align-content:start;padding:20px 22px}
-.stat+.stat{border-left:1px solid var(--line)}
-.stat i{font-style:normal;font:500 11.5px/1 var(--f-mono);color:var(--violet-deep);letter-spacing:.02em}
-.stat b{font:700 22px/1.2 var(--f-display);letter-spacing:-.01em;color:var(--ink)}
-.stat span{font-size:13.5px;line-height:1.5;color:var(--muted)}
-@media (max-width:900px){.proof{grid-template-columns:repeat(2,minmax(0,1fr))}.stat:nth-child(3){border-left:0}.stat:nth-child(n+3){border-top:1px solid var(--line)}}
-@media (max-width:520px){.proof{grid-template-columns:minmax(0,1fr)}.stat+.stat{border-left:0;border-top:1px solid var(--line)}}
 
 /* ---- sections ---- */
 section{padding-block:80px;scroll-margin-top:64px}
@@ -327,8 +318,9 @@ table.audit{min-width:740px;font-size:14.5px;table-layout:fixed}
 .key-row span{display:inline-flex;align-items:center;gap:6px}
 
 /* build with us */
-.build-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:28px;align-items:start}
-@media (max-width:960px){.build-grid{grid-template-columns:minmax(0,1fr)}}
+.cite{margin-top:28px;background:var(--surface);border:1px solid var(--line);border-radius:24px;padding:clamp(20px,3vw,32px);box-shadow:var(--shadow)}
+.cite-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.cite pre{margin:16px 0 0;padding:16px 18px;background:var(--code-bg);border-radius:14px;overflow-x:auto;font:400 13.5px/1.7 var(--f-mono);color:var(--ink-2)}
 .term{min-width:0;background:linear-gradient(180deg,var(--run-2),var(--run));border-radius:20px;border:1px solid rgba(167,139,250,.24);box-shadow:0 40px 80px -44px rgba(64,30,160,.6);overflow:hidden}
 .term-bar{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--run-line)}
 .term-bar .t{all:unset;cursor:pointer;padding:8px 12px;border-radius:999px;font:500 13.5px/1 var(--f-display);color:var(--run-muted)}
@@ -343,58 +335,12 @@ table.audit{min-width:740px;font-size:14.5px;table-layout:fixed}
 .term pre .c{color:#8C8ABA}
 .term pre .p{color:var(--run-lilac);user-select:none}
 .term .tnote2{padding:0 22px 20px;font-size:13.5px;line-height:1.6;color:var(--run-muted)}
-.health{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:22px 24px;box-shadow:var(--shadow)}
-.health h3{font-size:18px}
-.health dl{margin:12px 0 18px}
-.health dl div{display:grid;grid-template-columns:112px minmax(0,1fr);gap:12px;padding-block:9px;border-bottom:1px solid var(--line)}
-.health dt{font:500 12.5px/1.5 var(--f-mono);color:var(--muted)}
-.health dd{margin:0;font-size:14.5px;line-height:1.5;color:var(--ink)}
-.health dd b{font-weight:600;color:var(--violet-deep)}
-.help-h{margin:48px 0 16px;font-size:22px}
-.ways{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;min-width:0}
-@media (max-width:760px){.ways{grid-template-columns:minmax(0,1fr)}}
-.way{display:grid;grid-template-columns:42px minmax(0,1fr);gap:14px;align-items:start;padding:16px 18px;background:var(--surface);border:1.5px dashed var(--line-2);border-radius:16px;text-decoration:none;color:var(--ink-2);transition:border-color .18s,box-shadow .18s,transform .18s}
-.way:hover{border-style:solid;border-color:var(--violet);box-shadow:var(--shadow);transform:translateY(-1px);color:var(--ink-2)}
-.way .ic{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;background:var(--lav);color:var(--violet-deep)}
-.way .ic svg{width:20px;height:20px}
-.way b{display:block;font:700 16px/1.35 var(--f-display);color:var(--ink)}
-.way p{margin-top:4px;font-size:14.5px;line-height:1.6}
-.way .go{display:inline-block;margin-top:6px;font:500 12.5px/1.3 var(--f-mono);color:var(--violet-deep)}
 
 /* FAQ */
-.qa{display:grid;gap:14px;max-width:900px}
-.qa details{background:var(--surface);border:1px solid var(--line);border-radius:20px;transition:border-color .2s,box-shadow .2s}
-.qa details[open]{border-color:var(--lav-2);box-shadow:var(--shadow)}
-.qa summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:40px 1fr 28px;gap:14px;align-items:center;padding:20px 22px}
-.qa summary::-webkit-details-marker{display:none}
-.qa .qk{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;font:italic 400 20px/1 var(--f-serif);color:var(--violet-deep);background:var(--lav)}
-.qa .qt{font:500 17.5px/1.4 var(--f-display);color:var(--ink)}
-.qa .chev{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--line-2);color:var(--muted);transition:transform .2s}
-.qa details[open] .chev{transform:rotate(45deg);color:var(--violet)}
-.qa .ans{padding:0 22px 22px 76px;font-size:15.5px;color:var(--ink-2);line-height:1.8}
-.qa .ans code{font:400 .92em var(--f-mono);background:var(--code-bg);padding:1px 5px;border-radius:5px}
-@media (max-width:560px){.qa .ans{padding-left:22px}}
 
 /* paper */
-.abstract{margin-top:28px;background:var(--surface);border:1px solid var(--line);border-radius:24px;padding:clamp(24px,4vw,44px);box-shadow:var(--shadow);display:grid;grid-template-columns:220px minmax(0,1fr);gap:40px}
-@media (max-width:780px){.abstract{grid-template-columns:minmax(0,1fr);gap:16px}}
-.abstract h3{font-size:26px}
-.abstract .pull{font:italic 400 19px/1.45 var(--f-serif);color:var(--violet-deep);margin-top:12px}
-.abstract .btns{margin-top:22px}
-.abstract p.t{font-size:16.5px;line-height:1.85;color:var(--ink-2);max-width:74ch}
-.abstract p.t+p.t{margin-top:14px}
 
 /* closing band */
-.concl{position:relative;background:var(--ink);color:#FFFFFF;border-radius:28px;padding:clamp(28px,5vw,56px);overflow:hidden}
-.concl::after{content:"";position:absolute;right:-80px;top:-80px;width:320px;height:320px;border-radius:50%;border:26px solid transparent;background:var(--grad) border-box;-webkit-mask:linear-gradient(#000 0 0) padding-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;opacity:.35;pointer-events:none}
-.concl .ev{color:var(--run-muted)}.concl .ev b{color:var(--run-lilac)}.concl .ev .node{box-shadow:0 0 0 4px rgba(124,58,237,.25)}
-.concl h2{position:relative;z-index:1;color:#FFFFFF;margin-top:14px;max-width:22ch}
-.concl p{position:relative;z-index:1;margin-top:16px;font-size:17px;line-height:1.8;color:#D4D2E8;max-width:62ch}
-.concl .btns{position:relative;z-index:1}
-.concl .btn{background:rgba(255,255,255,.06);color:#FFFFFF;border-color:rgba(255,255,255,.34)}
-.concl .btn:hover{color:#FFFFFF;border-color:var(--run-lilac);box-shadow:none}
-.concl .btn.primary{background:#FFFFFF;color:var(--ink);border:1.5px solid #FFFFFF}
-.concl .btn.primary:hover{color:var(--ink);background:#EDE9FE;border-color:#EDE9FE}
 
 footer{padding-block:40px 56px;font-size:13.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:12px 28px;justify-content:space-between;align-items:center}
 footer .brand{font-size:15px}
@@ -411,8 +357,7 @@ footer a{color:var(--muted)}
       <li><a href="#problem">Problem</a></li>
       <li><a href="#method">How it works</a></li>
       <li><a href="#benchmarks">Results</a></li>
-      <li><a href="#start">Build with us</a></li>
-      <li><a href="#faq">FAQ</a></li>
+      <li><a href="#start">Quick start</a></li>
       <li><a href="#paper">Paper</a></li>
     </ul>
     <a class="btn sm gh" href="https://github.com/RISE-X-Lab/OpenCollab" target="_blank" rel="noopener">
@@ -468,14 +413,6 @@ footer a{color:var(--muted)}
 
 <main>
 <div class="wrap">
-
-<!-- ============ PROOF ============ -->
-<div class="proof" role="list" aria-label="At a glance">
-  <div class="stat" role="listitem"><i>3 benchmarks</i><b>Highest Pass@1</b><span>OpenCollab (Duo) against Mini-SWE-agent, Codex CLI and Claude Code</span></div>
-  <div class="stat" role="listitem"><i>cost</i><b>Fewest tokens</b><span>Base, the single agent, also costs the least on all three benchmarks</span></div>
-  <div class="stat" role="listitem"><i>code</i><b>239 lines</b><span>rebuild the core pattern of edict, a system of about 24k lines</span></div>
-  <div class="stat" role="listitem"><i>open source</i><b>MulanPSL-2.0</b><span><a data-release-version data-release-link href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.0">v0.9.0</a> · Seed Program of the Youth Open Source Special Fund</span></div>
-</div>
 
 <!-- ============ PROBLEM ============ -->
 <section id="problem">
@@ -735,93 +672,25 @@ footer a{color:var(--muted)}
 
 </div>
 
-<!-- ============ BUILD WITH US ============ -->
+<!-- ============ QUICK START ============ -->
 <section id="start" class="band bleed">
   <div class="wrap">
     <div class="sec-head">
-      <span class="ev"><span class="node"></span>build with us</span>
-      <h2>Start in three commands, then bring your own organization</h2>
-      <p>OpenCollab works with any OpenAI-compatible or Anthropic endpoint. Everything below runs from a clone of the repository.</p>
+      <span class="ev"><span class="node"></span>quick start</span>
+      <h2>Start in three commands</h2>
+      <p>OpenCollab works with any OpenAI-compatible or Anthropic endpoint. Declared teams, the Duo workflow and Mini Edict are covered in the <a href="https://github.com/RISE-X-Lab/OpenCollab#readme" target="_blank" rel="noopener">README</a>.</p>
     </div>
-    <div class="build-grid">
-      <div class="term">
-        <div class="term-bar">
-          <div role="tablist" aria-label="Example" id="termTabs" style="display:flex;flex-wrap:wrap;gap:4px"></div>
-          <button class="copy" id="copyBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>copy</span></button>
-        </div>
-        <pre id="termCode" role="tabpanel" tabindex="0" aria-live="polite"></pre>
-        <p class="tnote2" id="termNote"></p>
+    <div class="term">
+      <div class="term-bar">
+        <button class="copy" id="copyBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>copy</span></button>
       </div>
-      <aside class="health" aria-label="Project status">
-        <h3>The project today</h3>
-        <dl>
-          <div><dt>latest release</dt><dd><a data-release-link href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.0"><b data-release-version>v0.9.0</b></a>, <time id="release-date" datetime="2026-10-01T16:12:11Z">Oct 2, 2026</time></dd></div>
-          <div><dt>tests</dt><dd>4,065 passed (v0.9.0)</dd></div>
-          <div><dt>CI</dt><dd>ruff, pytest and import-contract checks</dd></div>
-          <div><dt>commits</dt><dd>Conventional Commits</dd></div>
-          <div><dt>python</dt><dd>3.10 to 3.14</dd></div>
-          <div><dt>license</dt><dd>MulanPSL-2.0</dd></div>
-        </dl>
-        <a class="btn sm" href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Read CONTRIBUTING.md <span class="arrow" aria-hidden="true">→</span></a>
-      </aside>
-    </div>
-    <h3 class="help-h">Where you can help</h3>
-    <div class="ways">
-        <a class="way" href="https://github.com/RISE-X-Lab/OpenCollab/tree/main/examples/mini-edict" target="_blank" rel="noopener">
-          <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.4 8.2l3.4 7.6M16.6 8.2l-3.4 7.6M8.5 6h7"/></svg></span>
-          <span><b>Port an organization</b><p>Debates, reviewer loops, SOP pipelines: write yours as a team file or a Python workflow. Mini Edict fits a nine-role court into 239 lines and is the template to copy.</p><span class="go">examples/mini-edict →</span></span>
-        </a>
-        <a class="way" href="https://github.com/RISE-X-Lab/OpenCollab-Eval" target="_blank" rel="noopener">
-          <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg></span>
-          <span><b>Add a benchmark</b><p>OpenCollab-Eval is the evaluation framework behind our results, kept in its own repository. It runs agents on software-engineering benchmarks and keeps each task's patch, trajectory and official test report together. Add an adapter for the suite you care about.</p><span class="go">OpenCollab-Eval →</span></span>
-        </a>
-        <a class="way" href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">
-          <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg></span>
-          <span><b>Extend the runtime</b><p>Model access, context handling, tool execution, orchestration and environments each have their own extension point, and CI enforces the layer boundaries between them.</p><span class="go">CONTRIBUTING.md →</span></span>
-        </a>
-        <a class="way" href="https://github.com/RISE-X-Lab/OpenCollab/issues/new" target="_blank" rel="noopener">
-          <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/></svg></span>
-          <span><b>Tell us what your team did</b><p>When a run surprises you, open an issue with the team file and the trace. Runs where the declared team never formed are the cases we most want to study.</p><span class="go">open an issue →</span></span>
-        </a>
+      <pre id="termCode" tabindex="0"></pre>
+      <p class="tnote2" id="termNote"></p>
     </div>
   </div>
 </section>
 
 <div class="wrap">
-
-<!-- ============ FAQ ============ -->
-<section id="faq">
-  <div class="sec-head">
-    <span class="ev"><span class="node"></span>faq</span>
-    <h2>Questions a reader usually asks</h2>
-  </div>
-  <div class="qa">
-    <details open>
-      <summary><span class="qk">Q</span><span class="qt">If a team scores higher than a single agent, did collaboration cause the gain?</span><span class="chev" aria-hidden="true">+</span></summary>
-      <div class="ans"><p>Not necessarily. Under the Open card the team scores 5.6 points above Single. Split by the recorded A<sub>r</sub>, that gain comes from the tasks where the team never formed (+15.8), while the adherent tasks show −5.9. Reading the +11.8 CACE as the complier effect requires the A<sub>r</sub> = 0 Team-versus-Single contrast to have mean zero, and only per-run Adherence lets you check it.</p></div>
-    </details>
-    <details>
-      <summary><span class="qk">Q</span><span class="qt">Why not keep only the runs where agents actually collaborated?</span><span class="chev" aria-hidden="true">+</span></summary>
-      <div class="ans"><p>That filter introduces post-treatment selection bias. Agents solve easy tasks alone and seek help only when stuck, so the collaborating subset skews toward harder tasks. It penalizes the multi-agent configuration and invalidates causal claims.</p></div>
-    </details>
-    <details>
-      <summary><span class="qk">Q</span><span class="qt">Can a prompt simply make the agents delegate?</span><span class="chev" aria-hidden="true">+</span></summary>
-      <div class="ans"><p>The prompt card moves Adherence from 47.2% (open) to 63.9% (optional) to 91.7% (mandatory), which shows collaboration is sensitive to phrasing. Other dimensions move it as much: with the prompt card fixed, the model alone takes it from 47.2% to 97.2%, and read-only tools for the adopter take it to 94.4%.</p></div>
-    </details>
-    <details>
-      <summary><span class="qk">Q</span><span class="qt">Is OpenCollab a weak harness that makes team gains look larger?</span><span class="chev" aria-hidden="true">+</span></summary>
-      <div class="ans"><p>The paper checks this directly. Five harnesses run with GPT-5.6-Luna on SWE-bench Pro, Terminal-Bench 2.1 and DeepSWE. OpenCollab (Duo) has the highest Pass@1 on all three, and OpenCollab (Base) uses the fewest tokens and the lowest cost on all three.</p></div>
-    </details>
-    <details>
-      <summary><span class="qk">Q</span><span class="qt">Which models can I use?</span><span class="chev" aria-hidden="true">+</span></summary>
-      <div class="ans"><p>Point <code>configs/.env</code> at an OpenAI-compatible or Anthropic endpoint. A team file can also override the model for each role.</p></div>
-    </details>
-    <details>
-      <summary><span class="qk">Q</span><span class="qt">Where do the benchmarks live?</span><span class="chev" aria-hidden="true">+</span></summary>
-      <div class="ans"><p>In <a href="https://github.com/RISE-X-Lab/OpenCollab-Eval" target="_blank" rel="noopener">OpenCollab-Eval</a>, a separate repository built on OpenCollab's public Python API. It creates an isolated workspace for each task, records the patch, runs the official tests, and keeps patches, trajectories and test reports together.</p></div>
-    </details>
-  </div>
-</section>
 
 <!-- ============ PAPER ============ -->
 <section id="paper" style="padding-top:24px">
@@ -833,38 +702,23 @@ footer a{color:var(--muted)}
     <div class="plate"><img src="fig/teaser.webp" alt="Four panels: (a) organizations in existing frameworks, (b) single versus team under shared tasks, model and tools, (c) a configured analyst-coder-tester topology versus the observed event timeline, (d) auditing a trace against its policy." width="3667" height="1437" loading="lazy"></div>
     <figcaption><b>Perspectives on multi-agent collaboration:</b> (a) organization, (b) benefit and cost, (c) configured versus observed execution, and (d) collaboration auditing.</figcaption>
   </figure>
-  <div class="abstract">
-    <div>
-      <h3>Abstract</h3>
-      <p class="pull">Is the declared organization actually realized?</p>
-      <div class="btns">
-        <a class="btn sm" href="https://arxiv.org/abs/2609.38345" target="_blank" rel="noopener">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>
-          Paper <small>arXiv</small>
-        </a>
-      </div>
-    </div>
-    <div>
-      <p class="t">Multi-agent coding systems are designed to tackle complex software engineering tasks through collaboration. However, existing evaluations typically assume configured organizations are followed faithfully, whereas reality differs. This behavioral gap, combined with differences in underlying system components, prevents clear attribution of observed gains.</p>
-      <p class="t">To this end, we introduce OpenCollab, a multi-agent coding framework that provides a unified infrastructure for programmable collaboration and controllable runtime. Specifically, OpenCollab unifies organization design, enforces experimental control on a shared runtime, and tracks execution through fine-grained event streams. On this basis, we define Adherence to quantify whether the declared organization is actually realized.</p>
-      <p class="t">Our experiments reveal that agents collaborate very differently across configurations: changing any single dimension shifts Adherence, from 47.2% to as high as 97.2%. Furthermore, extensive agentic coding benchmarks show that OpenCollab (Duo) establishes new SOTA performance compared to the mainstream harnesses such as Mini-SWE-agent, Codex CLI, and Claude Code, showing that a well-designed organization can outperform strong existing harnesses, while OpenCollab's single-agent configuration uses the fewest tokens across all evaluated suites. OpenCollab establishes a unified multi-agent infrastructure for easy programmable collaboration and controlled causal evaluation.</p>
-    </div>
-  </div>
-</section>
-
-<!-- ============ CLOSING ============ -->
-<section id="join" style="padding-top:24px">
-  <div class="concl">
-    <span class="ev"><span class="node"></span>your turn</span>
-    <h2>Declare the team. Check that it ran.</h2>
-    <p>OpenCollab is open source under MulanPSL-2.0. Run the quick start, port the organization you care about, and tell us what your agents actually did.</p>
-    <div class="btns">
-      <a class="btn primary" href="https://github.com/RISE-X-Lab/OpenCollab" target="_blank" rel="noopener">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.8l2.8 5.8 6.3.9-4.6 4.4 1.1 6.3L12 17.2l-5.6 3 1.1-6.3L2.9 9.5l6.3-.9z"/></svg>
-        Star on GitHub
+  <div class="cite">
+    <div class="cite-head">
+      <h3>BibTeX</h3>
+      <a class="btn sm" href="https://arxiv.org/abs/2609.38345" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>
+        Paper <small>arXiv</small>
       </a>
-      <a class="btn" href="#start">Quick start <span class="arrow" aria-hidden="true">→</span></a>
     </div>
+    <pre><code>@misc{hsu2026opencollabmultiagentcodingframework,
+  title         = {OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and Controllable Runtime},
+  author        = {Chun-Wah Hsu and Kai Gong and Yu Wu and Xianhe Chen and Mengyang Liu and Jie Li and Hanyu Li and Zhixuan Liu and Naisheng Tang and Jiaying Chi and Ziheng Fan and Xuning He and Xiaokang Yang and Xue Jiang and Yihong Dong},
+  year          = {2026},
+  eprint        = {2609.38345},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.SE},
+  url           = {https://arxiv.org/abs/2609.38345}
+}</code></pre>
   </div>
 </section>
 
@@ -1000,20 +854,9 @@ footer a{color:var(--muted)}
   });
 
   /* quick start (commands as in the repository README, docs/duo.md and examples/mini-edict) */
-  var Q=[
-    ['Quick start',
+  var Q=[['Quick start',
      '# in a clone of RISE-X-Lab/OpenCollab\nuv sync --locked\ncp configs/.env.example configs/.env\n# set OPENCOLLAB_API_KEY in configs/.env, then\nuv run opencollab --workspace .',
-     'Starts the built-in single lead, which may spawn ad-hoc specialists. Never commit real API keys.'],
-    ['Declared team',
-     'cp configs/team.example.yaml configs/team.yaml\nuv run opencollab --team-config configs/team.yaml --workspace .',
-     'Roles, per-role tools and the topology come from the team file; edit the copy to declare your own team.'],
-    ['Duo workflow',
-     'uv run opencollab workflow list --workspace /path/to/repo\nuv run opencollab workflow run duo --workspace /path/to/repo \\\n  --args \'{"goal": "Fix the public issue described here.",\n           "allow_unisolated_shell": true}\'',
-     'Two isolated coders each produce a solution; Duo compares their evidence and adopts one. The flag allows shell execution in a trusted local workspace; by default the shell requires process isolation.'],
-    ['Mini Edict',
-     'uv run opencollab \\\n  --team-config examples/mini-edict/team.yaml \\\n  --workspace .',
-     'Edict’s review-and-dispatch protocol with nine roles, in 239 lines of team and workflow code.']
-  ];
+     'Starts the built-in Self-Collaboration team. Never commit real API keys.']];
   var code=document.getElementById('termCode'),tnote=document.getElementById('termNote'),cur=0;
   function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
   function render(src){
@@ -1025,8 +868,7 @@ footer a{color:var(--muted)}
       return (cont?'':'<span class="p" aria-hidden="true">$ </span>')+esc(body)+(tail?'<span class="c">'+esc(tail)+'</span>':'');
     }).join('\n');
   }
-  var th=document.getElementById('termTabs');th.setAttribute('data-cls','t');
-  tabs(th,Q.map(function(q){return q[0];}),function(i){cur=i;code.innerHTML=render(Q[i][1]);tnote.textContent=Q[i][2];});
+  code.innerHTML=render(Q[0][1]);tnote.textContent=Q[0][2];
   var copyBtn=document.getElementById('copyBtn'),copyLabel=copyBtn.querySelector('span');
   function selectCode(){try{var r=document.createRange();r.selectNodeContents(code);var s=window.getSelection();s.removeAllRanges();s.addRange(r);}catch(e){}}
   copyBtn.addEventListener('click',function(){
