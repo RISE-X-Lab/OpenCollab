@@ -267,7 +267,10 @@ async def test_shared_team_runtime_always_cleans_scheduler(
     # The counters, plus the wind-down evidence every regime now reports: this
     # run owns its environments and cleaning the scheduler released them, which
     # is exactly what the assertions above just established.
+    # Every run mints its own id; its value is pinned by the end-to-end test.
+    assert result.metrics["run_id"].startswith("team-")
     assert result.metrics == {
+        "run_id": result.metrics["run_id"],
         "steps": 2,
         "sessions": 1,
         "session_quiesced": True,
