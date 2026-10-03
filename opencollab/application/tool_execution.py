@@ -307,6 +307,26 @@ def _bash_likely_mutates(args: dict) -> bool:
     return False
 
 
+_PREFLIGHT_ERROR_CODES = (
+    ("Error: unknown tool ", "unknown_tool"),
+    ("Error: invalid JSON arguments", "invalid_json_args"),
+    ("Error: tool arguments must be a JSON object", "non_object_args"),
+    ("schema validation failed", "schema_validation_failed"),
+    ("duplicate tool_call id", "duplicate_tool_call_id"),
+    ("batch has ", "batch_too_large"),
+)
+
+
+def _preflight_error_code(error: str) -> str:
+    """Name a ``preflight_tool_batch`` message with the trace code ``process`` uses."""
+    if not error:
+        return "rejected_with_batch"
+    for prefix, code in _PREFLIGHT_ERROR_CODES:
+        if error.startswith(prefix):
+            return code
+    return "malformed_call"
+
+
 class CallbackPermissionPolicy:
     def __init__(self, confirm_fn: Callable[[str], Awaitable[bool]]):
         self._confirm_fn = confirm_fn
@@ -676,23 +696,44 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                     )[:1_000]
         return errors
 
-    @staticmethod
     def preflight_rejection_result(
+        self,
         tool_calls: list[dict],
         preflight_errors: list[str],
     ) -> ToolProcessingResult:
-        """Build ordered no-side-effect responses for a rejected batch."""
+        """Build ordered no-side-effect responses for a rejected batch.
+
+        Every refused call also leaves a ``tool_error`` trace step, so a call
+        refused here is as visible in the trajectory as one refused inside
+        ``process``. Calls that were valid but refused with their batch carry
+        ``error="rejected_with_batch"``.
+        """
         result = ToolProcessingResult(tool_step_attempted=bool(tool_calls))
         summary = "; ".join(
             f"call {index}: {error}"
             for index, error in enumerate(preflight_errors)
             if error
         )[:2_000]
+        batched = len(tool_calls) > 1
         for index, tc in enumerate(tool_calls):
             tool_id = (
                 tc.get("id")
                 if isinstance(tc, dict) and isinstance(tc.get("id"), str)
                 else f"invalid-tool-call-{index}"
+            )
+            func = tc.get("function") if isinstance(tc, dict) else None
+            tool_name = func.get("name") if isinstance(func, dict) else None
+            self._trace_short_circuit(
+                "tool_error",
+                tool_name if isinstance(tool_name, str) else "",
+                {
+                    "error": _preflight_error_code(preflight_errors[index]),
+                    "detail": preflight_errors[index][:500],
+                    "tool_call_id": tool_id,
+                    "batch_rejected": batched,
+                    "batch_index": index,
+                    "batch_size": len(tool_calls),
+                },
             )
             result.messages_to_append.append(
                 {
@@ -700,7 +741,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                     "tool_call_id": tool_id,
                     "content": (
                         preflight_errors[index]
-                        if len(tool_calls) == 1
+                        if not batched
                         else "Error: entire tool-call batch rejected before execution: "
                         + summary
                     ),
