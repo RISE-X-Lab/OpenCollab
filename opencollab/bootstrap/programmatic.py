@@ -738,6 +738,7 @@ async def run_team(
     serialize_turns: bool = False,
     environment: Environment | None = None,
     record_delivery_tree: bool = False,
+    budget_explicit: bool = False,
 ) -> ProgrammaticResult:
     """Run the scheduler regime once, including bounded team cleanup.
 
@@ -766,6 +767,7 @@ async def run_team(
         serialize_turns=serialize_turns,
         environment=environment,
         record_delivery_tree=record_delivery_tree,
+        budget_explicit=budget_explicit,
     )
 
 

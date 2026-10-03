@@ -432,6 +432,8 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
         await scheduler.cleanup()
 
     (payload,) = _payloads(tracer.path, "assigned.topology_nodes")
+    per_agent_cap = scheduler._per_agent_cap()
+    assert payload["budget_source"] == "shared_rule"
     assert payload["entry_role"] == "analyst"
     assert payload["declared_roles"] == ["analyst", "coder", "tester"]
     assert payload["nodes"] == [
@@ -459,6 +461,7 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             # "carries bash and would be refused", which is what the Coder and
             # Tester record here.
             "shell": "absent",
+            "token_allowance": per_agent_cap,
         },
         {
             "aid": 1,
@@ -473,6 +476,7 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             # not one. The peers record the same answer agent 0 would: the
             # switch is run-wide, not per-agent.
             "shell": "sandbox_required",
+            "token_allowance": per_agent_cap,
         },
         {
             "aid": 2,
@@ -484,6 +488,7 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "workspace_isolated": False,
             # The tester uses the same sandboxed shell policy as the coder.
             "shell": "sandbox_required",
+            "token_allowance": per_agent_cap,
         },
     ]
 

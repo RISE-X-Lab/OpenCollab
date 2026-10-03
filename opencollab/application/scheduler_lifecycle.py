@@ -155,7 +155,7 @@ class LifecycleMixin:
                 parent_lease = self._release_turn_lease(parent_aid)
                 if parent_lease is not None:
                     self._track_review_parent_lease_release(parent_aid, 1)
-            budget = self._reserve_child_budget(aid)
+            budget = self._reserve_child_budget(aid, role)
             if budget <= 0:
                 raise RuntimeError(
                     "Cannot spawn agent: team token budget is fully allocated."

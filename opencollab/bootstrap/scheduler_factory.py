@@ -283,10 +283,16 @@ def build_scheduler(
         worktree_pool=worktree_pool,
         event_sink=event_bus,
         tracer=ctx.tracer,
-        max_budget_tokens=cfg["budget"],
+        # Declared per-role allowances are independent, so the team total is
+        # their sum; otherwise one shared pool of the configured budget.
+        max_budget_tokens=(
+            sum(team_cfg.role_budgets.values()) if team_cfg.role_budgets else cfg["budget"]
+        ),
         permission_policy=ctx.permission_policy,
         topology=team_cfg.topology,
         roles=tuple(team_cfg.roles),
+        role_budgets=team_cfg.role_budgets,
+        entry_role=team_cfg.entry,
         prebuild_team=prebuild_team,
         serialize_turns=serialize_turns,
         delivery_tree_probe=delivery_tree_probe,

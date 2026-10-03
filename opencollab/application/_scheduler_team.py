@@ -329,7 +329,7 @@ class SchedulerTeamMixin:
         aid = self.table.allocate_aid()
         env: Any | None = None
         try:
-            budget = self._reserve_child_budget(aid)
+            budget = self._reserve_child_budget(aid, role)
             if budget <= 0:
                 raise RuntimeError(
                     f"Cannot prebuild role '{role}': a team token budget of "
@@ -404,6 +404,8 @@ class SchedulerTeamMixin:
                     # the same capabilities" is a claim about the run, and it has
                     # to be checkable from the run's own records.
                     "shell": _shell_state(agent, env),
+                    # The most this agent may spend over the whole run.
+                    "token_allowance": self._agent_cap(aid, scb.agent.name),
                 }
             )
         return nodes
@@ -467,6 +469,9 @@ class SchedulerTeamMixin:
                     # default, so the run says which way it was set the same way
                     # each node says whether its workspace was isolated.
                     "turns_serialized": bool(self._serialize_turns),
+                    # Where each node's ``token_allowance`` came from: the team
+                    # file's per-role budgets, or the shared ``per_agent_cap`` rule.
+                    "budget_source": "team_file" if self._role_budgets else "shared_rule",
                     "nodes": self._assigned_topology_nodes(),
                 },
             )
