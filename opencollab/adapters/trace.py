@@ -17,6 +17,7 @@ import queue
 import threading
 import time
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -269,8 +270,16 @@ class Tracer:
         payload: dict[str, Any],
         tokens: int = 0,
         latency: float = 0.0,
+        *,
+        aid: int | None = None,
+        role: str | None = None,
     ) -> None:
-        """Record a single step. step_type: llm_call | tool_exec | delegate | compaction | error."""
+        """Record a single step. step_type: llm_call | tool_exec | delegate | compaction | error.
+
+        ``aid`` and ``role`` name the agent the record is about; a session
+        writes through ``for_agent`` so they are filled for it. ``None`` marks a
+        record written on no agent's behalf (the scheduler's own records).
+        """
         with self._state_lock:
             self._step_counter += 1
             step = self._step_counter
@@ -278,6 +287,8 @@ class Tracer:
             "timestamp": time.time(),
             "step": step,
             "run_id": self.run_id,
+            "aid": aid,
+            "role": role,
             "type": step_type,
             "payload": payload,
             "metrics": {"tokens": tokens, "latency_s": round(latency, 4)},
@@ -299,6 +310,15 @@ class Tracer:
             except queue.Full:
                 self._state.write_error = "BufferError: trajectory queue is full"
                 self._state.dropped_steps += 1
+
+
+    def for_agent(self, aid: int, agent: Any) -> AgentTraceView:
+        """A view of this tracer whose records name ``aid`` and ``agent.name``."""
+        return AgentTraceView(self, lambda: (aid, getattr(agent, "name", None)))
+
+    def for_identity(self, identity: Callable[[], tuple[int | None, Any]]) -> AgentTraceView:
+        """A view whose records name whatever ``identity()`` returns at write time."""
+        return AgentTraceView(self, identity)
 
     def flush(self) -> None:
         """Force flush to disk."""
@@ -358,3 +378,42 @@ class Tracer:
             # Python cannot propagate destructor failures to a caller. Explicit
             # close sites retain their ordinary error handling and reporting.
             pass
+
+
+class AgentTraceView:
+    """One agent's handle on a shared ``Tracer``: same file, same step counter.
+
+    The identity is read when each record is written, not when the view is
+    made: a prebuilt teammate is named after its session is built, and a
+    restored session takes its aid from the snapshot after construction.
+    """
+
+    def __init__(self, tracer: Tracer, identity: Callable[[], tuple[int | None, Any]]) -> None:
+        self._tracer = tracer
+        self._identity = identity
+
+    def log_step(
+        self,
+        step_type: str,
+        payload: dict[str, Any],
+        tokens: int = 0,
+        latency: float = 0.0,
+    ) -> None:
+        aid, role = self._identity()
+        self._tracer.log_step(
+            step_type,
+            payload,
+            tokens,
+            latency,
+            aid=aid,
+            role=role if isinstance(role, str) else None,
+        )
+
+    def for_agent(self, aid: int, agent: Any) -> AgentTraceView:
+        return self._tracer.for_agent(aid, agent)
+
+    def for_identity(self, identity: Callable[[], tuple[int | None, Any]]) -> AgentTraceView:
+        return self._tracer.for_identity(identity)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._tracer, name)

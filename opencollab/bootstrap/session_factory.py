@@ -25,6 +25,7 @@ from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.llm.types import model_capabilities
 from opencollab.adapters.repo_map import build_repo_map
 from opencollab.adapters.safe_files import ensure_directory_no_symlinks
+from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.trace import Tracer
 from opencollab.application.ports import (
     AskUserPort,
@@ -35,6 +36,7 @@ from opencollab.application.ports import (
     SchedulerPort,
     SessionStorePort,
     ShaperPort,
+    SnapshotStorePort,
 )
 from opencollab.application.scheduler import LaunchSpec
 from opencollab.application.session import Session
@@ -271,10 +273,33 @@ def load_session(
     agent: Agent,
     **kwargs: Any,
 ) -> Session:
-    """Build a session and restore the snapshot at ``path``."""
+    """Build a session and restore the snapshot at ``path``.
+
+    Without an explicit ``aid`` the session is built under the snapshot's own,
+    so the records written while it is built already name the agent it will be.
+    """
+    if "aid" not in kwargs:
+        snapshot_aid = _snapshot_aid(path, agent, kwargs.get("store"))
+        if snapshot_aid is not None:
+            kwargs["aid"] = snapshot_aid
     session = build_session(agent=agent, **kwargs)
     session.restore(path)
     return session
+
+
+def _snapshot_aid(path: str, agent: Agent, store: SessionStorePort | None) -> int | None:
+    """The aid a snapshot was saved under, or ``None`` if it records none.
+
+    Anything unreadable is left for ``restore`` to report.
+    """
+    resolved = store if store is not None else SessionStore()
+    if not isinstance(resolved, SnapshotStorePort):
+        return None
+    try:
+        snapshot = resolved.load_snapshot(path, agent.system_prompt)
+        return int(snapshot["aid"])
+    except Exception:  # noqa: BLE001 - restore raises the real error
+        return None
 
 
 def snapshot_session(
