@@ -441,6 +441,7 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "aid": 0,
             "role": "analyst",
             "entry": True,
+            "model": CONFIG["model"],
             # Headless, so the analyst's ask_user is dropped by the registry.
             # ``message_agent`` is the one addition ``_prebuildable_default``
             # makes: without it the Analyst's two edges are unwalkable and the
@@ -467,6 +468,7 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "aid": 1,
             "role": "coder",
             "entry": False,
+            "model": CONFIG["model"],
             "tools": sorted(CODER_TOOL_NAMES),
             "permission_mode": "auto",
             "workspace": workspaces[1],
@@ -482,6 +484,7 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "aid": 2,
             "role": "tester",
             "entry": False,
+            "model": CONFIG["model"],
             "tools": sorted(TESTER_TOOL_NAMES),
             "permission_mode": "auto",
             "workspace": workspaces[2],

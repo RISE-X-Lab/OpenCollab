@@ -386,6 +386,9 @@ class SchedulerTeamMixin:
                     "aid": aid,
                     "role": scb.agent.name,
                     "entry": aid == entry_aid,
+                    # The model this seat calls: a role's ``model:`` override,
+                    # else the run's model.
+                    "model": getattr(agent, "model", None),
                     "tools": tools,
                     # What gates this agent's risky actions. "confirm" means a
                     # permission policy is wired and something outside the agent
