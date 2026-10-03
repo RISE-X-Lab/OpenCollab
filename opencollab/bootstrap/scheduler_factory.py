@@ -119,6 +119,7 @@ def build_scheduler(
     serialize_turns: bool = False,
     environment: Environment | None = None,
     record_delivery_tree: bool = False,
+    run_id: str | None = None,
 ) -> Scheduler:
     """Build the Scheduler and let it create agent 0 (the init process).
 
@@ -314,12 +315,14 @@ def build_scheduler(
             if team_config_path is not None
             else resolve_team_file(ctx.workspace)
         )
-        run_id = os.path.basename(run_dir)
+        # The caller's run id when it minted one (the programmatic team run
+        # writes the same id to its trajectory); else the run folder's name.
+        manifest_run_id = run_id if run_id is not None else os.path.basename(run_dir)
         started_at = datetime.now(timezone.utc).isoformat()
 
         def _manifest_payload() -> dict:
             return {
-                "run_id": run_id,
+                "run_id": manifest_run_id,
                 "started_at": started_at,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "team_file": str(team_file) if team_file else None,

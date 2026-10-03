@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
@@ -67,9 +68,12 @@ async def run_team(
     context = build_runtime_context(workspace, run_config, trace=False)
     team_config = load_team_config(workspace, path=team_config_path)
     _programmatic._claim_artifacts(artifacts)
+    # One id per run, written to the trajectory, the team.json manifest and the
+    # result, so the three join on it and two runs never share one.
+    run_id = f"team-{uuid.uuid4().hex}"
     if artifacts is not None and trace:
         context.tracer = Tracer(
-            run_id="team",
+            run_id=run_id,
             output_dir=str(artifacts),
             filename="trajectory.jsonl",
         )
@@ -91,6 +95,7 @@ async def run_team(
             serialize_turns=serialize_turns,
             environment=environment,
             record_delivery_tree=record_delivery_tree,
+            run_id=run_id,
         )
     except BaseException as exc:
         tracer_failure = _programmatic._close_tracer(context.tracer)
@@ -218,6 +223,7 @@ async def run_team(
         artifacts=artifacts,
         error=failure or wind_down_failure,
         metrics={
+            "run_id": run_id,
             "steps": int(getattr(lead, "step_count", 0)),
             "sessions": len(scheduler.table.entries),
             **({"tree_snapshots": [dict(row) for row in scheduler.delivery_tree_snapshots]}

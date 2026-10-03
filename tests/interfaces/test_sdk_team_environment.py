@@ -218,3 +218,21 @@ async def test_a_team_says_nothing_about_an_environment_it_was_lent(
     assert metrics["session_quiesced"] is True
     assert metrics["environment_owned"] is False
     assert metrics["environment_quiesced"] is None
+
+
+async def test_one_run_id_joins_the_trajectory_the_manifest_and_the_result(run_team_in):
+    """The three things a run leaves name the same run, and only that run.
+
+    The trajectory used to carry the constant ``"team"`` on every record and the
+    manifest the name of the artifacts directory, so the two files of one run
+    disagreed, and two runs written under one name could not be told apart.
+    """
+    import re
+
+    observed = await run_team_in(environment=None)
+    result = observed["result"]
+    run_id = result.metrics["run_id"]
+    assert re.fullmatch(r"team-[0-9a-f]{32}", run_id)
+    assert {record["run_id"] for record in observed["records"]} == {run_id}
+    manifest = json.loads((result.artifacts / "team.json").read_text(encoding="utf-8"))
+    assert manifest["run_id"] == run_id
