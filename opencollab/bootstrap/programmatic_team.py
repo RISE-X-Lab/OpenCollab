@@ -45,6 +45,7 @@ async def run_team(
     serialize_turns: bool = False,
     environment: Environment | None = None,
     record_delivery_tree: bool = False,
+    budget_explicit: bool = False,
 ) -> ProgrammaticResult:
     """Run the scheduler regime once, including bounded team cleanup.
 
@@ -62,10 +63,17 @@ async def run_team(
     session store are read from it -- while the environment is what agents
     execute in, which is how a team reaches a repository inside a container.
     """
-    run_config = dict(config)
-    run_config["budget"] = max_tokens
-    context = build_runtime_context(workspace, run_config, trace=False)
     team_config = load_team_config(workspace, path=team_config_path)
+    if team_config.role_budgets and budget_explicit:
+        raise ValueError(
+            "the team file declares per-role token budgets; drop budget= from "
+            "this call, or remove the budgets from the file"
+        )
+    run_config = dict(config)
+    run_config["budget"] = (
+        sum(team_config.role_budgets.values()) if team_config.role_budgets else max_tokens
+    )
+    context = build_runtime_context(workspace, run_config, trace=False)
     _programmatic._claim_artifacts(artifacts)
     if artifacts is not None and trace:
         context.tracer = Tracer(

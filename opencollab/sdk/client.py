@@ -343,6 +343,11 @@ class OpenCollab:
         run records which way it was set, under
         ``assigned.topology_nodes.turns_serialized``.
 
+        ``budget`` is the team's shared token pool. A team file that declares
+        per-role allowances (``budget.tokens``) sets the budget itself — each
+        agent is held to its own allowance and the total is their sum — so
+        passing ``budget`` with such a file raises ``ValueError``.
+
         ``record_delivery_tree`` returns ``metrics["tree_snapshots"]``: the diff
         of the tree this run is graded on — agent 0's — taken before every turn
         and at every teammate message that was queued. Two consecutive rows
@@ -389,6 +394,7 @@ class OpenCollab:
                 serialize_turns=serialize_turns,
                 environment=self._environment,
                 record_delivery_tree=record_delivery_tree,
+                budget_explicit=budget is not None,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc

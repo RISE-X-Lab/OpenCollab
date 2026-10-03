@@ -113,7 +113,28 @@ class SchedulerPersistenceMixin:
         than budgeted). This catches the team total regardless of how the spend
         is distributed across sessions.
         """
+        if self._role_budgets:
+            # Independent allowances: the team is out of tokens only when every
+            # seated agent has spent its own. One agent's overshoot is that
+            # agent's, and must not stop a teammate with allowance left.
+            entries = self.table.entries
+            return bool(entries) and all(
+                self._session_used_tokens(aid) >= self._agent_cap(aid)
+                for aid in entries
+            )
         return self.used_tokens >= self._max_budget_tokens
+
+    def _role_of(self, aid: int) -> str | None:
+        if aid == 0 and self._entry_role is not None:
+            return self._entry_role
+        scb = self.table.get(aid)
+        return scb.agent.name if scb is not None else None
+
+    def _agent_cap(self, aid: int, role: str | None = None) -> int | None:
+        """The most ``aid`` may spend: its role's allowance, or the shared rule's cap."""
+        if self._role_budgets:
+            return self._role_budgets[role if role is not None else self._role_of(aid)]
+        return self._per_agent_cap()
 
     def _declared_team_size(self) -> int:
         """N — how many roles the team config declares, agent 0's role included."""
@@ -157,7 +178,7 @@ class SchedulerPersistenceMixin:
         team total would overstate agent 0's allowance by ``N / c`` once per
         turn, for the whole run.
         """
-        cap = self._per_agent_cap()
+        cap = self._agent_cap(0)
         return self._max_budget_tokens if cap is None else cap
 
     def _seed_entry_lease(self) -> None:
@@ -216,7 +237,7 @@ class SchedulerPersistenceMixin:
             committed += self._lease_remaining(aid, grant, self._lease_baseline.get(aid, 0))
         return committed
 
-    def _reserve_child_budget(self, aid: int) -> int:
+    def _reserve_child_budget(self, aid: int, role: str | None = None) -> int:
         """The budget a newly created agent's session is built with.
 
         Declared roster: its ``per_agent_cap``, and nothing is booked. Seating an
@@ -228,7 +249,7 @@ class SchedulerPersistenceMixin:
         spawn that runs before the first child's await already sees the updated
         allocation and cannot oversubscribe the pool.
         """
-        cap = self._per_agent_cap()
+        cap = self._agent_cap(aid, role)
         if cap is not None:
             return cap
         grant = split_budget(self._max_budget_tokens, self._budget_committed())
@@ -248,6 +269,10 @@ class SchedulerPersistenceMixin:
         """
         agent_remaining = cap - used
         pool_remaining = self._max_budget_tokens - self.used_tokens
+        if self._role_budgets:
+            # Independent allowances: the pool is only their sum, so what is
+            # left of it says nothing about what this agent may still spend.
+            return max(0, agent_remaining)
         if agent_remaining <= 0 < pool_remaining:
             self._trace_agent_cap_reached(
                 aid,
@@ -317,7 +342,7 @@ class SchedulerPersistenceMixin:
         """
         self._release_turn_lease(aid)
         baseline = self._session_used_tokens(aid)
-        cap = self._per_agent_cap()
+        cap = self._agent_cap(aid)
         if cap is None:
             grant = max(0, self._max_budget_tokens - self._budget_committed())
         else:

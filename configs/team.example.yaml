@@ -61,3 +61,11 @@ topology:
 # Unknown names or keys are refused at load.
 # context: default
 # context: { policy: no_history_compaction, tool_result_budget: 20000 }
+
+# Optional: token allowances. `budget.tokens` at the top level is every role's
+# allowance; a role may state its own `budget: { tokens: N }`. Once any role has
+# one, every role must, and the allowances are independent: each agent is held
+# to its own and nothing else, and the team total is their sum. Requires a
+# declared roster (`prebuild_team=True`); `client.team(budget=)` is then refused.
+# Omitted, the team shares one pool of the run's budget.
+# budget: { tokens: 2000000 }

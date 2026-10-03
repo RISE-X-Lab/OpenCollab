@@ -154,6 +154,17 @@ class RoleConfig(BaseModel):
     # ``ContextBuilder`` (prompt, tool limits) and ``DefaultSessionFactory``
     # (shaper, safety), which is where the profile's other halves are wired.
     profile: str | None = None
+    # This role's own token allowance, from the team file (``budget.tokens`` at
+    # the team level, overridable per role). ``None`` on every role leaves the
+    # team on the shared ``per_agent_cap`` rule; see ``TeamConfig.role_budgets``.
+    budget_tokens: int | None = Field(default=None, gt=0)
+
+    @field_validator("budget_tokens", mode="before")
+    @classmethod
+    def _reject_boolean_budget(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("role budget must not be a boolean")
+        return value
 
     @field_validator("prompt")
     @classmethod
@@ -192,6 +203,21 @@ class RoleConfig(BaseModel):
             raise ValueError("role temperature must not be a boolean")
         return value
 
+class _BudgetFileModel(BaseModel):
+    """On-disk ``budget`` entry, at the team level or on one role."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tokens: int = Field(gt=0)
+
+    @field_validator("tokens", mode="before")
+    @classmethod
+    def _reject_boolean_tokens(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("budget tokens must not be a boolean")
+        return value
+
+
 class _RoleFileModel(BaseModel):
     """On-disk role entry; ``prompt`` or ``prompt_file`` (resolved at load)."""
 
@@ -210,6 +236,7 @@ class _RoleFileModel(BaseModel):
     thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
     profile: str | None = None
+    budget: _BudgetFileModel | None = None
 
     @field_validator("profile")
     @classmethod
@@ -285,6 +312,9 @@ class _TeamFileModel(BaseModel):
     # The context policy every seat's session runs (see
     # ``bootstrap.context_policy``): a name, or ``{policy:, tool_result_budget:}``.
     context: Any = None
+    # Every role's token allowance unless the role states its own. Declaring
+    # any allowance makes them independent: see ``TeamConfig.role_budgets``.
+    budget: _BudgetFileModel | None = None
 
     @field_validator("tool_limits", mode="before")
     @classmethod
@@ -377,6 +407,27 @@ class TeamConfig:
             "topology",
             Topology(edges=canonical_edges, allow_all=self.topology.allow_all),
         )
+        unbudgeted = [
+            name for name, role in self.roles.items() if role.budget_tokens is None
+        ]
+        if unbudgeted and len(unbudgeted) < len(self.roles):
+            raise ValueError(
+                f"roles {unbudgeted} have no token budget while others do; set "
+                "budget.tokens at the team level or on each role"
+            )
+
+    @property
+    def role_budgets(self) -> dict[str, int]:
+        """Each role's independent token allowance, or ``{}`` if none is declared.
+
+        Declared allowances are independent: each agent is held to its own and
+        to nothing else, and the team's total is their sum. Undeclared, the team
+        keeps one shared pool divided by ``per_agent_cap``.
+        """
+        budgets = {name: role.budget_tokens for name, role in self.roles.items()}
+        if any(tokens is None for tokens in budgets.values()):
+            return {}
+        return {name: int(tokens) for name, tokens in budgets.items() if tokens is not None}
 
     def role_for(self, name: str) -> RoleConfig:
         """Return the declared role, or a generic fallback for ad-hoc roles."""
@@ -556,6 +607,11 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
             thinking_params=entry.thinking_params,
             tools=list(entry.tools),
             profile=entry.profile,
+            budget_tokens=(
+                entry.budget.tokens
+                if entry.budget is not None
+                else model.budget.tokens if model.budget is not None else None
+            ),
         )
 
     edges: dict[str, frozenset[str]] = {}
