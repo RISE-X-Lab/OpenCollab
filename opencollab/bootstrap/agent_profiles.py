@@ -27,7 +27,8 @@ class SingleAgentProfile:
     system_prompt: str
     default_steps: int
     resolve_tools: Callable[[str | Sequence[Any] | None], tuple[Any, ...]]
-    build_shaper: Callable[[LLMPort, Any], ShaperPort]
+    #: ``(llm, summarizer, **context_policy_options) -> shaper``.
+    build_shaper: Callable[..., ShaperPort]
     wrap_safety: Callable[[SafetyPolicyPort | None, str], SafetyPolicyPort]
     honor_explicit_limits: bool = False
     tool_limits: Mapping[str, Mapping[str, int]] = field(
@@ -48,13 +49,14 @@ def _single2_tools(value: str | Sequence[Any] | None) -> tuple[Any, ...]:
     return resolve_tools(value)
 
 
-def _single2_shaper(llm: LLMPort, summarizer: Any) -> ShaperPort:
+def _single2_shaper(llm: LLMPort, summarizer: Any, **policy_options: Any) -> ShaperPort:
     from opencollab.bootstrap.container import _build_default_shaper
 
     return _build_default_shaper(
         llm,
         summarizer,
         preserve_tool_result_tail=True,
+        **policy_options,
     )
 
 

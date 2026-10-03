@@ -53,3 +53,11 @@ topology:
 #   git_diff: { max_diff_chars: 8000, max_status_chars: 2000 }
 #   file_read: { max_read_chars: 30000 }
 #   grep: { max_grep_chars: 10000 }
+
+# Optional: the context policy every agent's session runs. `default` (the value
+# when omitted) is the lazy-degradation pipeline: a per-tool-result budget, then
+# pressure-triggered clearing of old tool output, snipping of old turns and
+# summarization. `no_history_compaction` keeps only the per-result budget.
+# Unknown names or keys are refused at load.
+# context: default
+# context: { policy: no_history_compaction, tool_result_budget: 20000 }

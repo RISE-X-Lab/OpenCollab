@@ -30,6 +30,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from opencollab.adapters.safe_files import read_regular_text
+from opencollab.bootstrap.context_policy import ContextPolicy, resolve_context_policy
 from opencollab.bootstrap.tool_registry import (
     COORDINATION_TOOL_NAMES,
     KNOWN_TOOL_NAMES,
@@ -281,11 +282,19 @@ class _TeamFileModel(BaseModel):
     # team tune output budgets to its backend's context size (see
     # ``bootstrap.tool_registry.build_tools_for_role``).
     tool_limits: dict[str, dict[str, int]] = Field(default_factory=dict)
+    # The context policy every seat's session runs (see
+    # ``bootstrap.context_policy``): a name, or ``{policy:, tool_result_budget:}``.
+    context: Any = None
 
     @field_validator("tool_limits", mode="before")
     @classmethod
     def _validate_tool_limits(cls, value: object) -> dict[str, dict[str, int]]:
         return validate_tool_limits(value)
+
+    @field_validator("context")
+    @classmethod
+    def _validate_context(cls, value: object) -> ContextPolicy:
+        return resolve_context_policy(value)
 
 
 @dataclass(frozen=True)
@@ -302,6 +311,9 @@ class TeamConfig:
     entry: str | None = None
     # Tool name -> constructor kwargs (output caps); applied by the registry.
     tool_limits: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Applied to every seat; the default is the pipeline every session ran
+    # before a team file could name one.
+    context: ContextPolicy = field(default_factory=ContextPolicy)
 
     def __post_init__(self) -> None:
         normalized_tool_limits = validate_tool_limits(self.tool_limits)
@@ -579,6 +591,7 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
         hooks=_build_hook_specs(model.hooks),
         entry=_resolve_entry_role(model.entry, roles),
         tool_limits={name: dict(kwargs) for name, kwargs in model.tool_limits.items()},
+        context=resolve_context_policy(model.context),
     )
 
 

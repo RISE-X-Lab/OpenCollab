@@ -260,6 +260,13 @@ on the structural fact that pinned sources are `role == "user"` context messages
 — never tool results, never assistant-tool_calls leaders — so they are protected
 implicitly.
 
+**Choosing a policy.** A team file selects the pipeline every agent runs with a
+top-level `context:` entry (`bootstrap/context_policy.py`). `default`, the value
+when the entry is omitted, is the pipeline above. `no_history_compaction` keeps
+only rung ② and turns off A0, A and B. Either may set `tool_result_budget`,
+rung ②'s character cap. Unknown names or keys are refused at load, and each
+session's `session.history_compaction` trace record names the policy it ran.
+
 **Every rung returns a new list of new dicts and never mutates `state.messages`.**
 The persisted transcript keeps the full original history, so a resume is lossless
 even after aggressive compaction.

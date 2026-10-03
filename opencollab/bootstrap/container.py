@@ -62,6 +62,7 @@ from opencollab.application.shaping import (
 )
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
+from opencollab.bootstrap.context_policy import ContextPolicy
 from opencollab.bootstrap.runtime_context import (
     RuntimeContext,
     build_runtime_context,
@@ -248,6 +249,7 @@ def _trace_history_compaction(
     agent: Agent,
     resolved_llm: LLMPort,
     shaper_injected: bool,
+    context_policy: ContextPolicy,
 ) -> None:
     """Record, once per session, the compaction thresholds it runs under.
 
@@ -268,8 +270,19 @@ def _trace_history_compaction(
         payload: dict[str, Any] = {
             "aid": aid,
             "model": getattr(agent, "model", None),
+            "context_policy": None if shaper_injected else context_policy.name,
         }
-        if shaper_injected:
+        if not shaper_injected and not context_policy.history_compaction:
+            # The policy runs no history layer, so no threshold is in force.
+            payload.update(
+                {
+                    "context_window_tokens": None,
+                    "history_trigger_tokens": None,
+                    "history_target_tokens": None,
+                    "history_thresholds_from": "disabled_by_context_policy",
+                }
+            )
+        elif shaper_injected:
             # A caller-supplied shaper carries its own thresholds; this wiring
             # never derived any. Writing the numbers we would have used would
             # name a setting no layer is enforcing.
@@ -293,8 +306,14 @@ def _build_default_shaper(
     summarizer: ReadTimeSummarizer,
     *,
     preserve_tool_result_tail: bool = False,
+    history_compaction: bool = True,
+    tool_result_budget: int = DEFAULT_TOOL_RESULT_BUDGET,
 ) -> ShaperPort:
     """Assemble the default lazy-degradation shaper pipeline.
+
+    ``history_compaction=False`` keeps only the per-tool-result budget, and
+    ``tool_result_budget`` sets that budget; both are how a team file's
+    context policy reaches this wiring (see ``bootstrap.context_policy``).
 
     Cheapest/lowest-loss first: per-tool-result budget bounds any one result;
     the reactive history layers then bound the *total* view once it crosses the
@@ -330,6 +349,12 @@ def _build_default_shaper(
     # to fixed defaults when the model is unrecognised. Resolved through
     # ``_history_compaction_settings`` so the trajectory record and the wiring
     # read the SAME two numbers rather than each deriving its own.
+    per_result = PerToolResultBudgetShaper(
+        tool_result_budget,
+        preserve_tail=preserve_tool_result_tail,
+    )
+    if not history_compaction:
+        return ShaperPipeline((per_result,))
     settings = _history_compaction_settings(resolved_llm)
     history_trigger = settings["history_trigger_tokens"]
     history_target = settings["history_target_tokens"]
@@ -349,10 +374,7 @@ def _build_default_shaper(
     }
     return ShaperPipeline(
         (
-            PerToolResultBudgetShaper(
-                DEFAULT_TOOL_RESULT_BUDGET,
-                preserve_tail=preserve_tool_result_tail,
-            ),
+            per_result,
             ToolOutputClearShaper(
                 compactable_tools=COMPACTABLE_TOOL_NAMES,
                 keep_recent=min(DEFAULT_TOOL_CLEAR_KEEP_RECENT, affordable_groups),
@@ -406,6 +428,7 @@ def build_session_runtime(
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
     agent_profile: Any | None = None,
+    context_policy: ContextPolicy | None = None,
 ) -> SessionRuntime:
     """Build a ``SessionRuntime`` with the same construction order
     ``Session.__init__`` used to perform inline.
@@ -416,8 +439,10 @@ def build_session_runtime(
     ``seed_system_messages`` retain source-level provenance for layered system
     context; ``seed_user_messages`` are startup user-context messages appended
     after them (e.g. a spawned agent's task);
-    ``shaper`` reshapes the message list before each model call.
+    ``shaper`` reshapes the message list before each model call; without
+    one, ``context_policy`` (default: the default policy) picks the layers.
     """
+    resolved_context = context_policy if context_policy is not None else ContextPolicy()
     resolved_env = env if env is not None else LocalEnvironment()
     resolved_store: SessionStorePort = store if store is not None else SessionStore()
 
@@ -466,9 +491,13 @@ def build_session_runtime(
     if shaper is not None:
         resolved_shaper = shaper
     elif agent_profile is not None:
-        resolved_shaper = agent_profile.build_shaper(resolved_llm, summarizer)
+        resolved_shaper = agent_profile.build_shaper(
+            resolved_llm, summarizer, **resolved_context.shaper_options()
+        )
     else:
-        resolved_shaper = _build_default_shaper(resolved_llm, summarizer)
+        resolved_shaper = _build_default_shaper(
+            resolved_llm, summarizer, **resolved_context.shaper_options()
+        )
     # A profile shaper is NOT an injected one: ``build_shaper`` routes back
     # through ``_build_default_shaper``, so it runs on the very thresholds
     # derived above. Only a caller-supplied shaper carries thresholds this
@@ -479,6 +508,7 @@ def build_session_runtime(
         agent=agent,
         resolved_llm=resolved_llm,
         shaper_injected=shaper is not None,
+        context_policy=resolved_context,
     )
     runner = SessionRunUseCase(
         agent=agent,

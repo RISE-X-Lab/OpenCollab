@@ -54,6 +54,7 @@ def test_history_compaction_record_names_the_thresholds_in_force():
     assert records[0] == {
         "aid": 3,
         "model": "fake-model",
+        "context_policy": "default",
         "context_window_tokens": 1_015_576,
         "history_trigger_tokens": 982_576,
         "history_target_tokens": 736_932,

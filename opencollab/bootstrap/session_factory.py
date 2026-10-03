@@ -217,6 +217,7 @@ def build_session(
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
     agent_profile: Any | None = None,
+    context_policy: Any | None = None,
 ) -> Session:
     """Self-wiring ``Session`` factory.
 
@@ -248,6 +249,7 @@ def build_session(
         shaper=shaper,
         team_budget_exhausted=team_budget_exhausted,
         agent_profile=agent_profile,
+        context_policy=context_policy,
     )
     Session.__init__(
         session,
@@ -646,6 +648,7 @@ class DefaultSessionFactory:
             seed_user_messages=plan.startup_user_messages(),
             seed_system_messages=plan.startup_system_messages(),
             team_budget_exhausted=_team_budget_guard(scheduler),
+            context_policy=self._team.context,
             agent_profile=self._role_profile(role),
         )
 
@@ -709,6 +712,7 @@ class DefaultSessionFactory:
             aid=aid,
             seed_system_messages=plan.startup_system_messages(),
             team_budget_exhausted=_team_budget_guard(scheduler),
+            context_policy=self._team.context,
             agent_profile=self._role_profile(self._team.entry),
         )
 
