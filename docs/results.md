@@ -1,8 +1,7 @@
 # Benchmark results
 
 Five harnesses run the same model, GPT-5.6-Luna at `max` reasoning effort, on
-SWE-bench Pro (193 tasks), Terminal-Bench 2.1 (89 tasks), and DeepSWE
-(113 tasks). [OC (Base)](single2.md) is a single agent. [OC (Duo)](duo.md)
+SWE-bench Pro, Terminal-Bench 2.1, and DeepSWE. [OC (Base)](single2.md) is a single agent. [OC (Duo)](duo.md)
 produces two isolated solutions, compares their evidence, and adopts one.
 
 <p align="center">
@@ -20,22 +19,23 @@ candidates, and it still costs less than Claude Code on each benchmark.
 ## Duo against Base, task by task
 
 Duo is a Workflow: its code issues every handoff, so both coders run on every
-task. The table pairs Duo with Base on each task. The last column is the exact
-two-sided sign test on the tasks that only one of them passed.
+task. The table pairs Duo with Base on each task and gives each outcome as a
+share of the benchmark's tasks. The last column is the exact two-sided sign
+test on the tasks that only one of them passed.
 
 | Benchmark | Both pass | Only Duo | Only Base | Both fail | p |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Terminal-Bench 2.1 (89 tasks) | 68 | 6 | 3 | 12 | 0.51 |
-| DeepSWE (113 tasks) | 58 | 21 | 5 | 29 | 0.0025 |
+| Terminal-Bench 2.1 | 76.40% | 6.74% | 3.37% | 13.48% | 0.51 |
+| DeepSWE | 51.33% | 18.58% | 4.42% | 25.66% | 0.0025 |
 
 On DeepSWE, Duo gains 14.2 points over Base and the difference is significant.
-On Terminal-Bench 2.1 it gains 3.4 points, and a split of 6 tasks to 3 is too
-few to separate the two.
+On Terminal-Bench 2.1 it gains 3.4 points, too few discordant tasks to separate
+the two.
 
 ## Network access on Terminal-Bench 2.1
 
 A Terminal-Bench 2.1 task gets internet access when its own `allow_internet`
-flag allows it. Ten generation attempts on that benchmark received material
+flag allows it. Some generation attempts on that benchmark received material
 that gives away the answer. Every pass obtained with such material was withdrawn or
 replaced by a fresh run before scoring, and the table above reports the results
 after this handling.

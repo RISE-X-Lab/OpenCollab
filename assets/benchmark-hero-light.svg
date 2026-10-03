@@ -7,7 +7,6 @@
     <text x="28" y="70" font-size="15" fill="#656d76">GPT-5.6-Luna at max reasoning effort across all five harnesses. Higher is better. Axes span 40–100%.</text>
     <rect x="16" y="150" width="948" height="42" rx="8" fill="#f4f0ff"/>
     <text x="200.0" y="110" font-size="17" font-weight="600">SWE-bench Pro</text>
-    <text x="200.0" y="131" font-size="13" fill="#656d76">193 tasks</text>
     <path d="M200.0 144V362" stroke="#d8dee4" stroke-width="1"/>
     <text x="200.0" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">40</text>
     <path d="M263.3 144V362" stroke="#d8dee4" stroke-width="1"/>
@@ -17,7 +16,6 @@
     <path d="M390.0 144V362" stroke="#d8dee4" stroke-width="1"/>
     <text x="390.0" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">100</text>
     <text x="450.7" y="110" font-size="17" font-weight="600">Terminal-Bench 2.1</text>
-    <text x="450.7" y="131" font-size="13" fill="#656d76">89 tasks</text>
     <path d="M450.7 144V362" stroke="#d8dee4" stroke-width="1"/>
     <text x="450.7" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">40</text>
     <path d="M514.0 144V362" stroke="#d8dee4" stroke-width="1"/>
@@ -27,7 +25,6 @@
     <path d="M640.7 144V362" stroke="#d8dee4" stroke-width="1"/>
     <text x="640.7" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">100</text>
     <text x="701.3" y="110" font-size="17" font-weight="600">DeepSWE</text>
-    <text x="701.3" y="131" font-size="13" fill="#656d76">113 tasks</text>
     <path d="M701.3 144V362" stroke="#d8dee4" stroke-width="1"/>
     <text x="701.3" y="380" font-size="12" text-anchor="middle" fill="#656d76" style="font-variant-numeric: tabular-nums">40</text>
     <path d="M764.6 144V362" stroke="#d8dee4" stroke-width="1"/>

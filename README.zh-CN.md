@@ -112,7 +112,7 @@ Framework with Programmable Collaboration and Controllable Runtime*](https://arx
 ```bibtex
 @misc{hsu2026opencollab,
   author        = {Hsu, Chun-Wah and Gong, Kai and Wu, Yu and Chen, Xianhe and
-                   Liu, Mengyang and Li, Jie and Li, Hanyu and Liu, Zhixuan and
+                   Li, Hanyu and Li, Jie and Liu, Mengyang and Liu, Zhixuan and
                    Tang, Naisheng and Chi, Jiaying and Fan, Ziheng and He, Xuning and
                    Yang, Xiaokang and Jiang, Xue and Dong, Yihong},
   title         = {OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and Controllable Runtime},

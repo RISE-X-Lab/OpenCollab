@@ -17,7 +17,9 @@ candidate selection, and patch adoption through the CLI and SDK.
 The [Chinese guide](duo/README.zh-CN.md) provides the same instructions in Chinese.
 The [benchmark results](results.md) page reports the cross-harness comparison
 and the paired Duo–Base test. The [Adherence page](adherence.md) explains what
-the runtime records and how we measure whether a declared team collaborated.
+the runtime records, the seven conditions for a controlled comparison and how
+ten agent artifacts meet them, and how we measure whether a declared team
+collaborated.
 The [native test evidence guide](test-evidence.md) explains Bash observation
 and the public Git patch parser.
 

@@ -38,12 +38,51 @@ collaboration*.
 - **Isolated workspaces.** Teammates can work in their own git worktrees and
   hand back their diffs.
 
+## Seven conditions for a controlled comparison
+
+Comparing two organizations is controlled only if everything else can be held
+fixed and each run can be checked against what it was declared to be. The paper
+names seven conditions. Five ask whether a factor can be set explicitly before
+a run: the model, the tools, the token budget, the context policy, and the
+topology. Two ask whether a run can be checked afterwards: **Realized** (the
+run's record holds the whole declared organization, with every call attributed
+to its agent) and **Compared** (every message names its sender and receiver,
+and every attempt to leave the declaration is refused or flagged). The paper
+audits ten agent artifacts against them, each read in code at a pinned version
+except Claude Code, which is read from its documentation:
+
+| Artifact | Model | Tools | Budget | Context | Topology | Realized | Compared |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| AutoGen | ✓ | ✓ | ◐ | ✓ | ✓ | ✗ | ✗ |
+| AG2 | ◐ | ◐ | ✗ | ◐ | ◐ | ◐ | ✗ |
+| LangGraph | ◐ | ◐ | ✗ | ◐ | ◐ | ✗ | ✗ |
+| SWE-agent | ✓ | ✓ | ◐ | ✓ | ✗ | ✓ | ✗ |
+| OpenHands | ✓ | ✓ | ◐ | ◐ | ◐ | ◐ | ✗ |
+| Claude Code | ✓ | ✓ | ◐ | ✗ | ◐ | ◐ | ✗ |
+| Codex CLI | ✓ | ◐ | ✗ | ✗ | ◐ | ◐ | ✗ |
+| DeepSeek Harness | ✓ | ✓ | ✗ | ◐ | ◐ | ◐ | ✗ |
+| Inspect AI | ✓ | ✓ | ◐ | ◐ | ✓ | ◐ | ◐ |
+| HAL | ◐ | ✗ | ✗ | ✗ | ✗ | ◐ | ✗ |
+| **OpenCollab** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+✓ by the artifact's own settings and records; ◐ only through the researcher's
+code, or in part; ✗ not met.
+
+OpenCollab's row is read on its Team controller. Its
+[team file](../configs/README.md#team) sets each role's model, tools, token
+allowance, and context policy together with the edges. Every model call is
+admitted against the calling role's remaining allowance before it is sent.
+Each run's trace opens with the declared organization, every role with its
+model and tools and every edge, so a declared teammate that never acts still
+appears. A message along an undeclared edge, or a call outside a role's tool
+set, is refused and recorded.
+
 ## Measuring Adherence
 
 A run counts as adherent only if its trace shows that every declared role took
 part and that delegation, role boundaries, budget sharing, information flow,
 and context policy all held. **Adherence** is the share of adherent runs. On
-36 SWE-bench Pro tasks, one change to the same team moves it a long way:
+SWE-bench Pro, one change to the same team moves it a long way:
 
 | Change to the reference team | Adherence |
 | --- | ---: |
