@@ -27,8 +27,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from opencollab import OpenCollab, RunResult  # noqa: E402
+from opencollab.teams import declared_role_budgets  # noqa: E402
 
 DEFAULT_CONFIG = REPO_ROOT / "configs" / "team.collab.yaml"
+DEFAULT_POOL = 1_000_000
 
 #: Inherited by every agent's shell (the subprocess runner passes ``env=None``).
 #: A teammate's worktree whose changes cannot be read refuses to be cleaned up,
@@ -51,7 +53,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     source.add_argument("--prompt", help="the task, inline")
     source.add_argument("--prompt-file", help="the task, read from a file")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="team file")
-    parser.add_argument("--budget", type=int, default=1_000_000, help="token pool")
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=None,
+        help=(
+            f"token pool (default {DEFAULT_POOL:,}); not passed for a team file "
+            "that declares each role's allowance, which sets the budget itself"
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=None, help="seconds, whole run")
     parser.add_argument("--max-steps", type=int, default=100, help="step ceiling per seat")
     parser.add_argument("--model", default=None)
@@ -118,11 +128,16 @@ def main(argv: list[str] | None = None) -> int:
     for name, value in TEST_ARTIFACT_ENV.items():
         os.environ.setdefault(name, value)
     client = OpenCollab(args.workspace, model=args.model)
+    budget: dict[str, int] = {}
+    if args.budget is not None:
+        budget["budget"] = args.budget
+    elif not declared_role_budgets(args.config):
+        budget["budget"] = DEFAULT_POOL
     result = asyncio.run(
         client.team(
             _task_text(args),
             config=args.config,
-            budget=args.budget,
+            **budget,
             timeout=args.timeout,
             max_steps=args.max_steps,
             artifacts=args.artifacts,

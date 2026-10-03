@@ -367,3 +367,27 @@ def test_refused_message_is_reported_as_an_attempt_not_a_delivery(tmp_path):
     line = module._handoff_summary(Result())
     assert "message attempts: analyst=1" in line
     assert "messages sent" not in line
+
+
+def test_the_runner_lets_a_file_with_allowances_set_the_budget(monkeypatch, tmp_path):
+    # A file that declares each role's allowance sets the budget itself, and a
+    # run handed a pool as well refuses to start. The runner's own default
+    # pool must therefore not be passed for such a file.
+    module = _runner_module()
+    calls = _record_calls(module, monkeypatch)
+    team_file = tmp_path / "team.yaml"
+    team_file.write_text(
+        CONFIG.read_text(encoding="utf-8") + "\nbudget: {tokens: 2000000}\n",
+        encoding="utf-8",
+    )
+    module.main(["--workspace", str(tmp_path), "--prompt", "fix it", "--config", str(team_file)])
+    assert "budget" not in calls[-1]
+
+
+def test_the_runner_still_passes_its_pool_for_a_file_without_allowances(monkeypatch, tmp_path):
+    module = _runner_module()
+    calls = _record_calls(module, monkeypatch)
+    module.main(["--workspace", str(tmp_path), "--prompt", "fix it"])
+    assert calls[-1]["budget"] == 1_000_000
+    module.main(["--workspace", str(tmp_path), "--prompt", "fix it", "--budget", "900000"])
+    assert calls[-1]["budget"] == 900_000
