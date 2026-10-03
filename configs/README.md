@@ -159,8 +159,8 @@ OPENCOLLAB_FILTER_MESSAGES=true
 ## Team
 
 Define a multi-agent team in a YAML file. The file can set role prompts, model
-and temperature overrides, tool allowlists, and the directed spawn and message
-topology.
+and temperature overrides, tool allowlists, each role's token allowance, the
+context policy every session runs, and the directed spawn and message topology.
 
 ```bash
 cp configs/team.example.yaml configs/team.yaml
@@ -177,6 +177,24 @@ Coder and Tester each work within their own tool bundle. To add a role such as
 `reviewer`, declare it and its topology edges in a team file, then select that
 file through one of the explicit inputs. See `team.example.yaml` for the schema.
 A selected file that is missing or unsafe raises an error.
+
+Two optional entries hold a team's resources fixed in the file rather than at
+the call site:
+
+- `budget: { tokens: N }`, at the top level or on a role, gives each role its
+  own token allowance. Allowances are independent: each agent is held to its
+  own, and the team's total is their sum. Once one role has an allowance every
+  role must, the roster must be prebuilt, and a run that is also handed a
+  `budget` refuses to start. Without the entry, the team shares one pool.
+- `context:` names the context policy. `default`, the value when omitted, is
+  the full compaction pipeline; `no_history_compaction` keeps only the cap on
+  each tool result, which `tool_result_budget` can set.
+
+A Team run's trajectory opens with the declared organization: every role with
+its model, tools and allowance, and every edge, so a role that never acts still
+appears. A run started with `team()` gets its own `run_id`, which its
+trajectory, `team.json` and the result's metrics share. `opencollab.teams` reads the same facts from a file
+before a run (`declared_role_budgets`, `declared_context_policy`).
 
 `team.collab.yaml` is a ready-made three-role team (Analyst, Coder, Tester) that
 hands work over rather than doing it in one seat, with every role prompt inline.

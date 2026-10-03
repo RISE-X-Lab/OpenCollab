@@ -275,6 +275,8 @@ context overflow.
 A team stores active agents in a session table and schedules them cooperatively.
 The `spawn` operation creates child sessions. Budget is reserved before the
 first `await`, so a concurrent child batch cannot overspend the shared pool.
+A team file may instead give each role its own allowance; each agent is then
+held to that allowance alone, and the team's total is their sum.
 Each child can work in an isolated git worktree and return its diff with the
 result.
 

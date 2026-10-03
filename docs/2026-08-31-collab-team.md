@@ -97,6 +97,10 @@ one line to stderr saying whether the handoff happened.
 at most `c * pool / N` with `c = 1.0` and `N = 3`, so `--budget 900000` gives
 every seat a 300k ceiling. Nothing is reserved at seating, so a role the model
 never uses holds no tokens and its allowance stays available to the others.
+A team file that declares `budget: { tokens: N }` replaces the pool with an
+independent allowance per role; the script then passes no pool unless
+`--budget` is given, and the run refuses one if it is (see
+[the configuration guide](../configs/README.md#team)).
 
 ### SDK
 

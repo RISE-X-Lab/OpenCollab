@@ -68,7 +68,7 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
   </picture>
 </p>
 
-- **Team。** 一个 YAML 文件声明每个角色的 prompt、模型和工具，以及谁可以给谁发消息。从示例开始：
+- **Team。** 一个 YAML 文件声明每个角色的 prompt、模型、工具和 token 额度，所有角色共用的 context policy，以及谁可以给谁发消息。从示例开始：
 
   ```bash
   cp configs/team.example.yaml configs/team.yaml   # 编辑角色、工具和拓扑

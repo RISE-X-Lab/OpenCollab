@@ -70,8 +70,9 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
   </picture>
 </p>
 
-- **Team.** A YAML file declares each role's prompt, model, and tools, and who
-  may message whom. Start from the example:
+- **Team.** A YAML file declares each role's prompt, model, tools, and token
+  allowance, the context policy, and who may message whom. Start from the
+  example:
 
   ```bash
   cp configs/team.example.yaml configs/team.yaml   # edit roles, tools, and topology
