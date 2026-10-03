@@ -7,6 +7,10 @@ figure times the number of roles the file declares (see
 how many roles a team file declares *before* it can say what pool to run it
 with, and reading that out of the file is the only way to get it right when the
 file changes.
+
+A file may instead declare each role's allowance itself (``budget.tokens``);
+the run then takes its budget from the file, and ``declared_role_budgets`` is
+how a caller finds that out before it passes a pool of its own.
 """
 
 import hashlib
@@ -14,6 +18,8 @@ import hashlib
 from opencollab.bootstrap.team_config import load_team_config
 
 __all__ = [
+    "declared_context_policy",
+    "declared_role_budgets",
     "declared_role_names",
     "declared_role_profiles",
     "declared_role_prompt_digests",
@@ -90,3 +96,29 @@ def declared_role_profiles(path: str) -> dict[str, str | None]:
     """
     config = load_team_config(path=path)
     return {name: role.profile for name, role in config.roles.items()}
+
+
+def declared_role_budgets(path: str) -> dict[str, int]:
+    """Each declared role's token allowance, role name to tokens, or ``{}``.
+
+    A file that declares allowances (``budget.tokens`` at the top level or on
+    each role) sets the team's budget itself: each agent is held to its own
+    allowance and the total is their sum, and a run that is also handed a pool
+    refuses to start. A caller therefore reads this before deciding whether to
+    pass a budget at all. ``{}`` means the file declares none and the run keeps
+    one shared pool, sized by the per-seat rule in the module docstring.
+    """
+    config = load_team_config(path=path)
+    budgets = config.role_budgets
+    return {name: budgets[name] for name in config.roles if name in budgets}
+
+
+def declared_context_policy(path: str) -> dict[str, object]:
+    """The context policy every seat runs, in the team file's own shape.
+
+    ``{"policy": name, "tool_result_budget": chars or None}``; a file without a
+    ``context`` entry reads as ``default`` with the built-in result cap. Two
+    arms whose files differ here differ in what each model call sees.
+    """
+    policy = load_team_config(path=path).context
+    return {"policy": policy.name, "tool_result_budget": policy.tool_result_budget}

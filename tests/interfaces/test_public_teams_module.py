@@ -11,7 +11,13 @@ working in a team.
 from __future__ import annotations
 
 from opencollab.domain.scheduler import per_agent_cap
-from opencollab.teams import declared_role_names, declared_role_prompt_digests, declared_role_tools
+from opencollab.teams import (
+    declared_context_policy,
+    declared_role_budgets,
+    declared_role_names,
+    declared_role_prompt_digests,
+    declared_role_tools,
+)
 from tests.support.paths import REPO_ROOT
 
 EXPERIMENT_TEAM = REPO_ROOT / "configs" / "team.handoff.experiment.yaml"
@@ -115,3 +121,47 @@ def test_roles_that_share_a_card_share_a_digest() -> None:
 
     assert primary["coder"] == facts_v2["coder"]
     assert primary["tester"] == facts_v2["tester"]
+
+
+def test_a_file_without_allowances_declares_no_role_budgets() -> None:
+    # Empty means the run keeps one shared pool, which the caller sizes itself
+    # by the rule above.
+    assert declared_role_budgets(str(EXPERIMENT_TEAM)) == {}
+
+
+def test_declared_allowances_are_read_per_role_with_overrides(tmp_path) -> None:
+    # A caller must not pass its own pool for a file like this (the run would
+    # refuse it), so it has to be able to see that the file sets the budget.
+    team_file = tmp_path / "team.yaml"
+    team_file.write_text(
+        "entry: Lead\nbudget: {tokens: 2000000}\nroles:\n"
+        "  Lead:\n    prompt: lead\n"
+        "  coder:\n    prompt: code\n    budget: {tokens: 500000}\n",
+        encoding="utf-8",
+    )
+
+    budgets = declared_role_budgets(str(team_file))
+
+    assert budgets == {"Lead": 2_000_000, "coder": 500_000}
+    assert tuple(budgets) == declared_role_names(str(team_file))
+
+
+def test_the_context_policy_defaults_when_the_file_names_none() -> None:
+    assert declared_context_policy(str(EXPERIMENT_TEAM)) == {
+        "policy": "default",
+        "tool_result_budget": None,
+    }
+
+
+def test_a_declared_context_policy_is_read_with_its_parameter(tmp_path) -> None:
+    team_file = tmp_path / "team.yaml"
+    team_file.write_text(
+        "entry: lead\ncontext: {policy: no_history_compaction, tool_result_budget: 20000}\n"
+        "roles:\n  lead:\n    prompt: lead\n",
+        encoding="utf-8",
+    )
+
+    assert declared_context_policy(str(team_file)) == {
+        "policy": "no_history_compaction",
+        "tool_result_budget": 20000,
+    }
