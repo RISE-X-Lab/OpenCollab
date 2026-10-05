@@ -5,7 +5,9 @@ is the Python project root, and the package source lives in `opencollab/`.
 
 ## Architecture — strict clean architecture
 
-Dependencies point inward only: `adapters → application → domain`.
+The core dependency direction is `bootstrap → adapters → application → domain`.
+The existing `.importlinter` configuration records the CLI composition-root
+exceptions and workflow sibling-cycle exception.
 
 - `domain/` — pure value objects + session FSM. Stdlib only, no I/O.
 - `application/` — use cases, scheduler, ports (`application/ports.py`). Imports
@@ -23,12 +25,16 @@ width, not line count — see `AGENTS.md`.
 ## Commands
 
 ```bash
-uv sync --extra dev             # one-time: create .venv with dev deps
+uv sync --locked --extra dev    # create .venv with dev deps
 uv run pytest -q                # tests (keep green)
 uv run ruff check .             # lint the whole repository
+uv run lint-imports              # architecture checks
+uv run deptry .                  # dependency checks
 uv run opencollab --workspace . # run the built-in Self-Collaboration team; add --team-config PATH for a declared team
 ```
 
-Conventional commits; `refactor:` commits stay behavior-preserving.
+Use an English Conventional Commit type with a Chinese description for commits
+and PRs. `refactor` commits preserve behavior. Follow [AGENTS.md](AGENTS.md)
+and [the testing guide](docs/testing.md) for the complete development checks.
 
 Commit authorship and `Co-authored-by` trailers are reserved for human contributors.

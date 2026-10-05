@@ -1,10 +1,17 @@
 # ICLR integration series
 
-The target branch is `integrate/iclr-2027`. It starts at main `7e83256f`.
-The source boundary is ICLR `45fdf22a`. Every pull request in this series targets
-the integration branch and builds on the preceding head.
+The cumulative series was merged into `main` through PR #154 at `a10d99ce` on
+October 1, 2026. Both the original ICLR source boundary `45fdf22a` and the final
+`integrate/iclr-2027` head are ancestors of current `main`. This page records the
+original integration sequence and its validation results. Use the
+[package guide](../opencollab/README.md) and
+[contributor guide](../CONTRIBUTING.md) for current development.
 
-The final stage also merges main `fe36bed5`, including release 0.8.2,
+The target branch was `integrate/iclr-2027`, starting at main `7e83256f`.
+The source boundary was ICLR `45fdf22a`. Each pull request targeted the
+integration branch and built on the preceding head.
+
+The final stage also merged main `fe36bed5`, including release 0.8.2,
 range-aware file-read loop detection, Duo V5 workspace delivery, Duo V6
 evidence-based selection rules, and worktree cleanup recovery.
 
@@ -19,16 +26,17 @@ evidence-based selection rules, and worktree cleanup recovery.
 | 7 | `iclr/07-docs` | Guides and configuration documentation |
 | 8 | `iclr/08-complete-history` | Coverage record and the verified ICLR merge ancestry |
 
-Use **Create a merge commit** for these pull requests in this order. Keeping the
-cumulative ancestors makes earlier changes disappear from later PR comparisons
-as they are accepted. The final PR merges the independently verified complete
-integration, which carries the ICLR source as a parent. This records the source
-history only after every remaining source change has a destination.
+The series used **Create a merge commit** in this order. Keeping the cumulative
+ancestors removed accepted changes from later PR comparisons. The final PR
+merged the independently verified complete integration with the ICLR source as
+a parent after every remaining source change had a destination.
 
-After accepting the complete series, the following check succeeds.
+The completed source-history relationship can be inspected in the current
+checkout.
 
 ```sh
-git merge-base --is-ancestor 45fdf22a integrate/iclr-2027
+git merge-base --is-ancestor 45fdf22a HEAD
+git merge-base --is-ancestor a10d99ce HEAD
 ```
 
 [Source coverage](iclr-source-coverage.json) records each path changed by ICLR
@@ -37,18 +45,20 @@ adapted code, retained current-main behavior, and relocated tests. The complete
 runtime and configuration tree was independently compared with the staged
 series before the final history merge.
 
-Current main supplies Base's Single2 mapping, the model capability defaults,
+The integrated main revision supplied Base's Single2 mapping, model capability
+defaults,
 strict editing defaults, lifecycle safety, and cancellation-safe stop notices.
 The additional ICLR editing behavior is available through explicit
 `normalize_hunks` and `relocate_expected` options. Provider timing retains its
 compatibility fields with an explicit first-protocol-event meaning; request
 tool observation identifies its application-layer sampling point.
 
-The corrected main handoff entry remains `team.handoff.experiment.yaml`.
+The corrected main handoff entry was `team.handoff.experiment.yaml`.
 The original ICLR primary treatment is available as
 `team.handoff.primary-legacy.yaml`, and the integrated evaluation registry uses
 that name for the historical primary condition. Legacy cards retain their
-recorded treatment text. The card generator checks all 40 assembled cards.
+recorded treatment text. The card generator checked all 40 assembled cards at
+that stage.
 
 The final complete source and series each passed 3702 tests, whole-repository
 Ruff, and the existing four architecture checks. After merging main `fe36bed5`,

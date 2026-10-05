@@ -57,12 +57,16 @@ workflows, including [Duo](../docs/duo.md). `OPENCOLLAB_WORKFLOWS_DIR` selects t
 caller directory. Relative paths resolve from the workspace, and duplicate
 names raise the registry's existing error.
 
-The following flags control tracing, isolation, team selection, and approvals.
+For the root team command, `--trace` enables trajectory recording,
+`--no-worktrees` disables per-child git-worktree isolation, and
+`--team-config PATH` selects a team YAML file. `--yolo` auto-approves risky
+commands. `--prompt TEXT` or `--prompt-file PATH` runs one turn and exits.
+Add `--hold` to inspect agents at the prompt after that turn.
 
-- `--trace` records every LLM call and tool execution.
-- `--no-worktrees` disables per-child git-worktree isolation.
-- `--team-config PATH` selects a team YAML file.
-- `--yolo` auto-approves risky commands.
+Workflow options follow `workflow run NAME` or `workflow list`. For example,
+use `opencollab workflow run NAME --workspace . --no-trace`. Workflow runs
+save sessions and record orchestration by default. `--no-trace` keeps saved
+sessions and the workflow manifest, while `--no-save` disables run artifacts.
 
 ## Python SDK
 
@@ -110,6 +114,18 @@ compatibility aliases for Base. Run metrics record the concrete profile name.
 integrations. Team configuration and workflow role configuration keep their
 own selection paths.
 
+`RunResult.status` is `completed`, `stopped`, or `failed`. A completed result
+has `ok=True`. A stopped result carries a `reason`, such as a token limit or
+run timeout. `raise_for_status()` returns a completed result and raises
+`RunError` for the other statuses, retaining the result in `exception.result`.
+Invalid arguments raise their validation error before the run starts.
+Lifecycle and persistence failures can raise `RunError` directly.
+
+All three methods accept a caller-chosen `run_id`. When omitted, OpenCollab
+generates an ID for that run. `result.metrics["run_id"]` matches the saved
+agent snapshot, team manifest, or workflow manifest and any enabled trajectory.
+This identity is available with `trace=False` as well.
+
 `OpenCollab.configuration` is a read-only snapshot of effective model,
 provider, budget, timeout, sampling, output-token, and thinking settings.
 `thinking_params` is deep-copied, so callers receive an independent snapshot. API keys
@@ -117,6 +133,12 @@ and base URLs are excluded. `base_url_sha256` provides a stable endpoint
 fingerprint without exposing credentials embedded in a URL. Agent runs accept
 `max_steps` and `cleanup_timeout`. The older `steps` spelling remains a supported
 alias.
+`timeout` bounds the whole agent, team, or workflow run. The resolved
+`llm_timeout` and connection and stream timeouts control model transport.
+`cleanup_timeout` separately bounds owned shutdown. See
+[configured evaluation runtime](../docs/evaluation-runtime.md) for cancellation,
+token accounting, and unbounded limits, and [configuration](../configs/README.md)
+for protocol selection and transport settings.
 Workflow runs accept `max_steps`, `system_prompt`, and `cleanup_timeout`.
 Their first argument accepts an installed workflow name such as `"duo"`, a
 caller-authored name, or a workflow function or spec. Names use the same
@@ -296,9 +318,16 @@ result.
 The test suite pins core invariants such as session transitions, budget
 reservation, context shaping, and import boundaries.
 
-Port-level ablations and workflow-versus-team comparisons have not been
-completed. Prompt caching is unavailable. Session snapshots restore token usage
-and recoverable terminal or awaiting-event phases. In-flight provider and tool
+The runtime ports support component replacement and controlled comparisons.
+See [benchmark results](../docs/results.md) and
+[collaboration adherence](../docs/adherence.md) for experiment settings and
+reported observations.
+
+Responses requests carry a `prompt_cache_key` scoped to the model
+client and response session. Provider-reported cache reads and cache creation
+are retained in usage records. Cache availability and reuse follow the endpoint.
+Session snapshots restore token usage and recoverable terminal or awaiting-event
+phases. In-flight provider and tool
 phases resume from `IDLE` because their process-local coroutines do not survive
 a restart. See [`../docs/`](../docs/) for design records and research notes.
 

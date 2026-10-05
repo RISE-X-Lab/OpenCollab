@@ -34,6 +34,8 @@
 
 ## 动态
 
+- **2026-10-05** — [OpenCollab 0.9.1](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.1)
+  增加角色独立预算和上下文策略，Duo 的交付检查更新至 V8。main 上的后续改动见[变更记录](CHANGELOG.md#unreleased)。
 - **2026-09-29**：论文已在 arXiv 公开：[*OpenCollab: A Multi-Agent Coding Framework with
   Programmable Collaboration and Controllable Runtime*](https://arxiv.org/abs/2609.38345)。
 - **2026-09-27**：[OpenCollab 0.8](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.8.0)
@@ -57,6 +59,10 @@ uv run opencollab --workspace .
 uv run opencollab workflow run duo --workspace /path/to/repository \
   --args '{"goal":"Fix the public issue described here.","allow_unisolated_shell":true}'
 ```
+
+工作流运行选项 `--workspace`、`--model`、`--budget` 应放在 `workflow run NAME` 后。
+列出其他工作区的工作流时，使用 `workflow list --workspace PATH`。
+放在 `workflow` 前的选项属于交互命令，会收到参数位置错误提示。
 
 ## 用代码编排协作
 

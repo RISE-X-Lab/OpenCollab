@@ -33,6 +33,9 @@
 
 ## News
 
+- **2026-10-05** — [OpenCollab 0.9.1](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.1)
+  adds per-role budgets and context policies, and updates Duo's delivery checks
+  to V8. Follow subsequent changes on main in the [changelog](CHANGELOG.md#unreleased).
 - **2026-09-29** — Our paper is on arXiv: [*OpenCollab: A Multi-Agent Coding Framework with
   Programmable Collaboration and Controllable Runtime*](https://arxiv.org/abs/2609.38345).
 - **2026-09-27** — [OpenCollab 0.8](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.8.0)
@@ -59,6 +62,11 @@ To run Duo on a Git repository, use this command.
 uv run opencollab workflow run duo --workspace /path/to/repository \
   --args '{"goal":"Fix the public issue described here.","allow_unisolated_shell":true}'
 ```
+
+Place run options such as `--workspace`, `--model` and `--budget` after
+`workflow run NAME`. To list workflows in another workspace, use
+`workflow list --workspace PATH`. Options before `workflow` belong to the
+interactive command and produce a usage error.
 
 ## Program the collaboration
 

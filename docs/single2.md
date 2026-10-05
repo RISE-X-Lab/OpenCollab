@@ -116,7 +116,11 @@ tools its team file declares, in the order the file declares them, so a roster
 adds the coordination tools a team needs on top of Single2's six. A team file
 that states its own `tool_limits` keeps them. `declared_role_profiles` reports
 which profile each declared seat runs under, alongside the existing card
-digests, so a recorded run can name both halves of its condition.
+digests, so a recorded run can name both halves of its condition. In team YAML,
+an omitted `profile` or `profile: default` uses the team's ordinary agent
+configuration. `profile: base` selects the current Base mapping. This team
+configuration rule is separate from standalone `client.agent`, where `default`
+resolves through Base.
 
 The source evaluation harness appends its bounded repository map, prepares the
 anonymous solver workspace, isolates hidden tests, extracts the candidate, and

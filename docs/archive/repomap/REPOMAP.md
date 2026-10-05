@@ -1,5 +1,11 @@
 # OpenCollab Repo Map
 
+This archived map records the earlier layout, including the retired harness
+and `run_tests` tool. Its source root and entry-point names describe that
+revision. The [package guide](../../../opencollab/README.md) and
+[contributor guide](../../../CONTRIBUTING.md) provide the current map and
+development commands.
+
 Concise developer map. Clean Architecture: dependencies point inward
 (`adapters → application → domain`). The `application` layer owns the port
 interfaces; `adapters` implement them; `bootstrap` is the only place that

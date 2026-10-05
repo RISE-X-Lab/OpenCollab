@@ -82,6 +82,15 @@ B receives the public verification command observed from A and is asked to run
 it when relevant and available. Each role reports its actual work, executed
 checks and remaining limitations.
 
+Duo runs A before B, then performs mechanical selection, any required
+adjudication, and adoption. The SDK's `concurrency` and the CLI's `--concurrency`
+limit active agent sessions. `task_concurrency` and `--task-concurrency`
+separately limit `parallel` and `pipeline` units, including candidate child
+workflows, and default to the agent-session limit. Increasing these limits
+leaves Duo's A-to-B sequence intact. A finite workflow `budget` is shared across
+its roles. Each role uses the remaining allowance unless a caller supplies a
+separate per-call cap in a custom workflow.
+
 The adjudicator first inspects each candidate separately for concrete failure
 paths against the public task requirements. It traces a relevant input or state
 and trigger through the implementation to the expected output. Coverage depends
@@ -193,6 +202,17 @@ If the source changes while a candidate is running, the runtime reports the
 change and retains the candidate worktree. The error includes its original Git
 tree, which remains referenced by `refs/worktree/opencollab-source` in the
 retained worktree, for recovery with commands such as `git show <tree>:<path>`.
+The runtime also records the source `HEAD` in `CandidateRun.source_revision`
+when the backend exposes it and checks that revision again before adoption.
+A changed revision rejects adoption even when the source diff is unchanged.
+
+Local Git candidates initialize clean submodules already available in the
+source, including nested dependencies within the selected workspace.
+Uninitialized optional submodules remain empty. Source submodule changes are
+reported before acquisition. A candidate that changes submodule contents,
+commits, or gitlinks raises `CandidateCaptureError` and retains the complete
+worktree for recovery. The repository patch backend delivers changes in the
+parent repository and requires a different delivery backend for submodule edits.
 
 `goal` supplies the task and `description` is an accepted alternative.
 `injected_test_paths` lets an evaluation integration preserve its protected test

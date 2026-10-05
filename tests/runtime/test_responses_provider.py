@@ -621,7 +621,19 @@ async def test_response_header_timeout_retries_the_same_request(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_round_deadline_cancels_and_closes_stream():
-    stream = FakeStream([ns(type="response.created")], delays=[10])
+    class WaitingStream(FakeStream):
+        started = False
+        cancelled = False
+
+        async def __anext__(self):
+            self.started = True
+            try:
+                return await super().__anext__()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    stream = WaitingStream([ns(type="response.created")], delays=[10])
 
     class Responses:
         async def create(self, **_kwargs):
@@ -637,8 +649,11 @@ async def test_round_deadline_cancels_and_closes_stream():
             0,
             first_event_timeout=1,
             stream_idle_timeout=1,
-            round_timeout=0.001,
+            # Leave time for request setup so the deadline interrupts stream reading.
+            round_timeout=0.1,
         )
+    assert stream.started is True
+    assert stream.cancelled is True
     assert stream.closed is True
 
 

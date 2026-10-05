@@ -1,5 +1,9 @@
 # Closed-Loop Steering Layer — Design
 
+Current profile behavior and execution limits are described in the
+[Base and Single2 guide](single2.md), [package guide](../opencollab/README.md),
+and [configuration guide](../configs/README.md).
+
 > **Historical proposal.** This document captures the design discussion on the
 > date below. It is not a maintained description of current runtime behavior.
 

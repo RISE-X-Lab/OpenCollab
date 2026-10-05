@@ -40,15 +40,13 @@ it. So each round records both:
 "handoff_taken": true            # whether those are the same
 ```
 
-This is the point of the mirror. In the team arm, a handoff requires the model
-to choose to send a message; here it requires the model to choose to check out
-what it was given. **Both arms are scored by whether the declared edge was
-actually walked, by the same rule**, which is what makes the two numbers
-comparable.
-
-The tester's claim is not taken on trust. Its worktree separately records the
-revision its diff was measured against, so `adopted_commit` and the tree either
-agree or they do not.
+In the team arm, the model chooses when to send a message. Here the script
+offers the commit and the tester chooses whether to check it out. The returned
+`handoff_taken` field compares the tester's reported `adopted_commit` with the
+offered string. It therefore records the tester's claim. Actual checkout and
+test execution require evidence from the tester's tool trajectory, such as an
+executed `git rev-parse HEAD` and the repository's native verification command.
+Use those observations when comparing the two arms' completed handoffs.
 
 ## Running it
 
@@ -72,7 +70,7 @@ files and shares Git objects while commands run with the host's privileges.
 With an injected environment that provides an OS process sandbox, keep the
 default and pass only the task's `goal`.
 
-The workspace must be a git repository with at least one commit: worktrees need
+The workspace must be a git repository with at least one commit. Worktrees need
 something to branch from. Each agent's tree is created detached at the
 workspace's base commit and removed when the run ends.
 

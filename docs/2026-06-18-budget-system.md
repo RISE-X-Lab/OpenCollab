@@ -1,5 +1,9 @@
 # The OpenCollab Budget System
 
+Current budget configuration is described in the
+[configuration guide](../configs/README.md) and
+[package guide](../opencollab/README.md).
+
 > **Historical design record.** This document describes the implementation at
 > commit `58a29a8` and is not a maintained API reference. Verify behavior
 > against the current code and tests before relying on individual details.
