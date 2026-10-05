@@ -67,8 +67,9 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
 
 Place run options such as `--workspace`, `--model` and `--budget` after
 `workflow run NAME`. To list workflows in another workspace, use
-`workflow list --workspace PATH`. Options before `workflow` belong to the
-interactive command and produce a usage error.
+`workflow list --workspace PATH`. Options placed before the `workflow`
+subcommand are interpreted as belonging to the root interactive mode and
+will produce a usage error.
 
 ## Program the collaboration
 

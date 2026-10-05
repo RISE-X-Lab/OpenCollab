@@ -61,7 +61,8 @@ the exact release commit.
 ## Build and inspect artifacts
 
 Read the candidate version from project metadata, then build the wheel from
-the source distribution as CI does. Run these Bash commands in the same shell.
+the source distribution as CI does. The following Bash commands set variables
+used across multiple steps, so run them all in the same shell session.
 
 ```bash
 set -euo pipefail
@@ -91,7 +92,8 @@ cp "${sdists[0]}" "${wheels[0]}" "$artifact_root/assets/"
 ```
 
 Install the wheel in a new environment and run the probe from a separate
-directory outside the checkout.
+directory outside the checkout (to ensure the installed package is used
+rather than the local source).
 
 ```bash
 probe_root="$(mktemp -d -t "opencollab-${release_version}-probe.XXXXXX")"

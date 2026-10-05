@@ -8,12 +8,13 @@ Create `configs/.env` from the example.
 cp configs/.env.example configs/.env
 ```
 
-Explicit CLI options and SDK constructor settings take precedence over loaded
-settings. For other values, process environment variables precede env-file
-values and built-in defaults. Env files are searched in workspace order, first
-`configs/.env` and then legacy `.env`, followed by the same paths in the current
-working directory when it differs. Earlier files provide values first, and later
-files fill missing variables.
+Explicit CLI options and SDK constructor settings take precedence over all other
+sources. For settings not provided explicitly, the resolution order is: process
+environment variables, then env-file values, then built-in defaults. Env files
+are searched in workspace order: first `configs/.env`, then legacy `.env`,
+followed by the same paths in the current working directory when it differs.
+The first file in this search order that defines a variable provides its value;
+later files only fill in variables that remain unset.
 
 Use `OPENCOLLAB_CONFIG_FILE=/path/to/file.env` to select one env file in place
 of that search. The selected file must exist and be a regular UTF-8 file.
@@ -97,11 +98,13 @@ Transport settings use seconds and apply to model calls.
 | `OPENCOLLAB_LLM_MAX_RETRIES` | `3` | Retries after a retryable provider failure |
 | `OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET` | `0` | Optional shared allowance for failed attempts and retry delays |
 
-`OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET=0` leaves retry attempts governed by
-`OPENCOLLAB_LLM_MAX_RETRIES`. A positive value adds the shared time allowance.
-Retries use backoff and provider `Retry-After` where available. A whole-run
-deadline is selected separately through SDK `timeout=` or a workflow role's
-`timeout=`. SDK `cleanup_timeout=` bounds shutdown after execution ends.
+`OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET=0` (the default) limits retry attempts
+using only `OPENCOLLAB_LLM_MAX_RETRIES`. A positive value adds a time-based limit:
+retries will continue within the time budget even if max retries hasn't been reached,
+but stop when either limit is exceeded. Retries use backoff and provider `Retry-After`
+where available. A whole-run deadline is selected separately through SDK `timeout=`
+or a workflow role's `timeout=`. SDK `cleanup_timeout=` bounds shutdown after
+execution ends.
 
 ## Streaming chat completions
 
@@ -194,9 +197,10 @@ their original ordering survive tool calls. Invalid or incompatible thinking
 parameters fail before the provider request is sent.
 
 A finite session reserves input tokens before selecting the call's output
-allowance. Manual thinking requires room for its thinking budget plus answer
-tokens. When the remaining allowance falls below that minimum, the session
-stops with a budget reason and retains its completed tool results and usage.
+allowance. Manual thinking requires room for both its thinking budget and answer
+tokens. When the remaining token allowance falls below this combined minimum,
+the session stops with a budget-exceeded reason and retains its completed tool
+results and usage.
 
 ## Display
 
@@ -244,10 +248,10 @@ A selected file that is missing or unsafe raises an error.
 
 `budget: { tokens: N }`, at the top level or on a role, gives each role its
 own token allowance. Each agent is held to its allowance, and the team's total
-is their sum. Once one role has an allowance every role must have one. Select
-`prebuild_team=True` and let the team file supply the budget. Teams with this
-setting reject a separate SDK `budget=`. A team with omitted allowances shares
-the run's token pool.
+is their sum. Note: once any role has an allowance, every role must have one
+(partial budgets are not supported). Select `prebuild_team=True` and let the
+team file supply the budget. Teams with this setting reject a separate SDK
+`budget=`. A team with omitted allowances shares the run's token pool.
 
 `context:` names the context policy. The default policy applies a per-tool-result
 allowance and pressure-triggered history compaction. `no_history_compaction`
