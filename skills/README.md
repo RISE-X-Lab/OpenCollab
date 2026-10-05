@@ -6,13 +6,11 @@ dedicated tool. A skill directory may contain supporting files used through
 tools the role already has. Enabled roles load skills through the generic
 `use_skill` tool.
 
-At runtime, discovery and loading happen in two steps.
-
-1. On startup, every skill under this directory is discovered and a **catalog**
-   (each skill's `name` + `description`) is folded into the agent's system prompt.
-2. When a catalogued skill matches the task, the model calls the generic
-   `use_skill(name)` tool, which loads that skill's full instruction **body** into the
-   conversation.
+On startup, the loader scans immediate skill directories for `SKILL.md` and
+builds a catalog from each accepted skill's `name` and `description`. Roles with
+`use_skill` receive that catalog in their system prompt. When a catalogued skill
+matches the task, the model calls `use_skill` with a `name` argument and receives
+the complete instruction body as the tool result.
 
 > The design record explains this interface in
 > [`docs/2026-06-18-skill-interface-design.md`](../docs/2026-06-18-skill-interface-design.md).
@@ -49,12 +47,12 @@ When asked to review a migration, follow these steps.
 4. Summarise risk as LOW / MEDIUM / HIGH with the single biggest concern.
 ```
 
-The frontmatter has two required fields.
+The frontmatter identifies the skill and supplies its catalog description.
 
 | Field | Required | Purpose |
 |---|---|---|
 | `name` | yes | The invocation key passed to `use_skill(name)`. Keep it equal to the directory name. |
-| `description` | yes | One line shown in the catalog. This is what the model matches against the task, so make it specific and trigger-worthy. |
+| `description` | recommended | Text shown in the catalog and used to match a task. An omitted description loads as an empty string. |
 
 Everything after the closing `---` is the body loaded when the skill is invoked.
 
@@ -86,9 +84,12 @@ invoke it by name. Adding a skill requires no registration or code change.
 | Naming | Use a short kebab-case `name` equal to the directory name. The model must type it exactly. |
 | Description | Write a specific task trigger such as "when you need to …". The model decides whether to load the skill from this field. |
 | Body | Write self-contained instructions that use tools already assigned to the role. A skill cannot grant additional tools. |
-| Size | The loader caps the body at 8000 characters and the description at 500 characters. It marks a truncated body clearly. |
-| Malformed file | The loader skips a `SKILL.md` with a missing `name`, unclosed frontmatter, or read error, while startup continues. Check the frontmatter and `name` if a skill is absent from the catalog. |
-| Unknown name | `use_skill` returns `Unknown skill '<x>'. Available skills: …`. |
+| Body size | A body of up to 8,000 characters loads in full. A longer body is rejected and excluded from the catalog. `FileSkillStore.load_diagnostics` and a warning identify the rejected skill. |
+| Description size | Descriptions are truncated to 500 characters for the catalog. |
+| File and directory limits | A skill file is limited to 64 KiB. The root scan accepts up to 256 package directories and 4,096 entries. Exceeding either directory limit raises `ValueError`. |
+| Malformed or unsafe file | The loader skips a missing or non-string `name`, non-string description, unclosed frontmatter, read error, symlink or oversized file. A missing, non-directory or symlink root gives an empty catalog. |
+| Duplicate name | Sorted package directories determine discovery order. The first accepted skill with a name is retained. |
+| Unknown name | `use_skill` reports the requested name and available catalog entries, or states that the catalog is empty. |
 
 ## Where skills are loaded from
 

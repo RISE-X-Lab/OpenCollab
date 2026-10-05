@@ -19,28 +19,42 @@ It ships: `template.team.yaml` (commented starting point), `build.sh` (the
 renderer glue), and the HTML template parts. Read `template.team.yaml` first.
 
 ## 2. Schema — what a team.yaml declares
-- **`roles:`** — one block per agent role (the key is its name). Each role:
-  - `prompt:` (block scalar) **or** `prompt_file:` — one is REQUIRED. Concrete,
-    role-specific instructions.
-  - `tools:` — an allowlist from the MENU below. Unknown names fail at startup.
-  - `model:` (optional, inherits `OPENCOLLAB_MODEL`), `temperature:` (optional,
-    0.0–2.0, inherits 0.2), `thinking:` (optional).
-  - `profile:` (optional) — an agent profile this seat runs under: `single2`, or
-    `default`/omitted for OpenCollab's own agent. The profile supplies the base
-    system prompt, the history shaper, the safety wrapper and the tool output
-    caps; `prompt:`/`prompt_file:` is appended to that base, not instead of it.
-- **`topology:`** — directed graph `src: [dst, …]`. A role may spawn/message
-  ONLY the roles listed for it. Coordination is gated by BOTH the tool AND an edge.
-- **`entry:`** — which role is agent 0. Omitted → a role named `lead`, else the
-  first role. An explicit `entry` naming no declared role fails fast.
-- **`tool_limits:`** (optional) — per-tool output caps; NOT for coordination tools.
 
-**Tool MENU (the only valid names):**
-- work: `bash` `file_read` `file_write` `apply_patch` `git_diff`
-  `grep` `ask_user`
-- coordination (pair with topology edges): `spawn_agent` `spawn_with_review`
-  `message_agent` `team_status`
-- skill: `use_skill`
+`roles` contains one block per role, keyed by its name. The current role fields
+are defined by `opencollab/bootstrap/team_config.py`.
+
+| Role field | Meaning |
+| --- | --- |
+| `prompt` or `prompt_file` | Required role instructions. A prompt file resolves relative to the team file. |
+| `tools` | Ordered allowlist from the tool menu below. Unknown names fail at startup. |
+| `model` | Optional override of the runtime's configured model. |
+| `temperature` | Optional value from 0.0 to 2.0. Omission inherits the global configuration. |
+| `thinking`, `thinking_params` | Optional thinking switch and provider parameter mapping, inherited from the global configuration when omitted. |
+| `profile` | `single2` selects that profile and `base` follows the Base mapping. Omission or `default` uses the team's ordinary agent configuration. A named profile supplies the base prompt, shaper, safety wrapper and output caps, with the role card appended. |
+| `budget.tokens` | Optional positive token allowance for each agent in this role. It overrides the team-level `budget.tokens`. |
+
+`topology` declares directed role edges. A role needs both its coordination tool
+and an allowed edge to spawn or message a destination. `entry` names agent 0.
+When omitted it selects `lead`, or the first declared role when `lead` is absent.
+An explicit entry must name a declared role.
+
+A top-level `budget.tokens` supplies a default allowance to every declared role.
+If any role declares an allowance, every role needs one through that default or
+its own override. Each agent then spends its own allowance. With all allowances
+omitted, the runtime keeps its shared team pool and `per_agent_cap` allocation.
+
+`tool_limits` sets output caps for `bash`, `file_read`, `git_diff` and `grep`.
+Use the accepted constructor keys from `opencollab/bootstrap/tool_registry.py`.
+
+| Tool category | Current names |
+| --- | --- |
+| Work and delivery | `bash`, `file_read`, `file_write`, `apply_patch`, `git_diff`, `grep`, `adopt`, `submit`, `ask_user` |
+| Coordination | `spawn_agent`, `spawn_with_review`, `message_agent`, `team_status` |
+| Skill loading | `use_skill` |
+
+`ask_user` is available when the runtime provides human interaction for that
+seat. `adopt` checks out an existing commit by its SHA under the runtime's
+command policy. `submit` ends the current turn and records the agent's summary.
 
 ## 3. Author configs/team.yaml
 Seed `configs/team.yaml` from the template ONLY if it doesn't exist yet — **never
@@ -83,6 +97,13 @@ Tell the user the absolute path and to open it in a browser. The page shows:
 - a live **validation** banner (missing prompts, unknown tools, unreachable
   roles, tools-without-edges, …) — read it and fix any errors in the YAML;
 - a live **team.yaml export** + a **Notes for the LLM** box.
+
+The shipped blueprint menu currently omits `adopt` and `submit`. Add those tools
+in YAML before rendering. The role cards display them with an unknown category
+and the banner reports them as unknown, while Copy YAML and Download retain
+them. Keep their chips selected when editing the graph. Check that specific
+finding against `KNOWN_TOOL_NAMES` in `opencollab/bootstrap/tool_registry.py`.
+The runtime loader accepts both names.
 
 ## 5. Round-trip on feedback
 The user can drag edges on the graph / toggle the matrix / edit roles in the

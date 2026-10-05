@@ -1,7 +1,8 @@
 # Native test evidence
 
 `opencollab.tools.evidence_tools` composes the same native tools as
-`builtin_tools` and wraps Bash with an execution observer. Workflows can use the
+`builtin_tools`, wraps Bash with an execution observer, and shares completed
+`file_write` and `apply_patch` observations with that history. Workflows can use the
 retained records when comparing candidate patches.
 
 ```python
@@ -17,7 +18,7 @@ print(candidate.test_records)
 print(candidate.verified_targets)
 ```
 
-The Git candidate backend reads clean initialized submodules. Source submodule
+The local Git candidate backend reads clean initialized submodules. Source submodule
 changes are reported before acquisition. Candidate submodule changes raise
 `CandidateCaptureError` and retain the complete worktree for recovery, including
 dirty files, commit changes, and changes within nested submodules.
@@ -39,6 +40,15 @@ passing targets before executing, so failed, interrupted, empty and
 collection-only runs update the current evidence. Truncated captured output
 also produces an unverified record. The workflow candidate runtime reads these
 two properties through its existing tool interface.
+
+Each execution record starts with `applicability="current"`. A completed native
+edit with an observed content change clears `verified_targets`, marks earlier
+records `applicability="unknown"`, and appends the edited path to
+`post_test_edits`. A Bash command outside the recognized executable test form
+has the same effect and is retained in `post_test_commands`, including commands
+that fail or are interrupted. Unchanged writes and native read-only tools keep
+the prior applicability. A new test execution creates a current record while
+the historical exit code and `verified` value remain available.
 
 `opencollab.tools.BashEvidence` can wrap an explicitly configured Bash tool.
 `opencollab.tools.has_pass_evidence` interprets an already captured test result
