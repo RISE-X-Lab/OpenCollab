@@ -90,9 +90,9 @@ exceptions. Run it locally with `uv run lint-imports`.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) format with an
 English type prefix and Chinese description for commits, PR titles, and merge
-subjects (e.g., `feat: 添加新功能`). Supported types include `feat`, `fix`,
-`refactor`, `docs`, `test`, `chore`, `perf`, `ci`, `build`, `style`, and `revert`.
-A `refactor` commit preserves behavior.
+subjects. Supported types include `feat`, `fix`, `refactor`, `docs`, `test`,
+`chore`, `perf`, `ci`, `build`, `style`, and `revert`. A `refactor` commit
+preserves behavior.
 
 Keep each PR focused and describe its changed behavior and verification in
 Chinese. Code, comments, and canonical tracked documentation use English.
