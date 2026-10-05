@@ -479,14 +479,44 @@ async def test_tool_call_without_an_id_raises():
         await run_stream(script, tools=TOOLS)
 
 
-async def test_assembled_arguments_that_are_not_json_raise():
+async def test_tool_call_without_a_name_raises():
     script = [
-        chunk(delta=tool_delta(0, call_id="c1", name="get_weather", arguments='{"city"')),
+        chunk(delta=tool_delta(0, call_id="c1", arguments="{broken")),
+        chunk(finish_reason="tool_calls"),
+        usage_chunk(),
+    ]
+
+    with pytest.raises(TransientProviderError, match="never carried a name"):
+        await run_stream(script, tools=TOOLS)
+
+
+@pytest.mark.parametrize("arguments", ['{"city"', "{broken", "{}{broken"])
+async def test_invalid_assembled_arguments_reach_tool_validation(arguments):
+    script = [
+        chunk(delta=tool_delta(0, call_id="c1", name="get_weather", arguments=arguments)),
         chunk(delta={}, finish_reason="tool_calls"),
         usage_chunk(),
     ]
 
-    with pytest.raises(TransientProviderError, match="invalid JSON"):
+    streamed, client = await run_stream(script, tools=TOOLS)
+
+    assert streamed.tool_calls == [{
+        "id": "c1", "type": "function",
+        "function": {"name": "get_weather", "arguments": arguments},
+    }]
+    assert streamed.finish_reason == "tool_calls"
+    assert streamed.usage.total_tokens == USAGE["total_tokens"]
+    assert streamed.usage.estimated is False
+    assert len(client.calls) == 1
+
+
+async def test_invalid_tool_arguments_still_require_reported_stream_usage():
+    script = [
+        chunk(delta=tool_delta(0, call_id="c1", name="get_weather", arguments="{broken")),
+        chunk(finish_reason="tool_calls"),
+    ]
+
+    with pytest.raises(StreamedUsageUnavailableError):
         await run_stream(script, tools=TOOLS)
 
 

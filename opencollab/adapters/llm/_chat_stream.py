@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -189,13 +188,10 @@ def _finalize_tool_calls(
 ) -> list[dict[str, Any]]:
     """Emit the assembled tool calls in first-seen index order.
 
-    Two checks turn assembly bugs into errors instead of wrong answers:
-    the reassembled name must be one this request actually registered (we hold
-    that list, so the check is free), and the reassembled arguments must parse
-    as JSON. The second check differs from the non-streaming path on purpose —
-    there, malformed arguments can only come from the model, while here they can
-    also come from our own reassembly, and the two are indistinguishable
-    downstream. ``responses_provider`` sets the same precedent.
+    Validate the assembled call identity against the tools registered for this
+    request. For a complete response, argument syntax is validated by the tool
+    execution layer, which returns ``tool_error`` feedback so the model can
+    correct malformed JSON on its next turn, as on the ordinary Chat path.
     """
     registered: set[str] = set()
     for tool in tools or ():
@@ -224,16 +220,9 @@ def _finalize_tool_calls(
                 f"streamed tool_call {index} never carried an id"
             )
 
-        # Repair the '{}{' prefix first, then validate: the other order would
-        # condemn a response the shared repair can still rescue.
+        # Apply the shared Chat normalization, then preserve the argument text
+        # for tool validation and model feedback.
         arguments = _normalize_tool_arguments("".join(slot.argument_parts))
-        if validate:
-            try:
-                json.loads(arguments)
-            except (TypeError, ValueError) as exc:
-                raise TransientProviderError(
-                    f"streamed tool_call {slot.call_id!r} assembled invalid JSON arguments"
-                ) from exc
 
         finalized.append({
             "id": slot.call_id or "",
