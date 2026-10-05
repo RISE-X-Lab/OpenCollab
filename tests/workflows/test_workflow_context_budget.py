@@ -123,6 +123,60 @@ async def test_parallel_agents_atomically_reserve_shared_budget():
     assert await task == ["a", "b"]
     assert ctx.budget.spent() == 100
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_index", [1, 2], ids=["first-waiter", "last-waiter"])
+async def test_cancelling_equal_budget_waiter_preserves_remaining_allowance(cancel_index):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def mark_started():
+        started.set()
+
+    factory = FakeFactory([
+        FakeSession(tokens=500, gate=release, on_enter=mark_started),
+        FakeSession(tokens=100),
+        FakeSession(tokens=5),
+    ])
+    ctx = WorkflowContext(factory, budget_total=1500, max_concurrency=1)
+    tasks = [asyncio.create_task(ctx.agent("first", budget=500))]
+
+    async def wait_for_reservations(count):
+        while len(ctx.budget._leases) < count:
+            await asyncio.sleep(0)
+
+    try:
+        await asyncio.wait_for(started.wait(), MUST_SETTLE_SECONDS)
+        for count, label in ((2, "second"), (3, "third")):
+            tasks.append(asyncio.create_task(ctx.agent(label, budget=500)))
+            await asyncio.wait_for(wait_for_reservations(count), MUST_SETTLE_SECONDS)
+        assert len(factory.builds) == 1
+
+        tasks[cancel_index].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tasks[cancel_index]
+        release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*(task for index, task in enumerate(tasks) if index != cancel_index)),
+            MUST_SETTLE_SECONDS,
+        )
+        await ctx.wait_for_pending_cleanup()
+
+        assert ctx.tokens_spent() == 600
+        assert ctx.tokens_remaining() == 900
+        assert ctx.budget._leases == []
+        assert await ctx.agent("follow-up", budget=900) == "done"
+        assert factory.builds[-1]["budget"] == 900
+        assert ctx.tokens_remaining() == 895
+    finally:
+        release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await ctx.wait_for_pending_cleanup()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("max_concurrency", (1, 2, 3))
 async def test_uncapped_parallel_agents_split_budget_before_concurrency_admission(
