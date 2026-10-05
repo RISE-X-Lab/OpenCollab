@@ -16,8 +16,14 @@ available without a caller-defined `workflows/` directory.
 ```bash
 opencollab workflow list --workspace /path/to/workspace
 opencollab workflow run duo --workspace /path/to/workspace \
-  --args '{"goal":"Complete the task described here.","allow_unisolated_shell":true}'
+  --task 'Complete the task described here.' \
+  --args '{"allow_unisolated_shell":true}'
 ```
+
+`--task` sets the workflow's `goal` argument. For longer tasks, use
+`--task-file task.md` to read a UTF-8 file. Keep other workflow arguments
+in `--args`. These shortcuts are mutually exclusive with each other and with
+an explicit `goal` in `--args`. Existing JSON-only invocations remain supported.
 
 The example explicitly permits shell execution in a trusted local workspace.
 The default shell setting requires process isolation. Container-backed callers
@@ -83,13 +89,14 @@ it when relevant and available. Each role reports its actual work, executed
 checks and remaining limitations.
 
 Duo runs A before B, then performs mechanical selection, any required
-adjudication, and adoption. The SDK's `concurrency` and the CLI's `--concurrency`
-limit active agent sessions. `task_concurrency` and `--task-concurrency`
-separately limit `parallel` and `pipeline` units, including candidate child
-workflows, and default to the agent-session limit. Increasing these limits
-leaves Duo's A-to-B sequence intact. A finite workflow `budget` is shared across
+adjudication, and adoption. A finite workflow `budget` is shared across
 its roles. Each role uses the remaining allowance unless a caller supplies a
 separate per-call cap in a custom workflow.
+
+The SDK's `concurrency` and the CLI's `--concurrency` limit active agent sessions.
+`task_concurrency` and `--task-concurrency` separately limit `parallel` and
+`pipeline` units, including candidate child workflows, and default to the
+agent-session limit. Increasing these limits leaves Duo's A-to-B sequence intact.
 
 The adjudicator first inspects each candidate separately for concrete failure
 paths against the public task requirements. It traces a relevant input or state
@@ -101,14 +108,15 @@ original changed paths and explain the inspected behavior. Model-written reports
 are claims to assess. Test records are comparable when their target, runner and
 command agree and their execution remains applicable to the final candidate.
 
-Recognized test execution through Bash creates a record with `applicability="current"`. A later
-completed `file_write` or `apply_patch` operation with an observed content change
-marks earlier records `applicability="unknown"` and appends its path to
-`post_test_edits` in completion order. The original exit code and parser-backed
-`verified` result remain in the history. A new test execution creates a current
-record alongside the earlier records. Failed edits and writes with unchanged
-contents preserve existing applicability. Custom `CandidateRun` providers whose
-records omit these optional fields retain their existing comparison behavior.
+Recognized test execution through Bash creates a record with `applicability="current"`.
+A later completed `file_write` or `apply_patch` operation may change this status.
+When such an operation produces an observed content change, it marks earlier records
+as `applicability="unknown"` and appends the changed path to `post_test_edits` in
+completion order. The original exit code and parser-backed `verified` result remain
+in the history. A new test execution creates a current record alongside the earlier
+records. Failed edits and writes with unchanged contents preserve existing applicability.
+Custom `CandidateRun` providers whose records omit these optional fields retain their
+existing comparison behavior.
 
 A later Bash command outside the recognized executable test form also makes
 earlier applicability unknown and is retained in `post_test_commands`. Shell
@@ -118,8 +126,8 @@ command name or exit status. Native read-only tools keep existing applicability,
 and executing the test again provides a new current result.
 
 The mechanical public-test comparison uses current records. Earlier records
-with subsequent edits remain available to the existing adjudicator through both
-individual and shared evidence, inline or paged. The adjudicator assesses the
+with subsequent edits remain available to the adjudicator through individual
+and shared evidence (either inline or paged). The adjudicator assesses the
 final candidate and the recorded edits or shell commands against the task requirements. This also
 applies to an observed notes-file write, whose effect on test inputs remains
 uncertain from the write facts alone.
@@ -191,10 +199,10 @@ by identity. Required files and live services are retained by that backend.
 Candidate validity and adoption are enforced by the runtime. Empty changes remain
 an incomplete result under the existing patch-based selection rules.
 
-Git candidates start with the source's current tracked and non-ignored untracked contents.
-Their delivered patches describe the subsequent candidate edits. Adoption applies
-that increment to the current source files and preserves independent user edits
-and the source index. A conflicting patch leaves the current source in place.
+Git candidates start with the source's current tracked files and untracked files
+that aren't ignored. Their delivered patches describe the subsequent candidate edits.
+Adoption applies that increment to the current source files and preserves independent
+user edits and the source index. A conflicting patch leaves the current source in place.
 Changes to ignore rules preserve files copied from the source and files added to
 the candidate index or commits. Newly created ignored files join delivery when
 explicitly added with `git add --force`.

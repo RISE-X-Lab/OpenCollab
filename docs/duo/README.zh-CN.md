@@ -11,8 +11,11 @@ Duo V8 为同一任务生成两个隔离候选，比较证据后采用一个结�
 ```bash
 opencollab workflow list --workspace /path/to/workspace
 opencollab workflow run duo --workspace /path/to/workspace \
-  --args '{"goal":"Complete the task described here.","allow_unisolated_shell":true}'
+  --task 'Complete the task described here.' \
+  --args '{"allow_unisolated_shell":true}'
 ```
+
+`--task` 设置工作流的 `goal` 参数。较长的任务可用 `--task-file task.md` 读取 UTF-8 文件，其他工作流参数继续放在 `--args` 中。两种任务输入方式选择一种，使用快捷参数时将 `goal` 留给它填写。原有纯 JSON 调用方式继续可用。
 
 上例显式允许在可信本地工作区执行 shell。默认设置要求进程隔离。容器调用方可以保留默认设置，并通过 SDK 传入执行环境。
 

@@ -578,7 +578,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
             ("  multi-agent dev", self._STYLE_MUTED),
         )
         tagline_text = (
-            "Type a message · Ctrl+C interrupts · 'exit' quits"
+            "Type a message · /help for controls · Ctrl+C interrupts · 'exit' quits"
             if interactive
             else "Running issue · Ctrl+C interrupts"
         )

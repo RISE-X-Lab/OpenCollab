@@ -60,9 +60,10 @@ check. Use a merge commit to retain the reviewed feature-branch history.
 
 File hygiene rejects a newly added file larger than 512,000 bytes or a change
 that grows a file past that limit. Python modules crossing 800 lines receive an
-advisory warning. The complete-tree check runs on pushes to `main`. Split by
-responsibility and public interface width when a split improves the module.
-Commit `.tex` and `.md` sources and keep compiled PDFs out of Git history.
+advisory warning. The complete-tree check runs on pushes to `main`. Consider
+splitting modules by responsibility and public interface width when a module
+becomes difficult to navigate or maintain. Commit `.tex` and `.md` sources and
+keep compiled PDFs out of Git history.
 
 The local pre-commit hooks cover Ruff with autofix, added large files,
 whitespace, merge conflicts, YAML, TOML, and the existing secret baseline.
@@ -87,10 +88,11 @@ exceptions. Run it locally with `uv run lint-imports`.
 
 ## Commits & pull requests
 
-Use [Conventional Commits](https://www.conventionalcommits.org/) with an English
-type and Chinese description for commits, PR titles, and merge subjects. Types
-include `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`, `build`,
-`style`, and `revert`. A `refactor` commit preserves behavior.
+Use [Conventional Commits](https://www.conventionalcommits.org/) format with an
+English type prefix and Chinese description for commits, PR titles, and merge
+subjects. Supported types include `feat`, `fix`, `refactor`, `docs`, `test`,
+`chore`, `perf`, `ci`, `build`, `style`, and `revert`. A `refactor` commit
+preserves behavior.
 
 Keep each PR focused and describe its changed behavior and verification in
 Chinese. Code, comments, and canonical tracked documentation use English.

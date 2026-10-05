@@ -37,15 +37,18 @@ uv run opencollab --workspace .
 
 It runs the current checkout in the project environment, resolves
 `configs/.env`, and starts agent 0 with the built-in Self-Collaboration team.
-Team mode uses the root command with `--team-config PATH`; there is no separate
-`team` subcommand. `scripts/start_opencollab.sh` remains available for
+Team runs use the root command with `--team-config PATH`. To work with team files,
+use `team init` to create an editable team file and `team show` to inspect its
+roles and topology. `scripts/start_opencollab.sh` remains available for
 environments that need its physical-path handling.
 
 After installation, invoke the CLI directly from the active environment.
 
 ```bash
 opencollab --workspace .
-opencollab --team-config configs/team.yaml --workspace .
+opencollab team init team.yaml
+opencollab team show --team-config team.yaml
+opencollab --team-config team.yaml --workspace .
 opencollab workflow list --workspace .
 OPENCOLLAB_WORKFLOWS_DIR=path/to/workflows \
   opencollab workflow run NAME --args '{"goal": "..."}'
@@ -56,6 +59,14 @@ A workflow directory contains caller-authored Python modules tagged with
 workflows, including [Duo](../docs/duo.md). `OPENCOLLAB_WORKFLOWS_DIR` selects the
 caller directory. Relative paths resolve from the workspace, and duplicate
 names raise the registry's existing error.
+
+In an interactive session, `/help` shows the local controls. Tab and Shift+Tab
+select an agent, `/save` saves the lead session, and `/exit` leaves the terminal.
+A reply to a waiting agent question is delivered before local commands.
+
+For workflows that accept a `goal`, `--task TEXT` and `--task-file PATH` provide
+that argument directly. Other arguments still use `--args`; an explicit `goal`
+in that JSON conflicts with either shortcut.
 
 For the root team command, `--trace` enables trajectory recording,
 `--no-worktrees` disables per-child git-worktree isolation, and
@@ -114,12 +125,13 @@ compatibility aliases for Base. Run metrics record the concrete profile name.
 integrations. Team configuration and workflow role configuration keep their
 own selection paths.
 
-`RunResult.status` is `completed`, `stopped`, or `failed`. A completed result
-has `ok=True`. A stopped result carries a `reason`, such as a token limit or
-run timeout. `raise_for_status()` returns a completed result and raises
-`RunError` for the other statuses, retaining the result in `exception.result`.
-Invalid arguments raise their validation error before the run starts.
-Lifecycle and persistence failures can raise `RunError` directly.
+`RunResult.status` can be `completed`, `stopped`, or `failed`. A completed result
+has `ok=True`, while stopped and failed results have `ok=False`. Stopped results
+include a `reason` field (such as a token limit or run timeout). The
+`raise_for_status()` method returns completed results unchanged and raises
+`RunError` for stopped or failed results, with the original result accessible
+via `exception.result`. Invalid arguments raise their validation error before
+the run starts. Lifecycle and persistence failures can raise `RunError` directly.
 
 All three methods accept a caller-chosen `run_id`. When omitted, OpenCollab
 generates an ID for that run. `result.metrics["run_id"]` matches the saved

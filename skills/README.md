@@ -6,11 +6,11 @@ dedicated tool. A skill directory may contain supporting files used through
 tools the role already has. Enabled roles load skills through the generic
 `use_skill` tool.
 
-On startup, the loader scans immediate skill directories for `SKILL.md` and
-builds a catalog from each accepted skill's `name` and `description`. Roles with
-`use_skill` receive that catalog in their system prompt. When a catalogued skill
-matches the task, the model calls `use_skill` with a `name` argument and receives
-the complete instruction body as the tool result.
+On startup, the loader scans for `SKILL.md` files in the immediate subdirectories
+of the skills directory and builds a catalog from each accepted skill's `name` and
+`description`. Roles with `use_skill` receive that catalog in their system prompt.
+When a catalogued skill matches the task, the model calls `use_skill` with a `name`
+argument and receives the complete instruction body as the tool result.
 
 > The design record explains this interface in
 > [`docs/2026-06-18-skill-interface-design.md`](../docs/2026-06-18-skill-interface-design.md).
@@ -84,7 +84,7 @@ invoke it by name. Adding a skill requires no registration or code change.
 | Naming | Use a short kebab-case `name` equal to the directory name. The model must type it exactly. |
 | Description | Write a specific task trigger such as "when you need to …". The model decides whether to load the skill from this field. |
 | Body | Write self-contained instructions that use tools already assigned to the role. A skill cannot grant additional tools. |
-| Body size | A body of up to 8,000 characters loads in full. A longer body is rejected and excluded from the catalog. `FileSkillStore.load_diagnostics` and a warning identify the rejected skill. |
+| Body size | A skill body of up to 8,000 characters loads in full. Skills with longer bodies are rejected and excluded from the catalog. `FileSkillStore.load_diagnostics` and a warning identify rejected skills. |
 | Description size | Descriptions are truncated to 500 characters for the catalog. |
 | File and directory limits | A skill file is limited to 64 KiB. The root scan accepts up to 256 package directories and 4,096 entries. Exceeding either directory limit raises `ValueError`. |
 | Malformed or unsafe file | The loader skips a missing or non-string `name`, non-string description, unclosed frontmatter, read error, symlink or oversized file. A missing, non-directory or symlink root gives an empty catalog. |
