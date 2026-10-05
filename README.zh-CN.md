@@ -53,11 +53,12 @@ uv run opencollab --workspace .
 
 `configs/.env` 可以指向任何 OpenAI 兼容端点或 Anthropic 端点。不要提交真实的 API key。
 这条命令启动内置的 Self-Collaboration 团队，由 Analyst 作为入口规划任务并派生 Coder 和 Tester，协作关系由封闭拓扑限定。
-需要增加角色时，按下文示例选择显式团队文件。使用以下命令在 Git 仓库上运行 Duo。
+在终端输入 `/help` 可查看切换 agent、保存和退出操作。需要增加角色时，按下文命令创建并选择团队文件。使用以下命令在 Git 仓库上运行 Duo。
 
 ```bash
 uv run opencollab workflow run duo --workspace /path/to/repository \
-  --args '{"goal":"Fix the public issue described here.","allow_unisolated_shell":true}'
+  --task 'Fix the public issue described here.' \
+  --args '{"allow_unisolated_shell":true}'
 ```
 
 工作流运行选项 `--workspace`、`--model`、`--budget` 应放在 `workflow run NAME` 后。
@@ -74,11 +75,12 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
   </picture>
 </p>
 
-- **Team。** 一个 YAML 文件声明每个角色的 prompt、模型、工具和 token 额度，所有角色共用的 context policy，以及谁可以给谁发消息。从示例开始：
+- **Team。** 一个 YAML 文件声明每个角色的 prompt、模型、工具和 token 额度，所有角色共用的 context policy，以及谁可以给谁发消息。可以先导出内置团队，再按需求编辑。
 
   ```bash
-  cp configs/team.example.yaml configs/team.yaml   # 编辑角色、工具和拓扑
-  uv run opencollab --team-config configs/team.yaml --workspace .
+  uv run opencollab team init team.yaml   # 编辑角色、提示、工具和协作关系
+  uv run opencollab team show --team-config team.yaml
+  uv run opencollab --team-config team.yaml --workspace .
   ```
 
 - **Workflow。** 一个 Python 模块发出每一次交接。Duo 就是一个 workflow；也可以[自己写一个](opencollab/README.md#workflow-authoring)，用 `opencollab workflow run NAME` 运行。

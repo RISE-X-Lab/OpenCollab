@@ -221,9 +221,15 @@ and temperature overrides, tool allowlists, each role's token allowance, the
 context policy every session runs, and the directed spawn and message topology.
 
 ```bash
-cp configs/team.example.yaml configs/team.yaml
-uv run opencollab --team-config configs/team.yaml --workspace .
+uv run opencollab team init team.yaml
+uv run opencollab team show --team-config team.yaml
+uv run opencollab --team-config team.yaml --workspace .
 ```
+
+`team init` writes an editable copy of the current built-in team and preserves
+an existing destination file. `team show` loads the selected configuration and
+prints its entry role, tools and topology without starting agent sessions.
+Both setup commands work before API credentials are configured.
 
 CLI `--team-config /path/to/team.yaml` or SDK `team(config=...)` selects an
 explicit team first. Otherwise, OpenCollab reads the process environment

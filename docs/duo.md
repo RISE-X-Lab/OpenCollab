@@ -16,8 +16,14 @@ available without a caller-defined `workflows/` directory.
 ```bash
 opencollab workflow list --workspace /path/to/workspace
 opencollab workflow run duo --workspace /path/to/workspace \
-  --args '{"goal":"Complete the task described here.","allow_unisolated_shell":true}'
+  --task 'Complete the task described here.' \
+  --args '{"allow_unisolated_shell":true}'
 ```
+
+`--task` sets the workflow's `goal` argument. For longer tasks, use
+`--task-file task.md` to read a UTF-8 file. Keep other workflow arguments
+in `--args`. Choose one task source, and leave `goal` out of `--args` when
+using either shortcut. Existing JSON-only invocations remain supported.
 
 The example explicitly permits shell execution in a trusted local workspace.
 The default shell setting requires process isolation. Container-backed callers

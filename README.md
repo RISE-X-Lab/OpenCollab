@@ -55,12 +55,14 @@ uv run opencollab --workspace .
 `configs/.env` accepts any OpenAI-compatible or Anthropic endpoint. Never commit
 real API keys. The command starts the built-in Self-Collaboration team. Its
 Analyst entry plans and delegates to the Coder and Tester over a closed topology.
-To define additional roles, select an explicit team file as shown below.
+Type `/help` in the terminal for navigation, saving and exit controls.
+To define additional roles, create and select an explicit team file as shown below.
 To run Duo on a Git repository, use this command.
 
 ```bash
 uv run opencollab workflow run duo --workspace /path/to/repository \
-  --args '{"goal":"Fix the public issue described here.","allow_unisolated_shell":true}'
+  --task 'Fix the public issue described here.' \
+  --args '{"allow_unisolated_shell":true}'
 ```
 
 Place run options such as `--workspace`, `--model` and `--budget` after
@@ -80,11 +82,12 @@ interactive command and produce a usage error.
 
 - **Team.** A YAML file declares each role's prompt, model, tools, and token
   allowance, the context policy, and who may message whom. Start from the
-  example:
+  built-in team and edit it:
 
   ```bash
-  cp configs/team.example.yaml configs/team.yaml   # edit roles, tools, and topology
-  uv run opencollab --team-config configs/team.yaml --workspace .
+  uv run opencollab team init team.yaml   # edit roles, prompts, tools, and topology
+  uv run opencollab team show --team-config team.yaml
+  uv run opencollab --team-config team.yaml --workspace .
   ```
 
 - **Workflow.** A Python module issues every handoff. Duo is one;
