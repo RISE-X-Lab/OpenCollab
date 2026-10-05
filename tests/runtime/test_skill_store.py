@@ -14,6 +14,7 @@ from opencollab.adapters.skills.file_skill_store import (
 )
 from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.domain.skill import SkillManifest
+from tests.support.paths import REPO_ROOT
 
 
 def _write_skill(root: Path, name: str, *, description: str, body: str) -> None:
@@ -39,6 +40,15 @@ def test_null_store_body_is_none():
 
 
 # --- FileSkillStore: parsing + retrieval ------------------------------------
+
+
+def test_bundled_sequence_diagram_skill_is_discoverable():
+    skills = REPO_ROOT / "skills"
+    store = FileSkillStore(skills)
+    source = (skills / "sequence-diagram" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "sequence-diagram" in {manifest.name for manifest in store.list_manifests()}
+    assert store.get_body("sequence-diagram") == source.split("---", 2)[2].strip()
 
 
 def test_file_store_parses_frontmatter_into_manifests(tmp_path):

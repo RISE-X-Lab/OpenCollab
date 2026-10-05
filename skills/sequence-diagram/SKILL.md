@@ -1,6 +1,11 @@
 ---
 name: sequence-diagram
-description: Draw a polished UML sequence / swimlane diagram of a software-engineering interaction. Use whenever the task asks to diagram, chart, visualize, or draw a flow over TIME between components — an API request, login/auth flow, checkout/payment saga, message-queue pipeline, RPC call chain, deploy sequence — from a description or from source you read. Produces a styled .d2 (d2's shape: sequence_diagram) rendered to .svg.
+description: >-
+  Draw a polished UML sequence or swimlane diagram of a software interaction.
+  Use when the task asks to visualize a flow over time between components,
+  such as an API request, login, checkout, message queue, RPC or deployment.
+  Read the supplied description or source and produce a styled D2 sequence
+  diagram rendered to SVG.
 ---
 
 Turn a software-engineering interaction — an API request, an auth/login flow, a
