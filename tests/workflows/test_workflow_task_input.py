@@ -16,7 +16,7 @@ from opencollab.adapters.cli import workflow as workflow_cli
 from opencollab.application.workflow_registry import Registry, workflow
 from tests.support.paths import PACKAGE_ROOT
 
-_TASK = ' 修复 "quoted" 和 \'single\' \\ path\n第二行 Grüße 🌍\n '
+_TASK = ' \u4fee\u590d "quoted" \u548c \'single\' \\ path\n\u7b2c\u4e8c\u884c Grüße 🌍\n '
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ def _cli(project: Path, arguments: list[str]) -> subprocess.CompletedProcess[str
 def test_real_cli_task_preserves_quotes_multiline_and_unicode(workflow_project, source):
     other_args = {"task": "custom parameter", "nested": {"attempts": 2}, "allow_unisolated_shell": False}
     if source == "file":
-        task_file = workflow_project / "任务 input.txt"
+        task_file = workflow_project / "\u4efb\u52a1 input.txt"
         task_file.write_bytes(_TASK.encode("utf-8"))
         task_options = ["--task-file", str(task_file)]
     else:
@@ -135,7 +135,7 @@ def test_task_rejects_blank_text(validation_cli, task):
     result = validation_cli(["--task", task])
 
     assert result.exit_code == 2
-    assert "--task must not be empty" in result.output
+    assert "--task must not be empty" in unstyle(result.output)
 
 
 @pytest.mark.parametrize("path", ["", " \t"])
@@ -143,7 +143,7 @@ def test_task_rejects_blank_file_path(validation_cli, path):
     result = validation_cli(["--task-file", path])
 
     assert result.exit_code == 2
-    assert "--task-file path must not be empty" in result.output
+    assert "--task-file path must not be empty" in unstyle(result.output)
 
 
 def test_task_rejects_both_inputs_even_when_text_is_empty(validation_cli, tmp_path):
@@ -153,7 +153,7 @@ def test_task_rejects_both_inputs_even_when_text_is_empty(validation_cli, tmp_pa
     result = validation_cli(["--task", "", "--task-file", str(path)])
 
     assert result.exit_code == 2
-    assert "mutually exclusive" in result.output
+    assert "mutually exclusive" in unstyle(result.output)
 
 
 @pytest.mark.parametrize("source", ["text", "file"])
@@ -166,7 +166,7 @@ def test_task_rejects_goal_already_in_args(validation_cli, tmp_path, source, exi
     result = validation_cli([*task_options, "--args", json.dumps({"goal": existing_goal})])
 
     assert result.exit_code == 2
-    assert "already contains 'goal'" in result.output
+    assert "already contains 'goal'" in unstyle(result.output)
 
 
 @pytest.mark.parametrize("kind", ["empty", "invalid-utf8", "missing", "directory", "fifo", "symlink", "oversized"])
@@ -191,7 +191,7 @@ def test_task_file_rejects_invalid_input(validation_cli, tmp_path, kind):
 
     assert result.exit_code == 2
     expected = "--task-file is empty" if kind == "empty" else "Cannot read --task-file"
-    assert expected in result.output
+    assert expected in unstyle(result.output)
 
 
 def test_workflow_list_prints_executable_next_step(tmp_path, monkeypatch):
