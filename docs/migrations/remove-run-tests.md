@@ -1,5 +1,9 @@
 # Retiring the built-in test runner
 
+This record describes the 0.7.0 removal. The
+[native test evidence guide](../test-evidence.md) documents the explicit
+observer-backed Bash wrapper now available to verification integrations.
+
 This change removes the `run_tests` tool and its pytest, Go, and Django runner
 selection, output parsers, GREEN/RED verdicts, target evidence cache, and repeated
 failure nudges. Agents run the repository's native test command through `bash`
@@ -72,9 +76,10 @@ effect of migration. Use an isolated environment for unattended test commands.
 ## Verification integrations
 
 The public structural `VerificationTool` protocol remains available for external
-custom tools. No built-in tool implements its `verified_targets` property after
-this removal. Integrations relying on parser-backed test evidence must supply
-an explicit custom verifier or retain their existing runner version. A zero
+custom tools. At the 0.7.0 removal, no built-in tool implemented its `verified_targets`
+property. Integrations on that release needed an explicit custom verifier or
+their earlier runner version. Current releases offer the explicit
+`evidence_tools()` wrapper described in the [native test evidence guide](../test-evidence.md). A zero
 shell exit code, help output, or zero collected tests alone does not prove that
 the requested tests passed.
 

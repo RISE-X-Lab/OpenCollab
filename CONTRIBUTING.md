@@ -24,7 +24,7 @@ OpenCollab uses [uv](https://docs.astral.sh/uv/). Run the following command from
 the repository root.
 
 ```bash
-uv sync --extra dev            # create .venv with runtime + dev dependencies
+uv sync --locked --extra dev   # create .venv with runtime + dev dependencies
 ```
 
 Copy the example config and point it at an OpenAI-compatible or Anthropic
@@ -38,30 +38,47 @@ cp configs/.env.example configs/.env   # then set OPENCOLLAB_API_KEY
 
 ```bash
 uv run ruff check .   # lint the whole repository (root ruff.toml)
-uv run pytest -q      # test suite
+uv run lint-imports   # architecture contracts
+uv run deptry .       # dependency hygiene
+uv run pytest -q      # Python test suite
 ```
 
 New behavior needs tests, and the suite must stay green.
 The [testing guide](docs/testing.md) covers focused runs and temporary reports.
 The [test directory guide](tests/README.md) maps runtime behavior to test topics.
 
-### Enforced automatically in CI
+### CI and local hooks
 
-- **Lint** runs `ruff check .` over the whole repository. Config lives in the
-  repository-root `ruff.toml`.
-- **PR title** must follow Conventional Commits. Squash-merge uses it as the
-  commit subject on `main`.
-- **File hygiene** rejects any file your change pushes over 500 KB, and any `.py`
-  module it pushes over 800 lines — appending to an existing module counts.
-  Commit `.tex`/`.md` sources, not compiled PDFs.
+CI runs the commands above on Python 3.10 through 3.14. The Python 3.12 job also
+runs the team blueprint DOM regressions with Node 20 or newer. Distribution and
+macOS jobs exercise installed artifacts and platform-specific integrity
+behavior. The [testing guide](docs/testing.md) gives the DOM commands.
 
-To run the same hooks locally, use
-`pip install pre-commit && pre-commit install`.
+The title workflow checks Conventional Commit syntax on PR titles and on
+non-merge commits pushed to `main`. It accepts a merge commit after the PR-title
+check. Use a merge commit to retain the reviewed feature-branch history.
+
+File hygiene rejects a newly added file larger than 512,000 bytes or a change
+that grows a file past that limit. Python modules crossing 800 lines receive an
+advisory warning. The complete-tree check runs on pushes to `main`. Split by
+responsibility and public interface width when a split improves the module.
+Commit `.tex` and `.md` sources and keep compiled PDFs out of Git history.
+
+The local pre-commit hooks cover Ruff with autofix, added large files,
+whitespace, merge conflicts, YAML, TOML, and the existing secret baseline.
+Install them with the following commands. Run the development commands above
+as well because CI also exercises architecture, dependencies, and tests.
+
+```bash
+uv tool install pre-commit
+pre-commit install
+```
 
 ## The architecture rule (enforced by `lint-imports`)
 
 `lint-imports` fails the build on any inward → outward import. The contracts live in
-`.importlinter`; run it locally with `uv run lint-imports`.
+`.importlinter`, including the explicitly retained CLI and sibling-cycle
+exceptions. Run it locally with `uv run lint-imports`.
 
 - Never import an outer layer from an inner one (e.g. `domain` importing `adapters`).
 - Need an outer capability inside? Add a **port** in `application/ports.py`, then
@@ -70,12 +87,16 @@ To run the same hooks locally, use
 
 ## Commits & pull requests
 
-- Use [Conventional Commits](https://www.conventionalcommits.org/) in English.
-  `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
-- `refactor:` commits must stay behavior-preserving.
-- Keep pull requests focused. Describe what changed and how you verified it.
-- Keep code, comments, tracked documentation, commit summaries, pull request
-  titles, pull request descriptions, and review replies in English.
+Use [Conventional Commits](https://www.conventionalcommits.org/) with an English
+type and Chinese description for commits, PR titles, and merge subjects. Types
+include `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`, `build`,
+`style`, and `revert`. A `refactor` commit preserves behavior.
+
+Keep each PR focused and describe its changed behavior and verification in
+Chinese. Code, comments, and canonical tracked documentation use English.
+Commit authorship and `Co-authored-by` trailers are reserved for human
+contributors. Merge with a merge commit to preserve feature-branch history and
+human authorship.
 
 ## Contribution license
 

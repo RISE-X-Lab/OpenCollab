@@ -1,7 +1,9 @@
 # Releasing OpenCollab
 
 This guide covers tagged GitHub releases and their distribution artifacts. PyPI
-publishing is not currently part of the OpenCollab release process.
+publishing is outside the current documented release process. Supported
+installation paths use a GitHub source checkout or the wheel attached to a
+GitHub release.
 
 ## Release invariants
 
@@ -15,19 +17,16 @@ publishing is not currently part of the OpenCollab release process.
   an explicit maintainer waiver before publishing; tag immutability remains an
   operational requirement.
 
-## 1. Finalize the release
+## Finalize the release
 
-Use a focused pull request with a Conventional Commit title using an English type and Chinese description. In that
-pull request:
+Use a focused pull request with a Conventional Commit title using an English
+type and Chinese description. Move the intended entries from `Unreleased` into
+a dated version section in `CHANGELOG.md` and update its comparison links.
+Align the version in `pyproject.toml`, `uv.lock`, `opencollab/__init__.py`, and
+any exact-version tests. Regenerate the lock file when project metadata changes
+and keep the release pull request focused on that version.
 
-1. Move the intended entries from `Unreleased` into a dated version section in
-   `CHANGELOG.md` and update its comparison links.
-2. Align the version in `pyproject.toml`, `uv.lock`, `opencollab/__init__.py`, and
-   any exact-version tests.
-3. Regenerate the lock file when project metadata changes.
-4. Keep unrelated changes out of the release pull request.
-
-After the pull request is merged, refresh `main` and record the candidate SHA:
+After the pull request is merged, refresh `main` and record the candidate SHA.
 
 ```bash
 git fetch origin main
@@ -38,29 +37,36 @@ release_sha="$(git rev-parse HEAD)"
 test "$release_sha" = "$(git rev-parse origin/main)"
 ```
 
-## 2. Verify the exact candidate
+## Verify the exact candidate
 
-Run the repository checks from the clean candidate:
+Run the repository checks from the clean candidate with Node 20 or newer
+available for the blueprint DOM tests.
 
 ```bash
-uv sync --locked --extra dev
+uv sync --locked --extra dev --python 3.12
 uv lock --check
 uv run ruff check .
+uv run lint-imports
+uv run deptry .
 uv run pytest -q
+npm ci --prefix tests/workflows/blueprint_dom --no-audit --no-fund
+npm test --prefix tests/workflows/blueprint_dom
 ```
 
-Wait for every GitHub check on `release_sha`, including the Python matrix,
-Distribution artifacts, macOS platform integrity, hygiene, title, and security
-checks. A successful job on another commit is not release evidence.
+Wait for every GitHub check on `release_sha`, including the Python 3.10–3.14
+matrix, blueprint DOM tests, Distribution artifacts, macOS platform integrity,
+Hygiene, Conventional Title, and Security checks. Record their results against
+the exact release commit.
 
-## 3. Build and inspect artifacts
+## Build and inspect artifacts
 
-Set the intended version explicitly, then build the wheel from the source
-distribution just as CI does:
+Read the candidate version from project metadata, then build the wheel from
+the source distribution as CI does. Run these Bash commands in the same shell.
 
 ```bash
 set -euo pipefail
-release_version=0.8.3
+shopt -s nullglob
+release_version="$(uv run python -c 'from pathlib import Path; import tomllib; print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])')"
 artifact_root="$(mktemp -d -t "opencollab-${release_version}.XXXXXX")"
 mkdir -p "$artifact_root/sdist" "$artifact_root/wheel" "$artifact_root/assets"
 
@@ -76,25 +82,36 @@ uvx --from twine==7.0.0 twine check "${sdists[0]}" "${wheels[0]}"
 cp "${sdists[0]}" "${wheels[0]}" "$artifact_root/assets/"
 (
   cd "$artifact_root/assets"
-  sha256sum ./*.tar.gz ./*.whl > SHA256SUMS
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum ./*.tar.gz ./*.whl > SHA256SUMS
+  else
+    shasum -a 256 ./*.tar.gz ./*.whl > SHA256SUMS
+  fi
 )
 ```
 
-Install the wheel outside the checkout and probe the installed distribution:
+Install the wheel in a new environment and run the probe from a separate
+directory outside the checkout.
 
 ```bash
 probe_root="$(mktemp -d -t "opencollab-${release_version}-probe.XXXXXX")"
-uv venv --no-project --python 3.12 "$probe_root"
-uv pip install --python "$probe_root/bin/python" --link-mode copy "${wheels[0]}"
-"$probe_root/bin/python" -c \
-  "import opencollab; assert opencollab.__version__ == '${release_version}'"
-"$probe_root/bin/opencollab" --help >/dev/null
+install_root="$probe_root/venv"
+uv venv --no-project --python 3.12 "$install_root"
+uv pip install --python "$install_root/bin/python" --link-mode copy "${wheels[0]}"
+(
+  cd "$probe_root"
+  "$install_root/bin/python" -c \
+    "import importlib.metadata as metadata; import opencollab; assert opencollab.__version__ == metadata.version('opencollab') == '${release_version}'"
+  "$install_root/bin/opencollab" --help >/dev/null
+  "$install_root/bin/opencollab" workflow --help >/dev/null
+  "$install_root/bin/opencollab" workflow run --help >/dev/null
+)
 ```
 
-## 4. Tag and publish
+## Tag and publish
 
-Create and verify the signed annotated tag. If signing is unavailable, stop and
-obtain an explicit maintainer decision before using an unsigned annotated tag.
+Create and verify the signed annotated tag. If signing is unavailable, obtain
+an explicit maintainer decision before using an unsigned annotated tag.
 
 ```bash
 git tag -s "v${release_version}" "$release_sha" -m "OpenCollab v${release_version}"
@@ -107,7 +124,8 @@ test "$remote_sha" = "$release_sha"
 
 Prepare curated notes from the matching changelog section. The maintainer
 chooses whether the GitHub entry is a regular release or a prerelease. The
-following command publishes a regular GitHub release.
+following command publishes a regular GitHub release. Write `release-notes.md`
+in Chinese before running it.
 
 ```bash
 gh release create "v${release_version}" \
@@ -118,7 +136,7 @@ gh release create "v${release_version}" \
   --notes-file release-notes.md
 ```
 
-## 5. Verify the public release
+## Verify the public release
 
 Download the published assets into a new directory, verify their hashes, and
 repeat the wheel installation probe. Confirm that the release page, changelog

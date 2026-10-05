@@ -1,12 +1,14 @@
-# The collaborating team: what it is, and how to run it
+# The collaborating team and its handoff experiment
 
 `configs/team.collab.yaml` is a three-role team that actually hands work over.
-This document is the handoff for it: what the file is, why it is built the way
-it is, the three ways to run it, and the four things that have to be true or the
-run degrades into something that reads like a team and is not one.
+This document explains the declared roles, the current launch routes, and the
+workspace handoff measured in the original experiment.
 
-Everything below was checked against runs, not only against the code. Where a
-claim comes from a run, the run is named.
+The experiment results and smoke-run transcript below were recorded on
+August 31, 2026. The configuration and launch instructions reflect the current
+`configs/team.collab.yaml` and `scripts/run_collab_team.py`. The original runs
+used `run_tests`, which was removed in 0.7.0. Current roles run native test
+commands through Bash. See the [native test evidence guide](test-evidence.md).
 
 ## What it is
 
@@ -18,7 +20,7 @@ command line with no sibling files to fix up.
 |---|---|---|---|
 | seat | agent 0; the request arrives here and its answer is read back | teammate | teammate |
 | edit tools | `apply_patch`, `file_write` | `apply_patch`, `file_write` | none |
-| read/run | `file_read`, `grep`, `bash`, `run_tests` | same | same, plus `git_diff` |
+| read/run | `file_read`, `grep`, `bash` | same | same, plus `git_diff` |
 | collaboration | `message_agent`, `team_status`, `submit` | same | same |
 | workspace | the delivered workspace itself | its own git worktree | its own git worktree |
 
@@ -81,7 +83,7 @@ time. The card now says to check the sha out directly and not to go looking.
 ### Script (the everyday route)
 
 ```bash
-scripts/run_collab_team.py --workspace ./repo \
+uv run scripts/run_collab_team.py --workspace ./repo \
     --prompt "fix the failing test in tests/test_slugify.py" \
     --artifacts ./artifacts --allow-unisolated-shell
 ```
@@ -91,12 +93,14 @@ The script exists because the team file needs a prebuilt roster and
 defaults to separate worktrees and serialized turns, and exposes
 `--no-worktrees` and `--concurrent` for callers choosing different execution
 conditions. It seeds `PYTEST_ADDOPTS=-p no:cacheprovider` (see below) and prints
-one line to stderr saying whether the handoff happened.
+the run status and recorded message attempts per role to stderr. A successful
+delivery is recorded by scheduler events and must be read separately from
+those tool-call counts.
 
 `--budget` is the **shared pool, not a per-seat allowance**. Each seat may spend
 at most `c * pool / N` with `c = 1.0` and `N = 3`, so `--budget 900000` gives
-every seat a 300k ceiling. Nothing is reserved at seating, so a role the model
-never uses holds no tokens and its allowance stays available to the others.
+every seat a 300k ceiling. Nothing is reserved at seating. Tokens are metered against the shared pool
+when roles run, and each role retains its own cumulative ceiling.
 A team file that declares `budget: { tokens: N }` replaces the pool with an
 independent allowance per role; the script then passes no pool unless
 `--budget` is given, and the run refuses one if it is (see
@@ -111,36 +115,33 @@ result = await OpenCollab(workspace).team(
     prebuild_team=True,      # required — see below
     use_worktrees=True,
     serialize_turns=True,
+    allow_unisolated_shell=True,  # authorize host commands for this workspace
 )
 ```
 
 ### Evaluation
 
-```bash
-python -m opencollab_eval.generation.gen_prediction_batch --arm team --team-config configs/team.collab.yaml ...
-```
-
-That path already passes `prebuild_team=True`, `use_worktrees=True`,
-`serialize_turns=True` and `record_delivery_tree=True`
-(`OpenCollab-Eval/src/opencollab_eval/engine/evaluator_sessions.py:373`). Note
-that the batch driver's `--budget-per-seat` is multiplied by the number of roles
-the team file declares (`gen_prediction_batch.pool_for`), so a three-role file
-is started with three times the per-seat figure — the opposite convention from
-the runner script's `--budget`.
+Benchmark launch commands and team budget handling belong to the companion
+package. Use the
+[OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme)
+for its current team arm and configuration options. OpenCollab's team API
+accepts `prebuild_team=True`, `use_worktrees=True`, `serialize_turns=True`, and
+`record_delivery_tree=True` for integrations that need the declared roster and
+workspace-delivery observations.
 
 ## The four things that must be true
 
-Each of these fails quietly rather than loudly. The symptom column is what you
-would actually see.
+The following checks connect each launch requirement to its observable state
+and the current role instructions.
 
 | Requirement | If it is missing | Symptom |
 |---|---|---|
-| **`prebuild_team=True`** | the Coder and the Tester are never seated; no role holds `spawn_agent`, and on a prebuilt team spawning is refused anyway | the Analyst does the whole task alone and the run looks successful. The card defends against this: it calls `team_status` first and stops with an explicit report if the roster is not there. |
+| **`prebuild_team=True`** | the Coder and the Tester are never seated, and no role holds `spawn_agent` | `team_status` shows only the Analyst. Its role card requires it to report the missing Coder and Tester and stop. |
 | **A shell that can run `git`** | `bash` refuses when the environment provides no OS process sandbox | every role reports the same refusal, no commit can cross between seats, and the handoff cannot happen at all. Pass `--allow-unisolated-shell` (only for a workspace you trust — it lets agents execute code on the host). Inside the evaluation container this is already satisfied. |
-| **No ignored files left in a teammate's worktree** | a worktree holding an ignored file cannot have its changes read, and the failure is raised during cleanup | the team delivers a correct answer and the run still reports `failed`, after the fact. `.pytest_cache/` alone causes it: pytest writes a `.gitignore` containing `*` inside it, so the directory ignores itself. Both the runner (`PYTEST_ADDOPTS=-p no:cacheprovider`) and the Coder/Tester cards defend against it. |
-| **Artifacts kept, if you want to know whether it worked** | `metrics` carries only agent 0's step count and the number of seats | "did anyone delegate" is not in the metrics, and a solo run is externally indistinguishable from a delegated one. Pass `--artifacts`; the runner then counts `message_agent` calls per role from the transcripts and prints them. Without it, it prints `handoffs=unknown` rather than an unsupported `0`. |
+| **No ignored files left in a teammate's worktree** | diff capture reports an error and retains the worktree when it cannot include ignored files | an otherwise completed task can report a lifecycle failure. Pytest's `.pytest_cache/` contains a `.gitignore` with `*`, so the directory ignores itself. The runner sets `PYTEST_ADDOPTS=-p no:cacheprovider`, and the Coder/Tester cards require cache cleanup. |
+| **Artifacts kept, if you want to know whether it worked** | per-role transcript files and scheduler-event files are unavailable for inspection | Pass `--artifacts` to retain these records and print each role's `message_agent` attempt count. Otherwise the runner prints `message attempts=unknown (pass --artifacts to count them)`. Inspect delivery events to establish which attempts reached a teammate. Returned metrics retain the lead's step count, seat count, run identity and lifecycle observations. With `record_delivery_tree=True`, they also include workspace snapshots. |
 
-## What a working run looks like
+## Recorded August 31 smoke run
 
 Smoke run #4, `~/collab-smoke/artifacts-1788239916` on gpu3, `deepseek-v4-flash`,
 a two-test slugify fixture:
@@ -166,15 +167,13 @@ the general claim.
 
 ## What is held by tests
 
-`tests/test_collab_team_config.py`, 32 tests, all passing. They pin: the roster
-and the six edges; that no role holds `spawn_agent`; that no card names a tool
-its role does not hold (strict for the role's own capability paragraph, loose
-against the union of the team's tools, because a card may legitimately describe
-a teammate's bundle); that the file stays self-contained when copied elsewhere;
-and the runner's call-site arguments, through a stub client.
+`tests/workflows/test_collab_team_config.py` covers the roster
+and six directed edges. The tests check role tool claims, the absence of
+`spawn_agent`, loading after copying the configuration, runner call arguments,
+and the distinction between message attempts and deliveries.
 
 `scripts/run_collab_team.py` is registered in the framework-script whitelist in
-`tests/test_repository_ownership.py`.
+`tests/packaging/test_repository_ownership.py`.
 
 ## Known rough edges
 

@@ -1,5 +1,10 @@
 # Plan: Code Clarity & Modularity Refactor
 
+This record describes the refactor completed on June 10, 2026. Current module
+boundaries and development commands are described in the
+[package guide](../../opencollab/README.md) and
+[contributor guide](../../CONTRIBUTING.md).
+
 **Status:** Implemented on 2026-06-10 — all phases including optional 3d;
 `RuntimeLimits` param-grouping skipped (would ripple through `build_session`'s
 many callers)

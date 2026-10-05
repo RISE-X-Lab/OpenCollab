@@ -7,6 +7,11 @@ context: follows "make context layers load-bearing" (commit d079864). This is th
   the priority/pin/shed machinery has something to act on.
 ---
 
+This proposal records the context-loader design considered on June 15, 2026.
+The [package guide](../../opencollab/README.md) and
+[configuration guide](../../configs/README.md) describe current interfaces.
+The proposal status and source references below belong to that design record.
+
 # Design: `ContextLoaderPort` and Deferred-Context Wiring for OpenCollab
 
 ## 0. Grounding — what's already true in the code

@@ -15,6 +15,21 @@ uv run lint-imports
 uv run deptry .
 ```
 
+CI runs these Python checks on Python 3.10 through 3.14. The Python 3.12 job
+also executes blueprint DOM tests. With Node 20 or newer available, run them
+from the repository root after preparing the Python environment.
+
+```bash
+npm ci --prefix tests/workflows/blueprint_dom --no-audit --no-fund
+npm test --prefix tests/workflows/blueprint_dom
+```
+
+The DOM tests use `.venv/bin/python` by default. Set `OPENCOLLAB_TEST_PYTHON` to
+an absolute interpreter path when using another development environment.
+The distribution job builds and probes artifacts outside the source checkout,
+and the macOS job runs the selected filesystem and terminal regressions.
+[RELEASING.md](../RELEASING.md) covers the existing release verification steps.
+
 The [test directory guide](../tests/README.md) maps behavior to directories.
 Use a directory, topic file or pytest node ID to run the part being changed.
 

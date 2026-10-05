@@ -1,5 +1,9 @@
 # Context: Assembly, Injection & Shaping — the runtime lifecycle
 
+The [package guide](../opencollab/README.md) and
+[configuration guide](../configs/README.md) describe current options. This
+chapter retains the recorded context design and source references.
+
 > **Historical architecture note.** This chapter records the post-S3 design at
 > the time of writing. Branch and `file:line` references may have drifted; use
 > current tests and source for executable behavior.

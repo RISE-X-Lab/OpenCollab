@@ -1,23 +1,26 @@
 # AGENTS.md
 
 Guidance for coding agents (OpenAI Codex, Claude Code, and others) contributing to
-**OpenCollab**. Follow it exactly — CI enforces most of it, and a PR that ignores it
-will be blocked. Human contributors: see [CONTRIBUTING.md](CONTRIBUTING.md) for the
-long form.
+**OpenCollab**. The checks below describe the repository workflows. Human
+contributors can use [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
 ## Setup & the checks your change must pass
 
 ```bash
-uv sync --extra dev          # create .venv with runtime + dev deps
+uv sync --locked --extra dev # create .venv with runtime + dev deps
 uv run ruff check .          # lint the whole repository
-uv run pytest -q             # test suite; must stay green
+uv run lint-imports          # enforce the existing architecture contracts
+uv run deptry .              # check dependency use
+uv run pytest -q             # execute the Python test suite
 ```
 
 New behavior needs tests. Do not weaken or delete a test to make CI pass.
 
 ## Project structure & the one architecture rule
 
-Strict clean architecture — dependencies point **inward only**:
+The core dependency direction is `bootstrap → adapters → application → domain`.
+The existing `.importlinter` configuration records narrow CLI composition-root
+exceptions and the workflow sibling-cycle exception.
 
 ```
 adapters  →  application  →  domain
@@ -41,7 +44,7 @@ width — see the module rule below.
 Commit authorship and `Co-authored-by` trailers are reserved for human contributors.
 
 - **Conventional Commits**, with Chinese descriptions and an English type: `feat` `fix` `refactor` `docs` `test`
-  `chore` `perf` `ci` `build` `style` `revert`. e.g. `feat: add X`, `fix(tui): handle Y`.
+  `chore` `perf` `ci` `build` `style` `revert`. e.g. `feat: <Chinese description>`, `fix(tui): <Chinese description>`.
 - **The PR title and merge commit subject must be valid Conventional Commits**,
   with Chinese descriptions and an English type.
 - **One focused change per PR.** Don't bundle unrelated work.
@@ -50,14 +53,37 @@ Commit authorship and `Co-authored-by` trailers are reserved for human contribut
   authorship remain available. Keep commits focused on meaningful implementation,
   tests, or documentation changes.
 
-## Hard gates CI will fail your PR on
+## Repository checks
 
-1. **Lint** — `ruff check .` over the **whole** repository. Config is the
-   repo-root `ruff.toml` (line-length 120, py310).
-2. **PR title** — Conventional Commits (see above).
-3. **File hygiene** — a file your change pushes over **500 KB**, or a `.py` module it
-   pushes over **800 lines**, fails the build. Growing an existing module past the
-   limit counts; split it instead of appending.
+CI runs the Python suite on Python 3.10 through 3.14, whole-repository Ruff,
+`lint-imports`, and `deptry`. The Python 3.12 job also runs the team blueprint DOM
+regressions with Node 20 or newer. The distribution job builds a wheel from the
+source archive, checks its contents and metadata, and exercises the installed
+package outside the checkout. A macOS job executes the selected file and
+terminal regressions. See [docs/testing.md](docs/testing.md) for local commands.
+
+The Conventional Title workflow validates PR titles and direct-push subjects.
+Its commit mode accepts merge commits because the PR title was checked before
+merge. The contribution convention above also applies to the merge subject.
+
+The Hygiene workflow rejects files newly added above **512,000 bytes** or grown
+past that limit. Python modules crossing **800 lines** receive a warning and
+leave the check successful. A push to `main` measures the complete tree. Choose
+module boundaries by responsibility and public interface width.
+
+The Security workflow scans proposed commit history against the trusted base's
+existing audited secret baseline. Preserve its dedicated baseline-update
+process in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Changes to validation and integrity mechanisms
+
+Use Git history, version numbers, primary keys, transactions, unique constraints,
+types, and ordinary tests before adding a hash, frozen contract, baseline, or
+gate. An addition requires a concrete failure scenario and an explanation of why
+those existing mechanisms cannot handle it. Preserve existing safety measures.
+Place gates at irreversible, cross-system, security, or formal release
+boundaries. Preparatory checks must leave room for actual execution, simulation,
+or measurement.
 
 ## Conventions that keep the repo clean
 
@@ -96,9 +122,9 @@ ran.
 - [CLAUDE.md](CLAUDE.md) — repo notes for Claude Code.
 - [SECURITY.md](SECURITY.md) — report vulnerabilities privately; never in a public issue.
 
-## ICLR integration branch
+## ICLR integration history
 
-Pull requests targeting `integrate/iclr-2027` form the cumulative series in
-`docs/iclr-integration.md`. Merge this series in order with merge commits so
-its final source-history relationship remains available to subsequent Git
-merges. The integration branch starts from the current main implementation.
+The cumulative `integrate/iclr-2027` series was merged into `main` through PR
+#154 on October 1, 2026. [docs/iclr-integration.md](docs/iclr-integration.md)
+records its original sequence, source boundary, and validation results. Continue
+new contributions from current `main` while retaining the existing ancestry.

@@ -1,45 +1,64 @@
 # OpenCollab documentation
 
-Start with the repository [README](../README.md) for setup and the two runtime
+Start with the repository [README](../README.md) for installation and runtime
 modes, then use the [package guide](../opencollab/README.md) for the CLI, Python
 API, and architecture boundary.
 
 ## Current documentation
 
-The [Base and Single2 guide](single2.md) explains the default agent profile and its implementation. The [configuration guide](../configs/README.md) covers providers,
-models, and team files. The [skills guide](../skills/README.md) explains
-on-demand agent skills, and the [scripts guide](../scripts/README.md) documents
-launchers and provider diagnostics. Contribution checks and vulnerability reporting are in
-[CONTRIBUTING.md](../CONTRIBUTING.md) and [SECURITY.md](../SECURITY.md).
-The [testing guide](testing.md) covers development checks and focused test runs.
-The [Duo guide](duo.md) covers built-in dual-coder execution, public evidence,
-candidate selection, and patch adoption through the CLI and SDK.
-The [Chinese guide](duo/README.zh-CN.md) provides the same instructions in Chinese.
-The [benchmark results](results.md) page reports the cross-harness comparison
-and the paired Duo–Base test. The [Adherence page](adherence.md) explains what
-the runtime records, the seven conditions for a controlled comparison and how
-ten agent artifacts meet them, and how we measure whether a declared team
-collaborated.
-The [native test evidence guide](test-evidence.md) explains Bash observation
-and the public Git patch parser.
+The [Base and Single2 guide](single2.md) explains the default agent profile and
+its implementation. The [Duo guide](duo.md) covers dual-coder execution,
+candidate selection, evidence, and patch adoption through the CLI and SDK.
+The [Chinese Duo guide](duo/README.zh-CN.md) provides localized instructions.
+The [configuration guide](../configs/README.md) covers providers, models, and
+team files. The [skills guide](../skills/README.md) explains on-demand agent
+skills. The [collaborating team guide](2026-08-31-collab-team.md) describes the
+three-role configuration, its current launcher and SDK calls, and the original
+handoff experiment.
+
+[Offline model and profile inspection](model-inspection.md) documents public
+queries used by evaluation and research tooling. The
+[evaluation runtime guide](evaluation-runtime.md) describes the framework
+surfaces used by external harnesses. Benchmark generation, scoring, reporting,
+and remote execution are documented in the
+[OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme).
+The [native test evidence guide](test-evidence.md) explains Bash observation and
+the public Git patch parser.
+
+The [benchmark results](results.md) page reports the recorded cross-harness
+comparison and paired Duo–Base test. The [Adherence page](adherence.md)
+explains runtime records, the conditions for a controlled comparison, and the
+measurement of collaboration in declared teams.
+
+[CONTRIBUTING.md](../CONTRIBUTING.md) covers contributor setup and checks,
+[the testing guide](testing.md) gives Python and DOM test commands, and
+[the test directory guide](../tests/README.md) maps behavior to test topics.
+[The scripts guide](../scripts/README.md) covers framework launchers, diagnostics,
+and local tool-loop measurement. [RELEASING.md](../RELEASING.md) describes the
+current GitHub release process. Report vulnerabilities through
+[SECURITY.md](../SECURITY.md).
 
 ## Migration guides
 
-- The [0.8.0 migration guide](migrations/0.8.0.md) covers Base profile introduction and Single2 as default
-- The [0.7.0 migration guide](migrations/0.7.0.md) covers Duo workflow, evaluation runtime, and native Bash testing
-- The [remove-run-tests migration guide](migrations/remove-run-tests.md) explains the transition to native Bash testing
-- The [0.6.0 migration guide](migrations/0.6.0.md) covers public API, team/workflow, evidence, lifecycle, and budget-contract changes (historical)
-- The [0.5.0 migration guide](migrations/0.5.0.md) remains available for historical reference
+Migration documents describe changes in the named release. Use the package
+and configuration guides above for the current signatures and defaults.
 
-[The collaborating team](2026-08-31-collab-team.md) documents
-`configs/team.collab.yaml`: what the three-role team is, the three ways to run
-it, and the four conditions that make a run a team's rather than one seat's.
+| Guide | Release changes |
+| --- | --- |
+| [0.8.0](migrations/0.8.0.md) | Base profile introduction, Single2 default, and 0.8.x follow-up changes |
+| [0.7.0](migrations/0.7.0.md) | Duo workflow, evaluation runtime, and native Bash testing |
+| [Retiring run_tests](migrations/remove-run-tests.md) | Migration from the removed test runner to native Bash |
+| [0.6.0](migrations/0.6.0.md) | Compact public API, team/workflow, lifecycle, evidence, and budget changes |
+| [0.5.0](migrations/0.5.0.md) | Audited runtime failures, isolation, configuration, and budgeting |
 
-## Design records
+## Design and integration history
 
-Dated Markdown files in this directory and `archive/` record earlier design
-work. Their branch names, line-number anchors, test counts, and implementation
-status reflect the repository at the time of writing. The package guide,
-current source, and tests define current behavior.
+[The ICLR integration record](iclr-integration.md) describes the cumulative
+series merged into `main` on October 1, 2026, its source ancestry, and validation
+at each recorded stage. [Source coverage](iclr-source-coverage.json) maps the
+original ICLR changes to that integration.
 
-[Offline model and profile inspection](model-inspection.md) describes the public queries used by evaluation and research tooling.
+Dated design files in this directory and `archive/` preserve earlier design
+work. Their branch names, line-number references, test counts, and
+implementation status refer to the recorded revision. Current package guides,
+source, and executable tests describe the maintained behavior.

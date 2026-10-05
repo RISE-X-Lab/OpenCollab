@@ -11,6 +11,9 @@ context: a "skill" is a packaged unit of INSTRUCTIONS (name + description + body
   ContextLoader / resolver / relevance-ranker / DURING_EXECUTION seam required.
 ---
 
+The maintained [skills guide](../skills/README.md) describes skill discovery,
+selection, and loading in the current implementation.
+
 > **Historical proposal.** The repository now contains a working skill system.
 > This document records the earlier design process and is not the current API
 > or implementation reference.
@@ -124,6 +127,7 @@ SKILL_TOOL_FACTORIES: dict[str, Callable[[SkillStorePort], Tool]] = {
 def build_tools_for_role(names, *, scheduler=None, skill_store=None) -> list[Tool]:
     # resolve: stateless → scheduler (needs scheduler) → skill (needs skill_store);
     # a name whose dependency wasn't provided → ValueError (existing fail-fast style)
+    ...
 ```
 
 ### 6.2 Catalog injection (`bootstrap/context_builder.py:70` `build_plan`)

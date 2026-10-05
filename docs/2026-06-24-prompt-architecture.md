@@ -1,5 +1,9 @@
 # OpenCollab Prompt Fragments — workflow path, compaction & steering
 
+The [package guide](../opencollab/README.md) and
+[Base and Single2 guide](single2.md) describe the current public execution
+surface and profile. The dated chapters retain their recorded source references.
+
 > **Historical architecture note.** The concepts remain useful, but branch and
 > `file:line` references below may have drifted. Current public behavior is
 > defined by the package API, tests, and maintained README files.
