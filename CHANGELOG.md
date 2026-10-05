@@ -7,6 +7,47 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+Candidate patches use a consistent machine-readable Git format across display
+settings and directory-copy worktrees. Each candidate owns its verification
+records. Source inspection failures retain recoverable candidate workspaces,
+including cancellation followed by a connection-close error. Submodule edits
+that a repository patch cannot deliver remain in the preserved workspace.
+Duo's own evidence directory is excluded from its source-change comparison.
+
+Cancellation keeps native file writes and late provider work owned until their
+effects settle. Workflow children share task capacity and the single extra
+budget allowance. Restored turns preserve accepted teammate messages through
+targeted cancellation, and dynamic teams retain reservations for calls still
+reporting usage during cleanup.
+
+Responses and Chat retries retain already-reported usage, while context sizing
+uses the final request's input. Native Responses replay participates in request
+estimates. Non-streaming reasoning aliases participate in response parsing and
+missing-usage estimates. Structured output limits keep their termination state
+and returned usage. Anthropic thinking budgets and dated model aliases follow
+the available output allowance and model capabilities.
+
+Context compaction keeps forced state local to each call and falls back to a
+raw excerpt for an empty summary. Session journal append failures roll back
+before retrying. Run identifiers remain consistent across snapshots, manifests
+and traces, and concurrent trace sequence numbers follow queue order. Large
+JSON integers retain integer validation semantics.
+
+File pagination accounts for displayed line numbers and continues at the first
+unread line. Git tools report truncated or failed audits explicitly. The CLI
+rejects interactive options placed before a workflow subcommand and explains
+the supported option position before discovering or executing a workflow.
+
+### Documentation
+
+Current guides describe the runtime's configuration precedence, cancellation,
+usage and candidate behavior. Developer and release instructions match the
+existing CI checks, while historical designs and migration guides link to the
+current entry points. Skill descriptions distinguish truncation from body-size
+rejection, and the sequence-diagram skill's YAML metadata loads correctly.
+
 ## [0.9.1] - 2026-10-05
 
 ### Added

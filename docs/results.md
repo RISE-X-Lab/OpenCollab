@@ -18,8 +18,8 @@ candidates, and it still costs less than Claude Code on each benchmark.
 
 ## Duo against Base, task by task
 
-Duo is a Workflow: its code issues every handoff, so both coders run on every
-task. The table pairs Duo with Base on each task and gives each outcome as a
+Duo is a Workflow whose code schedules the two coder candidates and their
+selection. The table pairs Duo with Base on each task and gives each outcome as a
 share of the benchmark's tasks. The last column is the exact two-sided sign
 test on the tasks that only one of them passed.
 
@@ -52,9 +52,10 @@ runner for other evaluation workloads.
 The default [OC Base agent](single2.md) maps to Single2 through the public
 `agent(...)` entry. For a collaborative evaluation, follow the
 [Duo with Single2 quick start](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start).
-It covers matching OC/OCE 0.8 installations, benchmark images, a Responses
+It covers matching OC/OCE 0.9.x installations, benchmark images, a Responses
 model endpoint, and one-task official evaluation with
-`oc-eval g22 --config /path/to/g22.json --indices 1 --workers 1`. The same
+`oc-eval duo --config /path/to/g22.json --indices 1 --workers 1`.
+`oc-eval g22` remains an alias for that command. The same
 configuration runs a batch and keeps per-task patches, trajectories, and
 official test reports together.
 

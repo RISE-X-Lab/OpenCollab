@@ -10,8 +10,9 @@ dot in the center of each notch.
 
 The ring represents collaboration without a permanent central role. Its open
 segments reflect control moving between roles. The full mark depicts
-intelligence emerging from the organization. The official tagline is *An
-Operating Theory of Organized Intelligence.*
+intelligence emerging from the organization. The lockup-with-tagline asset uses
+*An Operating Theory of Organized Intelligence.* The README hero uses
+*Program how coding agents collaborate. Verify that they did.*
 
 ## Files
 
