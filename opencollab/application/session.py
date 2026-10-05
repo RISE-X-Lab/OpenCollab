@@ -488,6 +488,7 @@ class Session:
             # over the current session's counters, phase, or pending work. Build
             # a complete clean state first, then update the existing object so
             # the runner and tool executor retain their shared state reference.
+            self._append_restore_results_for_open_tool_calls(restored)
             self._publish_restored_state(restored)
             self._restore_auto_save_tracking(snapshot)
             self._checkpoint_restored_auto_save_target(path)

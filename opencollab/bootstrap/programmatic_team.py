@@ -127,7 +127,7 @@ async def run_team(
                 output = await scheduler.run(prompt)
             else:
                 output = await asyncio.wait_for(scheduler.run(prompt), timeout=timeout)
-        except TimeoutError as exc:
+        except asyncio.TimeoutError as exc:
             status = "stopped"
             reason = "timeout"
             failure = exc

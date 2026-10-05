@@ -803,7 +803,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             self.state.transition_to(SessionPhase.EXECUTING_TOOLS)
             return
 
-        if self._pending_tool_allowlist and response.finish_reason in (None, "stop"):
+        if self._pending_tool_allowlist and response.finish_reason in (None, "stop", "end_turn"):
             if not self._required_tool_retried:
                 self._required_tool_retried = True
                 if self.tracer:

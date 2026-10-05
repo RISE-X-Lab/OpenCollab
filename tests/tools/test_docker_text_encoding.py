@@ -102,6 +102,71 @@ async def test_docker_native_edit_retains_untouched_utf8_bytes(
     assert any(call["write"] for call in calls)
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize("trailing_newline", [False, True])
+async def test_docker_displayed_unicode_line_edits_preserve_other_records(
+    tmp_path, docker_runtime, newline, trailing_newline,
+):
+    runtime, _calls = docker_runtime
+    target = tmp_path / "records.jsonl"
+    records = [
+        '{"text":"\u7b2c\u4e00\u2028\u7b2c\u4e8c"}',
+        '{"keep":"caf\u00e9 \u5b89\u5168"}',
+        '{"tail":"\u672b\u5c3e"}',
+    ]
+    suffix = newline if trailing_newline else ""
+    target.write_bytes((newline.join(records) + suffix).encode("utf-8"))
+    reader = FileReadTool()
+    displayed = await reader.execute_with_runtime({"path": str(target)}, runtime)
+    displayed_keep_line = next(
+        int(row.partition("\t")[0])
+        for row in displayed.split("\n")
+        if row.partition("\t")[2] == records[1]
+    )
+    replacement = '{"keep":"\u65b0\u503c"}'
+
+    output = await ApplyPatchTool().execute_with_runtime({
+        "path": str(target), "mode": "line_replace",
+        "start_line": displayed_keep_line, "end_line": displayed_keep_line,
+        "new_str": replacement,
+    }, runtime)
+
+    assert output.startswith("Applied"), output
+    expected = newline.join([records[0], replacement, records[2]]) + suffix
+    assert target.read_bytes() == expected.encode("utf-8"), (displayed, output)
+    assert "3 -> 3 lines" in output
+    assert displayed_keep_line == 2
+    assert displayed.split("\n")[1:] == [
+        f"{number}\t{record}" for number, record in enumerate(records, 1)
+    ]
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize("trailing_newlines", [0, 1, 2])
+async def test_docker_single_line_pages_keep_inline_unicode_and_final_record(
+    tmp_path, docker_runtime, newline, trailing_newlines,
+):
+    runtime, _calls = docker_runtime
+    target = tmp_path / "pages.txt"
+    lines = ["\u4e2d\u6587\u2028second\u2029third\u0085last", "caf\u00e9", "tail"]
+    source = newline.join(lines) + newline * trailing_newlines
+    target.write_bytes(source.encode("utf-8"))
+    expected_lines = lines + ([""] if trailing_newlines == 2 else [])
+    pages = [
+        await runtime.environment.read_text_range(
+            str(target), offset=offset, limit=1, max_chars=100,
+        )
+        for offset in range(1, len(expected_lines) + 2)
+    ]
+
+    assert [line for page in pages for line in page.lines] == expected_lines
+    assert [page.has_more for page in pages] == [
+        offset < len(expected_lines) for offset in range(1, len(expected_lines) + 2)
+    ]
+    assert all(not page.chars_truncated for page in pages)
+    assert target.read_bytes() == source.encode("utf-8")
+
+
 async def test_docker_file_read_rejects_non_utf8(tmp_path, docker_runtime):
     runtime, _calls = docker_runtime
     target = tmp_path / "latin1.txt"

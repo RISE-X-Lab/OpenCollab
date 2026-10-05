@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
+
 ENV_FILE_WRITE_LIMIT_BYTES = 4 * 1024 * 1024
 
 
@@ -73,7 +75,7 @@ class Environment:
         max_chars: int,
     ) -> TextFileRange:
         content = await self.read_file(path)
-        lines = content.splitlines()
+        lines, _ended_nl = _split_lines(_normalize_newlines(content))
         start = max(0, offset - 1)
         end = min(len(lines), start + limit)
         selected = lines[start:end]

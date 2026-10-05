@@ -114,7 +114,7 @@ async def _raw_diff_at(
         cached = " --cached"
     tracked = _complete(
         await environment.exec_cmd(
-            f"{git} --no-pager diff{cached} {shlex.quote(base_revision)} --binary "
+            f"{git} -c core.filemode=true --no-pager diff{cached} {shlex.quote(base_revision)} --binary "
             "--no-ext-diff --no-textconv --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/"
             + pathspec,
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,

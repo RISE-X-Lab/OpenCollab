@@ -7,6 +7,7 @@ import pytest
 
 from opencollab.adapters._env_base import Environment
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.fs import FileReadTool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -20,6 +21,19 @@ class _ReadFileOnly:
 
 
 class _DefaultRangeEnvironment(_ReadFileOnly, Environment):
+    pass
+
+
+class _ReadFileOnlyLocalEnvironment:
+    local_filesystem = True
+
+    def __init__(self, environment):
+        self.workspace = environment.workspace
+        self.read_file = environment.read_file
+        self.write_file = environment.write_file
+
+
+class _DefaultRangeLocalEnvironment(_ReadFileOnlyLocalEnvironment, Environment):
     pass
 
 
@@ -167,3 +181,46 @@ async def test_single_line_truncation_includes_its_line_number_budget(tmp_path, 
         assert len(_displayed_body(result)) <= 100
     finally:
         await _cleanup(runtime)
+
+
+@pytest.mark.parametrize("backend", [_DefaultRangeLocalEnvironment, _ReadFileOnlyLocalEnvironment])
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("trailing_newline", [False, True])
+async def test_compatible_file_reader_preserves_unicode_line_coordinates(
+    tmp_path, backend, newline, trailing_newline,
+):
+    target = tmp_path / "records.jsonl"
+    lines = ['{"text":"\u4e2d\u6587\u2028caf\u00e9"}', '{"keep":"old"}', '{"tail":"safe"}']
+    suffix = newline if trailing_newline else ""
+    target.write_bytes((newline.join(lines) + suffix).encode("utf-8"))
+    local = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=backend(local), safety_policy=None, permission_policy=None)
+    reader = FileReadTool()
+    try:
+        displayed = await reader.execute_with_runtime({"path": str(target)}, runtime)
+        displayed_keep_line = next(
+            int(row.partition("\t")[0])
+            for row in displayed.split("\n")
+            if row.partition("\t")[2] == lines[1]
+        )
+        output = await ApplyPatchTool().execute_with_runtime({
+            "path": str(target), "mode": "line_replace",
+            "start_line": displayed_keep_line, "end_line": displayed_keep_line,
+            "new_str": '{"keep":"new"}',
+        }, runtime)
+
+        assert output.startswith("Applied"), output
+        expected = newline.join([lines[0], '{"keep":"new"}', lines[2]]) + suffix
+        assert target.read_bytes() == expected.encode("utf-8"), (displayed, output)
+        assert "3 -> 3 lines" in output
+        assert displayed_keep_line == 2
+        assert "3 lines total, showing 1-3" in displayed
+        for offset, line in enumerate(lines, 1):
+            page = await reader.execute_with_runtime(
+                {"path": str(target), "offset": offset, "limit": 1}, runtime,
+            )
+            expected_line = '{"keep":"new"}' if offset == 2 else line
+            assert page.split("\n")[1] == f"{offset}\t{expected_line}"
+            assert ("Continue with" in page) == (offset < len(lines))
+    finally:
+        await local.cleanup()

@@ -1,4 +1,4 @@
-"""Shared internals for path-based and descriptor-relative safe-file helpers."""
+"""Shared text and safe-file internals."""
 
 from __future__ import annotations
 
@@ -7,6 +7,21 @@ from typing import TextIO
 _READ_CHUNK_BYTES = 1024 * 1024
 _RANGE_READ_CHUNK_CHARS = 64 * 1024
 _RANGE_TOTAL_COUNT_LIMIT_BYTES = 256 * 1024
+
+
+def _normalize_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _split_lines(text: str) -> tuple[list[str], bool]:
+    """Split LF lines, retaining inline Unicode and the final-newline flag."""
+    if text == "":
+        return [], False
+    ended_nl = text.endswith("\n")
+    lines = text.split("\n")
+    if ended_nl:
+        lines = lines[:-1]
+    return lines, ended_nl
 
 
 def _require_limit(max_bytes: int) -> int:
