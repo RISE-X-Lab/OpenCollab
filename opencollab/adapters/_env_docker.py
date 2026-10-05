@@ -25,6 +25,7 @@ from opencollab.adapters._env_process import (
     run_process,
     timed_out_result,
 )
+from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
 
@@ -546,7 +547,7 @@ class DockerEnvironment(Environment):
         result = await self.exec_cmd(command)
         if result.returncode != 0:
             raise FileNotFoundError(result.stderr)
-        lines = result.stdout.splitlines()
+        lines, _ended_nl = _split_lines(_normalize_newlines(result.stdout))
         has_more = len(lines) > limit
         selected = lines[:limit]
         joined = "\n".join(selected)

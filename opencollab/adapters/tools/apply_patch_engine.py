@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
 from opencollab.adapters.tools._parameters import integer_parameter
 
 # A hunk header: @@ -<old_start>[,<old_len>] +<new_start>[,<new_len>] @@ [heading]
@@ -31,25 +32,10 @@ def _detect_newline_style(text: str) -> str:
     return next(iter(styles), "\n")
 
 
-def _normalize_newlines(text: str) -> str:
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
 def _restore_newlines(text: str, style: str) -> str:
     if style == "\n":
         return text
     return text.replace("\n", style)
-
-
-def _split_lines(text: str) -> tuple[list[str], bool]:
-    """Split into lines without trailing newlines; return (lines, ended_with_nl)."""
-    if text == "":
-        return [], False
-    ended_nl = text.endswith("\n")
-    lines = text.split("\n")
-    if ended_nl:
-        lines = lines[:-1]
-    return lines, ended_nl
 
 
 def _join_lines(lines: list[str], ended_nl: bool) -> str:
@@ -59,8 +45,8 @@ def _join_lines(lines: list[str], ended_nl: bool) -> str:
 
 
 def _summary(path: str, mode: str, before: str, after: str) -> str:
-    before_n = len(before.splitlines())
-    after_n = len(after.splitlines())
+    before_n = len(_split_lines(_normalize_newlines(before))[0])
+    after_n = len(_split_lines(_normalize_newlines(after))[0])
     return (
         f"Applied {mode} to {path}: {before_n} -> {after_n} lines "
         f"({len(before)} -> {len(after)} chars)"

@@ -15,13 +15,13 @@ import shlex
 from typing import Any
 
 from opencollab.adapters._env_base import TextFileRange
+from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
 from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools._parameters import integer_parameter
 from opencollab.adapters.tools._paths import checked_path
 from opencollab.adapters.tools.apply_patch_engine import (
     _MIXED_NEWLINES,
     _detect_newline_style,
-    _normalize_newlines,
     _restore_newlines,
 )
 from opencollab.adapters.tools.base import Tool, host_write_lock
@@ -112,7 +112,7 @@ class FileReadTool(Tool):
                 )
             else:
                 content = await env.read_file(path)
-                lines = content.splitlines()
+                lines, _ended_nl = _split_lines(_normalize_newlines(content))
                 start = max(0, offset - 1)
                 end = min(len(lines), start + limit)
                 window = TextFileRange(
