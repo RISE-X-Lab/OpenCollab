@@ -117,6 +117,12 @@ class SchedulerRunMixin:
             self._start_agent_task(aid, session)
             await self._wait_for_restored_turn(aid, turn_start)
 
+        cancel_event = self._turn_cancel_events.get(aid)
+        if aid in self._cancelled_turn_inbox_holds:
+            if cancel_event is not None and cancel_event.is_set():
+                await self._wait_for_restored_turn(aid, len(session.state.messages))
+            self._cancelled_turn_inbox_holds.discard(aid)
+
         # Restored teammate messages are scheduler-owned turns. Deliver and
         # finish them before accepting the new external user turn.
         if self._message_inbox.get(aid):
@@ -307,6 +313,7 @@ class SchedulerRunMixin:
 
         reason = "interrupted by user"
         failure = f"Error: {reason}"
+        self._cancelled_turn_inbox_holds.add(aid)
         descendants = self._turn_descendant_aids(aid)
         # Close every wake gate in the subtree before cancelling any producer.
         # A leaf cancellation is delivered to its immediate parent first; if
@@ -314,6 +321,7 @@ class SchedulerRunMixin:
         # intermediate suspended parent and create an untracked replacement
         # task while this finalizer awaited the original owners.
         for child_aid in descendants:
+            self._cancelled_turn_inbox_holds.add(child_aid)
             child = self.table.get(child_aid)
             if child is not None and not child.state.phase.is_terminal():
                 child.state.cancel("parent turn interrupted by user")
@@ -372,6 +380,7 @@ class SchedulerRunMixin:
             self._turn_started_at.pop(child_aid, None)
             self._autosave_session(child_aid)
 
+        await self.notify_unanswered_senders(aid, reason)
         await self._safe_emit_scheduler_event(
             self._events.agent_cancelled(aid, target.agent.name)
         )
@@ -411,7 +420,10 @@ class SchedulerRunMixin:
         ):
             return False
         for scb in self.table.entries.values():
-            if self._message_inbox.get(scb.aid):
+            if (
+                self._message_inbox.get(scb.aid)
+                and scb.aid not in self._cancelled_turn_inbox_holds
+            ):
                 return False
             if not scb.state.pending_events.is_empty():
                 return False

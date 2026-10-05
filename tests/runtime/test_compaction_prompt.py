@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from opencollab.application.compaction_prompt import (
     CLAUDE_CODE_COMPACTION_REFERENCE_URL,
     CLAUDE_CODE_LICENSE_URL,
@@ -114,6 +116,16 @@ def test_format_returns_empty_for_no_usable_text():
     assert format_compact_summary("") == ""
     # Only an analysis block, no summary and nothing else → empty after strip.
     assert format_compact_summary("<analysis>just thinking</analysis>") == ""
+
+
+def test_format_returns_empty_for_empty_tagged_summary_in_sync_and_async_callers():
+    raw = "<summary> \n </summary>"
+    assert format_compact_summary(raw) == ""
+
+    async def format_in_async_context():
+        return format_compact_summary(raw)
+
+    assert asyncio.run(format_in_async_context()) == ""
 
 
 def test_format_keeps_text_when_no_summary_tags():

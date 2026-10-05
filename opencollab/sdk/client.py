@@ -436,9 +436,9 @@ class OpenCollab:
         A caller module using an installed name raises a duplicate-name error.
 
         ``concurrency`` limits agent sessions. ``task_concurrency`` separately
-        limits active parallel/pipeline units across the workflow and defaults
-        to ``concurrency``. Mixed agent and task work may therefore peak at the
-        sum of both limits.
+        limits active parallel/pipeline units across the workflow, including
+        candidate child workflows, and defaults to ``concurrency``. Mixed agent
+        and task work may therefore peak at the sum of both limits.
 
         ``agent_profile`` selects the shared agent configuration for every
         workflow role while preserving each role's explicit tool permissions.

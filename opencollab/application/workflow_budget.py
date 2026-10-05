@@ -73,6 +73,14 @@ class WorkflowBudget:
 
 
 @dataclass
+class _BudgetEscapeState:
+    """One atomic forced-write claim shared by a workflow and its children."""
+
+    lock: asyncio.Lock
+    used: bool = False
+
+
+@dataclass
 class _BudgetLease:
     """A per-call token allocation held while one workflow agent is active."""
 
@@ -227,22 +235,23 @@ class WorkflowBudgetMixin:
                         f"of {self.budget.total}"
                     )
                 if over_budget_ok and available <= 0:
-                    if self._over_budget_escape_used:
-                        self._trace_budget_decision(
-                            "budget_refusal",
-                            cap=cap,
-                            remaining=remaining,
-                            label=label,
-                            over_budget_ok=True,
-                        )
-                        raise WorkflowBudgetExceeded(
-                            f"workflow budget exhausted: spent {self.budget.spent()} "
-                            f"of {self.budget.total}; the one over-budget escape "
-                            "has already been used"
-                        )
-                    # Claim before tracing/building so failures cannot turn the
-                    # one-shot escape into a retry loop.
-                    self._over_budget_escape_used = True
+                    async with self._budget_escape_state.lock:
+                        if self._budget_escape_state.used:
+                            self._trace_budget_decision(
+                                "budget_refusal",
+                                cap=cap,
+                                remaining=remaining,
+                                label=label,
+                                over_budget_ok=True,
+                            )
+                            raise WorkflowBudgetExceeded(
+                                f"workflow budget exhausted: spent {self.budget.spent()} "
+                                f"of {self.budget.total}; the one over-budget escape "
+                                "has already been used"
+                            )
+                        # Claim before tracing/building so failures cannot turn the
+                        # one-shot escape into a retry loop.
+                        self._budget_escape_state.used = True
                     self._trace_budget_decision(
                         "budget_escape",
                         cap=cap,

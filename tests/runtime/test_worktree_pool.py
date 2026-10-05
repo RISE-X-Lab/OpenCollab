@@ -707,6 +707,63 @@ async def test_pool_keeps_failed_cleanup_for_retry(tmp_path, monkeypatch) -> Non
     assert pool._envs == [env]
 
 
+async def test_pool_release_waits_for_and_invalidates_inflight_acquire(tmp_path, monkeypatch) -> None:
+    setup_started = asyncio.Event()
+    setup_continue = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    class GatedEnvironment:
+        def __init__(self, *_args, **_kwargs):
+            self.workspace = str(tmp_path / "gated")
+
+        async def setup(self):
+            setup_started.set()
+            await setup_continue.wait()
+            return self.workspace
+
+        async def cleanup(self):
+            cleaned.set()
+
+    monkeypatch.setattr(pool_module, "WorktreeEnvironment", GatedEnvironment)
+    pool = WorktreePool(str(tmp_path), use_worktrees=True)
+    acquisition = asyncio.create_task(pool.acquire("coder"))
+    await setup_started.wait()
+    release = asyncio.create_task(pool.release())
+    await asyncio.sleep(0)
+    assert not release.done()
+    setup_continue.set()
+
+    with pytest.raises(RuntimeError, match="pool release"):
+        await acquisition
+    await release
+    assert cleaned.is_set()
+    assert pool._envs == []
+
+
+async def test_pool_retries_cleanup_after_failed_setup_cleanup(tmp_path, monkeypatch) -> None:
+    class PartiallyCreatedEnvironment:
+        def __init__(self, *_args, **_kwargs):
+            self.workspace = str(tmp_path / "partial")
+            self.cleanup_calls = 0
+
+        async def setup(self):
+            raise RuntimeError("setup failed")
+
+        async def cleanup(self):
+            self.cleanup_calls += 1
+            if self.cleanup_calls == 1:
+                raise OSError("cleanup retry needed")
+
+    monkeypatch.setattr(pool_module, "WorktreeEnvironment", PartiallyCreatedEnvironment)
+    pool = WorktreePool(str(tmp_path), use_worktrees=True)
+    with pytest.raises(RuntimeError, match="setup failed"):
+        await pool.acquire("coder")
+    assert len(pool._envs) == 1
+
+    await pool.release()
+    assert pool._envs == []
+
+
 async def test_pool_finishes_cleanup_before_forwarding_cancellation(tmp_path, monkeypatch) -> None:
     release = asyncio.Event()
     cleaned = asyncio.Event()

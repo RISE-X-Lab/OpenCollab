@@ -56,6 +56,7 @@ from opencollab.application.workflow_budget import UNBOUNDED_SESSION_BUDGET as U
 from opencollab.application.workflow_budget import (
     WorkflowBudget,
     WorkflowBudgetMixin,
+    _BudgetEscapeState,
     _BudgetLease,
     _ConcurrencyPermit,
     _positive_concurrency,
@@ -144,8 +145,9 @@ class WorkflowContext(
     interchangeable over the identical Session process primitive.
 
     ``max_concurrency`` limits active agent sessions only. ``task_concurrency``
-    limits active ``parallel`` and ``pipeline`` units across this context and
-    inherits ``max_concurrency`` when omitted. The limits are independent, so
+    limits active ``parallel`` and ``pipeline`` units across this workflow,
+    including candidate child workflows, and inherits ``max_concurrency`` when
+    omitted. The limits are independent, so
     mixed work may have up to their sum active at once.
     """
 
@@ -191,10 +193,9 @@ class WorkflowContext(
         self.budget = WorkflowBudget(budget_total, self._sessions)
         self._budget_lock = asyncio.Lock()
         self._budget_waiters = 0
-        # ``over_budget_ok`` is a one-shot escape for a forced final write.
-        # Claiming it under the budget lock prevents concurrent callers from
-        # turning the escape hatch into an unbounded tail.
-        self._over_budget_escape_used = False
+        # Candidate child contexts share this state so the escape remains one
+        # workflow-wide forced write instead of one escape per candidate.
+        self._budget_escape_state = _BudgetEscapeState(lock=asyncio.Lock())
         self._active_budget_lease: contextvars.ContextVar[_BudgetLease | None] = (
             contextvars.ContextVar("workflow_budget_lease", default=None)
         )

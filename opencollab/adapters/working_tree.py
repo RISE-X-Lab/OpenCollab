@@ -149,7 +149,7 @@ class EnvWorkingTreeProbe:
         for path in untracked_paths:
             result = await self._env.exec_cmd(
                 "git -C "
-                f"{workspace} --no-pager diff --no-index --binary --no-ext-diff "
+                f"{workspace} --no-pager diff --no-index --binary --no-ext-diff --no-textconv "
                 f"-- /dev/null {shlex.quote(path)}",
                 timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
             )

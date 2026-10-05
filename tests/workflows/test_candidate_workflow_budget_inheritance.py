@@ -111,6 +111,49 @@ async def test_parallel_candidates_retain_their_approved_shares(repository, requ
     assert parent.tokens_remaining() == 40
 
 
+async def test_over_budget_escape_is_shared_by_sibling_candidate_workflows(repository):
+    factory = FakeFactory([
+        FakeSession(tokens=10),
+        FakeSession(tokens=10),
+        FakeSession(tokens=7),
+        FakeSession(tokens=7),
+        FakeSession(tokens=7),
+    ])
+    parent = _context(repository, factory, 20)
+    children = []
+    ready = asyncio.Event()
+    release = asyncio.Event()
+
+    async def nested(child, _args):
+        children.append(child)
+        await child.agent("consume candidate share")
+        if len(children) == 2:
+            ready.set()
+        await release.wait()
+        try:
+            return await child.agent("forced final write", over_budget_ok=True)
+        except WorkflowBudgetExceeded:
+            return "refused"
+
+    task = asyncio.create_task(parent.parallel([
+        lambda: parent.candidate_workflow(nested, {}, label="A"),
+        lambda: parent.candidate_workflow(nested, {}, label="B"),
+    ]))
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=10)
+    finally:
+        release.set()
+    results = await asyncio.wait_for(task, timeout=10)
+
+    assert sorted(result.output for result in results) == ["done", "refused"]
+    assert len(factory.builds) == 3
+    assert parent.tokens_spent() == 27
+    assert parent.tokens_remaining() == -7
+    with pytest.raises(WorkflowBudgetExceeded, match="escape has already been used"):
+        await parent.agent("another forced write", over_budget_ok=True)
+    assert len(factory.builds) == 3
+
+
 @pytest.mark.parametrize("parallel", [False, True])
 async def test_nested_roles_share_child_pool(repository, parallel):
     factory = FakeFactory([FakeSession(tokens=30), FakeSession(tokens=30)])

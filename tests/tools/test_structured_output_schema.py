@@ -297,6 +297,24 @@ def test_validate_integer_rejects_non_integral_or_boolean_values(value):
     assert validate(value, {"type": "integer"})
 
 
+def test_validate_large_json_integer_without_float_coercion():
+    value = int("1" + "0" * 400) + 1
+
+    assert validate(value, {"type": "integer"}) == []
+    assert validate(value, {"type": "number"}) == []
+    assert validate(value, {"type": "integer", "minimum": 0}) == []
+    assert validate(value, {"type": "integer", "minimum": value + 1})
+    assert validate(value, {"type": "integer", "maximum": 10})
+    assert validate(value, {"type": "integer", "enum": [value]}) == []
+    assert validate(value, {"type": "integer", "enum": [value - 1]})
+
+
+def test_validate_schema_rejects_unsupported_multiple_of_assertion():
+    assert validate_schema({"type": "number", "multipleOf": 3}) == [
+        "$schema.multipleOf: unsupported schema keyword"
+    ]
+
+
 @pytest.mark.parametrize(
     ("value", "enum", "matches"),
     [

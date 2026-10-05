@@ -366,6 +366,81 @@ def test_session_with_auto_save_path_writes_on_user_message(tmp_path):
     assert "hello" in contents
 
 
+def test_autosave_retries_journal_record_after_fsync_error(tmp_path, monkeypatch):
+    path = tmp_path / "fsync-retry.json"
+    store = SessionStore()
+    session = Session(
+        agent=FakeAgent(),
+        llm=FakeLLMClient(),
+        auto_save_path=str(path),
+        store=store,
+    )
+    real_fsync = __import__("os").fsync
+    journal_path = tmp_path / "fsync-retry.json.journal"
+    journal_path.touch()
+    journal_identity = (journal_path.stat().st_dev, journal_path.stat().st_ino)
+    fail_once = True
+    injected_error = OSError(
+        "fsync reported failure after journal bytes were written"
+    )
+
+    def fsync_after_write(fd):
+        nonlocal fail_once
+        info = __import__("os").fstat(fd)
+        if fail_once and (info.st_dev, info.st_ino) == journal_identity:
+            fail_once = False
+            real_fsync(fd)
+            raise injected_error
+        real_fsync(fd)
+
+    monkeypatch.setattr("os.fsync", fsync_after_write)
+
+    async def persist_current_state():
+        await asyncio.gather(*session.pending_cleanup_tasks)
+
+    async def scenario():
+        session._next_auto_save_checkpoint = 1
+        await session.add_user_message("first message")
+        await persist_current_state()
+        # The failed write leaves its reservation uncommitted and its bytes
+        # rolled back; there is no durable snapshot or journal record yet.
+        assert session._auto_save_sequence == 0
+        assert store._read_journal_records(str(path)) == []
+        with pytest.raises(FileNotFoundError):
+            store.load_snapshot(str(path), session.agent.system_prompt)
+
+        session.state.append_message(
+            {"role": "user", "content": "second message"}
+        )
+        await session.event_bus.emit(SessionEvent(type="user_message_appended"))
+        await persist_current_state()
+
+    asyncio.run(scenario())
+
+    before_restore = store.load_snapshot(str(path), "fallback")
+    # Reservation 1 belongs to the failed attempt. The changed-transcript
+    # retry reserves and durably checkpoints sequence 2 without a duplicate 1.
+    assert session._auto_save_sequence == 2
+    assert before_restore["_autosave_sequence"] == 2
+    assert [message["content"] for message in before_restore["messages"][-2:]] == [
+        "first message",
+        "second message",
+    ]
+
+    restored = load_session(
+        str(path),
+        agent=FakeAgent(),
+        llm=FakeLLMClient(),
+    )
+    assert restored.messages[-2:]==[
+        {"role": "user", "content": "first message"},
+        {"role": "user", "content": "second message"},
+    ]
+    assert restored._auto_save_sequence == before_restore["_autosave_sequence"]
+    assert session.persistence_errors == (injected_error,)
+    assert journal_path.read_bytes() == b""
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_phase"),
     [("done", "done"), ("stopped", "stopped"), ("error", "error")],

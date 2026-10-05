@@ -12,6 +12,7 @@ import asyncio
 import inspect
 from typing import Any, Awaitable, Callable
 
+from opencollab.application.async_timeout import consume_task_result
 from opencollab.application.ports import EventPublisherPort
 
 EventCallback = Callable[[Any], Awaitable[None] | None]
@@ -22,6 +23,7 @@ class EventBus:
 
     def __init__(self, target: EventPublisherPort | EventCallback | None = None):
         self._targets: list[EventPublisherPort | EventCallback] = []
+        self._pending_subscriber_tasks: set[asyncio.Task[Any]] = set()
         if target is not None:
             self.subscribe(target)
 
@@ -43,8 +45,9 @@ class EventBus:
         """Live tasks owned by subscribers."""
         pending: list[asyncio.Task[Any]] = []
         seen: set[int] = set()
-        for target in self._targets:
-            tasks = getattr(target, "pending_tasks", ())
+        task_sources = [self._pending_subscriber_tasks]
+        task_sources.extend(getattr(target, "pending_tasks", ()) for target in self._targets)
+        for tasks in task_sources:
             for task in tasks:
                 if not isinstance(task, asyncio.Task) or task.done() or id(task) in seen:
                     continue
@@ -67,11 +70,13 @@ class EventBus:
             if not inspect.isawaitable(result):
                 continue
             subscriber = asyncio.create_task(self._isolate_self_cancel(result))
+            self._pending_subscriber_tasks.add(subscriber)
+            subscriber.add_done_callback(self._pending_subscriber_tasks.discard)
+            subscriber.add_done_callback(consume_task_result)
             try:
                 await asyncio.shield(subscriber)
             except asyncio.CancelledError:
                 subscriber.cancel()
-                await asyncio.gather(subscriber, return_exceptions=True)
                 raise
             except Exception:
                 continue

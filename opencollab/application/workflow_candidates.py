@@ -263,6 +263,7 @@ class WorkflowCandidatesMixin:
             token = None
             candidate: CandidateRun | None = None
             failure: BaseException | None = None
+            preserve_lease = False
             try:
                 budget_lease = await self._acquire_budget_lease(
                     budget,
@@ -305,7 +306,19 @@ class WorkflowCandidatesMixin:
                     )
                     failure.__cause__ = exc
                     raise failure
-                source_after = await self._candidate_source_state()
+                try:
+                    source_after = await self._candidate_source_state()
+                except asyncio.CancelledError:
+                    preserve_lease = True
+                    raise
+                except Exception as exc:
+                    failure = CandidateWorkspaceTrackingError(
+                        f"candidate patch was captured, but could not verify source "
+                        f"worktree state after candidate {label}; worktree preserved at "
+                        f"{lease.candidate_workspace}"
+                    )
+                    failure.__cause__ = exc
+                    raise failure
                 if source_after != source_before:
                     failure = CandidateWorkspaceTrackingError(
                         f"source worktree changed during candidate {label}. "
@@ -338,7 +351,10 @@ class WorkflowCandidatesMixin:
                             failure = exc
                     self.budget.release(budget_lease)
             if failure is not None:
-                if not isinstance(failure, (CandidateCaptureError, CandidateWorkspaceTrackingError)):
+                if (
+                    not preserve_lease
+                    and not isinstance(failure, (CandidateCaptureError, CandidateWorkspaceTrackingError))
+                ):
                     try:
                         await lease.cleanup()
                     except Exception as cleanup_exc:
@@ -414,6 +430,7 @@ class WorkflowCandidatesMixin:
                 child._semaphore = self._semaphore
                 child._task_semaphore = self._task_semaphore
                 child._active_task_concurrency_permit = self._active_task_concurrency_permit
+                child._budget_escape_state = self._budget_escape_state
                 try:
                     output = await workflow_fn(child, dict(args))
                 except Exception as exc:  # noqa: BLE001 - preserve candidate edits
@@ -430,7 +447,19 @@ class WorkflowCandidatesMixin:
                     )
                     failure.__cause__ = exc
                     raise failure
-                source_after = await self._candidate_source_state()
+                try:
+                    source_after = await self._candidate_source_state()
+                except asyncio.CancelledError:
+                    preserve_lease = True
+                    raise
+                except Exception as exc:
+                    failure = CandidateWorkspaceTrackingError(
+                        f"candidate patch was captured, but could not verify source "
+                        f"worktree state after candidate workflow {label}; worktree preserved at "
+                        f"{lease.candidate_workspace}"
+                    )
+                    failure.__cause__ = exc
+                    raise failure
                 if source_after != source_before:
                     failure = CandidateWorkspaceTrackingError(
                         f"source worktree changed during candidate workflow {label}. "
@@ -456,7 +485,9 @@ class WorkflowCandidatesMixin:
                             await child.release_isolated_workspaces()
                         except Exception as exc:
                             detail = f"{type(exc).__name__}: {exc}"
-                            preserve_lease = bool(getattr(child._factory, "has_pending_isolated_cleanup", False))
+                            preserve_lease = preserve_lease or bool(
+                                getattr(child._factory, "has_pending_isolated_cleanup", False)
+                            )
                             if preserve_lease:
                                 detail += f"; candidate worktree retained at {lease.candidate_workspace}"
                             self._record_agent_failure(f"{label}:cleanup", exc)

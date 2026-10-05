@@ -66,6 +66,7 @@ class SessionRuntime:
     auto_save_path: str | None
     auto_save_subscriber: AutoSaveSubscriber | None = None
     owns_llm: bool = False
+    run_id: str | None = None
 
 
 class Session:
@@ -99,6 +100,7 @@ class Session:
         self._permission_policy = permission_policy
         self._safety_policy = safety_policy
         self._auto_save_path = auto_save_path
+        self.run_id = runtime.run_id
         self._launch_state = "not_applied"
         self._applied_launch: object | None = None
         # The public facade owns turn admission. The runner protects its own
@@ -821,6 +823,8 @@ class Session:
                 "submitted_summary": self.state.submitted_summary,
             },
         }
+        if self.run_id is not None:
+            meta["run_id"] = self.run_id
         if self.state.step_count != self._loop_checkpoint_step or self.state.phase in {
             SessionPhase.AUTOSAVING, SessionPhase.AWAITING_EVENTS, SessionPhase.DONE,
         }:

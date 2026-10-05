@@ -84,6 +84,57 @@ def test_summarizer_falls_back_when_no_summary_block():
     assert s.last_call_cacheable is False
 
 
+def test_empty_tagged_summary_uses_fallback_and_is_never_cached_sync_or_async():
+    s = _summarizer("<summary> \n </summary>")
+    sync_result = s(SEGMENT)
+    assert "[user]: build the thing" in sync_result
+    assert s.last_call_cacheable is False
+
+    async def async_result():
+        return await s.asummarize(SEGMENT)
+
+    result = asyncio.run(async_result())
+    assert "[assistant]: working on it" in result
+    assert s.last_call_cacheable is False
+
+
+def test_empty_tagged_summary_is_not_cached_by_autocompact():
+    from opencollab.application.shaping import AutoCompactShaper
+
+    calls = []
+
+    async def acomplete(_request):
+        calls.append("call")
+        return SimpleNamespace(content="<summary> \n </summary>")
+
+    summarizer = ReadTimeSummarizer(acomplete, fallback_chars=100)
+    shaper = AutoCompactShaper(
+        summarizer=summarizer,
+        estimate_tokens=lambda messages: sum(len(message.get("content", "")) for message in messages),
+        trigger_tokens=2,
+        target_tokens=1,
+        keep_recent_groups=1,
+    )
+    segment = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "request"},
+        {"role": "assistant", "content": "x" * 300},
+        {"role": "user", "content": "recent"},
+    ]
+
+    shaper.shape(segment)
+    shaper.shape(segment)
+
+    async def shape_twice():
+        await shaper.ashape(segment)
+        await shaper.ashape(segment)
+
+    asyncio.run(shape_twice())
+
+    assert len(calls) == 4
+    assert summarizer.last_call_cacheable is False
+
+
 def test_summarizer_falls_back_when_summary_formatting_fails(monkeypatch):
     def broken_formatter(_raw):
         raise ValueError("broken parser")

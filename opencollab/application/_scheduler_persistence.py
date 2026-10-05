@@ -235,7 +235,58 @@ class SchedulerPersistenceMixin:
             return committed
         for aid, grant in self._turn_lease.items():
             committed += self._lease_remaining(aid, grant, self._lease_baseline.get(aid, 0))
+        for aid, grant, baseline, _tasks, _finished in self._pending_provider_budget_leases.values():
+            committed += self._lease_remaining(aid, grant, baseline)
         return committed
+
+    def _defer_budget_lease_for_provider_cleanup(self, aid: int) -> bool:
+        """Keep a dynamic-roster grant booked until late provider usage settles.
+
+        The runner's late-result callback is registered on each provider task
+        before this scheduler callback, so a successful late response updates
+        the session's token ledger before the reservation is removed. Grouping
+        the tasks under one reservation avoids counting a grant once per cleanup
+        task when a runner exposes more than one owner.
+        """
+        if self._per_agent_cap() is not None:
+            return False
+        session = self._sessions.get(aid)
+        runner = getattr(session, "runner", None)
+        pending = getattr(runner, "pending_cleanup_tasks", ())
+        tasks = frozenset(task for task in pending if isinstance(task, asyncio.Task))
+        lease = self._current_turn_lease(aid)
+        if not tasks or lease is None:
+            return False
+
+        grant, baseline = lease
+        self._release_turn_lease(aid)
+        reservation = object()
+        self._pending_provider_budget_leases[reservation] = (
+            aid,
+            grant,
+            baseline,
+            tasks,
+            set(),
+        )
+        for task in tasks:
+            task.add_done_callback(
+                lambda finished, key=reservation: self._finish_provider_budget_lease(
+                    key, finished
+                )
+            )
+        return True
+
+    def _finish_provider_budget_lease(
+        self, reservation: object, task: asyncio.Task[object]
+    ) -> None:
+        """Drop one deferred grant after every provider cleanup owner settles."""
+        lease = self._pending_provider_budget_leases.get(reservation)
+        if lease is None:
+            return
+        lease[4].add(task)
+        if not lease[3].issubset(lease[4]):
+            return
+        self._pending_provider_budget_leases.pop(reservation, None)
 
     def _reserve_child_budget(self, aid: int, role: str | None = None) -> int:
         """The budget a newly created agent's session is built with.

@@ -159,6 +159,7 @@ class FakeTUI:
 
 class FakeTracer:
     path = "/tmp/trajectory.jsonl"
+    run_id = "scheduler-test"
 
     def __init__(self):
         self.closed = False
@@ -263,6 +264,7 @@ async def test_cli_run_passes_team_config_path_to_scheduler(monkeypatch, tmp_pat
 
     assert captured["team_config_path"] == str(team_config)
     assert captured["allow_unisolated_child_shell"] is allow_child_shell
+    assert captured["run_id"] == tracer.run_id
     assert tracer.closed is True
 
 

@@ -82,3 +82,6 @@ docs/**/*.pdf
 
 # Internal working drafts — keep local, do not publish
 docs/2026-07-12-oc-module-refactor-report.md
+
+# Local agent reports and PR drafts
+/.codex/

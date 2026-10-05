@@ -17,6 +17,7 @@ import pytest
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.scheduler_types import LaunchSpec
+from opencollab.application.session import SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.bootstrap import build_session as Session
@@ -127,6 +128,18 @@ def test_session_event_bus_reaches_injected_sink():
     run(session.event_bus.emit(event))
 
     assert seen == [event]
+
+
+def test_session_runtime_preserves_legacy_positional_optional_fields():
+    subscriber = AutoSaveSubscriber(lambda: None)
+    runtime = SessionRuntime(
+        object(), object(), object(), object(), object(), object(), None,
+        subscriber, True,
+    )
+
+    assert runtime.auto_save_subscriber is subscriber
+    assert runtime.owns_llm is True
+    assert runtime.run_id is None
 
 
 def test_session_with_auto_save_path_subscribes_autosave_subscriber(tmp_path):

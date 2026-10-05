@@ -277,14 +277,10 @@ class LifecycleMixin:
             )
 
     def _release_leases(self, aid: int) -> None:
-        """Release a terminal child's single-flight and budget leases.
-
-        Both are held from spawn until the child reaches a terminal phase; this
-        frees them together so a later spawn can reuse the (role, task) key and
-        the unspent budget headroom. Idempotent at each site.
-        """
+        """Clear terminal dedup state; retain budget while late provider work drains."""
         self._clear_inflight(aid)
-        self._release_turn_lease(aid)
+        if not self._defer_budget_lease_for_provider_cleanup(aid):
+            self._release_turn_lease(aid)
 
     def _start_agent_task(self, aid: int, session: Any) -> asyncio.Task[None]:
         """Start and track one driver, reaping its references when it settles."""
@@ -420,8 +416,7 @@ class LifecycleMixin:
         if scb.state.phase is SessionPhase.AWAITING_EVENTS:
             return
 
-        # Terminal — release the single-flight + budget reservations before
-        # delivering, so a later spawn can reuse this child's unspent headroom.
+        # Release single-flight; late provider usage can keep budget reserved.
         self._release_leases(aid)
 
         terminal_failure = self._terminal_failure_result(scb, result)

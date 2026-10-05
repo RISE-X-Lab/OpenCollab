@@ -26,7 +26,7 @@ def estimate_tokens(text: str) -> int:
 _REQUEST_MESSAGE_FIELDS = frozenset({
     "role", "content", "reasoning_content", "tool_calls", "tool_call_id", "name",
 })
-_REQUEST_ESTIMATE_MESSAGE_FIELDS = _REQUEST_MESSAGE_FIELDS | {"provider_state"}
+_REQUEST_ESTIMATE_MESSAGE_FIELDS = _REQUEST_MESSAGE_FIELDS | {"provider_state", "response_items"}
 # Provider history policies can omit recorded reasoning. ``provider_state``
 # remains available because Anthropic replays native thinking blocks as input.
 _REQUEST_ESTIMATE_MESSAGE_FIELDS_NO_REASONING = (
@@ -52,8 +52,36 @@ def _serialized_tokens(value: Any) -> int:
     return estimate_tokens(_serialize_payload(value))
 
 
+def _request_message_payload(
+    message: dict,
+    fields: frozenset[str],
+    *,
+    prefer_response_items: bool,
+) -> dict:
+    """Select recorded fields or the native Responses projection for a role."""
+    role = message.get("role")
+    if prefer_response_items and role == "system":
+        return {"role": role, "content": message.get("content") or ""}
+    if prefer_response_items and role == "tool":
+        return {
+            "role": role,
+            "tool_call_id": message.get("tool_call_id"),
+            "content": message.get("content") or "",
+        }
+    if prefer_response_items and message.get("response_items") is not None:
+        return {"response_items": message["response_items"]}
+    return {
+        key: ("" if key == "content" and value is None else value)
+        for key, value in message.items()
+        if key in fields
+    }
+
+
 def estimate_messages_tokens(
-    messages: list[dict], tools: list[dict] | None = None
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    *,
+    prefer_response_items: bool = False,
 ) -> int:
     """Estimate OpenAI-compatible request tokens, including structured payloads.
 
@@ -64,11 +92,11 @@ def estimate_messages_tokens(
     """
     total = 0
     for message in messages:
-        payload = {
-            key: ("" if key == "content" and value is None else value)
-            for key, value in message.items()
-            if key in _REQUEST_MESSAGE_FIELDS
-        }
+        payload = _request_message_payload(
+            message,
+            _REQUEST_MESSAGE_FIELDS,
+            prefer_response_items=prefer_response_items,
+        )
         total += _MESSAGE_TOKEN_OVERHEAD + _serialized_tokens(payload)
     if tools:
         total += _TOOLS_TOKEN_OVERHEAD + _serialized_tokens(tools)
@@ -80,6 +108,7 @@ def estimate_request_tokens(
     tools: list[dict] | None = None,
     *,
     keep_reasoning_content: bool = True,
+    prefer_response_items: bool = False,
 ) -> int:
     """Estimate the provider request input tokens a call will actually spend.
 
@@ -98,9 +127,13 @@ def estimate_request_tokens(
 
     ``keep_reasoning_content`` follows the selected provider history policy.
     Callers with an already-normalized request can use the default field set.
+    ``prefer_response_items`` selects the native replay shape used by the
+    Responses protocol, where provider items replace legacy message fields.
     """
     total = _REQUEST_PROTOCOL_TOKEN_OVERHEAD + estimate_request_message_tokens(
-        messages, keep_reasoning_content=keep_reasoning_content
+        messages,
+        keep_reasoning_content=keep_reasoning_content,
+        prefer_response_items=prefer_response_items,
     )
     if tools:
         total += (
@@ -112,7 +145,10 @@ def estimate_request_tokens(
 
 
 def estimate_request_message_tokens(
-    messages: list[dict], *, keep_reasoning_content: bool = True
+    messages: list[dict],
+    *,
+    keep_reasoning_content: bool = True,
+    prefer_response_items: bool = False,
 ) -> int:
     """Estimate the per-message half of a request, without request framing.
 
@@ -124,6 +160,9 @@ def estimate_request_message_tokens(
 
     ``keep_reasoning_content`` selects the same field set the outbound request
     will carry; see :func:`estimate_request_tokens`.
+    ``prefer_response_items`` is reserved for requests sent through the native
+    Responses protocol. Generic history sizing leaves it false so recorded
+    content and native state are both accounted for.
     """
     fields = (
         _REQUEST_ESTIMATE_MESSAGE_FIELDS
@@ -132,10 +171,13 @@ def estimate_request_message_tokens(
     )
     total = 0
     for message in messages:
-        payload = {
-            key: ("" if key == "content" and value is None else value)
-            for key, value in message.items()
-            if key in fields
-        }
+        # Generic history sizing uses every recorded field. Provider-specific
+        # reservation opts into the native Responses projection, whose role
+        # precedence is shared with estimate_messages_tokens above.
+        payload = _request_message_payload(
+            message,
+            fields,
+            prefer_response_items=prefer_response_items,
+        )
         total += _MESSAGE_PROTOCOL_TOKEN_OVERHEAD + _serialized_tokens(payload)
     return total

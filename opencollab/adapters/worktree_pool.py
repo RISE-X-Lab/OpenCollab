@@ -7,6 +7,7 @@ env for a given role, remember it for cleanup, tear them all down at the end.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import posixpath
 import uuid
@@ -62,6 +63,11 @@ class WorktreePool:
         self._use_worktrees = use_worktrees
         self._base_environment = base_environment
         self._envs: list[Environment] = []
+        self._lifecycle = asyncio.Condition()
+        self._release_lock = asyncio.Lock()
+        self._release_active = False
+        self._generation = 0
+        self._inflight_acquires = 0
 
     async def acquire(self, role: str) -> Environment:
         """Create (and remember) an isolated env for a spawned agent of this role."""
@@ -75,26 +81,61 @@ class WorktreePool:
             if base is not None:
                 return base
             env = LocalEnvironment(self._workspace)
-            self._envs.append(env)
-            return env
+            generation = await self._begin_acquire()
+            return await self._finish_acquire(env, generation)
 
         branch = f"opencollab-{role_storage_slug(role)}-{uuid.uuid4().hex[:8]}"
         env = self._build_worktree(branch, base)
+        generation = await self._begin_acquire()
         try:
             await env.setup()
         except BaseException as original:
             try:
                 await _finish_cleanup(env.cleanup())
             except BaseException as cleanup_exc:
-                self._envs.append(env)
+                async with self._lifecycle:
+                    self._envs.append(env)
                 logger.warning("partial worktree cleanup failed", exc_info=True)
                 add_exception_note(
                     original,
                     "partial worktree retained for cleanup retry: "
                     f"{type(cleanup_exc).__name__}: {cleanup_exc}",
                 )
+            await _finish_cleanup(self._end_acquire())
             raise original
-        self._envs.append(env)
+        return await self._finish_acquire(env, generation)
+
+    async def _begin_acquire(self) -> int:
+        async with self._lifecycle:
+            while self._release_active:
+                await self._lifecycle.wait()
+            self._inflight_acquires += 1
+            return self._generation
+
+    async def _end_acquire(self) -> None:
+        async with self._lifecycle:
+            self._inflight_acquires -= 1
+            self._lifecycle.notify_all()
+
+    async def _finish_acquire(self, env: Environment, generation: int) -> Environment:
+        async with self._lifecycle:
+            invalidated = generation != self._generation
+            if not invalidated:
+                self._envs.append(env)
+                self._inflight_acquires -= 1
+                self._lifecycle.notify_all()
+        if invalidated:
+            try:
+                await _finish_cleanup(env.cleanup())
+            except BaseException as cleanup_exc:
+                async with self._lifecycle:
+                    self._envs.append(env)
+                raise RuntimeError(
+                    "pool release invalidated an in-flight acquire; cleanup retained for retry"
+                ) from cleanup_exc
+            finally:
+                await _finish_cleanup(self._end_acquire())
+            raise RuntimeError("pool release invalidated an in-flight acquire")
         return env
 
     def _build_worktree(self, branch: str, base: Environment | None) -> Environment:
@@ -128,6 +169,20 @@ class WorktreePool:
         await _finish_cleanup(self._release_owned())
 
     async def _release_owned(self) -> None:
+        async with self._release_lock:
+            async with self._lifecycle:
+                self._release_active = True
+                self._generation += 1
+                while self._inflight_acquires:
+                    await self._lifecycle.wait()
+            try:
+                await self._cleanup_owned()
+            finally:
+                async with self._lifecycle:
+                    self._release_active = False
+                    self._lifecycle.notify_all()
+
+    async def _cleanup_owned(self) -> None:
         failures: list[str] = []
         for env in tuple(self._envs):
             try:
@@ -149,16 +204,17 @@ class WorktreePool:
 
     async def release_env(self, env: Environment) -> None:
         """Release one failed spawn's environment without touching siblings."""
-        if env not in self._envs:
-            return
-        try:
-            await _finish_cleanup(env.cleanup())
-        except BaseException:
-            logger.warning(
-                "environment cleanup failed for %s", env.workspace, exc_info=True
-            )
-            raise
-        self._envs.remove(env)
+        async with self._release_lock:
+            if env not in self._envs:
+                return
+            try:
+                await _finish_cleanup(env.cleanup())
+            except BaseException:
+                logger.warning(
+                    "environment cleanup failed for %s", env.workspace, exc_info=True
+                )
+                raise
+            self._envs.remove(env)
 
     async def cleanup(self) -> None:
         """Compatibility alias for older callers."""

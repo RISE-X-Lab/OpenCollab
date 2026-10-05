@@ -11,9 +11,10 @@ from typing import Any, Iterator
 import pytest
 
 from opencollab.adapters.llm.client import LLMClient
+from opencollab.domain.token_estimation import estimate_messages_tokens
 
 
-def _response(response_id: str) -> dict[str, Any]:
+def _response(response_id: str, *, include_usage: bool = True) -> dict[str, Any]:
     return {
         "id": response_id,
         "object": "response",
@@ -35,13 +36,17 @@ def _response(response_id: str) -> dict[str, Any]:
         "tools": [],
         "top_p": 0.95,
         "truncation": "disabled",
-        "usage": {
-            "input_tokens": 20,
-            "input_tokens_details": {"cached_tokens": 7, "cache_write_tokens": 2},
-            "output_tokens": 5,
-            "output_tokens_details": {"reasoning_tokens": 3},
-            "total_tokens": 25,
-        },
+        "usage": (
+            {
+                "input_tokens": 20,
+                "input_tokens_details": {"cached_tokens": 7, "cache_write_tokens": 2},
+                "output_tokens": 5,
+                "output_tokens_details": {"reasoning_tokens": 3},
+                "total_tokens": 25,
+            }
+            if include_usage
+            else None
+        ),
         "metadata": {},
     }
 
@@ -59,11 +64,13 @@ def _completed_event(
     response_id: str,
     sequence: int,
     output: list[dict[str, Any]],
+    *,
+    include_usage: bool = True,
 ) -> dict[str, Any]:
     return {
         "type": "response.completed",
         "sequence_number": sequence,
-        "response": {**_response(response_id), "output": output},
+        "response": {**_response(response_id, include_usage=include_usage), "output": output},
     }
 
 
@@ -217,6 +224,101 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output(monke
         "call_id": "call_exact",
         "output": "42",
     }
+
+
+@pytest.mark.asyncio
+async def test_real_http_missing_usage_estimates_encrypted_replay_and_registered_tools():
+    reasoning = {
+        "id": "rs_1",
+        "type": "reasoning",
+        "summary": [],
+        "encrypted_content": "ciphertext-" * 6_000,
+    }
+    call = {
+        "id": "fc_1",
+        "type": "function_call",
+        "status": "completed",
+        "call_id": "call_exact",
+        "name": "lookup_record",
+        "arguments": "{}",
+    }
+    messages = [
+        {"role": "system", "content": "instruction " * 100, "response_items": []},
+        {"role": "user", "content": "Look it up."},
+        {"role": "assistant", "content": None, "response_items": [reasoning, call]},
+        {
+            "role": "tool",
+            "tool_call_id": "call_exact",
+            "content": "tool output " * 100,
+            "response_items": [],
+        },
+        {"role": "user", "content": "Continue."},
+    ]
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "lookup_record",
+            "description": "d" * 1_200,
+            "parameters": {"type": "object", "properties": {"key": {"type": "string"}}},
+        },
+    }]
+    answer = {
+        "id": "msg_done",
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "content": [{"type": "output_text", "text": "done", "annotations": []}],
+    }
+    scripts = [[
+        {"type": "response.created", "sequence_number": 0, "response": _response("resp_missing_usage")},
+        _item_event(answer, 0),
+        {
+            "type": "response.completed",
+            "sequence_number": 2,
+            "response": {**_response("resp_missing_usage", include_usage=False), "output": [answer]},
+        },
+    ]]
+    with fake_responses_server(scripts) as (base_url, requests):
+        client = LLMClient(
+            model="gpt-5-fake",
+            api_key="fake-key",  # pragma: allowlist secret
+            base_url=base_url,
+            wire_protocol="responses",
+            max_retries=0,
+            request_timeout=HANG_GUARD_SECONDS,
+            first_event_timeout=HANG_GUARD_SECONDS,
+            stream_idle_timeout=HANG_GUARD_SECONDS,
+        )
+        result = await client.complete(
+            messages,
+            tools=tools,
+            temperature=1.0,
+            max_output_tokens=128,
+        )
+        await client.close()
+
+    request = requests[0]
+    assert reasoning in request["input"]
+    assert call in request["input"]
+    assert request["input"][-2] == {
+        "type": "function_call_output",
+        "call_id": "call_exact",
+        "output": messages[3]["content"],
+    }
+    assert len(request["tools"]) == 1
+    assert result.usage.estimated is True
+    assert result.usage.raw_usage == {}
+    assert result.usage.input_tokens == estimate_messages_tokens(
+        messages, request["tools"], prefer_response_items=True
+    )
+    assert result.usage.input_tokens > estimate_messages_tokens(
+        messages, prefer_response_items=True
+    )
+    assert result.usage.input_tokens > estimate_messages_tokens(
+        [{**message, "response_items": []} for message in messages],
+        request["tools"],
+        prefer_response_items=True,
+    )
 
 
 @pytest.mark.asyncio

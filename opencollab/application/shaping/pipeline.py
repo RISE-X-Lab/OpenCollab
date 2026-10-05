@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from typing import Any, Iterator
 
 from opencollab.application.ports import ShaperPort
@@ -40,6 +41,11 @@ _UNLABELED_RUNG = "unknown"
 DEFAULT_OUTPUT_RESERVE_TOKENS = 20_000  # held back for the summary/answer response
 DEFAULT_COMPACT_BUFFER_TOKENS = 13_000  # safety margin below the effective window
 HISTORY_TARGET_RATIO = 0.75
+
+# Forced state belongs to one shaping call (and its async task), not to shared
+# shaper instances. Reactive layers consult this set while preserving their
+# legacy ``_forced`` override for direct callers.
+_forced_shaper_ids: ContextVar[frozenset[int]] = ContextVar("forced_shaper_ids", default=frozenset())
 
 
 def require_nonnegative_int(value: Any, name: str) -> int:
@@ -111,13 +117,16 @@ def approx_messages_tokens(messages: list[dict[str, Any]]) -> int:
 
 @contextmanager
 def _forced_layers(shaper: ShaperPort) -> Iterator[None]:
-    """Temporarily flip every reactive history layer reachable from ``shaper``
-    into forced mode (compact unconditionally toward target), restoring the
-    prior flags on exit. A shaper without a ``_forced`` flag is left untouched
-    (e.g. the per-tool-result cap, which is already unconditional). Recurses
-    into a nested ``ShaperPipeline`` so a wrapped chain is covered too.
+    """Run reactive history layers reachable from ``shaper`` in forced mode.
+
+    Reactive layers use call-local context so shared instances are safe across
+    awaits. Legacy shapers that expose only ``_forced`` retain the temporary
+    flag behavior. A shaper without a ``_forced`` flag is left untouched (e.g.
+    the per-tool-result cap, which is already unconditional). Recurses into a
+    nested ``ShaperPipeline`` so a wrapped chain is covered too.
     """
-    toggled: list[Any] = []
+    contextual: list[Any] = []
+    legacy: list[Any] = []
     stack: list[ShaperPort] = [shaper]
     while stack:
         node = stack.pop()
@@ -125,15 +134,18 @@ def _forced_layers(shaper: ShaperPort) -> Iterator[None]:
             stack.extend(node._shapers)
             continue
         if hasattr(node, "_forced"):
-            toggled.append(node)
-    saved = [node._forced for node in toggled]
-    for node in toggled:
+            (contextual if getattr(node, "_forced_contextual", False) else legacy).append(node)
+    saved = [node._forced for node in legacy]
+    for node in legacy:
         node._forced = True
+    prior = _forced_shaper_ids.get()
+    token = _forced_shaper_ids.set(prior | frozenset(map(id, contextual)))
     try:
         yield
     finally:
-        for node, prior in zip(toggled, saved):
-            node._forced = prior
+        _forced_shaper_ids.reset(token)
+        for node, prior_flag in zip(legacy, saved):
+            node._forced = prior_flag
 
 
 def forced_shape(

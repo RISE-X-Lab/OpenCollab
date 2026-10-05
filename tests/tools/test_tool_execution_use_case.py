@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -168,6 +169,54 @@ def test_structured_output_rejects_unsupported_assertion_schema_before_provider_
                 ]
             }
         )
+
+
+def test_structured_output_preflight_accepts_large_json_integer():
+    schema = {
+        "type": "object",
+        "required": ["value"],
+        "properties": {"value": {"type": "integer"}},
+    }
+    tool = StructuredOutputTool(schema)
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
+    value = int("1" + "0" * 400) + 1
+    call = tool_call(name=tool.name, arguments=json.dumps({"value": value}))
+
+    assert use_case.preflight_tool_batch([call]) == [""]
+
+
+def test_structured_output_preflight_rejects_large_integer_maximum():
+    schema = {
+        "type": "object",
+        "required": ["value"],
+        "properties": {"value": {"type": "integer", "maximum": 10}},
+    }
+    tool = StructuredOutputTool(schema)
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
+    value = int("1" + "0" * 400) + 1
+    call = tool_call(name=tool.name, arguments=json.dumps({"value": value}))
+
+    errors = use_case.preflight_tool_batch([call])
+
+    assert len(errors) == 1
+    assert "must be <= 10" in errors[0]
+
+
+def test_structured_output_preflight_checks_large_integer_minimum():
+    value = int("1" + "0" * 400) + 1
+    schema = {
+        "type": "object",
+        "required": ["value"],
+        "properties": {"value": {"type": "integer", "minimum": value + 1}},
+    }
+    tool = StructuredOutputTool(schema)
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
+    call = tool_call(name=tool.name, arguments=json.dumps({"value": value}))
+
+    errors = use_case.preflight_tool_batch([call])
+
+    assert len(errors) == 1
+    assert "must be >=" in errors[0]
 
 
 @pytest.mark.parametrize(

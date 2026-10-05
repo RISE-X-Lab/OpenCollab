@@ -390,6 +390,12 @@ class MessagingMixin:
 
     def _restore_message_inbox(self, aid: int, state: object) -> None:
         """Rebuild scheduler-owned delivery records from a durable sidecar."""
+        if (
+            getattr(state, "phase", None) is SessionPhase.STOPPED
+            and getattr(state, "terminal_reason", None)
+            in {"interrupted by user", "parent turn interrupted by user"}
+        ):
+            self._cancelled_turn_inbox_holds.add(aid)
         pending = getattr(state, "pending_user_messages", None)
         if not isinstance(pending, list) or not pending:
             return
@@ -612,6 +618,8 @@ class MessagingMixin:
             inbox[:] = retained
             self._autosave_session(aid)
         if not inbox:
+            return events
+        if aid in self._cancelled_turn_inbox_holds:
             return events
         # An external turn can already own the append while its driver does
         # not exist yet. Keep accepted messages queued until that append and

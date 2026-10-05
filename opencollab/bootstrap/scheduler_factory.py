@@ -321,9 +321,16 @@ def build_scheduler(
             if team_config_path is not None
             else resolve_team_file(ctx.workspace)
         )
-        # The caller's run id when it minted one (the programmatic team run
-        # writes the same id to its trajectory); else the run folder's name.
-        manifest_run_id = run_id if run_id is not None else os.path.basename(run_dir)
+        # Keep the manifest joined to the active trace when the composition
+        # root did not supply an explicit run id. Trace-off runs still use the
+        # reserved run-folder name as their identity.
+        manifest_run_id = (
+            run_id
+            if run_id is not None
+            else ctx.tracer.run_id
+            if ctx.tracer is not None
+            else os.path.basename(run_dir)
+        )
         started_at = datetime.now(timezone.utc).isoformat()
 
         def _manifest_payload() -> dict:

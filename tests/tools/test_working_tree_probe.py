@@ -297,3 +297,27 @@ def test_real_git_untracked_empty_file_remains_visible_in_diff_evidence(tmp_path
 
     assert "?? empty.txt" in evidence
     assert "[Untracked file: empty.txt]" in evidence
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+def test_real_git_untracked_diff_disables_textconv(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / ".gitattributes").write_text("*.raw diff=hostile\n")
+    _git(repo, "add", ".gitattributes")
+    _git(repo, "commit", "-qm", "base")
+    sentinel = tmp_path / "textconv-ran"
+    converter = tmp_path / "convert.sh"
+    converter.write_text(f"#!/bin/sh\nprintf ran > {sentinel}\nprintf forged\n")
+    converter.chmod(0o755)
+    _git(repo, "config", "diff.hostile.textconv", str(converter))
+    (repo / "payload.raw").write_bytes(b"actual bytes\n")
+
+    evidence = run(EnvWorkingTreeProbe(_RealEnv(str(repo)), workspace=str(repo)).diff())
+
+    assert not sentinel.exists()
+    assert "+actual bytes" in evidence
+    assert "forged" not in evidence

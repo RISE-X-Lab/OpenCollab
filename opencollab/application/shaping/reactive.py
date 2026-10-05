@@ -20,6 +20,7 @@ from opencollab.application.shaping.pipeline import (
     DEFAULT_HISTORY_TARGET_TOKENS,
     DEFAULT_HISTORY_TRIGGER_TOKENS,
     _droppable_region,
+    _forced_shaper_ids,
     approx_messages_tokens,
     is_complete_tool_exchange,
     matched_tool_result_occurrences,
@@ -54,6 +55,8 @@ SummarizerPort = Callable[[list[dict[str, Any]]], str]
 class _ReactiveHistoryShaper:
     """Shared trigger/estimate plumbing for the reactive history layers."""
 
+    _forced_contextual = True
+
     def __init__(
         self,
         *,
@@ -71,15 +74,12 @@ class _ReactiveHistoryShaper:
         self.trigger_tokens = trigger_tokens
         self.target_tokens = target_tokens
         self.keep_recent_groups = keep_recent_groups
-        # When set, every layer acts as if the trigger were crossed: it compacts
-        # unconditionally toward ``target_tokens`` instead of no-op'ing below the
-        # estimate. Toggled only by the forced-compaction safety-net pass (see
-        # ``pipeline.forced_shape``) after a real context-overflow rejection,
-        # where the char estimate provably under-counted the prompt.
+        # Legacy direct override. The forced-compaction safety net uses a
+        # call-local context instead, so shared shapers remain safe across awaits.
         self._forced = False
 
     def _over_trigger(self, messages: list[dict[str, Any]]) -> bool:
-        if self._forced:
+        if self._forced or id(self) in _forced_shaper_ids.get():
             return bool(messages)
         return bool(messages) and self._estimate(messages) > self.trigger_tokens
 

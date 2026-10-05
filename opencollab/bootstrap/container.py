@@ -458,6 +458,7 @@ def build_session_runtime(
     team_budget_exhausted: Callable[[], bool] | None = None,
     agent_profile: Any | None = None,
     context_policy: ContextPolicy | None = None,
+    run_id: str | None = None,
 ) -> SessionRuntime:
     """Build a ``SessionRuntime`` with the same construction order
     ``Session.__init__`` used to perform inline.
@@ -577,6 +578,7 @@ def build_session_runtime(
         tool_execution=tool_execution,
         runner=runner,
         auto_save_path=auto_save_path,
+        run_id=run_id,
         auto_save_subscriber=auto_save_subscriber,
         owns_llm=llm is None,
     )

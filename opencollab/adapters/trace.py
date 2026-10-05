@@ -280,12 +280,8 @@ class Tracer:
         writes through ``for_agent`` so they are filled for it. ``None`` marks a
         record written on no agent's behalf (the scheduler's own records).
         """
-        with self._state_lock:
-            self._step_counter += 1
-            step = self._step_counter
         record = {
             "timestamp": time.time(),
-            "step": step,
             "run_id": self.run_id,
             "aid": aid,
             "role": role,
@@ -294,19 +290,22 @@ class Tracer:
             "metrics": {"tokens": tokens, "latency_s": round(latency, 4)},
         }
         try:
-            line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
+            serialized = json.dumps(record, ensure_ascii=False, default=str)
         except Exception as exc:
             record["payload"] = {
                 "serialization_error": type(exc).__name__,
                 "payload_type": type(payload).__name__,
             }
-            line = json.dumps(record, ensure_ascii=False) + "\n"
+            serialized = json.dumps(record, ensure_ascii=False)
         with self._state_lock:
             if self._closed or self._state.write_error is not None:
                 self._state.dropped_steps += 1
                 return
+            step = self._step_counter + 1
+            line = serialized[:1] + f'"step":{step},' + serialized[1:] + "\n"
             try:
                 self._records.put_nowait(line)
+                self._step_counter = step
             except queue.Full:
                 self._state.write_error = "BufferError: trajectory queue is full"
                 self._state.dropped_steps += 1

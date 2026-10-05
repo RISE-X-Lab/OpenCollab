@@ -68,7 +68,11 @@ def parse_responses_usage(
         cache_creation_tokens = _optional_usage_int(raw, "cache_write_tokens")
     estimated = input_tokens is None or output_tokens is None
     if input_tokens is None:
-        input_tokens = estimate_messages_tokens(messages, tools)
+        input_tokens = estimate_messages_tokens(
+            messages,
+            tools,
+            prefer_response_items=True,
+        )
     if output_tokens is None:
         text = content or ""
         for call in tool_calls:

@@ -170,7 +170,11 @@ class LLMClient:
                 self.model, messages, tools, 0.0, thinking, thinking_params
             )
             return estimate_request_tokens(request["messages"], request.get("tools"))
-        return estimate_request_tokens(messages, tools)
+        return estimate_request_tokens(
+            messages,
+            tools,
+            prefer_response_items=self.wire_protocol == RESPONSES,
+        )
 
     async def close(self) -> None:
         """Close the owned provider transport exactly once."""

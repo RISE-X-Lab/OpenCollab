@@ -182,6 +182,7 @@ async def run_agent(
     llm_timeout_seconds: float = 600.0,
     cleanup_environment: bool = False,
     agent_profile: Any | None = None,
+    run_id: str | None = None,
 ) -> AgentRuntimeResult:
     """Run one Agent and return only after cleanup and final save quiesce."""
     session = build_session(
@@ -195,6 +196,7 @@ async def run_agent(
         llm=llm,
         llm_timeout=llm_timeout_seconds,
         agent_profile=agent_profile,
+        run_id=run_id,
     )
     owner = asyncio.create_task(_run_session(session, prompt))
     finalization_task: asyncio.Task[bool] | None = None

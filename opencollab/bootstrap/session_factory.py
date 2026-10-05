@@ -220,6 +220,7 @@ def build_session(
     team_budget_exhausted: Callable[[], bool] | None = None,
     agent_profile: Any | None = None,
     context_policy: Any | None = None,
+    run_id: str | None = None,
 ) -> Session:
     """Self-wiring ``Session`` factory.
 
@@ -252,6 +253,7 @@ def build_session(
         team_budget_exhausted=team_budget_exhausted,
         agent_profile=agent_profile,
         context_policy=context_policy,
+        run_id=run_id,
     )
     Session.__init__(
         session,
@@ -337,6 +339,7 @@ def snapshot_session(
         ),
         llm=session._llm,
         aid=session.state.aid,
+        run_id=session.run_id,
     )
     state = _clone_snapshot_component(session.state, label="session state")
     new.state = state

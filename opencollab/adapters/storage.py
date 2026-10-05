@@ -540,24 +540,38 @@ class SessionStore:
                     f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
                     f"{journal_path}"
                 )
-            with open_regular_text_append(journal_path, readable=True) as handle:
-                current_size = os.fstat(handle.fileno()).st_size
-                complete_size = self._complete_journal_size(
-                    handle.fileno(),
-                    current_size,
-                )
-                if complete_size < current_size:
-                    os.ftruncate(handle.fileno(), complete_size)
-                    current_size = complete_size
-                if current_size + payload_size > MAX_SESSION_SNAPSHOT_BYTES:
-                    raise ValueError(
-                        "autosave journal exceeds "
-                        f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
-                        f"{journal_path}"
+            append_start: int | None = None
+            try:
+                with open_regular_text_append(journal_path, readable=True) as handle:
+                    current_size = os.fstat(handle.fileno()).st_size
+                    complete_size = self._complete_journal_size(
+                        handle.fileno(),
+                        current_size,
                     )
-                write_locked_text(handle, payload)
-                handle.flush()
-                os.fsync(handle.fileno())
+                    if complete_size < current_size:
+                        os.ftruncate(handle.fileno(), complete_size)
+                        current_size = complete_size
+                    if current_size + payload_size > MAX_SESSION_SNAPSHOT_BYTES:
+                        raise ValueError(
+                            "autosave journal exceeds "
+                            f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
+                            f"{journal_path}"
+                        )
+                    append_start = current_size
+                    write_locked_text(handle, payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except BaseException as append_error:
+                if append_start is not None:
+                    try:
+                        # Close the append handle before truncating so a buffered
+                        # close cannot write the failed record back afterward.
+                        with open_regular_text_append(journal_path, readable=True) as handle:
+                            os.ftruncate(handle.fileno(), append_start)
+                            os.fsync(handle.fileno())
+                    except BaseException as rollback_error:
+                        raise append_error from rollback_error
+                raise
 
     @staticmethod
     def _complete_journal_size(fd: int, size: int) -> int:

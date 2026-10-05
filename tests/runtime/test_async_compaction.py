@@ -9,6 +9,7 @@ import time
 import pytest
 
 from opencollab.application.session_run import GenerationTimeoutError
+from opencollab.application.shaping import AutoCompactShaper, ShaperPipeline
 from opencollab.bootstrap import build_session
 from opencollab.domain.agent import Agent
 from tests.support.session_run_test_support import llm_response
@@ -155,3 +156,146 @@ def test_owned_summary_client_closes_after_cancellation(monkeypatch):
     assert clients[0].calls == []
     assert clients[1].cancelled == [True]
     assert [client.close_calls for client in clients] == [1, 1]
+
+
+def test_shared_pipeline_forced_and_normal_calls_keep_force_state_local():
+    class GatedSummarizer:
+        def __init__(self):
+            self.started = 0
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def __call__(self, segment):
+            return "summary"
+
+        async def asummarize(self, segment):
+            self.started += 1
+            self.entered.set()
+            await self.release.wait()
+            return "summary"
+
+    async def scenario():
+        summarizer = GatedSummarizer()
+        shaper = AutoCompactShaper(
+            summarizer=summarizer,
+            estimate_tokens=lambda messages: sum(len(message.get("content", "")) for message in messages),
+            trigger_tokens=1_000_000,
+            target_tokens=100,
+            keep_recent_groups=1,
+        )
+        pipeline = ShaperPipeline((shaper,))
+        messages = history()
+
+        forced = asyncio.create_task(pipeline.ashape(messages, force=True))
+        await summarizer.entered.wait()
+        ordinary = asyncio.create_task(pipeline.ashape(messages))
+        await asyncio.sleep(0)
+        summarizer.release.set()
+        forced_result, ordinary_result = await asyncio.gather(forced, ordinary)
+        assert ordinary_result is messages
+        assert summarizer.started == 1
+        assert forced_result != messages
+        assert shaper._forced is False
+
+    asyncio.run(scenario())
+
+
+def test_overlapping_forced_calls_do_not_leave_shared_force_flag_set():
+    class GatedSummarizer:
+        def __init__(self):
+            self.started = 0
+            self.both_started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def __call__(self, segment):
+            return "summary"
+
+        async def asummarize(self, segment):
+            self.started += 1
+            if self.started == 2:
+                self.both_started.set()
+            await self.release.wait()
+            return "summary"
+
+    async def scenario():
+        summarizer = GatedSummarizer()
+        shaper = AutoCompactShaper(
+            summarizer=summarizer,
+            estimate_tokens=lambda messages: sum(len(message.get("content", "")) for message in messages),
+            trigger_tokens=1_000_000,
+            target_tokens=100,
+            keep_recent_groups=1,
+        )
+        pipeline = ShaperPipeline((shaper,))
+        messages = history()
+        first = asyncio.create_task(pipeline.ashape(messages, force=True))
+        second = asyncio.create_task(pipeline.ashape(messages, force=True))
+        await asyncio.wait_for(summarizer.both_started.wait(), 1)
+        assert shaper._forced is False
+        summarizer.release.set()
+        results = await asyncio.gather(first, second)
+        assert all(result != messages for result in results)
+        assert summarizer.started == 2
+        assert shaper._forced is False
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_forced_compaction_restores_force_state_and_nested_force_applies():
+    class GatedSummarizer:
+        def __init__(self):
+            self.started = asyncio.Event()
+
+        def __call__(self, segment):
+            return "summary"
+
+        async def asummarize(self, segment):
+            self.started.set()
+            await asyncio.Event().wait()
+
+    async def scenario():
+        summarizer = GatedSummarizer()
+        shaper = AutoCompactShaper(
+            summarizer=summarizer,
+            estimate_tokens=lambda messages: sum(len(message.get("content", "")) for message in messages),
+            trigger_tokens=100,
+            target_tokens=10,
+            keep_recent_groups=1,
+        )
+        pipeline = ShaperPipeline((ShaperPipeline((shaper,)),))
+        messages = history(False)
+        task = asyncio.create_task(pipeline.ashape(messages, force=True))
+        await summarizer.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert shaper._forced is False
+        assert await pipeline.ashape(messages) is messages
+
+    asyncio.run(scenario())
+
+
+def test_failed_forced_summary_does_not_leak_force_state():
+    class FailingSummarizer:
+        def __call__(self, segment):
+            return "summary"
+
+        async def asummarize(self, segment):
+            raise RuntimeError("summary failed")
+
+    async def scenario():
+        shaper = AutoCompactShaper(
+            summarizer=FailingSummarizer(),
+            estimate_tokens=lambda messages: sum(len(message.get("content", "")) for message in messages),
+            trigger_tokens=1_000_000,
+            target_tokens=100,
+            keep_recent_groups=1,
+        )
+        pipeline = ShaperPipeline((ShaperPipeline((shaper,)),))
+        messages = history()
+        with pytest.raises(RuntimeError, match="summary failed"):
+            await pipeline.ashape(messages, force=True)
+        assert shaper._forced is False
+        assert await pipeline.ashape(messages) is messages
+
+    asyncio.run(scenario())

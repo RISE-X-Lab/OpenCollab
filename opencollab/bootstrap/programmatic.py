@@ -414,6 +414,7 @@ async def run_agent(
                 llm_timeout_seconds=config.get("llm_timeout", 600.0),
                 cleanup_environment=owned_environment,
                 agent_profile=resolved_profile,
+                run_id=run_id,
             )
         except AgentRuntimeLifecycleError as exc:
             raise ProgrammaticLifecycleError(str(exc)) from exc

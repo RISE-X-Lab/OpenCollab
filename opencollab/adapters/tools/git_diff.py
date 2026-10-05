@@ -172,6 +172,11 @@ class GitDiffTool(Tool):
                     error,
                     self.max_status_chars,
                 )
+            if getattr(untracked_result, "stdout_truncated", False):
+                return (
+                    "Error: untracked file enumeration was incomplete because "
+                    "Git status output was truncated."
+                )
             untracked_paths = [
                 entry[3:]
                 for entry in untracked_result.stdout.split("\0")

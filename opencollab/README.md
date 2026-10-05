@@ -122,7 +122,8 @@ Their first argument accepts an installed workflow name such as `"duo"`, a
 caller-authored name, or a workflow function or spec. Names use the same
 workspace directory resolution as the CLI. Functions and specs run directly.
 Their `concurrency` option limits agent sessions only. `task_concurrency`
-separately limits active `parallel` and `pipeline` units across the workflow;
+separately limits active `parallel` and `pipeline` units across the workflow,
+including candidate child workflows;
 omitting it inherits `concurrency`. The two limits are independent, so mixed
 agent and task work may peak at their sum.
 Completed, stopped, and failed workflow results report aggregate session,

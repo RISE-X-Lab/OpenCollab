@@ -100,7 +100,9 @@ def format_compact_summary(raw: str) -> str:
     out = re.sub(r"<analysis>[\s\S]*?</analysis>", "", raw)
     out = re.sub(
         r"<summary>([\s\S]*?)</summary>",
-        lambda match: f"Summary:\n{(match.group(1) or '').strip()}",
+        lambda match: (
+            f"Summary:\n{body}" if (body := (match.group(1) or "").strip()) else ""
+        ),
         out,
     )
     out = re.sub(r"\n\n+", "\n\n", out)

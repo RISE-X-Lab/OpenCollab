@@ -401,6 +401,7 @@ async def _run(
             session_file=session_file, auto_save=True,
             team_config_path=team_config_path,
             allow_unisolated_child_shell=allow_local_child_shell,
+            run_id=getattr(ctx.tracer, "run_id", None),
         )
         tui.set_team_provider(scheduler.team_roster)
         lead = scheduler.lead_session

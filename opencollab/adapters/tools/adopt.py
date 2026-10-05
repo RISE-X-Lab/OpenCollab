@@ -107,6 +107,23 @@ class AdoptTool(Tool):
         diff = await env.exec_cmd(
             f"{git_command} --no-pager diff --no-ext-diff --no-textconv {self._start} {commit}", timeout=30
         )
+        audit_problems = []
+        for label, result in (("commit subject", subject), ("change summary", stat), ("full diff", diff)):
+            if result.returncode != 0:
+                error = (result.stderr or result.stdout).strip()
+                detail = f": {truncate(error, 300)}" if error else ""
+                audit_problems.append(f"{label} command failed{detail}")
+            elif getattr(result, "stdout_truncated", False):
+                audit_problems.append(f"{label} output was truncated")
+        checkout_message = f"Checked out {commit}. HEAD is now that commit."
+        if audit_problems:
+            return "\n\n".join(
+                (
+                    checkout_message,
+                    "Change summary unavailable or incomplete: " + "; ".join(audit_problems),
+                )
+            )
+
         parts = [
             f"Checked out {commit} ({subject.stdout.strip()}). "
             "HEAD is now that commit, and its tree is the one read as the answer.",

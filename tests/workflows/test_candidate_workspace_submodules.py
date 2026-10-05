@@ -90,6 +90,30 @@ async def test_candidate_copies_initialized_dependency_and_leaves_optional_empty
     assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
 
 
+async def test_candidate_from_repository_subdirectory_initializes_only_scoped_submodules(tmp_path):
+    dependency = _dependency(tmp_path, "nested-dependency")
+    outside = _dependency(tmp_path, "outside-dependency")
+    repository = _repository(tmp_path)
+    scoped_source = repository / "src"
+    scoped_source.mkdir()
+    (scoped_source / "app.py").write_text("app = True\n")
+    _git(repository, "-c", "protocol.file.allow=always", "submodule", "add", str(dependency), "src/vendor/required")
+    _git(repository, "-c", "protocol.file.allow=always", "submodule", "add", str(outside), "vendor/outside")
+    _git(repository, "commit", "-am", "add source and modules")
+    _git(repository, "submodule", "deinit", "-f", "--", "vendor/outside")
+    base = LocalEnvironment(str(scoped_source))
+    lease = None
+    try:
+        lease = await EnvCandidateWorkspace(base).acquire("nested-source")
+        assert await lease.environment.read_file("vendor/required/source.py") == "value = 1\n"
+        optional = Path(lease.candidate_workspace) / "vendor/outside"
+        assert optional.is_dir() and list(optional.iterdir()) == []
+    finally:
+        if lease is not None:
+            await lease.cleanup()
+        await base.cleanup()
+
+
 async def test_worktree_environment_keeps_requiring_initialized_source_submodules(tmp_path):
     source = _partly_initialized_source(tmp_path)
     environment = WorktreeEnvironment(str(source))

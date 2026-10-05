@@ -30,13 +30,15 @@ _TYPE_CHECKS = {
     "integer": lambda v: (
         isinstance(v, (int, float))
         and not isinstance(v, bool)
-        and math.isfinite(v)
-        and float(v).is_integer()
+        and (
+            isinstance(v, int)
+            or (math.isfinite(v) and v.is_integer())
+        )
     ),
     "number": lambda v: (
         isinstance(v, (int, float))
         and not isinstance(v, bool)
-        and math.isfinite(v)
+        and (isinstance(v, int) or math.isfinite(v))
     ),
     "null": lambda v: v is None,
 }
@@ -283,7 +285,7 @@ def _is_number(value: Any) -> bool:
     return (
         isinstance(value, (int, float))
         and not isinstance(value, bool)
-        and math.isfinite(value)
+        and (isinstance(value, int) or math.isfinite(value))
     )
 
 
