@@ -235,7 +235,11 @@ def _load_workflow_specs(path: str) -> list[WorkflowSpec]:
     path = os.path.abspath(path)
     source = read_regular_text(path, max_bytes=MAX_WORKFLOW_SOURCE_BYTES)
     package_name = f"_opencollab_workflow_{uuid.uuid4().hex}"
-    module_name = f"{package_name}.workflow"
+    module_basename = os.path.splitext(os.path.basename(path))[0]
+    # A dotted filename is still one source file, not a nested Python module.
+    if "." in module_basename:
+        module_basename = package_name
+    module_name = f"{package_name}.{module_basename}"
     package_spec = importlib.machinery.ModuleSpec(
         package_name,
         loader=None,
