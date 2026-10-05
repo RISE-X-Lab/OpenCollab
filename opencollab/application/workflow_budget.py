@@ -80,9 +80,9 @@ class _BudgetEscapeState:
     used: bool = False
 
 
-@dataclass
+@dataclass(eq=False)
 class _BudgetLease:
-    """A per-call token allocation held while one workflow agent is active."""
+    """A per-call allocation whose identity remains distinct from equal grants."""
 
     total: int | None
     reserved: int

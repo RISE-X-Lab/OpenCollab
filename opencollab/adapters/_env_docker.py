@@ -462,6 +462,7 @@ class DockerEnvironment(Environment):
         *,
         timeout: float,
         input_bytes: bytes | None = None,
+        strict_stdout: bool = False,
     ) -> ExecResult:
         self._ensure_active()
         await self._bind_attached()
@@ -495,13 +496,18 @@ class DockerEnvironment(Environment):
         finally:
             async with self._active_exec_lock:
                 self._active_execs.pop(token, None)
-        return result.to_exec_result()
+        decoded = result.to_exec_result()
+        if strict_stdout and result.returncode == 0 and not decoded.stdout_truncated:
+            decoded.stdout = result.stdout.decode("utf-8", errors="strict")
+        return decoded
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         return await self._exec(cmd, timeout=timeout)
 
     async def read_file(self, path: str) -> str:
-        result = await self.exec_cmd(f"cat -- {shlex.quote(path)}")
+        result = await self._exec(
+            f"cat -- {shlex.quote(path)}", timeout=120.0, strict_stdout=True,
+        )
         if result.returncode != 0:
             raise FileNotFoundError(result.stderr)
         if result.stdout_truncated:
