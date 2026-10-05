@@ -11,7 +11,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from opencollab.bootstrap.config import build_config
+from opencollab.bootstrap.config import build_config, resolve_provider_base_url
 from opencollab.bootstrap.programmatic import (
     DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS,
     ProgrammaticLifecycleError,
@@ -148,6 +148,9 @@ class OpenCollab:
         )
         self._workspace = str(resolved_workspace)
         self._config = build_config(self._workspace, overrides=overrides).model_dump()
+        self._config["base_url"] = resolve_provider_base_url(
+            self._config["provider"], self._config["base_url"],
+        )
         self._environment = environment
 
     @property

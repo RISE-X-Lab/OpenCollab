@@ -371,6 +371,13 @@ def missing_api_key(provider: str | None, api_key: str | None, base_url: str | N
     return True
 
 
+def resolve_provider_base_url(provider: str | None, base_url: str | None) -> str:
+    """Select an endpoint from resolved config, including the provider default."""
+    if base_url:
+        return base_url
+    return "https://api.anthropic.com" if is_anthropic(provider) else "https://api.openai.com/v1"
+
+
 def build_config(workspace: str | None = None, overrides: dict[str, Any] | None = None) -> OpenCollabConfig:
     """Build and validate runtime configuration.
 
