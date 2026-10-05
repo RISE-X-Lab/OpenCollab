@@ -28,6 +28,25 @@ from opencollab.domain.session import SessionPhase
 logger = logging.getLogger(__name__)
 
 
+class _SerializedTurn:
+    """One driver's ownership of the team lock, including review suspension."""
+
+    def __init__(self, lock: asyncio.Lock, aid: int):
+        self.lock = lock
+        self.aid = aid
+        self.driver = asyncio.current_task()
+        self.held = False
+
+    async def acquire(self) -> None:
+        await self.lock.acquire()
+        self.held = True
+
+    def release(self) -> None:
+        if self.held:
+            self.held = False
+            self.lock.release()
+
+
 class LifecycleMixin:
     """Spawn, drive, finalize, and wake agents in the delegation tree."""
 
@@ -315,18 +334,69 @@ class LifecycleMixin:
         except Exception as exc:
             logger.error("background task for aid %s failed: %s", aid, exc)
 
-    def _turn_gate(self) -> Any:
+    @contextlib.asynccontextmanager
+    async def _turn_gate(self, aid: int = -1):
         """The team-wide turn gate every driver runs its loop inside.
 
-        Serialized teams share one lock across ``run_loop``. A session releases
-        it when suspending on ``AWAITING_EVENTS``, allowing its children to run.
+        Serialized teams share one lock for model/tool execution. A session
+        releases it when suspending on ``AWAITING_EVENTS`` or waiting for a
+        synchronous review, allowing its children to run. A review's parent
+        reacquires the same lock before continuing its model/tool work.
         Concurrent teams retain per-aid ordering. The lock is created on first use.
         """
         if not self._serialize_turns:
-            return contextlib.nullcontext()
+            yield
+            return
         if self._turn_gate_lock is None:
             self._turn_gate_lock = asyncio.Lock()
-        return self._turn_gate_lock
+        turn = _SerializedTurn(self._turn_gate_lock, aid)
+        await turn.acquire()
+        token = self._serialized_turn.set(turn)
+        try:
+            yield
+        finally:
+            turn.release()
+            self._serialized_turn.reset(token)
+
+    @contextlib.asynccontextmanager
+    async def _suspend_review_turn(self, parent_aid: int):
+        """Yield the current driver's execution lock while its review runs.
+
+        The tool task inherits the holder through its context, but only the
+        still-tracked parent driver may yield it. Ordinary tool failures resume
+        under the lock because the executor turns those failures into text and
+        continues the parent. Cancellation exits without waiting to reacquire.
+        """
+        turn = self._serialized_turn.get()
+        if (
+            turn is None
+            or turn.aid != parent_aid
+            or self._tasks.get(parent_aid) is not turn.driver
+            or not turn.held
+        ):
+            yield
+            return
+
+        turn.release()
+        cancelled = False
+        try:
+            yield
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            if (
+                not cancelled
+                and not self._shutting_down
+                and self._tasks.get(parent_aid) is turn.driver
+            ):
+                self._turn_waiters.add(parent_aid)
+                try:
+                    await turn.acquire()
+                    self._turn_waiters.discard(parent_aid)
+                    await self.snapshot_delivery_tree("turn_start", aid=parent_aid)
+                finally:
+                    self._turn_waiters.discard(parent_aid)
 
     async def _drive_agent(self, aid: int, session: Any) -> None:
         """Run a session's loop once and finalize.
@@ -350,7 +420,7 @@ class LifecycleMixin:
             if self._serialize_turns:
                 self._turn_waiters.add(aid)
             try:
-                async with self._turn_gate():
+                async with self._turn_gate(aid):
                     self._turn_waiters.discard(aid)
                     await self.snapshot_delivery_tree("turn_start", aid=aid)
                     result = (

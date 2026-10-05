@@ -351,7 +351,9 @@ class OpenCollab:
         message wakes waits for the running turn to finish instead of running
         beside it. It changes only *when* an agent runs — every declared edge
         stays open and ``message_agent`` stays voluntary, so whether the agents
-        hand work to each other is still theirs to decide. Off by default. The
+        hand work to each other is still theirs to decide. A parent waiting for
+        ``spawn_with_review`` yields execution to its coder and reviewer, then
+        resumes after their work. Off by default. The
         run records which way it was set, under
         ``assigned.topology_nodes.turns_serialized``.
 

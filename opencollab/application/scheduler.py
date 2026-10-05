@@ -42,7 +42,7 @@ from opencollab.application.ports import (
     WorktreePoolPort,
 )
 from opencollab.application.scheduler_dedup import InflightDedupMixin
-from opencollab.application.scheduler_lifecycle import LifecycleMixin
+from opencollab.application.scheduler_lifecycle import LifecycleMixin, _SerializedTurn
 from opencollab.application.scheduler_messaging import MessagingMixin
 from opencollab.application.scheduler_types import DuplicateSpawnError as DuplicateSpawnError
 from opencollab.application.scheduler_types import LaunchSpec as LaunchSpec
@@ -137,8 +137,10 @@ class Scheduler(
         self._team_prebuilt = False
         # One turn at a time across the whole team. Off by default, which is the
         # concurrent behaviour above. On, ``_turn_gate`` holds a single lock
-        # across every ``run_loop``, so a teammate woken by a message waits for
-        # the current turn instead of running beside it. What the agents may say
+        # while a driver executes its model/tool work. A synchronous review
+        # yields that driver's execution right while waiting for its children,
+        # then reacquires before the parent continues. A teammate woken by a
+        # message waits for the lock. What the agents may say
         # to each other is untouched: the topology keeps every declared edge and
         # ``message_agent`` stays voluntary — only the timing changes.
         self._serialize_turns = bool(serialize_turns)
@@ -148,6 +150,11 @@ class Scheduler(
         # Created on first use: ``__init__`` may run without a running loop.
         self._prebuild_lock: asyncio.Lock | None = None
         self._turn_gate_lock: asyncio.Lock | None = None
+        # Tool execution runs in a child task and inherits its driver's context.
+        # The holder records which driver owns the shared execution lock.
+        self._serialized_turn: contextvars.ContextVar[_SerializedTurn | None] = (
+            contextvars.ContextVar("serialized_turn", default=None)
+        )
         # Drivers waiting to enter the existing serialized turn lock.
         self._turn_waiters: set[int] = set()
         # Configured role names (from the team config), in declaration order.

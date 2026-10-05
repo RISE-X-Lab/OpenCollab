@@ -59,7 +59,8 @@ class SchedulerReviewMixin:
         tracker = {"outstanding": 0}
         token = self._review_parent_lease_tracker.set((parent_aid, tracker))
         try:
-            return await run_spawn_with_review(self, parent_aid, task, context, max_iterations)
+            async with self._suspend_review_turn(parent_aid):
+                return await run_spawn_with_review(self, parent_aid, task, context, max_iterations)
         finally:
             self._review_parent_lease_tracker.reset(token)
             if tracker["outstanding"] > 0 and not self._shutting_down and self.table.get(parent_aid) is not None:
