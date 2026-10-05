@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from typing import Any, Optional
 
 import typer
@@ -25,6 +26,7 @@ from opencollab.adapters.cli.config_resolve import (
     print_missing_key_hint,
     resolve_config,
 )
+from opencollab.adapters.cli.text_input import resolve_text_input
 from opencollab.application.async_timeout import run_with_bounded_shutdown
 from opencollab.application.ports import EventPublisherPort
 from opencollab.application.workflow_registry import Registry
@@ -35,6 +37,7 @@ app = typer.Typer(name="workflow", help="Run deterministic Python workflows.")
 console = Console()
 
 DEFAULT_WORKFLOWS_DIR = "workflows"
+MAX_CLI_TASK_FILE_BYTES = 4 * 1024 * 1024
 
 
 def load_registry(workspace: str = ".") -> Registry:
@@ -74,12 +77,18 @@ def list_cmd(
         return
     for spec in specs:
         console.print(f"[bold]{spec.name}[/bold]  {spec.description}")
+    next_name = "duo" if any(spec.name == "duo" for spec in specs) else specs[0].name
+    console.print(Text(f"Next run opencollab workflow run {shlex.quote(next_name)} --help", style="dim"))
 
 
 @app.command(name="run")
 def run_cmd(
     name: str = typer.Argument(..., help="Name of the workflow to run"),
     args: str = typer.Option("{}", "--args", help="JSON object of workflow arguments"),
+    task: Optional[str] = typer.Option(None, "--task", help="Set workflow goal as plain text"),
+    task_file: Optional[str] = typer.Option(
+        None, "--task-file", help="Read workflow goal from a UTF-8 text file (max 4 MiB)",
+    ),
     model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM model (default from config)"),
     provider: Optional[str] = typer.Option(None, "--provider", "-p", help="LLM provider (default from config)"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="API key (default from config)"),
@@ -130,6 +139,18 @@ def run_cmd(
     if not isinstance(parsed_args, dict):
         console.print("[red]--args must be a JSON object.[/red]")
         raise typer.Exit(code=1)
+
+    if "goal" in parsed_args and (task is not None or task_file is not None):
+        raise typer.BadParameter("--args already contains 'goal'. Use --args or --task/--task-file for goal.")
+    task_text = resolve_text_input(
+        task,
+        task_file,
+        text_option="--task",
+        file_option="--task-file",
+        max_bytes=MAX_CLI_TASK_FILE_BYTES,
+    )
+    if task_text is not None:
+        parsed_args["goal"] = task_text
 
     cfg = resolve_config(workspace, model, provider, api_key, base_url, budget)
     if missing_api_key_for(cfg["provider"], cfg["api_key"], cfg["base_url"]):

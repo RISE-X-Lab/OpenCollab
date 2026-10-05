@@ -32,6 +32,7 @@ from typing import Any, Optional
 
 import typer
 from rich.console import Console
+from rich.table import Table
 from rich.text import Text
 
 from opencollab.adapters.cli.config_resolve import (
@@ -40,23 +41,33 @@ from opencollab.adapters.cli.config_resolve import (
     resolve_config,
 )
 from opencollab.adapters.cli.live_prompt import LivePrompt
+from opencollab.adapters.cli.team import build_team_app
+from opencollab.adapters.cli.text_input import resolve_text_input
 from opencollab.adapters.cli.turn_queue import TurnQueue
 from opencollab.adapters.cli.workflow import app as workflow_app
-from opencollab.adapters.safe_files import read_regular_text
 from opencollab.application.async_timeout import run_with_bounded_shutdown
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.scheduler_types import SchedulerTurnError
+from opencollab.bootstrap.team_config import default_team_config, load_team_config
 from opencollab.domain.session import SessionPhase
 
 app = typer.Typer(
     name="opencollab",
-    help="OpenCollab — Minimal Multi-Agent Software Development Framework",
+    help="OpenCollab — interactive teams and reusable coding workflows. Run without a subcommand to chat.",
+    epilog=(
+        "Start chatting: opencollab --workspace .\n\n"
+        "Create a team: opencollab team init team.yaml\n\n"
+        "Inspect your team: opencollab team show --team-config team.yaml\n\n"
+        "Explore workflows: opencollab workflow list\n\n"
+        "Duo options: opencollab workflow run duo --help"
+    ),
     add_completion=False,
 )
 console = Console()
 MAX_CLI_PROMPT_FILE_BYTES = 4 * 1024 * 1024
 
 app.add_typer(workflow_app, name="workflow")
+app.add_typer(build_team_app(default_team_config, load_team_config), name="team")
 
 
 @app.callback(invoke_without_command=True)
@@ -103,10 +114,14 @@ def main_callback(
             and source.name == "COMMANDLINE"
         ]
         if explicit_options:
+            placement = (
+                "Place team configuration options after 'team show'."
+                if ctx.invoked_subcommand == "team"
+                else "Place shared workflow options after 'workflow run NAME' or 'workflow list'."
+            )
             raise typer.BadParameter(
                 f"Interactive team options {', '.join(explicit_options)} were supplied before "
-                f"{ctx.invoked_subcommand}. Place shared workflow options after "
-                "'workflow run NAME' or 'workflow list'."
+                f"{ctx.invoked_subcommand}. {placement}"
             )
         return
 
@@ -139,26 +154,13 @@ def main_callback(
 
 
 def _resolve_one_shot_prompt(prompt: str | None, prompt_file: str | None) -> str | None:
-    if prompt is not None and prompt_file is not None:
-        raise typer.BadParameter("--prompt and --prompt-file are mutually exclusive.")
-    if prompt_file is not None:
-        if not prompt_file.strip():
-            raise typer.BadParameter("--prompt-file path must not be empty.")
-        try:
-            text = read_regular_text(
-                prompt_file,
-                max_bytes=MAX_CLI_PROMPT_FILE_BYTES,
-            )
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
-            raise typer.BadParameter(f"Cannot read --prompt-file: {exc}") from exc
-        if not text.strip():
-            raise typer.BadParameter(f"--prompt-file is empty: {prompt_file}")
-        return text
-    if prompt is not None:
-        if not prompt.strip():
-            raise typer.BadParameter("--prompt must not be empty.")
-        return prompt
-    return None
+    return resolve_text_input(
+        prompt,
+        prompt_file,
+        text_option="--prompt",
+        file_option="--prompt-file",
+        max_bytes=MAX_CLI_PROMPT_FILE_BYTES,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +201,24 @@ def _save_session(lead: Any) -> None:
     console.print(f"[dim]Session saved to {path}[/dim]")
 
 
+def _print_repl_help() -> None:
+    table = Table(title="Interactive team help", show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold", no_wrap=True)
+    table.add_column()
+    for action, description in (
+        ("Message", "Type a task or follow-up for the selected agent. Typing during a turn queues it."),
+        ("Tab / Shift+Tab", "Select the next / previous agent to inspect and address."),
+        ("Ctrl+C", "Interrupt the current turn and clear queued turns. Exit when idle."),
+        ("/save", "Save the lead agent's session for resuming with --session PATH."),
+        ("/exit or /quit", "Leave the interactive session."),
+        ("/help", "Show this help without starting a model call."),
+    ):
+        table.add_row(action, description)
+    console.print(table)
+    console.print(Text("From your shell, use 'opencollab team --help' to set up a team, "
+                       "or 'opencollab workflow run duo --help' to run Duo."))
+
+
 def _dispatch_repl_command(
     line: str,
     lead: Any,
@@ -211,6 +231,9 @@ def _dispatch_repl_command(
     command = line.lower()
     if command in exit_words:
         return False
+    if command == "/help":
+        _print_repl_help()
+        return True
     if command == "/save":
         try:
             _save_session(lead)

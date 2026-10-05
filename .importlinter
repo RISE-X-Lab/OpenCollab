@@ -11,13 +11,14 @@ layers =
     opencollab.adapters
     opencollab.application
     opencollab.domain
-; TODO(#NNN): CLI reaches into the composition root. Remove these four lines
+; TODO(#NNN): CLI reaches into the composition root. Remove these entries
 ; once config/session/workflow entry points are injected instead of imported.
 ignore_imports =
     opencollab.adapters.cli.config_resolve -> opencollab.bootstrap.config
     opencollab.adapters.cli.workflow -> opencollab.bootstrap.session_factory
     opencollab.adapters.cli.workflow -> opencollab.bootstrap.workflow_runtime
     opencollab.adapters.cli.main -> opencollab.bootstrap
+    opencollab.adapters.cli.main -> opencollab.bootstrap.team_config
 
 [importlinter:contract:domain-stdlib-only]
 name = Domain depends on the standard library only
