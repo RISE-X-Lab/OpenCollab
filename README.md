@@ -33,13 +33,11 @@
 
 ## News
 
-- **2026-10-06** — [OpenCollab 0.9.2](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.2)
-  simplifies Team and workflow setup and improves candidate delivery, session
-  recovery, provider handling, and serial review. See the [changelog](CHANGELOG.md#092---2026-10-06).
-
-- **2026-10-05** — [OpenCollab 0.9.1](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.1)
-  adds per-role budgets and context policies, and updates Duo's delivery checks
-  to V8. Follow subsequent changes on main in the [changelog](CHANGELOG.md#unreleased).
+- 🎆 **2026-10-06** — [OpenCollab 0.9.2](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.2)
+  includes the latest Duo V8 workflow and all the statistical features described
+  in our paper to support research experiments. Following extensive testing and
+  bug fixes, the framework is now nearly ready for 1.0.0. We will release version
+  1.0.0 once our paper is accepted. See the [changelog](CHANGELOG.md#092---2026-10-06).
 - **2026-09-29** — Our paper is on arXiv: [*OpenCollab: A Multi-Agent Coding Framework with
   Programmable Collaboration and Controllable Runtime*](https://arxiv.org/abs/2609.38345).
 - **2026-09-27** — [OpenCollab 0.8](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.8.0)
