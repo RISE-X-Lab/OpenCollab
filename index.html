@@ -388,7 +388,7 @@ footer a{color:var(--muted)}
       <p class="sublinks"><a href="https://arxiv.org/abs/2609.38345" target="_blank" rel="noopener">Paper · arXiv 2609.38345</a><span>MulanPSL-2.0</span></p>
     </div>
 
-    <aside class="console" aria-label="Adherence under two tool sets: 47.2% of runs realized the declared team with all tools, 94.4% with a read-only adopter">
+    <aside class="console" aria-label="Adherence, the share of runs in which the team worked as declared: 47.2% with all tools, 94.4% when the Adopter is read-only">
       <div class="con-head">
         <span class="node"></span><span>audit</span><span>·</span><b>Qwen3.8-Flash</b><span>·</span><span>SWE-bench Pro</span>
       </div>
@@ -398,13 +398,13 @@ footer a{color:var(--muted)}
         <div class="con-num"><b>47.2%</b><small>Adherence</small></div>
       </div>
       <div class="con-row" data-k="34">
-        <div class="con-lab"><span class="tag">tools = read-only</span><span class="what">Only change: the adopter cannot edit files.</span></div>
+        <div class="con-lab"><span class="tag">tools = read-only</span><span class="what">Only change: the Adopter cannot edit files.</span></div>
         <div class="dots" aria-hidden="true"></div>
         <div class="con-num"><b>94.4%</b><small>Adherence</small></div>
       </div>
       <div class="con-foot">
-        <p class="say">One change to the tool set <em>doubles Adherence</em>, the share of runs that realize the declared team.</p>
-        <div class="legend"><span><i class="on"></i>run realized the declared team</span><span><i class="off"></i>declared, not realized</span>
+        <p class="say"><em>Adherence</em> is the share of runs in which the team worked as declared: every teammate took part, the Adopter handed work off, and no role overstepped its limits. Changing only the tool set moves it from 47.2% to 94.4%.</p>
+        <div class="legend"><span><i class="on"></i>team worked as declared</span><span><i class="off"></i>it did not</span>
           <button class="replay" id="replay" type="button" aria-label="Replay the audit animation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>replay</button></div>
       </div>
     </aside>
@@ -422,13 +422,13 @@ footer a{color:var(--muted)}
   </div>
   <div class="problem">
     <div class="prose">
-      <p>Multi-agent teams on repository-level tasks usually begin by configuring roles such as an Analyst, a Coder and a Tester. Left to decide on their own, models rarely delegate. Mostly the lead agent bypasses its teammates and resolves the issue alone; in other cases it spends its token allowance before issuing any handoff. Adherence, the rate at which the declared organization is realized, frequently falls below half as the system collapses into a single-agent loop. The paper calls this the <span class="term-i">illusion of collaboration</span>.</p>
+      <p>Multi-agent teams on repository-level tasks usually begin by configuring roles such as an Analyst, a Coder and a Tester. Left to decide on their own, models rarely delegate. Mostly the Adopter, the agent that receives the task, bypasses its teammates and resolves the issue alone; in other cases it spends its token allowance before issuing any handoff. Adherence, the share of runs in which the team works as declared, frequently falls below half as the system collapses into a single-agent loop. The paper calls this the <span class="term-i">illusion of collaboration</span>.</p>
       <p>Prompts and log filters do not fix it. Mandating delegation in the prompt makes Adherence swing with the phrasing. Keeping only the runs where agents collaborated biases the comparison: agents solve easy tasks alone and ask for help when stuck, so that subset skews toward harder tasks.</p>
     </div>
     <figure class="diagram">
       <svg viewBox="0 0 600 262" role="img" aria-labelledby="dvr-t dvr-d">
         <title id="dvr-t">Declared team versus what often runs</title>
-        <desc id="dvr-d">Left: a lead connected by dashed declared edges to an analyst, a coder and a tester. Right: the same team where only the lead acts and the teammates are bypassed.</desc>
+        <desc id="dvr-d">Left: an Adopter connected by dashed declared edges to an analyst, a coder and a tester. Right: the same team where only the Adopter acts and the teammates are bypassed.</desc>
         <defs>
           <linearGradient id="dvr-g" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#7C3AED"/><stop offset="1" stop-color="#2563EB"/></linearGradient>
           <marker id="dvr-a" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#7C3AED"/></marker>
@@ -446,7 +446,7 @@ footer a{color:var(--muted)}
           <path d="M152 206 Q190 244 220 208" marker-end="url(#dvr-a)"/>
         </g>
         <g font-family="Google Sans, Noto Sans, sans-serif" font-size="14" font-weight="500" text-anchor="middle" fill="#0E1330">
-          <rect x="98" y="46" width="84" height="34" rx="17" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.6"/><text x="140" y="68">Lead</text>
+          <rect x="98" y="46" width="84" height="34" rx="17" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.6"/><text x="140" y="68">Adopter</text>
           <rect x="8" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.6"/><text x="48" y="193">Analyst</text>
           <rect x="100" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.6"/><text x="140" y="193">Coder</text>
           <rect x="192" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#7C3AED" stroke-width="1.6"/><text x="232" y="193">Tester</text>
@@ -461,20 +461,20 @@ footer a{color:var(--muted)}
         <text x="552" y="60" font-family="Noto Sans, sans-serif" font-size="12.5" fill="#333A56">works</text>
         <text x="552" y="76" font-family="Noto Sans, sans-serif" font-size="12.5" fill="#333A56">alone</text>
         <g font-family="Google Sans, Noto Sans, sans-serif" font-size="14" font-weight="500" text-anchor="middle">
-          <rect x="418" y="46" width="84" height="34" rx="17" fill="url(#dvr-g)"/><text x="460" y="68" fill="#FFFFFF">Lead</text>
+          <rect x="418" y="46" width="84" height="34" rx="17" fill="url(#dvr-g)"/><text x="460" y="68" fill="#FFFFFF">Adopter</text>
           <rect x="328" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#C3C8DD" stroke-width="1.5" stroke-dasharray="4 4"/><text x="368" y="193" fill="#8D93AC">Analyst</text>
           <rect x="420" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#C3C8DD" stroke-width="1.5" stroke-dasharray="4 4"/><text x="460" y="193" fill="#8D93AC">Coder</text>
           <rect x="512" y="172" width="80" height="32" rx="16" fill="#FFFFFF" stroke="#C3C8DD" stroke-width="1.5" stroke-dasharray="4 4"/><text x="552" y="193" fill="#8D93AC">Tester</text>
         </g>
         <text x="460" y="236" text-anchor="middle" font-family="Google Sans Code, ui-monospace, monospace" font-size="12" fill="#8D93AC">teammates bypassed</text>
       </svg>
-      <figcaption>Declared edges are dashed. In many runs only the lead acts, and the team collapses into a single-agent loop.</figcaption>
+      <figcaption>Declared edges are dashed. In many runs only the Adopter acts, and the team collapses into a single-agent loop.</figcaption>
     </figure>
   </div>
   <div class="adds">
-    <div class="add"><i>shared runtime</i><b>One gate before every model call</b><p>Every role runs through the same session loop, and pre-call admission enforces each role's token allowance, so no lead agent silently spends the run before it could delegate.</p></div>
+    <div class="add"><i>shared runtime</i><b>One gate before every model call</b><p>Every role runs through the same session loop, and pre-call admission enforces each role's token allowance, so no Adopter silently spends the run before it could delegate.</p></div>
     <div class="add"><i>event stream</i><b>Records instead of prose logs</b><p>Every action and every token is bound to the role that produced it, so scripts can reconstruct who did what without parsing natural language.</p></div>
-    <div class="add"><i>adherence</i><b>A verdict for every run</b><p>From the stream we measure whether each run realized the declared organization, which is what lets a gain be attributed to it.</p></div>
+    <div class="add"><i>adherence</i><b>A verdict for every run</b><p>From the stream we check each run: did every teammate act, did the Adopter delegate, did each role keep to its tools, budget and message routes. A run counts only if every check passes, which is what lets a gain be credited to the team.</p></div>
   </div>
 </section>
 
@@ -544,7 +544,7 @@ footer a{color:var(--muted)}
   <div class="adh">
     <div>
       <h3>Structural adherence</h3>
-      <p>For each applicable axis a run gets a verdict: adherent, deviant, or unverifiable. A run is adherent only if every applicable axis passes.</p>
+      <p>Adherence asks of every run: did the team you declared actually run? Six checks answer it. For each applicable check a run gets a verdict: adherent, deviant, or unverifiable. A run is adherent only if every applicable axis passes.</p>
       <div class="axes"><span>participation</span><span>delegation</span><span>role boundary</span><span>budget sharing</span><span>information flow</span><span>context policy</span></div>
     </div>
     <div>
