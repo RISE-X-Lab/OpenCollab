@@ -34,7 +34,7 @@
 
 ## 动态
 
-- 🎆 **2026-10-06** — [OpenCollab 0.9.2](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.2)
+- 🎉 **2026-10-06** — [OpenCollab 0.9.2](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.2)
   内置最新版 Duo V8，并完整提供论文中介绍的面向科研实验的统计功能。
   经过充分测试与缺陷修复，框架在功能与稳定性上已接近 1.0.0 的目标。
   我们将在论文录用后正式发布 1.0.0 版本。详见[变更记录](CHANGELOG.md#092---2026-10-06)。

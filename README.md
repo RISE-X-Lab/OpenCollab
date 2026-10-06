@@ -33,7 +33,7 @@
 
 ## News
 
-- 🎆 **2026-10-06** — [OpenCollab 0.9.2](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.2)
+- 🎉 **2026-10-06** — [OpenCollab 0.9.2](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.2)
   includes the latest Duo V8 workflow and all the statistical features described
   in our paper to support research experiments. Following extensive testing and
   bug fixes, the framework is now nearly ready for 1.0.0. We will release version
