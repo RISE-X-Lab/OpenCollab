@@ -34,6 +34,9 @@
 
 ## 动态
 
+- **2026-10-06** — [OpenCollab 0.9.2](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.2)
+  简化 Team 与工作流的启动方式，完善候选交付、会话恢复、模型请求处理和串行审核。详见[变更记录](CHANGELOG.md#092---2026-10-06)。
+
 - **2026-10-05** — [OpenCollab 0.9.1](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.1)
   增加角色独立预算和上下文策略，Duo 的交付检查更新至 V8。main 上的后续改动见[变更记录](CHANGELOG.md#unreleased)。
 - **2026-09-29**：论文已在 arXiv 公开：[*OpenCollab: A Multi-Agent Coding Framework with

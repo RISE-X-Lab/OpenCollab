@@ -7,6 +7,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-06
+
+### Added
+
+The CLI can create a team configuration from its built-in template and accepts
+plain task text for workflow runs. Interactive help links the default agent,
+Team, and Duo entry points with matching examples.
+
 ### Fixed
 
 Candidate patches use a consistent machine-readable Git format across display
@@ -39,6 +47,20 @@ File pagination accounts for displayed line numbers and continues at the first
 unread line. Git tools report truncated or failed audits explicitly. The CLI
 rejects interactive options placed before a workflow subcommand and explains
 the supported option position before discovering or executing a workflow.
+
+Source executable-bit changes reach candidate workspaces even when Git's
+filemode setting ignores them. File display, pagination, and editing use the
+same physical line coordinates, and container edits reject lossy decoding.
+Workflow entry modules can import a sibling named `workflow.py`. Cancelling an
+equal-sized queued budget request returns its own reservation.
+
+Complete streaming tool calls with malformed arguments reach normal tool
+validation so the model can correct them. Anthropic end turns honor required
+tool checks. Legacy interrupted snapshots restore paired tool results. SDK
+clients retain the provider endpoint resolved at construction. Serial teams
+yield execution while awaiting coder review, then resume with correct file
+ownership and cancellation cleanup. Team timeouts are classified consistently
+on Python 3.10 and later.
 
 ### Documentation
 
@@ -426,7 +448,8 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.4...v0.9.0
 [0.8.4]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.3...v0.8.4
