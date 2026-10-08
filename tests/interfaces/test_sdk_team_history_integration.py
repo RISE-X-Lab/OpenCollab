@@ -37,6 +37,7 @@ def _response(name: str | None = None, arguments: dict | None = None) -> LLMResp
 
 @pytest.mark.parametrize("operation", [
     "control", "rebase", "cherry-pick", "merge", "cherry-pick-abort", "rebase-own-history", "reset-own-history",
+    "pull-rebase", "pull-short", "pull-config", "pull-default",
 ])
 async def test_team_delivers_the_repair_after_integrating_upstream(tmp_path, monkeypatch, operation):
     source = tmp_path / "repo"
@@ -105,8 +106,18 @@ topology:
                     "rebase": "git rebase main",
                     "cherry-pick": f"git cherry-pick {observed['upstream']}",
                     "merge": "git merge --no-edit main",
+                    "pull-rebase": f"git pull --rebase {shlex.quote(str(source))} main",
+                    "pull-short": f"git pull -r {shlex.quote(str(source))} main",
+                    "pull-config": f"git -c pull.rebase=true pull {shlex.quote(str(source))} main",
                 }.get(operation, "")
-                if operation == "cherry-pick-abort":
+                if operation == "pull-default":
+                    preparation = (
+                        f"git checkout -qb repair-client && git remote add origin {shlex.quote(str(source))} && "
+                        "git fetch origin main && git branch --set-upstream-to=origin/main && "
+                        "git config pull.rebase true && "
+                    )
+                    integration = "git pull"
+                elif operation == "cherry-pick-abort":
                     (source / "answer.py").write_text("def answer():\n    return 3\n", encoding="utf-8")
                     _git(source, "add", "answer.py")
                     _git(source, "commit", "-qm", "conflicting answer")
@@ -123,9 +134,10 @@ topology:
                         integration = f"git -c sequence.editor={editor} -c core.editor=true rebase -i HEAD~2"
                     else:
                         integration = "git reset --hard HEAD~1"
+                subject = "repair (start): keep the edit (pick): subject" if operation.startswith("pull-") else "repair"
                 command = (
                     "printf 'def answer():\\n    return 2\\n' > answer.py && "
-                    "git add answer.py && git commit -qm repair && "
+                    f"git add answer.py && git commit -qm {shlex.quote(subject)} && "
                     f"{preparation}{integration} && {shlex.quote(sys.executable)} -B -c "
                     "'from answer import answer; assert answer() == 2; print(answer())'"
                 )
@@ -162,7 +174,7 @@ topology:
         assert expected_files == {entry["path"] for entry in payload["files"]}
         assert payload["head_commit"] in payload["commits"]
         assert payload["diff_base"] != payload["head_commit"]
-        if operation in {"rebase", "merge"}:
+        if operation in {"rebase", "merge"} or operation.startswith("pull-"):
             assert payload["diff_base"] == observed["upstream"]
         else:
             assert payload["diff_base"] == creation_base

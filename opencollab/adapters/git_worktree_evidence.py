@@ -25,7 +25,9 @@ REFLOG_ENTRY_RE = re.compile(r"^([0-9a-f]{40}|[0-9a-f]{64})\t([0-9a-f ]*)\t(.*)$
 # and the parenthesised variants ``commit (initial)``, ``commit (amend)``,
 # ``commit (merge)``. Cherry-pick and revert also append work to the current history.
 OWN_COMMIT_REFLOG_PREFIX = ("commit", "cherry-pick:", "revert:")
-REBASE_REFLOG_RE = re.compile(r"^rebase(?: -i)? \(([^)]+)\):")
+# Pull prefixes the same rebase lifecycle with its command line. Try bare pull
+# first, then its arguments lazily, before any markers in the commit subject.
+REBASE_REFLOG_RE = re.compile(r"^(?:rebase(?: -i)?|pull|pull [^\r\n]*?) \(([^)]+)\):")
 # How many of a worktree's own commits are listed to a caller. The true total is
 # reported separately, so a capped list never reads as a shorter one.
 OWN_COMMIT_LIMIT = 64

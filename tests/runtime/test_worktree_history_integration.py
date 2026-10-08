@@ -63,9 +63,11 @@ def _execute_answer(workspace: Path, value: int) -> str:
     "reset-own-history", "reset-own-twice", "reset-across-handoff", "reset-external", "checkout-external",
     "reset-after-rebase-abort",
     "amend", "revert", "merge", "merge-conflict",
+    "pull-rebase", "pull-short", "pull-config", "pull-merges", "pull-autostash",
+    "pull-conflict", "pull-abort", "pull-merge", "pull-default", "pull-default-merges",
 ])
 async def test_a_repair_survives_history_integration(tmp_path, backend, operation):
-    source = _repo(tmp_path / "source")
+    source = _repo(tmp_path / ("remote source" if operation.startswith("pull-") else "source"))
     environment = _environment(source, tmp_path, backend)
     workspace = Path(await environment.setup())
     creation_base = _git(workspace, "rev-parse", "HEAD")
@@ -73,10 +75,12 @@ async def test_a_repair_survives_history_integration(tmp_path, backend, operatio
     expected_count = 1
     expected_value = 2
     expected_base = creation_base
-    source_value = 3 if operation.endswith("conflict") or operation == "cherry-pick-abort" else 1
+    source_value = 3 if operation.endswith("conflict") or operation in {"cherry-pick-abort", "pull-abort"} else 1
     try:
         _answer(workspace, 2)
-        assert (await environment.exec_cmd("git add answer.py && git commit -qm repair")).returncode == 0
+        subject = "repair (start): keep the edit (pick): subject" if operation.startswith("pull-") else "repair"
+        committed = await environment.exec_cmd(f"git add answer.py && git commit -qm {shlex.quote(subject)}")
+        assert committed.returncode == 0
         original_repair = _git(workspace, "rev-parse", "HEAD")
         assert "answer.py" in await environment.get_diff()
         if operation in {"rebase-squash", "rebase-own-history"}:
@@ -94,14 +98,48 @@ async def test_a_repair_survives_history_integration(tmp_path, backend, operatio
             (workspace / "discarded.txt").write_text("discarded repair\n", encoding="utf-8")
             _git(workspace, "add", "discarded.txt")
             _git(workspace, "commit", "-qm", "discarded repair")
-        if operation.endswith("conflict"):
+        if operation.endswith("conflict") or operation == "pull-abort":
             _answer(source, 3)
         (source / "upstream.txt").write_text("upstream helper\n", encoding="utf-8")
         _git(source, "add", ".")
         _git(source, "commit", "-qm", "upstream helper")
         upstream = _git(source, "rev-parse", "HEAD")
 
-        if operation in {"rebase", "rebase-apply", "rebase-squash", "rebase-conflict"}:
+        if operation.startswith("pull-"):
+            expected_base = upstream
+            remote = shlex.quote(str(source))
+            command = {
+                "pull-short": f"git pull -r {remote} main",
+                "pull-config": f"git -c pull.rebase=true pull {remote} main",
+                "pull-merges": f"git pull --rebase=merges {remote} main",
+                "pull-autostash": f"git pull --rebase --autostash {remote} main",
+                "pull-merge": f"git pull --no-rebase {remote} main",
+            }.get(operation, f"git pull --rebase {remote} main")
+            if operation in {"pull-default", "pull-default-merges"}:
+                _git(workspace, "checkout", "-qb", "repair-client")
+                _git(workspace, "remote", "add", "origin", str(source))
+                _git(workspace, "fetch", "origin", "main")
+                _git(workspace, "branch", "--set-upstream-to=origin/main")
+                _git(workspace, "config", "pull.rebase", "merges" if operation.endswith("merges") else "true")
+                command = "git pull"
+            if operation == "pull-autostash":
+                expected_value = 4
+                _answer(workspace, expected_value)
+            if operation == "pull-merge":
+                expected_count = 2
+            result = await environment.exec_cmd(command)
+            if operation == "pull-conflict":
+                assert result.returncode == 1
+                expected_value = 4
+                _answer(workspace, expected_value)
+                result = await environment.exec_cmd("git add answer.py && git -c core.editor=true rebase --continue")
+            elif operation == "pull-abort":
+                assert result.returncode == 1
+                expected_base = creation_base
+                result = await environment.exec_cmd("git rebase --abort")
+                assert _git(workspace, "rev-parse", "HEAD") == original_repair
+            assert result.returncode == 0, result.stderr
+        elif operation in {"rebase", "rebase-apply", "rebase-squash", "rebase-conflict"}:
             expected_base = upstream
             flags = "--apply " if operation == "rebase-apply" else ""
             if operation == "rebase-squash":
@@ -210,7 +248,8 @@ async def test_a_repair_survives_history_integration(tmp_path, backend, operatio
 
 
 @pytest.mark.parametrize("backend", ["local", "docker-shell"])
-async def test_fast_forward_adopts_the_incoming_merge_commit(tmp_path, backend):
+@pytest.mark.parametrize("command", ["merge", "pull"])
+async def test_fast_forward_adopts_the_incoming_merge_commit(tmp_path, backend, command):
     """Even a two-parent incoming tip is a handoff when it is fast-forwarded."""
     source = _repo(tmp_path / "source")
     environment = _environment(source, tmp_path, backend)
@@ -224,7 +263,11 @@ async def test_fast_forward_adopts_the_incoming_merge_commit(tmp_path, backend):
         _git(source, "merge", "--no-ff", "--no-edit", "helper")
         adopted = _git(source, "rev-parse", "HEAD")
         assert len(_git(source, "show", "-s", "--format=%P", "HEAD").split()) == 2
-        assert (await environment.exec_cmd("git merge --no-edit main")).returncode == 0
+        integration = (
+            f"git pull --rebase {shlex.quote(str(source))} main"
+            if command == "pull" else "git merge --no-edit main"
+        )
+        assert (await environment.exec_cmd(integration)).returncode == 0
         assert await environment.get_diff() == ""
         assert environment.diff_base == adopted
         assert environment.own_commits == ()
