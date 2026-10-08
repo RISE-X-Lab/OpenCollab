@@ -411,12 +411,12 @@ class WorktreeEnvironment(Environment):
             diff = await self._directory_copy_diff()
             self._copy_exported_diff = diff
             return diff
+        self._git_diff_delivery_pending = True
         if self._base_commit is None:
             raise RuntimeError("worktree base commit is unavailable")
         base_revision = await self._resolve_diff_base()
         self._diff_base = base_revision
         await self._resolve_own_commits(base_revision)
-        self._git_diff_delivery_pending = True
         result = await self._local_env.exec_cmd(
             guarded_staged_diff_command(base_revision=base_revision)
         )
