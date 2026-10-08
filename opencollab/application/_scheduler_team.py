@@ -12,7 +12,7 @@ from opencollab.application._scheduler_constants import (
     WORKTREE_DIFF_KEEP_CHARS,
     WORKTREE_DIFF_MAX_CHARS,
 )
-from opencollab.application.ports import DiffCapablePort, EnvironmentPort
+from opencollab.application.ports import DiffCapablePort, EnvironmentPort, RecoverableChangesPort
 from opencollab.application.scheduler_types import TeamPrebuiltError
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.identity import role_collision_key
@@ -607,6 +607,7 @@ class SchedulerTeamMixin:
 
     async def _append_worktree_diff(
         self, env: EnvironmentPort, result: str, *, aid: int | None = None, role: str = "",
+        partial: bool = False,
     ) -> str:
         """Capture worktree changes once for the result and its trace."""
         if not isinstance(env, DiffCapablePort):
@@ -616,13 +617,16 @@ class SchedulerTeamMixin:
             await self._trace_worktree_changes(aid, role, env, diff=diff)
         if not diff:
             return result
+        recovery = ""
         if len(diff) > WORKTREE_DIFF_MAX_CHARS:
+            if partial and isinstance(env, RecoverableChangesPort):
+                recovery = f"\n\n[Full partial changes retained at {env.retain_changes()}]"
             diff = (
                 diff[:WORKTREE_DIFF_KEEP_CHARS]
                 + f"\n\n... [{len(diff) - WORKTREE_DIFF_MAX_CHARS} chars truncated] ...\n\n"
                 + diff[-WORKTREE_DIFF_KEEP_CHARS:]
             )
-        return result + f"\n\n[Changes made in worktree]\n```diff\n{diff}\n```"
+        return result + f"\n\n[Changes made in worktree]\n```diff\n{diff}\n```" + recovery
 
     async def _trace_worktree_changes(
         self, aid: int, role: str, env: EnvironmentPort, *, diff: str,

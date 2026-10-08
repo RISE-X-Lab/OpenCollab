@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ import pytest
 from opencollab import OpenCollab
 from opencollab.adapters import worktree_pool
 from opencollab.adapters.llm import retry
+from opencollab.application._scheduler_constants import MAX_TEAMMATE_MESSAGE_BYTES
 from opencollab.bootstrap import programmatic
 from opencollab.domain.pending import PendingEventTable, RowStatus
 from opencollab.domain.session import SessionPhase
@@ -29,12 +31,15 @@ def _tool_call(step: int, name: str, arguments: dict) -> dict:
     }
 
 
-async def _run_team(tmp_path, monkeypatch, *, backend, ending, trace, capture_failure=None):
+async def _run_team(
+    tmp_path, monkeypatch, *, backend, ending, trace, capture_failure=None,
+    prebuilt=False, payload=None,
+):
     repo = make_repo(tmp_path / "repo")
     team = tmp_path / "team.yaml"
     team.write_text(
         "entry: lead\nroles:\n"
-        "  lead:\n    prompt: ROLE_LEAD\n    tools: [spawn_agent]\n"
+        f"  lead:\n    prompt: ROLE_LEAD\n    tools: [{'message_agent' if prebuilt else 'spawn_agent'}]\n"
         "  coder:\n    prompt: ROLE_CODER\n    tools: [file_write, file_read]\n"
         "topology:\n  lead: [coder]\n", encoding="utf-8",
     )
@@ -43,13 +48,16 @@ async def _run_team(tmp_path, monkeypatch, *, backend, ending, trace, capture_fa
     monkeypatch.setattr(worktree_pool, "CONTAINER_WORKTREE_ROOT", str(tmp_path / "worktrees"))
     monkeypatch.setattr(retry, "RETRY_JITTER_MAX_SECONDS", 0)
     observed = {"steps": {}, "outages": 0, "captures": 0}
+    last_tool_step = 3 if payload is not None else 2
 
     def handler(request):
         messages = json.loads(request.content)["messages"]
         role = "lead" if "ROLE_LEAD" in str(messages[0].get("content")) else "coder"
+        if role == "lead":
+            observed.setdefault("lead_inputs", []).append(messages)
         step = observed["steps"].get(role, 0) + 1
         observed["steps"][role] = step
-        if role == "coder" and step >= 3 and ending == "api":
+        if role == "coder" and step > last_tool_step and ending == "api":
             observed["outages"] += 1
             return http_response(
                 request, 503, headers={"retry-after": "0"},
@@ -57,12 +65,20 @@ async def _run_team(tmp_path, monkeypatch, *, backend, ending, trace, capture_fa
             )
         calls = []
         if role == "lead" and step == 1:
-            calls = [_tool_call(step, "spawn_agent", {"role": "coder", "task": "Write and read solution.py."})]
+            calls = [_tool_call(step, "message_agent", {
+                "to_aid": 1, "summary": "write", "content": "Write and read solution.py.",
+            })] if prebuilt else [_tool_call(
+                step, "spawn_agent", {"role": "coder", "task": "Write and read solution.py."},
+            )]
         elif role == "coder" and step == 1:
             calls = [_tool_call(step, "file_write", {
                 "path": "solution.py", "mode": "create", "content": "print(42)\n",
             })]
-        elif role == "coder" and step == 2:
+        elif role == "coder" and step == 2 and payload is not None:
+            calls = [_tool_call(step, "file_write", {
+                "path": "payload.txt", "mode": "create", "content": payload,
+            })]
+        elif role == "coder" and step == last_tool_step:
             workspace = Path(observed["env"].workspace)
             assert (workspace / "solution.py").read_text() == "print(42)\n"
             executed = subprocess.run(
@@ -140,8 +156,8 @@ async def _run_team(tmp_path, monkeypatch, *, backend, ending, trace, capture_fa
         environment=environment,
     ).team(
         "Write and read the script.", config=team, budget=1_000_000, timeout=15,
-        max_steps=2 if ending == "stopped" else 100, use_worktrees=True,
-        trace=trace, artifacts=tmp_path / "artifacts",
+        max_steps=last_tool_step if ending == "stopped" else 100, use_worktrees=True,
+        trace=trace, artifacts=tmp_path / "artifacts", prebuild_team=prebuilt, serialize_turns=prebuilt,
     )
     observed.update({"repo": repo, "result": result})
     return observed
@@ -257,3 +273,79 @@ async def test_sdk_ignored_cache_capture_failure_retains_the_real_files(
         shutil.rmtree(workspace / "__pycache__")
         git(observed["repo"], "worktree", "remove", "--force", str(workspace))
         git(observed["repo"], "update-ref", "-d", f"refs/heads/{env._branch}", env._base_commit)
+
+
+@pytest.mark.parametrize("backend", ["local", "container"])
+@pytest.mark.parametrize("ending", ["api", "stopped"])
+@pytest.mark.parametrize("trace", [False, True])
+async def test_prebuilt_sender_receives_small_failed_patch(
+    worktree_transport, tmp_path, monkeypatch, backend, ending, trace,
+):
+    observed = await _run_team(
+        tmp_path, monkeypatch, backend=backend, ending=ending, trace=trace, prebuilt=True,
+    )
+    scheduler = observed["scheduler"]
+    child = scheduler.table.get(1)
+    notices = [message["content"].split("</team-notice>", 1)[0] + "</team-notice>"
+               for message in scheduler._sessions[0].messages
+               if "<team-notice " in str(message.get("content"))]
+    assert len(notices) == 1
+    assert len(notices[0].encode()) <= MAX_TEAMMATE_MESSAGE_BYTES
+    content = ET.fromstring(notices[0]).text
+    assert "has stopped" in content
+    assert "[Changes made in worktree]" in content and "+print(42)" in content
+    if ending == "api":
+        assert "+print(42)" in json.dumps(observed["lead_inputs"])
+    assert child.state.phase in {SessionPhase.ERROR, SessionPhase.STOPPED}
+    assert observed["result"].agent_failures
+    assert not Path(observed["env"].workspace).exists()
+    patch = content.split("```diff\n", 1)[1].rsplit("\n```", 1)[0]
+    apply_and_execute(observed["repo"], patch)
+
+
+@pytest.mark.parametrize("backend", ["local", "container"])
+@pytest.mark.parametrize("ending", ["api", "stopped"])
+@pytest.mark.parametrize("trace", [False, True])
+@pytest.mark.parametrize("prebuilt", [False, True])
+async def test_truncated_failed_patch_retains_complete_files_after_sdk_shutdown(
+    worktree_transport, tmp_path, monkeypatch, backend, ending, trace, prebuilt,
+):
+    payload = "".join(f"line {index} \u4e2d\u6587 & <tag> value\n" for index in range(1800))
+    observed = await _run_team(
+        tmp_path, monkeypatch, backend=backend, ending=ending, trace=trace,
+        prebuilt=prebuilt, payload=payload,
+    )
+    env = observed["env"]
+    workspace = Path(env.workspace)
+    try:
+        assert observed["result"].agent_failures
+        assert observed["captures"] == 1
+        assert (workspace / "payload.txt").read_text() == payload
+        if prebuilt:
+            notices = [message["content"].split("</team-notice>", 1)[0] + "</team-notice>"
+                       for message in observed["scheduler"]._sessions[0].messages
+                       if "<team-notice " in str(message.get("content"))]
+            assert len(notices) == 1
+            assert len(notices[0].encode()) <= MAX_TEAMMATE_MESSAGE_BYTES
+            delivered = ET.fromstring(notices[0]).text
+        else:
+            delivered = observed["parent_result"]
+            assert "chars truncated" in delivered
+        assert str(workspace) in delivered and "retained" in delivered
+        for session in observed["scheduler"]._sessions.values():
+            assert session._llm._closed
+        for _ in range(2):
+            with pytest.raises(OSError, match="retry state retained"):
+                await observed["pool"].release()
+            assert (workspace / "payload.txt").read_text() == payload
+        patch = await env.get_diff()
+        assert env.recovery_location is None
+        apply_and_execute(observed["repo"], patch)
+        assert (observed["repo"] / "payload.txt").read_bytes() == payload.encode()
+        await observed["pool"].release()
+        await observed["pool"].release()
+        assert not workspace.exists()
+    finally:
+        if workspace.exists():
+            git(observed["repo"], "worktree", "remove", "--force", str(workspace))
+            git(observed["repo"], "update-ref", "-d", f"refs/heads/{env._branch}", env._base_commit)

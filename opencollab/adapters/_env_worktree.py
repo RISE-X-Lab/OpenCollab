@@ -398,6 +398,19 @@ class WorktreeEnvironment(Environment):
             return self._base_commit
         return select_diff_base(reflog.stdout, fallback=self._base_commit)
 
+    def retain_changes(self) -> str:
+        """Keep a captured workspace when its caller could only deliver an excerpt."""
+        if self._worktree_dir is None:
+            raise RuntimeError("worktree is unavailable for recovery")
+        self._git_diff_delivery_pending = True
+        if not self._git_mode:
+            self._copy_exported_diff = None
+        return self.workspace
+
+    @property
+    def recovery_location(self) -> str | None:
+        return self.workspace if self._git_diff_delivery_pending else None
+
     async def get_diff(self) -> str:
         self._ensure_active()
         if self._local_env is None:
@@ -409,6 +422,7 @@ class WorktreeEnvironment(Environment):
             self._own_commit_count = None
             diff = await self._directory_copy_diff()
             self._copy_exported_diff = diff
+            self._git_diff_delivery_pending = False
             return diff
         self._git_diff_delivery_pending = True
         if self._base_commit is None:

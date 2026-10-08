@@ -195,6 +195,15 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         if location.returncode == 0 and not location.stdout_truncated and not location.stderr_truncated:
             self._registered_worktree_path = location.stdout.removesuffix("\n")
 
+    def retain_changes(self) -> str:
+        """Keep the worktree when a bounded delivery omitted part of its patch."""
+        self._git_diff_delivery_pending = True
+        return f"{self._container_id}:{self._worktree_dir}"
+
+    @property
+    def recovery_location(self) -> str | None:
+        return f"{self._container_id}:{self._worktree_dir}" if self._git_diff_delivery_pending else None
+
     async def get_diff(self) -> str:
         """This worktree's changes since the point its current work started from."""
         self._ensure_active()

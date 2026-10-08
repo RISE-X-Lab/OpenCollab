@@ -588,7 +588,7 @@ class LifecycleMixin:
         if env is None:
             return result
         try:
-            return await self._append_worktree_diff(env, result, aid=aid, role=scb.agent.name)
+            return await self._append_worktree_diff(env, result, aid=aid, role=scb.agent.name, partial=True)
         except Exception as exc:
             logger.error("partial worktree diff failed for aid %s: %s", aid, exc)
             return result + f"\n\n[Worktree diff extraction failed]\n{exc}"
@@ -614,7 +614,10 @@ class LifecycleMixin:
         parent, then re-activate the parent. No-op for fire-and-forget spawns.
         """
         if status is RowStatus.FAILED:
-            await self.notify_unanswered_senders(child_aid, error or result)
+            await self.notify_unanswered_senders(
+                child_aid, error or result,
+                partial_result=result if error is not None and result != error else None,
+            )
         origin = self._spawn_origin.get(child_aid)
         if origin is None:
             return
