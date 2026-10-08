@@ -68,6 +68,15 @@ directories must be new or empty. A caller-supplied environment remains owned
 by the caller, whose cleanup determines environment quiescence. The result's
 `session_quiesced` separately describes session and persistence completion.
 
+Failed Team children deliver available worktree patches with their failure
+results. Prebuilt teammates receive the same partial work in their stop notices.
+Their ERROR or STOPPED status and original failure reason remain available.
+When capture fails, or a bounded result or notice cannot carry the complete
+partial patch, native worktrees retain the full files and report a recovery
+location. The SDK reports the retained cleanup state. Export the full changes
+from that location before releasing the worktree. A later successful
+`get_diff()` clears the native retention state and permits cleanup.
+
 A revoked execution environment stops its current session before another model
 call. Workflow calls also check the shared environment before acquiring work and
 after waiting for an agent slot, so queued roles terminate with the revocation
