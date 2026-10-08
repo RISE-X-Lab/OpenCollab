@@ -222,7 +222,7 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
     async def _resolve_diff_base(self) -> str:
         assert self._base_commit is not None
         reflog = await self._git(
-            self._worktree_dir, "log", "-g", "--format=%H%x09%gs", "HEAD"
+            self._worktree_dir, "log", "-g", "--format=%H%x09%P%x09%gs", "HEAD"
         )
         if reflog.returncode != 0 or reflog.stdout_truncated:
             return self._base_commit
