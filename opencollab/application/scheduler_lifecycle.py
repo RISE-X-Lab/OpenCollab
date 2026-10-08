@@ -454,8 +454,8 @@ class LifecycleMixin:
             terminal_reason = scb.state.terminal_reason or f"{type(exc).__name__}: {exc}"
             scb.state.fail(terminal_reason)
             reason = f"Error: {terminal_reason}"
-            scb.result = reason
-            await self._trace_worktree_evidence(aid, scb, session)
+            result = await self._append_partial_worktree_diff(aid, scb, session, reason)
+            scb.result = result
             try:
                 await self.emit_scheduler_event(
                     self._events.agent_failed(aid, scb.agent.name, terminal_reason)
@@ -464,7 +464,7 @@ class LifecycleMixin:
                 logger.error(
                     "agent_failed event failed for aid %s: %s", aid, event_exc
                 )
-            await self._deliver_to_parent(aid, reason, RowStatus.FAILED, error=reason)
+            await self._deliver_to_parent(aid, result, RowStatus.FAILED, error=reason)
             await self._drain_message_inbox(aid, allow_current_task=True)
             await self._drain_ready_message_inboxes()
             await self._drain_own_inbox_late(aid)
@@ -491,14 +491,14 @@ class LifecycleMixin:
 
         terminal_failure = self._terminal_failure_result(scb, result)
         if terminal_failure is not None:
-            scb.result = terminal_failure
-            await self._trace_worktree_evidence(aid, scb, session)
+            result = await self._append_partial_worktree_diff(aid, scb, session, terminal_failure)
+            scb.result = result
             await self._safe_emit_scheduler_event(
                 self._events.agent_failed(aid, scb.agent.name, terminal_failure)
             )
             await self._deliver_to_parent(
                 aid,
-                terminal_failure,
+                result,
                 RowStatus.FAILED,
                 error=terminal_failure,
             )
@@ -514,7 +514,7 @@ class LifecycleMixin:
         env = getattr(session, "env", None)
         if env is not None:
             try:
-                result = await self._append_worktree_diff(env, result)
+                result = await self._append_worktree_diff(env, result, aid=aid, role=scb.agent.name)
             except Exception as exc:
                 logger.error("worktree diff failed for aid %s: %s", aid, exc)
                 scb.state.fail()
@@ -529,10 +529,6 @@ class LifecycleMixin:
                     await self._drain_ready_message_inboxes()
                 await self._drain_own_inbox_late(aid)
                 return
-            # Same changes, second destination: a structured, never-truncated
-            # per-file record. Observational, so it is deliberately outside the
-            # contract above — it may not fail the agent.
-            await self._trace_worktree_changes(aid, scb.agent.name, env)
 
         if self._shutting_down:
             self._finalize_cleanup_failure(aid)
@@ -584,29 +580,18 @@ class LifecycleMixin:
             return
         await self._drain_message_inbox(aid, allow_current_task=True)
 
-    async def _trace_worktree_evidence(self, aid: int, scb: Any, session: Any) -> None:
-        """Record what an agent left in its worktree, whatever ended the agent.
-
-        The completion path already writes this row. Every other terminal path
-        returned before reaching it, so an agent that spent its whole budget
-        writing code wrote no row at all -- and neither does an agent that
-        changed nothing, which is the reading ``_trace_worktree_changes``
-        exists to rule out. The two are opposite outcomes and they looked
-        identical on disk.
-
-        That matters beyond tidiness because per-agent adherence is scored off
-        these rows: a run whose coder was stopped at its cap after committing
-        scores as a coder that never touched a file, so the collaboration it
-        did do is counted as collaboration that did not happen.
-
-        Observational, like the call it mirrors: ``_trace_worktree_changes``
-        guards every read and swallows its own failures, so a diff that cannot
-        be taken here leaves the terminal path exactly as it was.
-        """
+    async def _append_partial_worktree_diff(
+        self, aid: int, scb: Any, session: Any, result: str,
+    ) -> str:
+        """Deliver available changes while retaining the original failure."""
         env = getattr(session, "env", None)
         if env is None:
-            return
-        await self._trace_worktree_changes(aid, scb.agent.name, env)
+            return result
+        try:
+            return await self._append_worktree_diff(env, result, aid=aid, role=scb.agent.name, partial=True)
+        except Exception as exc:
+            logger.error("partial worktree diff failed for aid %s: %s", aid, exc)
+            return result + f"\n\n[Worktree diff extraction failed]\n{exc}"
 
     @staticmethod
     def _terminal_failure_result(scb: Any, result: str) -> str | None:
@@ -629,7 +614,10 @@ class LifecycleMixin:
         parent, then re-activate the parent. No-op for fire-and-forget spawns.
         """
         if status is RowStatus.FAILED:
-            await self.notify_unanswered_senders(child_aid, error or result)
+            await self.notify_unanswered_senders(
+                child_aid, error or result,
+                partial_result=result if error is not None and result != error else None,
+            )
         origin = self._spawn_origin.get(child_aid)
         if origin is None:
             return

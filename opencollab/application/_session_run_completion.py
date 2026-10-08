@@ -505,7 +505,11 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         try:
             return await self._complete_with_choice(messages, tools, tool_choice)
         except Exception as exc:
-            if tool_choice in (None, "auto") or self._is_context_overflow(exc):
+            forced_choice = tool_choice == "required" or (
+                isinstance(tool_choice, dict)
+                and tool_choice.get("type") in {"any", "tool", "function"}
+            )
+            if not forced_choice or self._is_context_overflow(exc):
                 raise
             # Only degrade to "auto" when the provider plainly REJECTED the
             # parameter — a 4xx request-validation error, or a message naming

@@ -28,7 +28,7 @@ async def test_message_arriving_during_terminal_inbox_drain_is_delivered(monkeyp
     if ending == "diff_failure":
         lead.env = object()
 
-        async def failing_diff(env, result):
+        async def failing_diff(env, result, **_kwargs):
             del lead.env
             raise OSError("diff failed")
 

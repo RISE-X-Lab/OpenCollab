@@ -15,16 +15,19 @@ from __future__ import annotations
 
 import re
 
-# One HEAD reflog entry as ``git log -g --format=%H%x09%gs`` writes it: the
-# commit HEAD was moved to, and the message saying how it got there. Object ids
+# One HEAD reflog entry as ``git log -g --format=%H%x09%P%x09%gs`` writes it:
+# the commit HEAD moved to, its parents, and the message saying how it got there. Object ids
 # are 40 hexadecimal characters in a SHA-1 repository and 64 in a SHA-256 one;
 # a rule that recognised only the first would read every entry of a SHA-256
 # repository as unparseable and silently report the creation base forever.
-REFLOG_ENTRY_RE = re.compile(r"^([0-9a-f]{40}|[0-9a-f]{64})\t(.*)$")
+REFLOG_ENTRY_RE = re.compile(r"^([0-9a-f]{40}|[0-9a-f]{64})\t([0-9a-f ]*)\t(.*)$")
 # Reflog messages for a commit this worktree made itself: ``commit: <subject>``,
 # and the parenthesised variants ``commit (initial)``, ``commit (amend)``,
-# ``commit (merge)``. Every other way HEAD moves adopts a commit from elsewhere.
-OWN_COMMIT_REFLOG_PREFIX = "commit"
+# ``commit (merge)``. Cherry-pick and revert also append work to the current history.
+OWN_COMMIT_REFLOG_PREFIX = ("commit", "cherry-pick:", "revert:")
+# Pull prefixes the same rebase lifecycle with its command line. Try bare pull
+# first, then its arguments lazily, before any markers in the commit subject.
+REBASE_REFLOG_RE = re.compile(r"^(?:rebase(?: -i)?|pull|pull [^\r\n]*?) \(([^)]+)\):")
 # How many of a worktree's own commits are listed to a caller. The true total is
 # reported separately, so a capped list never reads as a shorter one.
 OWN_COMMIT_LIMIT = 64
@@ -44,15 +47,43 @@ def validate_worktree_branch(name: str) -> str:
     return name
 
 
-def select_diff_base(reflog: str, *, fallback: str) -> str:
-    """The commit HEAD was last *moved onto*, or ``fallback``.
+def _previous_work_entry(
+    entries: list[tuple[str, str, str]], index: int, commit: str,
+) -> int | None:
+    """Find where this worktree last produced a restored commit.
 
-    ``reflog`` is the output of ``git log -g --format=%H%x09%gs HEAD`` read in
-    the worktree, newest entry first. The answer is the newest entry that is not
-    a commit this worktree made: a checkout, reset, or merge that brings in
-    someone else's history moves the base forward onto what was adopted, while
-    the agent's own commits leave it where it was, so work the agent committed
-    itself still reads as its own.
+    A later checkout or fast-forward adoption of the same commit begins a new
+    stretch. No-op moves and earlier restores keep its original provenance.
+    """
+    for previous in range(index + 1, len(entries)):
+        earlier_commit, parents, message = entries[previous]
+        if earlier_commit != commit:
+            continue
+        if previous + 1 < len(entries) and entries[previous + 1][0] == commit:
+            continue
+        rebase = REBASE_REFLOG_RE.match(message)
+        if message.startswith(OWN_COMMIT_REFLOG_PREFIX) or (
+            len(parents.split()) == 2 and ": Merge made by " in message
+        ) or (rebase is not None and rebase.group(1) not in {"start", "abort", "finish", "reset"}):
+            return previous
+        if message.startswith("reset:") or rebase is not None:
+            continue
+        return None
+    return None
+
+
+def select_diff_base(reflog: str, *, fallback: str) -> str:
+    """The external history this worktree's current work grew from, or ``fallback``.
+
+    ``reflog`` is ``git log -g --format=%H%x09%P%x09%gs HEAD``, newest first.
+    Checkout, reset, and fast-forward merge adopt the commit they move onto.
+    Commit, amend, cherry-pick, and revert extend or revise the current work.
+    Rebase adopts its start commit, retaining the replayed work in the diff.
+    A two-parent merge adopts its incoming parent, retaining the first parent's
+    work and any conflict resolution. Aborted rebases leave the previous base
+    intact, including when the rebase had already replayed some commits.
+    Reset or rebase onto this worktree's own history resumes that earlier
+    stretch, preserving repairs that remain in the restored commit.
 
     ``fallback`` is the commit the worktree was created on, which is the honest
     answer when there is nothing to read -- a repository with
@@ -62,9 +93,40 @@ def select_diff_base(reflog: str, *, fallback: str) -> str:
         match.groups() for line in reflog.split("\n")
         if (match := REFLOG_ENTRY_RE.match(line)) is not None
     ]
-    for index, (commit, message) in enumerate(entries):
+    aborted_rebases = 0
+    resume_at = 0
+    for index, (commit, parents, message) in enumerate(entries):
+        if index < resume_at:
+            continue
+        rebase = REBASE_REFLOG_RE.match(message)
+        if rebase is not None:
+            action = rebase.group(1)
+            if action == "abort":
+                aborted_rebases += 1
+            elif action == "start":
+                if aborted_rebases:
+                    aborted_rebases -= 1
+                else:
+                    previous_work = _previous_work_entry(entries, index, commit)
+                    if previous_work is not None:
+                        resume_at = previous_work
+                    elif index + 1 == len(entries) or entries[index + 1][0] != commit:
+                        return commit
+            continue
+        if aborted_rebases:
+            continue
+        parent_commits = parents.split()
+        if len(parent_commits) == 2 and (
+            message.startswith("commit (merge):") or ": Merge made by " in message
+        ):
+            return parent_commits[1]
         if message.startswith(OWN_COMMIT_REFLOG_PREFIX):
             continue
+        if message.startswith("reset:"):
+            previous_work = _previous_work_entry(entries, index, commit)
+            if previous_work is not None:
+                resume_at = previous_work
+                continue
         # Creating a branch at the current HEAD does not adopt a new base.
         if index + 1 < len(entries) and entries[index + 1][0] == commit:
             continue

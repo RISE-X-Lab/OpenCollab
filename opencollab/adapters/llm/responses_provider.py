@@ -219,7 +219,9 @@ def _build_request_kwargs(
             kwargs["text"] = forced_text_format(text_tool)
         else:
             kwargs["tools"] = converted_tools
-            if not capabilities.supports_forced_tool_choice and choice is not None and choice != "auto":
+            if not capabilities.supports_forced_tool_choice and (
+                choice == "required" or isinstance(choice, dict)
+            ):
                 choice = "auto"
             kwargs["tool_choice"] = choice
     if top_p is not None:

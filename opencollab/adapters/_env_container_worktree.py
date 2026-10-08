@@ -87,6 +87,7 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         self._worktree_registered = False
         self._worktree_files_pending = False
         self._registered_worktree_path: str | None = None
+        self._git_diff_delivery_pending = False
         self._base_commit: str | None = None
         self._diff_base: str | None = None
         self._head_commit: str | None = None
@@ -194,9 +195,19 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         if location.returncode == 0 and not location.stdout_truncated and not location.stderr_truncated:
             self._registered_worktree_path = location.stdout.removesuffix("\n")
 
+    def retain_changes(self) -> str:
+        """Keep the worktree when a bounded delivery omitted part of its patch."""
+        self._git_diff_delivery_pending = True
+        return f"{self._container_id}:{self._worktree_dir}"
+
+    @property
+    def recovery_location(self) -> str | None:
+        return f"{self._container_id}:{self._worktree_dir}" if self._git_diff_delivery_pending else None
+
     async def get_diff(self) -> str:
         """This worktree's changes since the point its current work started from."""
         self._ensure_active()
+        self._git_diff_delivery_pending = True
         if self._base_commit is None:
             raise RuntimeError("container worktree base commit is unavailable")
         self._diff_base = await self._resolve_diff_base()
@@ -214,12 +225,13 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
                 f"container worktree diff extraction failed: {detail}; "
                 f"worktree retained at {self._worktree_dir}"
             )
+        self._git_diff_delivery_pending = False
         return result.stdout
 
     async def _resolve_diff_base(self) -> str:
         assert self._base_commit is not None
         reflog = await self._git(
-            self._worktree_dir, "log", "-g", "--format=%H%x09%gs", "HEAD"
+            self._worktree_dir, "log", "-g", "--format=%H%x09%P%x09%gs", "HEAD"
         )
         if reflog.returncode != 0 or reflog.stdout_truncated:
             return self._base_commit
@@ -246,6 +258,11 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         Retained resources are reported to the pool so ownership survives for
         cleanup retry. The caller-owned container is never removed here.
         """
+        if self._git_diff_delivery_pending:
+            raise RuntimeError(
+                "refusing to clean undelivered Git worktree changes; "
+                f"worktree retained at {self._worktree_dir}"
+            )
         failures: list[str] = []
         if self._worktree_registered:
             removed = await self._git(

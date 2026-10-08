@@ -370,14 +370,13 @@ class WorktreeEnvironment(Environment):
         ``worktree_changes`` record files all of them under the tester — which
         is the per-agent attribution the record exists to provide.
 
-        So the base is the commit HEAD was last *moved onto* rather than the one
-        it *grew from*: the newest HEAD reflog entry that is not a commit this
-        worktree made. A checkout, a reset, or a merge that brings in someone
-        else's history moves the base forward onto what was adopted; the agent's
-        own commits leave it where it was, so work the agent committed itself
-        still reads as its own. When the newest such entry is the one git wrote
-        when the worktree was created, the answer is exactly ``_base_commit``,
-        so an agent that never took a handoff diffs precisely as it did before.
+        Git's reflog and commit parents distinguish adopting external history
+        from extending or replaying the agent's work. Checkout, reset, and
+        fast-forward merge adopt their target. A rebase adopts its start commit;
+        a two-parent merge adopts its incoming parent. The resulting diff keeps
+        the agent's commits and conflict resolution. Commit, amend, cherry-pick,
+        and revert keep the current base, and an aborted rebase restores it.
+        Reset or rebase onto the agent's earlier work resumes its original base.
 
         Nothing has to be told when a stretch of work begins: git already
         records every HEAD move per worktree, in ``logs/HEAD`` under
@@ -394,10 +393,23 @@ class WorktreeEnvironment(Environment):
         worktree = self._worktree_dir
         if worktree is None:
             return self._base_commit
-        reflog = await self._git_in(worktree, "log", "-g", "--format=%H%x09%gs", "HEAD")
+        reflog = await self._git_in(worktree, "log", "-g", "--format=%H%x09%P%x09%gs", "HEAD")
         if reflog.returncode != 0 or reflog.stdout_truncated or reflog.stderr_truncated:
             return self._base_commit
         return select_diff_base(reflog.stdout, fallback=self._base_commit)
+
+    def retain_changes(self) -> str:
+        """Keep a captured workspace when its caller could only deliver an excerpt."""
+        if self._worktree_dir is None:
+            raise RuntimeError("worktree is unavailable for recovery")
+        self._git_diff_delivery_pending = True
+        if not self._git_mode:
+            self._copy_exported_diff = None
+        return self.workspace
+
+    @property
+    def recovery_location(self) -> str | None:
+        return self.workspace if self._git_diff_delivery_pending else None
 
     async def get_diff(self) -> str:
         self._ensure_active()
@@ -410,13 +422,14 @@ class WorktreeEnvironment(Environment):
             self._own_commit_count = None
             diff = await self._directory_copy_diff()
             self._copy_exported_diff = diff
+            self._git_diff_delivery_pending = False
             return diff
+        self._git_diff_delivery_pending = True
         if self._base_commit is None:
             raise RuntimeError("worktree base commit is unavailable")
         base_revision = await self._resolve_diff_base()
         self._diff_base = base_revision
         await self._resolve_own_commits(base_revision)
-        self._git_diff_delivery_pending = True
         result = await self._local_env.exec_cmd(
             guarded_staged_diff_command(base_revision=base_revision)
         )

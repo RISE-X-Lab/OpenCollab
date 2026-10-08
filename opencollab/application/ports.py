@@ -70,6 +70,20 @@ class DiffCapablePort(Protocol):
 
 
 @runtime_checkable
+class RecoverableChangesPort(Protocol):
+    """Optional retention of owned changes omitted from a bounded result."""
+
+    def retain_changes(self) -> str:
+        """Keep the workspace until a later complete export; return its location."""
+        ...
+
+    @property
+    def recovery_location(self) -> str | None:
+        """The retained workspace location, if a full export is still pending."""
+        ...
+
+
+@runtime_checkable
 class WorkingTreeProbe(Protocol):
     """Read-only probe answering "has the working tree changed?".
 
