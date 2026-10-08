@@ -25,11 +25,11 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-hero-dark.svg">
-    <img src="assets/benchmark-hero-light.svg" alt="五个 harness 都使用 GPT-5.6-Luna 时的 Pass@1。OpenCollab (Duo) 在三个 benchmark 上都最高：SWE-bench Pro 64.25%，Terminal-Bench 2.1 83.15%，DeepSWE 69.91%，高于 OpenCollab (Base)、Claude Code、Codex CLI 和 Mini-SWE-Agent。" width="980">
+    <img src="assets/benchmark-hero-light.svg" alt="六个 harness 都使用 GPT-5.6-Luna 和 max reasoning effort。OpenCollab (Duo) 在 SWE-bench Pro、Terminal-Bench 2.1、DeepSWE、SWE-bench Pro v2 HARD-51 上的 Pass@1 分别为 68.91%、83.15%、65.49%、90.20%。HARD-51 与 OpenCollab (Base)、Codex CLI、Mini-SWE-Agent 并列。" width="1180">
   </picture>
 </p>
 <p align="center">
-  <sub>Duo 生成两个相互隔离的解，采纳其中一个。Base 是单 agent，token 用量在五个 harness 里最少。<a href="docs/results.md">完整结果（英文）</a></sub>
+  <sub>Duo 生成两个相互隔离的解，采纳其中一个。Base 是单 agent，在四个测试集中的平均 token 用量均最少。<a href="docs/results.md">完整结果（英文）</a></sub>
 </p>
 
 ## 动态

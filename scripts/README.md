@@ -10,6 +10,11 @@ its physical-path handling.
 `check_dashscope.py` performs an explicit provider connectivity check using the
 caller's configuration.
 
+`generate_benchmark_assets.py` renders the README charts and results-table SVGs
+from [`docs/benchmark-results.json`](../docs/benchmark-results.json). Run it with
+`python3 scripts/generate_benchmark_assets.py` after updating the published
+summary. The light and dark assets share this source.
+
 `benchmark_tool_loop.py` compares framework tool-processing overhead between two
 explicit source checkouts using mock providers and disposable local workspaces.
 See [the tool-loop measurement guide](../docs/development/tool-loop-progress.md)

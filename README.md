@@ -23,11 +23,11 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-hero-dark.svg">
-    <img src="assets/benchmark-hero-light.svg" alt="Pass@1 of five harnesses that all use GPT-5.6-Luna. OpenCollab (Duo) is highest on all three benchmarks: 64.25% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 69.91% on DeepSWE, ahead of OpenCollab (Base), Claude Code, Codex CLI, and Mini-SWE-Agent." width="980">
+    <img src="assets/benchmark-hero-light.svg" alt="Pass@1 of six harnesses using GPT-5.6-Luna at max reasoning effort. OpenCollab (Duo) scores 68.91% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, 65.49% on DeepSWE, and 90.20% on SWE-bench Pro v2 HARD-51. HARD-51 has a four-way tie with OpenCollab (Base), Codex CLI, and Mini-SWE-Agent." width="1180">
   </picture>
 </p>
 <p align="center">
-  <sub>Duo produces two isolated solutions and adopts one. Base, a single agent, uses the fewest tokens of the five.
+  <sub>Duo produces two isolated solutions and adopts one. Base, a single agent, uses the fewest tokens across all four benchmarks.
   <a href="docs/results.md">Full results</a></sub>
 </p>
 
