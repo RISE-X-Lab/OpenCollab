@@ -27,6 +27,7 @@ from opencollab.adapters.llm.types import (
     rescue_empty_turn,
     to_plain_data,
 )
+from opencollab.domain.token_estimation import estimate_request_tokens
 
 _ANTHROPIC_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 _ANTHROPIC_VERSION_RE = re.compile(
@@ -233,6 +234,18 @@ def _merge_anthropic_reasoning_effort(
         )
     output_config["effort"] = reasoning_effort
     request["output_config"] = output_config
+
+
+def _estimate_request_tokens(messages: list[dict], tools: list[dict] | None) -> int:
+    """Reserve the native input projection with the shared framing allowances."""
+    system_parts, anthropic_messages = convert_to_anthropic_messages(messages)
+    if system_parts:
+        # Price the top-level system text as one message after the same join
+        # used by the request builder. Native assistant blocks already replace
+        # their recorded content, reasoning, and tool-call aliases.
+        anthropic_messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
+    converted_tools = [_convert_tool(tool) for tool in normalize_function_tools(tools)]
+    return estimate_request_tokens(anthropic_messages, converted_tools)
 
 
 def _build_request_kwargs(

@@ -14,6 +14,9 @@ from urllib.parse import urlsplit
 
 import openai
 
+from opencollab.adapters.llm.anthropic_provider import (
+    _estimate_request_tokens as _estimate_anthropic_request_tokens,
+)
 from opencollab.adapters.llm.anthropic_provider import _minimum_output_tokens, complete_anthropic
 from opencollab.adapters.llm.first_token import recording
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs, complete_openai
@@ -165,7 +168,9 @@ class LLMClient:
         thinking_params: dict | None = None,
     ) -> int:
         """Reserve input from the message payload this client will send."""
-        if not is_anthropic(self.provider) and self.wire_protocol != RESPONSES:
+        if is_anthropic(self.provider):
+            return _estimate_anthropic_request_tokens(messages, tools)
+        if self.wire_protocol != RESPONSES:
             request = _build_request_kwargs(
                 self.model, messages, tools, 0.0, thinking, thinking_params
             )
