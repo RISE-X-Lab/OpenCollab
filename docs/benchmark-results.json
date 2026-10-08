@@ -193,73 +193,6 @@
           "usage_tasks": 113
         }
       ]
-    },
-    {
-      "id": "hard",
-      "name": "SWE-bench Pro v2 HARD-51",
-      "tasks": 51,
-      "results": [
-        {
-          "harness": "mini",
-          "label": "Mini-SWE-Agent",
-          "passed": 46,
-          "failed": 5,
-          "avg_tokens_m": 18.75420405882353,
-          "avg_cost_usd": 4.075411007373413,
-          "cache_hit_percent": 36.70181692293619,
-          "usage_tasks": 51
-        },
-        {
-          "harness": "openhands",
-          "label": "OpenHands",
-          "passed": 41,
-          "failed": 10,
-          "avg_tokens_m": 8.362970176470588,
-          "avg_cost_usd": 1.2592038911995338,
-          "cache_hit_percent": 67.24531797065453,
-          "usage_tasks": 51
-        },
-        {
-          "harness": "codex",
-          "label": "Codex CLI",
-          "passed": 46,
-          "failed": 5,
-          "avg_tokens_m": 6.48598894117647,
-          "avg_cost_usd": 0.662927962762944,
-          "cache_hit_percent": 89.37792484733332,
-          "usage_tasks": 51
-        },
-        {
-          "harness": "claude",
-          "label": "Claude Code",
-          "passed": 45,
-          "failed": 6,
-          "avg_tokens_m": 22.29753154901961,
-          "avg_cost_usd": 2.2280240184362494,
-          "cache_hit_percent": 90.42450724753931,
-          "usage_tasks": 51
-        },
-        {
-          "harness": "base",
-          "label": "OC (Base)",
-          "passed": 46,
-          "failed": 5,
-          "avg_tokens_m": 5.958811019607843,
-          "avg_cost_usd": 0.6289168298813023,
-          "cache_hit_percent": 87.85171013133318,
-          "usage_tasks": 51
-        },
-        {
-          "harness": "duo",
-          "label": "OC (Duo)",
-          "passed": 46,
-          "failed": 5,
-          "avg_tokens_m": 10.955005980392157,
-          "avg_cost_usd": 1.0211810918889082,
-          "cache_hit_percent": 93.49385265827104,
-          "usage_tasks": 51
-        }
-      ]
     }
   ],
   "duo_base_pairs": [
@@ -280,15 +213,6 @@
       "only_base": 10,
       "both_fail": 29,
       "two_sided_sign_p": 0.07075554598122835
-    },
-    {
-      "dataset": "hard",
-      "tasks": 51,
-      "both_pass": 45,
-      "only_duo": 1,
-      "only_base": 1,
-      "both_fail": 4,
-      "two_sided_sign_p": 1.0
     }
   ]
 }
