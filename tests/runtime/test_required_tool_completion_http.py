@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool
 from opencollab.application.session_run import _REQUIRED_TOOL_RETRY_NUDGE
 from opencollab.application.steering import READS_NUDGE_HARD
-from tests.support.provider_sdk_http import install_sdk_transport
+from tests.support.provider_sdk_http import install_sdk_transport, provider_http
 
 _PROTOCOLS = [
     pytest.param("anthropic", "chat_completions", id="anthropic-manual-thinking"),
@@ -39,8 +38,9 @@ def _write_blocks():
 
 def _http_reply(body, blocks, *, provider, wire, index):
     input_tokens, output_tokens = 20 + index, 5 + index
+    http = provider_http(provider)
     if provider == "anthropic":
-        return httpx.Response(200, json={
+        return http.Response(200, json={
             "id": f"msg_{index}", "type": "message", "role": "assistant", "model": body["model"],
             "content": [{"type": "thinking", "thinking": "Inspect then act", "signature": "mock-signature"},
                         *blocks],
@@ -69,9 +69,9 @@ def _http_reply(body, blocks, *, provider, wire, index):
         events = [{"type": "response.output_item.done", "output_index": position, "item": item}
                   for position, item in enumerate(items)]
         events.append({"type": "response.completed", "response": response})
-        return httpx.Response(200, headers={"content-type": "text/event-stream"},
-                              text="".join(f"data: {json.dumps(event)}\n\n" for event in events))
-    return httpx.Response(200, json={
+        return http.Response(200, headers={"content-type": "text/event-stream"},
+                             text="".join(f"data: {json.dumps(event)}\n\n" for event in events))
+    return http.Response(200, json={
         "id": f"chat_{index}", "object": "chat.completion", "created": 1, "model": body["model"],
         "choices": [{"index": 0, "message": {"role": "assistant", "content": text,
                       **({"tool_calls": calls} if calls else {})},

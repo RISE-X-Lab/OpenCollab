@@ -3,12 +3,11 @@
 import json
 from types import SimpleNamespace
 
-import anthropic
-import httpx
 import pytest
 
 from opencollab.adapters.llm.anthropic_provider import _parse_usage
 from opencollab.adapters.llm.client import LLMClient
+from tests.support.provider_sdk_http import http_response, install_sdk_transport
 
 
 @pytest.mark.parametrize("details,expected", [({"thinking_tokens": 312}, 312), ({"thinking_tokens": 0}, 0), ({}, None)])
@@ -17,18 +16,13 @@ async def test_anthropic_thinking_usage_from_sdk_reaches_ledger(monkeypatch, tmp
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(ledger))
 
     async def handler(request):
-        return httpx.Response(200, json={
+        return http_response(request, 200, json={
             "id": "msg_usage", "type": "message", "role": "assistant", "model": "claude-sonnet-4-6",
             "content": [{"type": "text", "text": "answer"}], "stop_reason": "end_turn", "stop_sequence": None,
             "usage": {"input_tokens": 25, "output_tokens": 348, "output_tokens_details": details},
         })
 
-    sdk_type = anthropic.AsyncAnthropic
-
-    def create_sdk(**kwargs):
-        return sdk_type(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
-
-    monkeypatch.setattr(anthropic, "AsyncAnthropic", create_sdk)
+    install_sdk_transport(monkeypatch, "anthropic", handler)
     async with LLMClient(
         model="claude-sonnet-4-6", provider="anthropic", api_key="test-placeholder",  # pragma: allowlist secret
         base_url="https://provider.invalid/v1", max_retries=0,

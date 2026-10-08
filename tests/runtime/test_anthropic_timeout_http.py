@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 
 import anthropic
-import httpx
 import openai
 import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters.llm.client import LLMClient
-from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport
+from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport, provider_http
 
 
 @pytest.fixture(autouse=True)
@@ -83,7 +82,9 @@ async def test_public_model_client_enforces_the_configured_connection_allowance(
         allowance = timeout["connect"]
         await asyncio.sleep(min(connect_delay, allowance))
         if allowance < connect_delay:
-            raise httpx.ConnectTimeout("Controlled connection exceeded its allowance", request=request)
+            raise provider_http("anthropic").ConnectTimeout(
+                "Controlled connection exceeded its allowance", request=request,
+            )
         return completion_http_response(request)
 
     install_sdk_transport(monkeypatch, "anthropic", handler)
