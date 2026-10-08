@@ -152,7 +152,9 @@ async def _run_team(
     else:
         environment = local_environment(repo)
     result = await OpenCollab(
-        repo, model="offline", api_key="local-fixture", base_url="https://offline.example.invalid/v1",  # pragma: allowlist secret
+        repo, model="offline",
+        api_key="local-fixture",  # pragma: allowlist secret
+        base_url="https://offline.example.invalid/v1",
         environment=environment,
     ).team(
         "Write and read the script.", config=team, budget=1_000_000, timeout=15,
