@@ -7,6 +7,36 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-08
+
+This release is the v1.0.0 PreRelease, published as package version 0.9.3.
+
+### Fixed
+
+Failed patch capture preserves local and container worktrees until their changes
+have been exported successfully. Failed or stopped team members deliver their
+usable edits to the parent task, including prebuilt teammates. Larger changes
+remain available in their original workspace with a recovery location.
+
+Git worktree delivery retains coder changes through rebase, pull-triggered
+rebase, cherry-pick, conflict recovery, abort, and resets within the coder's own
+history. Configured `git pull` and explicit `git pull --rebase` follow the same
+history handling, including commit subjects that contain rebase action markers.
+
+Explicitly disabled tools remain disabled through Responses capability handling
+and parameter-error retries. Anthropic input-budget estimates count the native
+request content once while retaining system instructions, thinking signatures,
+and tool data.
+
+### Changed
+
+Anthropic SDK support includes both 0.x and 1.x, with explicit sampling options
+forwarded through the supported interface for each SDK generation.
+
+Benchmark figures and result tables include OpenHands and the latest adopted
+Duo results for SWE-bench Pro, Terminal-Bench 2.1, and DeepSWE. The three-chart
+view uses a shared 40–85 percent scale.
+
 ## [0.9.2] - 2026-10-06
 
 ### Added
@@ -448,7 +478,8 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.8.4...v0.9.0
