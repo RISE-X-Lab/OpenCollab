@@ -1,101 +1,152 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="980" height="688" viewBox="0 0 980 688" role="img" aria-labelledby="title description">
-  <title id="title">Cross-harness benchmark results</title>
-  <desc id="description">Five harnesses on SWE-bench Pro, Terminal-Bench 2.1, and DeepSWE. OC Duo has the highest reported Pass@1 in each group. Columns show Pass@1, average tokens, estimated average cost, and cache hit.</desc>
-  <rect width="980" height="688" rx="12" fill="#0d1117"/>
-  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" fill="#e6edf3">
-    <text x="24" y="43" text-anchor="start" font-size="15" font-weight="600">Dataset</text>
-    <text x="250" y="43" text-anchor="start" font-size="15" font-weight="600">Harness</text>
-    <text x="552" y="32" text-anchor="end" font-size="15" font-weight="600">Pass@1</text>
-    <text x="552" y="55" text-anchor="end" font-size="13" fill="#9da7b3">(%) ↑</text>
-    <text x="684" y="32" text-anchor="end" font-size="15" font-weight="600">Tokens</text>
-    <text x="684" y="55" text-anchor="end" font-size="13" fill="#9da7b3">Avg. (M) ↓</text>
-    <text x="814" y="32" text-anchor="end" font-size="15" font-weight="600">Cost</text>
-    <text x="814" y="55" text-anchor="end" font-size="13" fill="#9da7b3">Avg. ($) ↓</text>
-    <text x="948" y="32" text-anchor="end" font-size="15" font-weight="600">Cache hit</text>
-    <text x="948" y="55" text-anchor="end" font-size="13" fill="#9da7b3">(%) ↑</text>
-    <path d="M24 76H956" stroke="#30363d" stroke-width="1.5"/>
-    <text x="24" y="182" text-anchor="start" font-weight="600">SWE-bench Pro</text>
-    <text x="250" y="113" text-anchor="start" >Mini-SWE-Agent</text>
-    <text x="552" y="113" text-anchor="end" style="font-variant-numeric:tabular-nums">61.66</text>
-    <text x="684" y="113" text-anchor="end" style="font-variant-numeric:tabular-nums">4.16</text>
-    <text x="814" y="113" text-anchor="end" style="font-variant-numeric:tabular-nums">0.90</text>
-    <text x="948" y="113" text-anchor="end" style="font-variant-numeric:tabular-nums">36.65</text>
-    <text x="250" y="147" text-anchor="start" >Codex CLI</text>
-    <text x="552" y="147" text-anchor="end" style="font-variant-numeric:tabular-nums">63.73</text>
-    <text x="684" y="147" text-anchor="end" style="font-variant-numeric:tabular-nums">7.31</text>
-    <text x="814" y="147" text-anchor="end" style="font-variant-numeric:tabular-nums">0.73</text>
-    <text x="948" y="147" text-anchor="end" style="font-variant-numeric:tabular-nums">90.27</text>
-    <text x="250" y="181" text-anchor="start" >Claude Code</text>
-    <text x="552" y="181" text-anchor="end" style="font-variant-numeric:tabular-nums">58.03</text>
-    <text x="684" y="181" text-anchor="end" style="font-variant-numeric:tabular-nums">9.38</text>
-    <text x="814" y="181" text-anchor="end" style="font-variant-numeric:tabular-nums">2.54</text>
-    <text x="948" y="181" text-anchor="end" style="font-variant-numeric:tabular-nums">12.50</text>
-    <text x="250" y="215" text-anchor="start" >OC (Base)</text>
-    <text x="552" y="215" text-anchor="end" style="font-variant-numeric:tabular-nums">63.21</text>
-    <text x="684" y="215" text-anchor="end" style="font-variant-numeric:tabular-nums">3.89</text>
-    <text x="814" y="215" text-anchor="end" style="font-variant-numeric:tabular-nums">0.41</text>
-    <text x="948" y="215" text-anchor="end" style="font-variant-numeric:tabular-nums">88.03</text>
-    <rect x="234" y="226" width="728" height="32" rx="6" fill="#211a35"/>
-    <text x="250" y="249" text-anchor="start" font-weight="650" fill="#c4b5fd">OC (Duo)</text>
-    <text x="552" y="249" text-anchor="end" style="font-variant-numeric:tabular-nums" font-weight="700" fill="#c4b5fd">64.25</text>
-    <text x="684" y="249" text-anchor="end" style="font-variant-numeric:tabular-nums">6.50</text>
-    <text x="814" y="249" text-anchor="end" style="font-variant-numeric:tabular-nums">0.73</text>
-    <text x="948" y="249" text-anchor="end" style="font-variant-numeric:tabular-nums">84.95</text>
-    <path d="M24 274H956" stroke="#30363d"/>
-    <text x="24" y="378" text-anchor="start" font-weight="600">Terminal-Bench 2.1</text>
-    <text x="250" y="309" text-anchor="start" >Mini-SWE-Agent</text>
-    <text x="552" y="309" text-anchor="end" style="font-variant-numeric:tabular-nums">76.40</text>
-    <text x="684" y="309" text-anchor="end" style="font-variant-numeric:tabular-nums">2.97</text>
-    <text x="814" y="309" text-anchor="end" style="font-variant-numeric:tabular-nums">0.45</text>
-    <text x="948" y="309" text-anchor="end" style="font-variant-numeric:tabular-nums">67.36</text>
-    <text x="250" y="343" text-anchor="start" >Codex CLI</text>
-    <text x="552" y="343" text-anchor="end" style="font-variant-numeric:tabular-nums">80.90</text>
-    <text x="684" y="343" text-anchor="end" style="font-variant-numeric:tabular-nums">2.86</text>
-    <text x="814" y="343" text-anchor="end" style="font-variant-numeric:tabular-nums">0.26</text>
-    <text x="948" y="343" text-anchor="end" style="font-variant-numeric:tabular-nums">93.88</text>
-    <text x="250" y="377" text-anchor="start" >Claude Code</text>
-    <text x="552" y="377" text-anchor="end" style="font-variant-numeric:tabular-nums">77.53</text>
-    <text x="684" y="377" text-anchor="end" style="font-variant-numeric:tabular-nums">21.95</text>
-    <text x="814" y="377" text-anchor="end" style="font-variant-numeric:tabular-nums">2.73</text>
-    <text x="948" y="377" text-anchor="end" style="font-variant-numeric:tabular-nums">79.32</text>
-    <text x="250" y="411" text-anchor="start" >OC (Base)</text>
-    <text x="552" y="411" text-anchor="end" style="font-variant-numeric:tabular-nums">79.78</text>
-    <text x="684" y="411" text-anchor="end" style="font-variant-numeric:tabular-nums">1.54</text>
-    <text x="814" y="411" text-anchor="end" style="font-variant-numeric:tabular-nums">0.19</text>
-    <text x="948" y="411" text-anchor="end" style="font-variant-numeric:tabular-nums">78.38</text>
-    <rect x="234" y="422" width="728" height="32" rx="6" fill="#211a35"/>
-    <text x="250" y="445" text-anchor="start" font-weight="650" fill="#c4b5fd">OC (Duo)</text>
-    <text x="552" y="445" text-anchor="end" style="font-variant-numeric:tabular-nums" font-weight="700" fill="#c4b5fd">83.15</text>
-    <text x="684" y="445" text-anchor="end" style="font-variant-numeric:tabular-nums">4.60</text>
-    <text x="814" y="445" text-anchor="end" style="font-variant-numeric:tabular-nums">0.60</text>
-    <text x="948" y="445" text-anchor="end" style="font-variant-numeric:tabular-nums">76.47</text>
-    <path d="M24 470H956" stroke="#30363d"/>
-    <text x="24" y="574" text-anchor="start" font-weight="600">DeepSWE</text>
-    <text x="250" y="505" text-anchor="start" >Mini-SWE-Agent</text>
-    <text x="552" y="505" text-anchor="end" style="font-variant-numeric:tabular-nums">61.95</text>
-    <text x="684" y="505" text-anchor="end" style="font-variant-numeric:tabular-nums">19.36</text>
-    <text x="814" y="505" text-anchor="end" style="font-variant-numeric:tabular-nums">3.27</text>
-    <text x="948" y="505" text-anchor="end" style="font-variant-numeric:tabular-nums">58.81</text>
-    <text x="250" y="539" text-anchor="start" >Codex CLI</text>
-    <text x="552" y="539" text-anchor="end" style="font-variant-numeric:tabular-nums">47.79</text>
-    <text x="684" y="539" text-anchor="end" style="font-variant-numeric:tabular-nums">15.01</text>
-    <text x="814" y="539" text-anchor="end" style="font-variant-numeric:tabular-nums">1.30</text>
-    <text x="948" y="539" text-anchor="end" style="font-variant-numeric:tabular-nums">96.47</text>
-    <text x="250" y="573" text-anchor="start" >Claude Code</text>
-    <text x="552" y="573" text-anchor="end" style="font-variant-numeric:tabular-nums">56.64</text>
-    <text x="684" y="573" text-anchor="end" style="font-variant-numeric:tabular-nums">77.90</text>
-    <text x="814" y="573" text-anchor="end" style="font-variant-numeric:tabular-nums">7.66</text>
-    <text x="948" y="573" text-anchor="end" style="font-variant-numeric:tabular-nums">91.16</text>
-    <text x="250" y="607" text-anchor="start" >OC (Base)</text>
-    <text x="552" y="607" text-anchor="end" style="font-variant-numeric:tabular-nums">55.75</text>
-    <text x="684" y="607" text-anchor="end" style="font-variant-numeric:tabular-nums">11.95</text>
-    <text x="814" y="607" text-anchor="end" style="font-variant-numeric:tabular-nums">1.19</text>
-    <text x="948" y="607" text-anchor="end" style="font-variant-numeric:tabular-nums">90.53</text>
-    <rect x="234" y="618" width="728" height="32" rx="6" fill="#211a35"/>
-    <text x="250" y="641" text-anchor="start" font-weight="650" fill="#c4b5fd">OC (Duo)</text>
-    <text x="552" y="641" text-anchor="end" style="font-variant-numeric:tabular-nums" font-weight="700" fill="#c4b5fd">69.91</text>
-    <text x="684" y="641" text-anchor="end" style="font-variant-numeric:tabular-nums">26.11</text>
-    <text x="814" y="641" text-anchor="end" style="font-variant-numeric:tabular-nums">2.67</text>
-    <text x="948" y="641" text-anchor="end" style="font-variant-numeric:tabular-nums">89.36</text>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="990" viewBox="0 0 980 990" role="img" aria-labelledby="title description">
+<title id="title">Cross-harness benchmark results</title>
+<desc id="description">Six harnesses on four benchmarks. Columns show Pass@1, average tokens, estimated average cost, and cache hit. SWE-bench Pro. Mini-SWE-Agent 61.66%; OpenHands 64.77%; Codex CLI 63.73%; Claude Code 58.03%; OC (Base) 63.21%; OC (Duo) 68.91%. Terminal-Bench 2.1. Mini-SWE-Agent 76.40%; OpenHands 76.40%; Codex CLI 80.90%; Claude Code 77.53%; OC (Base) 79.78%; OC (Duo) 83.15%. DeepSWE. Mini-SWE-Agent 61.95%; OpenHands 62.83%; Codex CLI 47.79%; Claude Code 56.64%; OC (Base) 55.75%; OC (Duo) 65.49%. SWE-bench Pro v2 HARD-51. Mini-SWE-Agent 90.20%; OpenHands 80.39%; Codex CLI 90.20%; Claude Code 88.24%; OC (Base) 90.20%; OC (Duo) 90.20%.</desc>
+<rect width="980" height="990" rx="12" fill="#0d1117"/>
+<g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, Liberation Sans, sans-serif" fill="#e6edf3" style="font-variant-numeric:tabular-nums">
+<text x="24" y="43" font-size="15" font-weight="600">Dataset</text>
+<text x="250" y="43" font-size="15" font-weight="600">Harness</text>
+<text x="552" y="32" text-anchor="end" font-size="15" font-weight="600">Pass@1</text>
+<text x="552" y="55" text-anchor="end" font-size="13" fill="#9da7b3">(%) ↑</text>
+<text x="684" y="32" text-anchor="end" font-size="15" font-weight="600">Tokens</text>
+<text x="684" y="55" text-anchor="end" font-size="13" fill="#9da7b3">Avg. (M) ↓</text>
+<text x="814" y="32" text-anchor="end" font-size="15" font-weight="600">Cost</text>
+<text x="814" y="55" text-anchor="end" font-size="13" fill="#9da7b3">Avg. ($) ↓</text>
+<text x="948" y="32" text-anchor="end" font-size="15" font-weight="600">Cache hit</text>
+<text x="948" y="55" text-anchor="end" font-size="13" fill="#9da7b3">(%) ↑</text>
+<path d="M24 76H956" stroke="#30363d"/>
+<text x="24" y="191" font-size="17" font-weight="600">SWE-bench Pro</text>
+<text x="250" y="111" font-size="17" font-weight="400" fill="#e6edf3">Mini-SWE-Agent</text>
+<text x="552" y="111" text-anchor="end" font-size="17" font-weight="400">61.66</text>
+<text x="684" y="111" text-anchor="end" font-size="17" font-weight="400">4.16</text>
+<text x="814" y="111" text-anchor="end" font-size="17" font-weight="400">0.90</text>
+<text x="948" y="111" text-anchor="end" font-size="17" font-weight="400">36.65</text>
+<text x="250" y="143" font-size="17" font-weight="400" fill="#e6edf3">OpenHands</text>
+<text x="552" y="143" text-anchor="end" font-size="17" font-weight="400">64.77</text>
+<text x="684" y="143" text-anchor="end" font-size="17" font-weight="400">6.16</text>
+<text x="814" y="143" text-anchor="end" font-size="17" font-weight="400">0.87</text>
+<text x="948" y="143" text-anchor="end" font-size="17" font-weight="400">71.82</text>
+<text x="250" y="175" font-size="17" font-weight="400" fill="#e6edf3">Codex CLI</text>
+<text x="552" y="175" text-anchor="end" font-size="17" font-weight="400">63.73</text>
+<text x="684" y="175" text-anchor="end" font-size="17" font-weight="400">7.31</text>
+<text x="814" y="175" text-anchor="end" font-size="17" font-weight="400">0.73</text>
+<text x="948" y="175" text-anchor="end" font-size="17" font-weight="400">90.27</text>
+<text x="250" y="207" font-size="17" font-weight="400" fill="#e6edf3">Claude Code</text>
+<text x="552" y="207" text-anchor="end" font-size="17" font-weight="400">58.03</text>
+<text x="684" y="207" text-anchor="end" font-size="17" font-weight="400">9.38</text>
+<text x="814" y="207" text-anchor="end" font-size="17" font-weight="400">2.54</text>
+<text x="948" y="207" text-anchor="end" font-size="17" font-weight="400">12.50</text>
+<text x="250" y="239" font-size="17" font-weight="400" fill="#e6edf3">OC (Base)</text>
+<text x="552" y="239" text-anchor="end" font-size="17" font-weight="400">63.21</text>
+<text x="684" y="239" text-anchor="end" font-size="17" font-weight="400">3.89</text>
+<text x="814" y="239" text-anchor="end" font-size="17" font-weight="400">0.41</text>
+<text x="948" y="239" text-anchor="end" font-size="17" font-weight="400">88.03</text>
+<rect x="234" y="248" width="728" height="30" rx="6" fill="#211a35"/>
+<text x="250" y="271" font-size="17" font-weight="600" fill="#c4b5fd">OC (Duo)</text>
+<text x="552" y="271" text-anchor="end" font-size="17" font-weight="700">68.91</text>
+<text x="684" y="271" text-anchor="end" font-size="17" font-weight="400">4.79</text>
+<text x="814" y="271" text-anchor="end" font-size="17" font-weight="400">0.47</text>
+<text x="948" y="271" text-anchor="end" font-size="17" font-weight="400">91.50</text>
+<path d="M24 292H956" stroke="#30363d"/>
+<text x="24" y="407" font-size="17" font-weight="600">Terminal-Bench 2.1</text>
+<text x="250" y="327" font-size="17" font-weight="400" fill="#e6edf3">Mini-SWE-Agent</text>
+<text x="552" y="327" text-anchor="end" font-size="17" font-weight="400">76.40</text>
+<text x="684" y="327" text-anchor="end" font-size="17" font-weight="400">2.97</text>
+<text x="814" y="327" text-anchor="end" font-size="17" font-weight="400">0.45</text>
+<text x="948" y="327" text-anchor="end" font-size="17" font-weight="400">67.36</text>
+<text x="250" y="359" font-size="17" font-weight="400" fill="#e6edf3">OpenHands</text>
+<text x="552" y="359" text-anchor="end" font-size="17" font-weight="400">76.40</text>
+<text x="684" y="359" text-anchor="end" font-size="17" font-weight="400">6.63</text>
+<text x="814" y="359" text-anchor="end" font-size="17" font-weight="400">1.03</text>
+<text x="948" y="359" text-anchor="end" font-size="17" font-weight="400">65.17</text>
+<text x="250" y="391" font-size="17" font-weight="400" fill="#e6edf3">Codex CLI</text>
+<text x="552" y="391" text-anchor="end" font-size="17" font-weight="400">80.90</text>
+<text x="684" y="391" text-anchor="end" font-size="17" font-weight="400">2.86</text>
+<text x="814" y="391" text-anchor="end" font-size="17" font-weight="400">0.26</text>
+<text x="948" y="391" text-anchor="end" font-size="17" font-weight="400">93.88</text>
+<text x="250" y="423" font-size="17" font-weight="400" fill="#e6edf3">Claude Code</text>
+<text x="552" y="423" text-anchor="end" font-size="17" font-weight="400">77.53</text>
+<text x="684" y="423" text-anchor="end" font-size="17" font-weight="400">21.95</text>
+<text x="814" y="423" text-anchor="end" font-size="17" font-weight="400">2.73</text>
+<text x="948" y="423" text-anchor="end" font-size="17" font-weight="400">79.32</text>
+<text x="250" y="455" font-size="17" font-weight="400" fill="#e6edf3">OC (Base)</text>
+<text x="552" y="455" text-anchor="end" font-size="17" font-weight="400">79.78</text>
+<text x="684" y="455" text-anchor="end" font-size="17" font-weight="400">1.54</text>
+<text x="814" y="455" text-anchor="end" font-size="17" font-weight="400">0.19</text>
+<text x="948" y="455" text-anchor="end" font-size="17" font-weight="400">78.38</text>
+<rect x="234" y="464" width="728" height="30" rx="6" fill="#211a35"/>
+<text x="250" y="487" font-size="17" font-weight="600" fill="#c4b5fd">OC (Duo)</text>
+<text x="552" y="487" text-anchor="end" font-size="17" font-weight="700">83.15</text>
+<text x="684" y="487" text-anchor="end" font-size="17" font-weight="400">4.71</text>
+<text x="814" y="487" text-anchor="end" font-size="17" font-weight="400">0.77</text>
+<text x="948" y="487" text-anchor="end" font-size="17" font-weight="400">61.77</text>
+<path d="M24 508H956" stroke="#30363d"/>
+<text x="24" y="623" font-size="17" font-weight="600">DeepSWE</text>
+<text x="250" y="543" font-size="17" font-weight="400" fill="#e6edf3">Mini-SWE-Agent</text>
+<text x="552" y="543" text-anchor="end" font-size="17" font-weight="400">61.95</text>
+<text x="684" y="543" text-anchor="end" font-size="17" font-weight="400">19.36</text>
+<text x="814" y="543" text-anchor="end" font-size="17" font-weight="400">3.27</text>
+<text x="948" y="543" text-anchor="end" font-size="17" font-weight="400">58.81</text>
+<text x="250" y="575" font-size="17" font-weight="400" fill="#e6edf3">OpenHands</text>
+<text x="552" y="575" text-anchor="end" font-size="17" font-weight="400">62.83</text>
+<text x="684" y="575" text-anchor="end" font-size="17" font-weight="400">26.85</text>
+<text x="814" y="575" text-anchor="end" font-size="17" font-weight="400">3.64</text>
+<text x="948" y="575" text-anchor="end" font-size="17" font-weight="400">74.17</text>
+<text x="250" y="607" font-size="17" font-weight="400" fill="#e6edf3">Codex CLI</text>
+<text x="552" y="607" text-anchor="end" font-size="17" font-weight="400">47.79</text>
+<text x="684" y="607" text-anchor="end" font-size="17" font-weight="400">15.01</text>
+<text x="814" y="607" text-anchor="end" font-size="17" font-weight="400">1.30</text>
+<text x="948" y="607" text-anchor="end" font-size="17" font-weight="400">96.47</text>
+<text x="250" y="639" font-size="17" font-weight="400" fill="#e6edf3">Claude Code</text>
+<text x="552" y="639" text-anchor="end" font-size="17" font-weight="400">56.64</text>
+<text x="684" y="639" text-anchor="end" font-size="17" font-weight="400">77.90</text>
+<text x="814" y="639" text-anchor="end" font-size="17" font-weight="400">7.66</text>
+<text x="948" y="639" text-anchor="end" font-size="17" font-weight="400">91.16</text>
+<text x="250" y="671" font-size="17" font-weight="400" fill="#e6edf3">OC (Base)</text>
+<text x="552" y="671" text-anchor="end" font-size="17" font-weight="400">55.75</text>
+<text x="684" y="671" text-anchor="end" font-size="17" font-weight="400">11.95</text>
+<text x="814" y="671" text-anchor="end" font-size="17" font-weight="400">1.19</text>
+<text x="948" y="671" text-anchor="end" font-size="17" font-weight="400">90.53</text>
+<rect x="234" y="680" width="728" height="30" rx="6" fill="#211a35"/>
+<text x="250" y="703" font-size="17" font-weight="600" fill="#c4b5fd">OC (Duo)</text>
+<text x="552" y="703" text-anchor="end" font-size="17" font-weight="700">65.49</text>
+<text x="684" y="703" text-anchor="end" font-size="17" font-weight="400">61.30</text>
+<text x="814" y="703" text-anchor="end" font-size="17" font-weight="400">8.42</text>
+<text x="948" y="703" text-anchor="end" font-size="17" font-weight="400">73.28</text>
+<path d="M24 724H956" stroke="#30363d"/>
+<text x="24" y="829" font-size="17" font-weight="600">SWE-bench Pro v2</text>
+<text x="24" y="852" font-size="16">HARD-51</text>
+<text x="250" y="759" font-size="17" font-weight="400" fill="#e6edf3">Mini-SWE-Agent</text>
+<text x="552" y="759" text-anchor="end" font-size="17" font-weight="700">90.20</text>
+<text x="684" y="759" text-anchor="end" font-size="17" font-weight="400">18.75</text>
+<text x="814" y="759" text-anchor="end" font-size="17" font-weight="400">4.08</text>
+<text x="948" y="759" text-anchor="end" font-size="17" font-weight="400">36.70</text>
+<text x="250" y="791" font-size="17" font-weight="400" fill="#e6edf3">OpenHands</text>
+<text x="552" y="791" text-anchor="end" font-size="17" font-weight="400">80.39</text>
+<text x="684" y="791" text-anchor="end" font-size="17" font-weight="400">8.36</text>
+<text x="814" y="791" text-anchor="end" font-size="17" font-weight="400">1.26</text>
+<text x="948" y="791" text-anchor="end" font-size="17" font-weight="400">67.25</text>
+<text x="250" y="823" font-size="17" font-weight="400" fill="#e6edf3">Codex CLI</text>
+<text x="552" y="823" text-anchor="end" font-size="17" font-weight="700">90.20</text>
+<text x="684" y="823" text-anchor="end" font-size="17" font-weight="400">6.49</text>
+<text x="814" y="823" text-anchor="end" font-size="17" font-weight="400">0.66</text>
+<text x="948" y="823" text-anchor="end" font-size="17" font-weight="400">89.38</text>
+<text x="250" y="855" font-size="17" font-weight="400" fill="#e6edf3">Claude Code</text>
+<text x="552" y="855" text-anchor="end" font-size="17" font-weight="400">88.24</text>
+<text x="684" y="855" text-anchor="end" font-size="17" font-weight="400">22.30</text>
+<text x="814" y="855" text-anchor="end" font-size="17" font-weight="400">2.23</text>
+<text x="948" y="855" text-anchor="end" font-size="17" font-weight="400">90.42</text>
+<text x="250" y="887" font-size="17" font-weight="400" fill="#e6edf3">OC (Base)</text>
+<text x="552" y="887" text-anchor="end" font-size="17" font-weight="700">90.20</text>
+<text x="684" y="887" text-anchor="end" font-size="17" font-weight="400">5.96</text>
+<text x="814" y="887" text-anchor="end" font-size="17" font-weight="400">0.63</text>
+<text x="948" y="887" text-anchor="end" font-size="17" font-weight="400">87.85</text>
+<rect x="234" y="896" width="728" height="30" rx="6" fill="#211a35"/>
+<text x="250" y="919" font-size="17" font-weight="600" fill="#c4b5fd">OC (Duo)</text>
+<text x="552" y="919" text-anchor="end" font-size="17" font-weight="700">90.20</text>
+<text x="684" y="919" text-anchor="end" font-size="17" font-weight="400">10.96</text>
+<text x="814" y="919" text-anchor="end" font-size="17" font-weight="400">1.02</text>
+<text x="948" y="919" text-anchor="end" font-size="17" font-weight="400">93.49</text>
+<path d="M24 943H956" stroke="#30363d"/>
+<text x="24" y="971" font-size="13" fill="#9da7b3">GPT-5.6-Luna · max reasoning effort · Updated 2026-10-08 · Costs are estimates</text>
+</g>
 </svg>

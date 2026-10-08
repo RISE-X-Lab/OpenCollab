@@ -1,0 +1,294 @@
+{
+  "updated": "2026-10-08",
+  "model": "GPT-5.6-Luna",
+  "reasoning_effort": "max",
+  "duo_version_family": "0.9",
+  "estimated_cost_formula": "T * (0.2975 - 0.2185 * h), T = average input+output tokens in millions, h = total cached input / total input",
+  "datasets": [
+    {
+      "id": "pro",
+      "name": "SWE-bench Pro",
+      "tasks": 193,
+      "results": [
+        {
+          "harness": "mini",
+          "label": "Mini-SWE-Agent",
+          "passed": 119,
+          "failed": 74,
+          "avg_tokens_m": 4.16,
+          "avg_cost_usd": 0.9,
+          "cache_hit_percent": 36.65
+        },
+        {
+          "harness": "openhands",
+          "label": "OpenHands",
+          "passed": 125,
+          "failed": 68,
+          "avg_tokens_m": 6.1579249222797925,
+          "avg_cost_usd": 0.8656982178235663,
+          "cache_hit_percent": 71.81566034483615,
+          "usage_tasks": 193
+        },
+        {
+          "harness": "codex",
+          "label": "Codex CLI",
+          "passed": 123,
+          "failed": 70,
+          "avg_tokens_m": 7.31,
+          "avg_cost_usd": 0.73,
+          "cache_hit_percent": 90.27
+        },
+        {
+          "harness": "claude",
+          "label": "Claude Code",
+          "passed": 112,
+          "failed": 81,
+          "avg_tokens_m": 9.38,
+          "avg_cost_usd": 2.54,
+          "cache_hit_percent": 12.5
+        },
+        {
+          "harness": "base",
+          "label": "OC (Base)",
+          "passed": 122,
+          "failed": 71,
+          "avg_tokens_m": 3.89,
+          "avg_cost_usd": 0.41,
+          "cache_hit_percent": 88.03
+        },
+        {
+          "harness": "duo",
+          "label": "OC (Duo)",
+          "passed": 133,
+          "failed": 60,
+          "avg_tokens_m": 4.789376357512953,
+          "avg_cost_usd": 0.46735029302088305,
+          "cache_hit_percent": 91.49628579385482,
+          "usage_tasks": 193
+        }
+      ]
+    },
+    {
+      "id": "terminal",
+      "name": "Terminal-Bench 2.1",
+      "tasks": 89,
+      "results": [
+        {
+          "harness": "mini",
+          "label": "Mini-SWE-Agent",
+          "passed": 68,
+          "failed": 21,
+          "avg_tokens_m": 2.97,
+          "avg_cost_usd": 0.45,
+          "cache_hit_percent": 67.36
+        },
+        {
+          "harness": "openhands",
+          "label": "OpenHands",
+          "passed": 68,
+          "failed": 21,
+          "avg_tokens_m": 6.6285391348314615,
+          "avg_cost_usd": 1.0280847849743504,
+          "cache_hit_percent": 65.17173759095931,
+          "usage_tasks": 89
+        },
+        {
+          "harness": "codex",
+          "label": "Codex CLI",
+          "passed": 72,
+          "failed": 17,
+          "avg_tokens_m": 2.86,
+          "avg_cost_usd": 0.26,
+          "cache_hit_percent": 93.88
+        },
+        {
+          "harness": "claude",
+          "label": "Claude Code",
+          "passed": 69,
+          "failed": 20,
+          "avg_tokens_m": 21.95,
+          "avg_cost_usd": 2.73,
+          "cache_hit_percent": 79.32
+        },
+        {
+          "harness": "base",
+          "label": "OC (Base)",
+          "passed": 71,
+          "failed": 18,
+          "avg_tokens_m": 1.54,
+          "avg_cost_usd": 0.19,
+          "cache_hit_percent": 78.38
+        },
+        {
+          "harness": "duo",
+          "label": "OC (Duo)",
+          "passed": 74,
+          "failed": 15,
+          "avg_tokens_m": 4.708317123595506,
+          "avg_cost_usd": 0.7652934245505368,
+          "cache_hit_percent": 61.76624441365768,
+          "usage_tasks": 89
+        }
+      ]
+    },
+    {
+      "id": "deep",
+      "name": "DeepSWE",
+      "tasks": 113,
+      "results": [
+        {
+          "harness": "mini",
+          "label": "Mini-SWE-Agent",
+          "passed": 70,
+          "failed": 43,
+          "avg_tokens_m": 19.36,
+          "avg_cost_usd": 3.27,
+          "cache_hit_percent": 58.81
+        },
+        {
+          "harness": "openhands",
+          "label": "OpenHands",
+          "passed": 71,
+          "failed": 42,
+          "avg_tokens_m": 26.85038239823009,
+          "avg_cost_usd": 3.6363888854518787,
+          "cache_hit_percent": 74.17320401642897,
+          "usage_tasks": 113
+        },
+        {
+          "harness": "codex",
+          "label": "Codex CLI",
+          "passed": 54,
+          "failed": 59,
+          "avg_tokens_m": 15.01,
+          "avg_cost_usd": 1.3,
+          "cache_hit_percent": 96.47
+        },
+        {
+          "harness": "claude",
+          "label": "Claude Code",
+          "passed": 64,
+          "failed": 49,
+          "avg_tokens_m": 77.9,
+          "avg_cost_usd": 7.66,
+          "cache_hit_percent": 91.16
+        },
+        {
+          "harness": "base",
+          "label": "OC (Base)",
+          "passed": 63,
+          "failed": 50,
+          "avg_tokens_m": 11.95,
+          "avg_cost_usd": 1.19,
+          "cache_hit_percent": 90.53
+        },
+        {
+          "harness": "duo",
+          "label": "OC (Duo)",
+          "passed": 74,
+          "failed": 39,
+          "avg_tokens_m": 61.30328846902655,
+          "avg_cost_usd": 8.42187900985822,
+          "cache_hit_percent": 73.28121637443287,
+          "usage_tasks": 113
+        }
+      ]
+    },
+    {
+      "id": "hard",
+      "name": "SWE-bench Pro v2 HARD-51",
+      "tasks": 51,
+      "results": [
+        {
+          "harness": "mini",
+          "label": "Mini-SWE-Agent",
+          "passed": 46,
+          "failed": 5,
+          "avg_tokens_m": 18.75420405882353,
+          "avg_cost_usd": 4.075411007373413,
+          "cache_hit_percent": 36.70181692293619,
+          "usage_tasks": 51
+        },
+        {
+          "harness": "openhands",
+          "label": "OpenHands",
+          "passed": 41,
+          "failed": 10,
+          "avg_tokens_m": 8.362970176470588,
+          "avg_cost_usd": 1.2592038911995338,
+          "cache_hit_percent": 67.24531797065453,
+          "usage_tasks": 51
+        },
+        {
+          "harness": "codex",
+          "label": "Codex CLI",
+          "passed": 46,
+          "failed": 5,
+          "avg_tokens_m": 6.48598894117647,
+          "avg_cost_usd": 0.662927962762944,
+          "cache_hit_percent": 89.37792484733332,
+          "usage_tasks": 51
+        },
+        {
+          "harness": "claude",
+          "label": "Claude Code",
+          "passed": 45,
+          "failed": 6,
+          "avg_tokens_m": 22.29753154901961,
+          "avg_cost_usd": 2.2280240184362494,
+          "cache_hit_percent": 90.42450724753931,
+          "usage_tasks": 51
+        },
+        {
+          "harness": "base",
+          "label": "OC (Base)",
+          "passed": 46,
+          "failed": 5,
+          "avg_tokens_m": 5.958811019607843,
+          "avg_cost_usd": 0.6289168298813023,
+          "cache_hit_percent": 87.85171013133318,
+          "usage_tasks": 51
+        },
+        {
+          "harness": "duo",
+          "label": "OC (Duo)",
+          "passed": 46,
+          "failed": 5,
+          "avg_tokens_m": 10.955005980392157,
+          "avg_cost_usd": 1.0211810918889082,
+          "cache_hit_percent": 93.49385265827104,
+          "usage_tasks": 51
+        }
+      ]
+    }
+  ],
+  "duo_base_pairs": [
+    {
+      "dataset": "terminal",
+      "tasks": 89,
+      "both_pass": 65,
+      "only_duo": 9,
+      "only_base": 6,
+      "both_fail": 9,
+      "two_sided_sign_p": 0.60723876953125
+    },
+    {
+      "dataset": "deep",
+      "tasks": 113,
+      "both_pass": 53,
+      "only_duo": 21,
+      "only_base": 10,
+      "both_fail": 29,
+      "two_sided_sign_p": 0.07075554598122835
+    },
+    {
+      "dataset": "hard",
+      "tasks": 51,
+      "both_pass": 45,
+      "only_duo": 1,
+      "only_base": 1,
+      "both_fail": 4,
+      "two_sided_sign_p": 1.0
+    }
+  ]
+}
