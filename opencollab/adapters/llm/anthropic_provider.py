@@ -7,6 +7,7 @@ to Anthropic's format on the way out.
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import re
 from typing import Any
@@ -368,7 +369,8 @@ async def complete_anthropic(
         # time; the wrapper exists only to put that fact, and the attempt's
         # start, on the record.
         begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
-        return await client.messages.create(**kwargs)
+        create = client.messages.create
+        return await create(**_sdk_sampling_kwargs(create, kwargs))
 
     resp = await with_retry(
         request_once,
@@ -376,6 +378,23 @@ async def complete_anthropic(
         retry_time_budget=provider_error_time_budget,
     )
     return _parse_response(resp)
+
+
+def _sdk_sampling_kwargs(create: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Preserve supported sampling on SDKs that moved it to extra_body."""
+    sampling = {name: kwargs[name] for name in ("temperature", "top_p") if name in kwargs}
+    if not sampling:
+        return kwargs
+    parameters = inspect.signature(create).parameters
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return kwargs
+    moved = {name: value for name, value in sampling.items() if name not in parameters}
+    if not moved:
+        return kwargs
+    return {
+        **{name: value for name, value in kwargs.items() if name not in moved},
+        "extra_body": {**kwargs.get("extra_body", {}), **moved},
+    }
 
 
 def _parse_response(resp: Any) -> LLMResponse:
