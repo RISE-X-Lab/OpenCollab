@@ -605,11 +605,15 @@ class SchedulerTeamMixin:
             raise ValueError(f"No agent with aid {aid}.")
         return int(getattr(session, "step_count", session.state.step_count))
 
-    async def _append_worktree_diff(self, env: EnvironmentPort, result: str) -> str:
-        """If env is a worktree, append its diff to the result."""
+    async def _append_worktree_diff(
+        self, env: EnvironmentPort, result: str, *, aid: int | None = None, role: str = "",
+    ) -> str:
+        """Capture worktree changes once for the result and its trace."""
         if not isinstance(env, DiffCapablePort):
             return result
         diff = await env.get_diff()
+        if aid is not None:
+            await self._trace_worktree_changes(aid, role, env, diff=diff)
         if not diff:
             return result
         if len(diff) > WORKTREE_DIFF_MAX_CHARS:
@@ -620,7 +624,9 @@ class SchedulerTeamMixin:
             )
         return result + f"\n\n[Changes made in worktree]\n```diff\n{diff}\n```"
 
-    async def _trace_worktree_changes(self, aid: int, role: str, env: EnvironmentPort) -> None:
+    async def _trace_worktree_changes(
+        self, aid: int, role: str, env: EnvironmentPort, *, diff: str,
+    ) -> None:
         """Record one agent's worktree changes as a structured trace row.
 
         The copy of the diff that reaches the parent is prose — fenced markdown
@@ -662,7 +668,6 @@ class SchedulerTeamMixin:
         if tracer is None or not isinstance(env, DiffCapablePort):
             return
         try:
-            diff = await env.get_diff()
             files: list[dict[str, Any]] = []
             for path, op in _parse_worktree_diff(diff):
                 entry: dict[str, Any] = {"path": path, "op": op, "content_sha": None}
