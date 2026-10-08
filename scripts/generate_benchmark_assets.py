@@ -65,27 +65,25 @@ def _description(data: dict) -> str:
 
 
 def render_hero(data: dict, theme: str) -> str:
-    """Render four aligned panels with the displayed benchmark-specific scales."""
+    """Render three aligned benchmark panels."""
     c = PALETTES[theme]
-    width, height = 1180, 478
-    start_x, plot_width, panel_width = 214, 164, 236
+    width, height = 980, 478
+    start_x, plot_width, panel_width = 214, 190, 250
     first_y, row_height = 164, 44
     bottom = first_y + len(HERO_ORDER) * row_height
     svg = _start(
         width,
         height,
-        "Pass@1 on four agentic coding benchmarks",
-        "Six harnesses use GPT-5.6-Luna at max reasoning effort. "
-        "The first three benchmark axes span 40% to 85%. The HARD-51 axis spans 40% to 100%. " + _description(data),
+        "Pass@1 on three agentic coding benchmarks",
+        "Six harnesses use GPT-5.6-Luna at max reasoning effort. " + _description(data),
         c,
     )
     svg += [
-        _text(28, 44, "Pass@1 on four agentic coding benchmarks", font_size=22, font_weight=600),
+        _text(28, 44, "Pass@1 on three agentic coding benchmarks", font_size=22, font_weight=600),
         _text(
             28,
             72,
-            "GPT-5.6-Luna at max reasoning effort. Higher is better. "
-            "Axes span 40–85% for the first three benchmarks and 40–100% for HARD-51.",
+            "GPT-5.6-Luna at max reasoning effort across all six harnesses. Higher is better.",
             font_size=15,
             fill=c["muted"],
         ),
@@ -101,15 +99,9 @@ def render_hero(data: dict, theme: str) -> str:
         )
     for index, dataset in enumerate(data["datasets"]):
         x = start_x + index * panel_width
-        if dataset["id"] == "hard":
-            svg += [
-                _text(x, 116, "SWE-bench Pro v2", font_size=17, font_weight=600),
-                _text(x, 140, "HARD-51", font_size=14, fill=c["muted"]),
-            ]
-        else:
-            svg.append(_text(x, 128, dataset["name"], font_size=17, font_weight=600))
-        axis_max = 100 if dataset["id"] == "hard" else 85
-        ticks = (40, 60, 80, 100) if axis_max == 100 else (40, 55, 70, 85)
+        svg.append(_text(x, 128, dataset["name"], font_size=17, font_weight=600))
+        axis_max = 85
+        ticks = (40, 55, 70, 85)
         for tick in ticks:
             axis_x = x + (tick - 40) / (axis_max - 40) * plot_width
             svg += [
@@ -144,7 +136,7 @@ def render_hero(data: dict, theme: str) -> str:
 
 
 def render_results(data: dict, theme: str) -> str:
-    """Render all 24 result rows, keeping OpenHands immediately after Mini."""
+    """Render all 18 result rows, keeping OpenHands immediately after Mini."""
     c = PALETTES[theme]
     row_height, group_height = 32, 216
     height = 84 + len(data["datasets"]) * group_height + 42
@@ -152,7 +144,7 @@ def render_results(data: dict, theme: str) -> str:
         980,
         height,
         "Cross-harness benchmark results",
-        "Six harnesses on four benchmarks. Columns show Pass@1, average tokens, "
+        "Six harnesses on three benchmarks. Columns show Pass@1, average tokens, "
         "estimated average cost, and cache hit. " + _description(data),
         c,
     )
@@ -174,13 +166,7 @@ def render_results(data: dict, theme: str) -> str:
         top = 84 + index * group_height
         svg.append(f'<path d="M24 {top - 8}H956" stroke="{c["grid"]}"/>')
         title_y = top + 107
-        if dataset["id"] == "hard":
-            svg += [
-                _text(24, title_y - 10, "SWE-bench Pro v2", font_size=17, font_weight=600),
-                _text(24, title_y + 13, "HARD-51", font_size=16),
-            ]
-        else:
-            svg.append(_text(24, title_y, dataset["name"], font_size=17, font_weight=600))
+        svg.append(_text(24, title_y, dataset["name"], font_size=17, font_weight=600))
         best = max(r["passed"] for r in dataset["results"])
         for row, result in enumerate(dataset["results"]):
             y = top + row * row_height + 27

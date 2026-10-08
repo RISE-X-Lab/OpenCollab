@@ -1,7 +1,7 @@
 # Benchmark results
 
 Six harnesses run GPT-5.6-Luna at `max` reasoning effort on SWE-bench Pro,
-Terminal-Bench 2.1, DeepSWE, and SWE-bench Pro v2 HARD-51. This snapshot was
+Terminal-Bench 2.1, and DeepSWE. This snapshot was
 updated on October 8, 2026. The Duo results use the OC 0.9 series.
 [OC (Base)](single2.md) is a single agent. [OC (Duo)](duo.md) produces two
 isolated solutions, compares their evidence, and adopts one.
@@ -9,13 +9,12 @@ isolated solutions, compares their evidence, and adopts one.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/benchmark-results-dark.svg">
-    <img src="../assets/benchmark-results-light.svg" alt="Final results for six harnesses on four benchmarks. Duo scores 68.91% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, 65.49% on DeepSWE, and 90.20% on HARD-51. Columns show Pass@1, average tokens, estimated average cost, and cache hit. HARD-51 is tied with Base, Codex CLI, and Mini-SWE-Agent." width="980">
+    <img src="../assets/benchmark-results-light.svg" alt="Final results for six harnesses on three benchmarks. Duo scores 68.91% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 65.49% on DeepSWE. Columns show Pass@1, average tokens, estimated average cost, and cache hit." width="980">
   </picture>
 </p>
 
 Duo has the highest Pass@1 on SWE-bench Pro, Terminal-Bench 2.1, and DeepSWE.
-On HARD-51, Duo, Base, Codex CLI, and Mini-SWE-Agent each pass 46 of 51 tasks.
-Base has the lowest average token use and estimated cost on all four
+Base has the lowest average token use and estimated cost on all three
 benchmarks. Duo uses fewer tokens than Claude Code on each benchmark.
 Its estimated DeepSWE cost is $8.42 per task, compared with Claude Code's
 $7.66, reflecting their different cache hit rates.
@@ -24,8 +23,7 @@ $7.66, reflecting their different cache hit rates.
 
 The [summary data](benchmark-results.json) contains every row's pass and fail
 counts, token use, estimated cost, and cache hit rate. The benchmark sizes are
-193 tasks for SWE-bench Pro, 89 for Terminal-Bench 2.1, 113 for DeepSWE, and 51
-for HARD-51.
+193 tasks for SWE-bench Pro, 89 for Terminal-Bench 2.1, and 113 for DeepSWE.
 
 Pass@1 divides the accepted pass count by the full task count. Average tokens
 include input and output, with cached tokens already included in input and
@@ -36,8 +34,7 @@ Cache hit is the ratio of total cached input to total input.
 Average cost is the estimate `T × (0.2975 − 0.2185 × h)`, where `T` is average
 input plus output in millions of tokens and `h` is the aggregate cache hit
 fraction. Calls whose usage was unavailable retain unknown provider charges.
-The recorded usage for all six HARD-51 groups covers all 51 tasks in each
-group. Earlier comparison rows retain their reported usage aggregates.
+Earlier comparison rows retain their reported usage aggregates.
 
 ## Duo against Base, task by task
 
@@ -50,11 +47,9 @@ passed.
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Terminal-Bench 2.1 | 65 | 9 | 6 | 9 | 0.6072 |
 | DeepSWE | 53 | 21 | 10 | 29 | 0.0708 |
-| HARD-51 | 45 | 1 | 1 | 4 | 1.0000 |
 
 On DeepSWE, Duo gains 9.73 percentage points over Base, with 21 Duo-only
 passes and 10 Base-only passes. On Terminal-Bench 2.1 it gains 3.37 points.
-On HARD-51 both configurations pass 46 tasks, with one task unique to each.
 
 ## Network access on Terminal-Bench 2.1
 

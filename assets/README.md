@@ -69,7 +69,7 @@ The five node dots use colors sampled along the gradient (`#713AED`, `#2A53EB`,
 `benchmark-results-light.svg` and `benchmark-results-dark.svg` display the
 benchmark results in a fixed-column layout. Both keep text editable and
 support the corresponding GitHub color scheme. Their shared source is
-[`docs/benchmark-results.json`](../docs/benchmark-results.json), covering four
+[`docs/benchmark-results.json`](../docs/benchmark-results.json), covering three
 benchmarks and six harnesses. Regenerate all four benchmark SVGs together.
 
 ```bash
@@ -77,7 +77,7 @@ python3 scripts/generate_benchmark_assets.py
 ```
 
 `benchmark-hero-light.svg` and `benchmark-hero-dark.svg` show the Pass@1 column
-of the same table as bars in the README header. The first three benchmark axes span 40% to 85%. HARD-51 spans 40% to 100%.
+of the same table as bars in the README header. The benchmark axes span 40% to 85%.
 Keep the README descriptions and the results-page interpretation aligned with
 the shared data when publishing an update.
 
