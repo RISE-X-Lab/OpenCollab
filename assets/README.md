@@ -77,7 +77,7 @@ python3 scripts/generate_benchmark_assets.py
 ```
 
 `benchmark-hero-light.svg` and `benchmark-hero-dark.svg` show the Pass@1 column
-of the same table as bars in the README header. Their axes span 40% to 100%.
+of the same table as bars in the README header. The first three benchmark axes span 40% to 85%. HARD-51 spans 40% to 100%.
 Keep the README descriptions and the results-page interpretation aligned with
 the shared data when publishing an update.
 

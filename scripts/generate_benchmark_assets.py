@@ -65,7 +65,7 @@ def _description(data: dict) -> str:
 
 
 def render_hero(data: dict, theme: str) -> str:
-    """Render the README's four aligned panels with the existing 40–100% scale."""
+    """Render four aligned panels with the displayed benchmark-specific scales."""
     c = PALETTES[theme]
     width, height = 1180, 478
     start_x, plot_width, panel_width = 214, 164, 236
@@ -75,7 +75,8 @@ def render_hero(data: dict, theme: str) -> str:
         width,
         height,
         "Pass@1 on four agentic coding benchmarks",
-        "Six harnesses use GPT-5.6-Luna at max reasoning effort. Each axis spans 40% to 100%. " + _description(data),
+        "Six harnesses use GPT-5.6-Luna at max reasoning effort. "
+        "The first three benchmark axes span 40% to 85%. The HARD-51 axis spans 40% to 100%. " + _description(data),
         c,
     )
     svg += [
@@ -83,7 +84,8 @@ def render_hero(data: dict, theme: str) -> str:
         _text(
             28,
             72,
-            "GPT-5.6-Luna at max reasoning effort across all six harnesses. Higher is better. Axes span 40–100%.",
+            "GPT-5.6-Luna at max reasoning effort. Higher is better. "
+            "Axes span 40–85% for the first three benchmarks and 40–100% for HARD-51.",
             font_size=15,
             fill=c["muted"],
         ),
@@ -106,8 +108,10 @@ def render_hero(data: dict, theme: str) -> str:
             ]
         else:
             svg.append(_text(x, 128, dataset["name"], font_size=17, font_weight=600))
-        for tick in (40, 60, 80, 100):
-            axis_x = x + (tick - 40) / 60 * plot_width
+        axis_max = 100 if dataset["id"] == "hard" else 85
+        ticks = (40, 60, 80, 100) if axis_max == 100 else (40, 55, 70, 85)
+        for tick in ticks:
+            axis_x = x + (tick - 40) / (axis_max - 40) * plot_width
             svg += [
                 f'<path d="M{axis_x:g} 158V{bottom}" stroke="{c["grid"]}" stroke-width="1"/>',
                 _text(axis_x, bottom + 23, str(tick), font_size=12, text_anchor="middle", fill=c["muted"]),
@@ -115,7 +119,7 @@ def render_hero(data: dict, theme: str) -> str:
         records = {r["harness"]: r for r in dataset["results"]}
         for row, harness in enumerate(HERO_ORDER):
             rate = _rate(records[harness], dataset)
-            bar_width = (rate - 40) / 60 * plot_width
+            bar_width = (rate - 40) / (axis_max - 40) * plot_width
             y = first_y + row * row_height
             fill = c[harness] if harness in ("duo", "base") else c["bar"]
             svg.append(

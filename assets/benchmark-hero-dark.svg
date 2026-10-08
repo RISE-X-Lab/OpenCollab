@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1180" height="478" viewBox="0 0 1180 478" role="img" aria-labelledby="title description">
 <title id="title">Pass@1 on four agentic coding benchmarks</title>
-<desc id="description">Six harnesses use GPT-5.6-Luna at max reasoning effort. Each axis spans 40% to 100%. SWE-bench Pro. Mini-SWE-Agent 61.66%; OpenHands 64.77%; Codex CLI 63.73%; Claude Code 58.03%; OC (Base) 63.21%; OC (Duo) 68.91%. Terminal-Bench 2.1. Mini-SWE-Agent 76.40%; OpenHands 76.40%; Codex CLI 80.90%; Claude Code 77.53%; OC (Base) 79.78%; OC (Duo) 83.15%. DeepSWE. Mini-SWE-Agent 61.95%; OpenHands 62.83%; Codex CLI 47.79%; Claude Code 56.64%; OC (Base) 55.75%; OC (Duo) 65.49%. SWE-bench Pro v2 HARD-51. Mini-SWE-Agent 90.20%; OpenHands 80.39%; Codex CLI 90.20%; Claude Code 88.24%; OC (Base) 90.20%; OC (Duo) 90.20%.</desc>
+<desc id="description">Six harnesses use GPT-5.6-Luna at max reasoning effort. The first three benchmark axes span 40% to 85%. The HARD-51 axis spans 40% to 100%. SWE-bench Pro. Mini-SWE-Agent 61.66%; OpenHands 64.77%; Codex CLI 63.73%; Claude Code 58.03%; OC (Base) 63.21%; OC (Duo) 68.91%. Terminal-Bench 2.1. Mini-SWE-Agent 76.40%; OpenHands 76.40%; Codex CLI 80.90%; Claude Code 77.53%; OC (Base) 79.78%; OC (Duo) 83.15%. DeepSWE. Mini-SWE-Agent 61.95%; OpenHands 62.83%; Codex CLI 47.79%; Claude Code 56.64%; OC (Base) 55.75%; OC (Duo) 65.49%. SWE-bench Pro v2 HARD-51. Mini-SWE-Agent 90.20%; OpenHands 80.39%; Codex CLI 90.20%; Claude Code 88.24%; OC (Base) 90.20%; OC (Duo) 90.20%.</desc>
 <rect width="1180" height="478" rx="12" fill="#0d1117"/>
 <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, Liberation Sans, sans-serif" fill="#e6edf3" style="font-variant-numeric:tabular-nums">
 <text x="28" y="44" font-size="22" font-weight="600">Pass@1 on four agentic coding benchmarks</text>
-<text x="28" y="72" font-size="15" fill="#9da7b3">GPT-5.6-Luna at max reasoning effort across all six harnesses. Higher is better. Axes span 40–100%.</text>
+<text x="28" y="72" font-size="15" fill="#9da7b3">GPT-5.6-Luna at max reasoning effort. Higher is better. Axes span 40–85% for the first three benchmarks and 40–100% for HARD-51.</text>
 <rect x="16" y="164" width="1148" height="44" rx="8" fill="#211a35"/>
 <text x="28" y="193" font-size="16" font-weight="600">OpenCollab (Duo)</text>
 <text x="28" y="237" font-size="16" font-weight="400">OpenCollab (Base)</text>
@@ -16,65 +16,65 @@
 <path d="M214 158V428" stroke="#30363d" stroke-width="1"/>
 <text x="214" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">40</text>
 <path d="M268.667 158V428" stroke="#30363d" stroke-width="1"/>
-<text x="268.667" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">60</text>
+<text x="268.667" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">55</text>
 <path d="M323.333 158V428" stroke="#30363d" stroke-width="1"/>
-<text x="323.333" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">80</text>
+<text x="323.333" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">70</text>
 <path d="M378 158V428" stroke="#30363d" stroke-width="1"/>
-<text x="378" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">100</text>
-<rect x="214" y="175" width="79.026" height="23" rx="4" fill="#a78bfa" data-dataset="pro" data-harness="duo" data-pass-rate="68.91191710"/>
-<text x="301.026" y="193" font-size="15" font-weight="600" stroke="#211a35" stroke-width="4" stroke-linejoin="round" paint-order="stroke">68.91</text>
-<rect x="214" y="219" width="63.447" height="23" rx="4" fill="#7963bb" data-dataset="pro" data-harness="base" data-pass-rate="63.21243523"/>
-<text x="285.447" y="237" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">63.21</text>
-<rect x="214" y="263" width="49.285" height="23" rx="4" fill="#4b515a" data-dataset="pro" data-harness="claude" data-pass-rate="58.03108808"/>
-<text x="271.285" y="281" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">58.03</text>
-<rect x="214" y="307" width="64.864" height="23" rx="4" fill="#4b515a" data-dataset="pro" data-harness="codex" data-pass-rate="63.73056995"/>
-<text x="286.864" y="325" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">63.73</text>
-<rect x="214" y="351" width="59.199" height="23" rx="4" fill="#4b515a" data-dataset="pro" data-harness="mini" data-pass-rate="61.65803109"/>
-<text x="281.199" y="369" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">61.66</text>
-<rect x="214" y="395" width="67.696" height="23" rx="4" fill="#4b515a" data-dataset="pro" data-harness="openhands" data-pass-rate="64.76683938"/>
-<text x="289.696" y="413" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">64.77</text>
+<text x="378" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">85</text>
+<rect x="214" y="175" width="105.368" height="23" rx="4" fill="#a78bfa" data-dataset="pro" data-harness="duo" data-pass-rate="68.91191710"/>
+<text x="327.368" y="193" font-size="15" font-weight="600" stroke="#211a35" stroke-width="4" stroke-linejoin="round" paint-order="stroke">68.91</text>
+<rect x="214" y="219" width="84.596" height="23" rx="4" fill="#7963bb" data-dataset="pro" data-harness="base" data-pass-rate="63.21243523"/>
+<text x="306.596" y="237" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">63.21</text>
+<rect x="214" y="263" width="65.713" height="23" rx="4" fill="#4b515a" data-dataset="pro" data-harness="claude" data-pass-rate="58.03108808"/>
+<text x="287.713" y="281" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">58.03</text>
+<rect x="214" y="307" width="86.485" height="23" rx="4" fill="#4b515a" data-dataset="pro" data-harness="codex" data-pass-rate="63.73056995"/>
+<text x="308.485" y="325" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">63.73</text>
+<rect x="214" y="351" width="78.931" height="23" rx="4" fill="#4b515a" data-dataset="pro" data-harness="mini" data-pass-rate="61.65803109"/>
+<text x="300.931" y="369" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">61.66</text>
+<rect x="214" y="395" width="90.261" height="23" rx="4" fill="#4b515a" data-dataset="pro" data-harness="openhands" data-pass-rate="64.76683938"/>
+<text x="312.261" y="413" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">64.77</text>
 <text x="450" y="128" font-size="17" font-weight="600">Terminal-Bench 2.1</text>
 <path d="M450 158V428" stroke="#30363d" stroke-width="1"/>
 <text x="450" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">40</text>
 <path d="M504.667 158V428" stroke="#30363d" stroke-width="1"/>
-<text x="504.667" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">60</text>
+<text x="504.667" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">55</text>
 <path d="M559.333 158V428" stroke="#30363d" stroke-width="1"/>
-<text x="559.333" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">80</text>
+<text x="559.333" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">70</text>
 <path d="M614 158V428" stroke="#30363d" stroke-width="1"/>
-<text x="614" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">100</text>
-<rect x="450" y="175" width="117.933" height="23" rx="4" fill="#a78bfa" data-dataset="terminal" data-harness="duo" data-pass-rate="83.14606742"/>
-<text x="575.933" y="193" font-size="15" font-weight="600" stroke="#211a35" stroke-width="4" stroke-linejoin="round" paint-order="stroke">83.15</text>
-<rect x="450" y="219" width="108.719" height="23" rx="4" fill="#7963bb" data-dataset="terminal" data-harness="base" data-pass-rate="79.77528090"/>
-<text x="566.719" y="237" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">79.78</text>
-<rect x="450" y="263" width="102.577" height="23" rx="4" fill="#4b515a" data-dataset="terminal" data-harness="claude" data-pass-rate="77.52808989"/>
-<text x="560.577" y="281" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">77.53</text>
-<rect x="450" y="307" width="111.790" height="23" rx="4" fill="#4b515a" data-dataset="terminal" data-harness="codex" data-pass-rate="80.89887640"/>
-<text x="569.79" y="325" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">80.90</text>
-<rect x="450" y="351" width="99.506" height="23" rx="4" fill="#4b515a" data-dataset="terminal" data-harness="mini" data-pass-rate="76.40449438"/>
-<text x="557.506" y="369" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">76.40</text>
-<rect x="450" y="395" width="99.506" height="23" rx="4" fill="#4b515a" data-dataset="terminal" data-harness="openhands" data-pass-rate="76.40449438"/>
-<text x="557.506" y="413" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">76.40</text>
+<text x="614" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">85</text>
+<rect x="450" y="175" width="157.243" height="23" rx="4" fill="#a78bfa" data-dataset="terminal" data-harness="duo" data-pass-rate="83.14606742"/>
+<text x="615.243" y="193" font-size="15" font-weight="600" stroke="#211a35" stroke-width="4" stroke-linejoin="round" paint-order="stroke">83.15</text>
+<rect x="450" y="219" width="144.959" height="23" rx="4" fill="#7963bb" data-dataset="terminal" data-harness="base" data-pass-rate="79.77528090"/>
+<text x="602.959" y="237" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">79.78</text>
+<rect x="450" y="263" width="136.769" height="23" rx="4" fill="#4b515a" data-dataset="terminal" data-harness="claude" data-pass-rate="77.52808989"/>
+<text x="594.769" y="281" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">77.53</text>
+<rect x="450" y="307" width="149.054" height="23" rx="4" fill="#4b515a" data-dataset="terminal" data-harness="codex" data-pass-rate="80.89887640"/>
+<text x="607.054" y="325" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">80.90</text>
+<rect x="450" y="351" width="132.674" height="23" rx="4" fill="#4b515a" data-dataset="terminal" data-harness="mini" data-pass-rate="76.40449438"/>
+<text x="590.674" y="369" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">76.40</text>
+<rect x="450" y="395" width="132.674" height="23" rx="4" fill="#4b515a" data-dataset="terminal" data-harness="openhands" data-pass-rate="76.40449438"/>
+<text x="590.674" y="413" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">76.40</text>
 <text x="686" y="128" font-size="17" font-weight="600">DeepSWE</text>
 <path d="M686 158V428" stroke="#30363d" stroke-width="1"/>
 <text x="686" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">40</text>
 <path d="M740.667 158V428" stroke="#30363d" stroke-width="1"/>
-<text x="740.667" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">60</text>
+<text x="740.667" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">55</text>
 <path d="M795.333 158V428" stroke="#30363d" stroke-width="1"/>
-<text x="795.333" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">80</text>
+<text x="795.333" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">70</text>
 <path d="M850 158V428" stroke="#30363d" stroke-width="1"/>
-<text x="850" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">100</text>
-<rect x="686" y="175" width="69.664" height="23" rx="4" fill="#a78bfa" data-dataset="deep" data-harness="duo" data-pass-rate="65.48672566"/>
-<text x="763.664" y="193" font-size="15" font-weight="600" stroke="#211a35" stroke-width="4" stroke-linejoin="round" paint-order="stroke">65.49</text>
-<rect x="686" y="219" width="43.056" height="23" rx="4" fill="#7963bb" data-dataset="deep" data-harness="base" data-pass-rate="55.75221239"/>
-<text x="737.056" y="237" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">55.75</text>
-<rect x="686" y="263" width="45.475" height="23" rx="4" fill="#4b515a" data-dataset="deep" data-harness="claude" data-pass-rate="56.63716814"/>
-<text x="739.475" y="281" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">56.64</text>
-<rect x="686" y="307" width="21.286" height="23" rx="4" fill="#4b515a" data-dataset="deep" data-harness="codex" data-pass-rate="47.78761062"/>
-<text x="715.286" y="325" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">47.79</text>
-<rect x="686" y="351" width="59.988" height="23" rx="4" fill="#4b515a" data-dataset="deep" data-harness="mini" data-pass-rate="61.94690265"/>
-<text x="753.988" y="369" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">61.95</text>
-<rect x="686" y="395" width="62.407" height="23" rx="4" fill="#4b515a" data-dataset="deep" data-harness="openhands" data-pass-rate="62.83185841"/>
-<text x="756.407" y="413" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">62.83</text>
+<text x="850" y="451" font-size="12" text-anchor="middle" fill="#9da7b3">85</text>
+<rect x="686" y="175" width="92.885" height="23" rx="4" fill="#a78bfa" data-dataset="deep" data-harness="duo" data-pass-rate="65.48672566"/>
+<text x="786.885" y="193" font-size="15" font-weight="600" stroke="#211a35" stroke-width="4" stroke-linejoin="round" paint-order="stroke">65.49</text>
+<rect x="686" y="219" width="57.408" height="23" rx="4" fill="#7963bb" data-dataset="deep" data-harness="base" data-pass-rate="55.75221239"/>
+<text x="751.408" y="237" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">55.75</text>
+<rect x="686" y="263" width="60.633" height="23" rx="4" fill="#4b515a" data-dataset="deep" data-harness="claude" data-pass-rate="56.63716814"/>
+<text x="754.633" y="281" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">56.64</text>
+<rect x="686" y="307" width="28.382" height="23" rx="4" fill="#4b515a" data-dataset="deep" data-harness="codex" data-pass-rate="47.78761062"/>
+<text x="722.382" y="325" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">47.79</text>
+<rect x="686" y="351" width="79.984" height="23" rx="4" fill="#4b515a" data-dataset="deep" data-harness="mini" data-pass-rate="61.94690265"/>
+<text x="773.984" y="369" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">61.95</text>
+<rect x="686" y="395" width="83.209" height="23" rx="4" fill="#4b515a" data-dataset="deep" data-harness="openhands" data-pass-rate="62.83185841"/>
+<text x="777.209" y="413" font-size="15" font-weight="400" stroke="#0d1117" stroke-width="4" stroke-linejoin="round" paint-order="stroke">62.83</text>
 <text x="922" y="116" font-size="17" font-weight="600">SWE-bench Pro v2</text>
 <text x="922" y="140" font-size="14" fill="#9da7b3">HARD-51</text>
 <path d="M922 158V428" stroke="#30363d" stroke-width="1"/>
