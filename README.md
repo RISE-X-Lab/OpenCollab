@@ -33,6 +33,11 @@
 
 ## News
 
+- 🎉 **2026-10-08** — [OpenCollab 0.9.3 (v1.0.0 PreRelease)](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.3)
+  improves candidate preservation, team repair delivery, Git history handling,
+  tool restrictions, and Anthropic input-budget estimates. See the
+  [changelog](CHANGELOG.md#093---2026-10-08).
+
 - 🎉 **2026-10-06** — [OpenCollab 0.9.2](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.2)
   includes the latest Duo V8 workflow and all the statistical features described
   in our paper to support research experiments. Following extensive testing and
