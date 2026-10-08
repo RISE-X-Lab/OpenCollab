@@ -35,7 +35,9 @@ def _response(name: str | None = None, arguments: dict | None = None) -> LLMResp
     )
 
 
-@pytest.mark.parametrize("operation", ["control", "rebase", "cherry-pick", "merge"])
+@pytest.mark.parametrize("operation", [
+    "control", "rebase", "cherry-pick", "merge", "cherry-pick-abort", "rebase-own-history", "reset-own-history",
+])
 async def test_team_delivers_the_repair_after_integrating_upstream(tmp_path, monkeypatch, operation):
     source = tmp_path / "repo"
     source.mkdir()
@@ -46,6 +48,7 @@ async def test_team_delivers_the_repair_after_integrating_upstream(tmp_path, mon
     (source / "answer.py").write_text("def answer():\n    return 1\n", encoding="utf-8")
     _git(source, "add", ".")
     _git(source, "commit", "-qm", "base")
+    creation_base = _git(source, "rev-parse", "HEAD")
     transport = LocalDockerTransport(source, pair_reads=False)
     environment = DockerEnvironment(
         workspace=str(source), container_id="c" * 64, exec_workdir=str(source),
@@ -96,16 +99,34 @@ topology:
                 _git(source, "add", "upstream.txt")
                 _git(source, "commit", "-qm", "helper")
                 observed["upstream"] = _git(source, "rev-parse", "HEAD")
+                preparation = ""
                 integration = {
                     "control": "git status --porcelain",
                     "rebase": "git rebase main",
                     "cherry-pick": f"git cherry-pick {observed['upstream']}",
                     "merge": "git merge --no-edit main",
-                }[operation]
+                }.get(operation, "")
+                if operation == "cherry-pick-abort":
+                    (source / "answer.py").write_text("def answer():\n    return 3\n", encoding="utf-8")
+                    _git(source, "add", "answer.py")
+                    _git(source, "commit", "-qm", "conflicting answer")
+                    conflicting = _git(source, "rev-parse", "HEAD")
+                    integration = (
+                        f"(git cherry-pick {observed['upstream']} {conflicting}; pick_status=$?; "
+                        'test "$pick_status" -eq 1 && test -f upstream.txt && git cherry-pick --abort)'
+                    )
+                elif operation in {"rebase-own-history", "reset-own-history"}:
+                    preparation = "printf extra > extra.txt && git add extra.txt && git commit -qm extra && "
+                    if operation == "rebase-own-history":
+                        preparation += "printf other > other.txt && git add other.txt && git commit -qm other && "
+                        editor = shlex.quote("sed -i.bak '2s/^pick/fixup/'")
+                        integration = f"git -c sequence.editor={editor} -c core.editor=true rebase -i HEAD~2"
+                    else:
+                        integration = "git reset --hard HEAD~1"
                 command = (
                     "printf 'def answer():\\n    return 2\\n' > answer.py && "
                     "git add answer.py && git commit -qm repair && "
-                    f"{integration} && {shlex.quote(sys.executable)} -B -c "
+                    f"{preparation}{integration} && {shlex.quote(sys.executable)} -B -c "
                     "'from answer import answer; assert answer() == 2; print(answer())'"
                 )
                 return _response("bash", {"command": command})
@@ -131,13 +152,20 @@ topology:
     changes = [record["payload"] for record in records if record["type"] == "worktree_changes"]
     coder_changes = [payload for payload in changes if payload["role"] == "coder"]
     assert coder_changes
+    expected_files = {"answer.py"}
+    if operation == "cherry-pick":
+        expected_files.add("upstream.txt")
+    elif operation == "rebase-own-history":
+        expected_files.update({"extra.txt", "other.txt"})
     for payload in coder_changes:
         assert payload["diff_chars"] > 0
-        assert "answer.py" in {entry["path"] for entry in payload["files"]}
+        assert expected_files == {entry["path"] for entry in payload["files"]}
         assert payload["head_commit"] in payload["commits"]
         assert payload["diff_base"] != payload["head_commit"]
         if operation in {"rebase", "merge"}:
             assert payload["diff_base"] == observed["upstream"]
-            assert "upstream.txt" not in {entry["path"] for entry in payload["files"]}
-    assert (source / "answer.py").read_text(encoding="utf-8") == "def answer():\n    return 1\n"
+        else:
+            assert payload["diff_base"] == creation_base
+    source_value = 3 if operation == "cherry-pick-abort" else 1
+    assert (source / "answer.py").read_text(encoding="utf-8") == f"def answer():\n    return {source_value}\n"
     assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1

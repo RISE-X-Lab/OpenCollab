@@ -376,6 +376,7 @@ class WorktreeEnvironment(Environment):
         a two-parent merge adopts its incoming parent. The resulting diff keeps
         the agent's commits and conflict resolution. Commit, amend, cherry-pick,
         and revert keep the current base, and an aborted rebase restores it.
+        Reset or rebase onto the agent's earlier work resumes its original base.
 
         Nothing has to be told when a stretch of work begins: git already
         records every HEAD move per worktree, in ``logs/HEAD`` under

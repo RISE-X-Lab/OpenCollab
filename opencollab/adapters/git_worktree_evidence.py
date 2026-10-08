@@ -45,6 +45,31 @@ def validate_worktree_branch(name: str) -> str:
     return name
 
 
+def _previous_work_entry(
+    entries: list[tuple[str, str, str]], index: int, commit: str,
+) -> int | None:
+    """Find where this worktree last produced a restored commit.
+
+    A later checkout or fast-forward adoption of the same commit begins a new
+    stretch. No-op moves and earlier restores keep its original provenance.
+    """
+    for previous in range(index + 1, len(entries)):
+        earlier_commit, parents, message = entries[previous]
+        if earlier_commit != commit:
+            continue
+        if previous + 1 < len(entries) and entries[previous + 1][0] == commit:
+            continue
+        rebase = REBASE_REFLOG_RE.match(message)
+        if message.startswith(OWN_COMMIT_REFLOG_PREFIX) or (
+            len(parents.split()) == 2 and ": Merge made by " in message
+        ) or (rebase is not None and rebase.group(1) not in {"start", "abort", "finish", "reset"}):
+            return previous
+        if message.startswith("reset:") or rebase is not None:
+            continue
+        return None
+    return None
+
+
 def select_diff_base(reflog: str, *, fallback: str) -> str:
     """The external history this worktree's current work grew from, or ``fallback``.
 
@@ -55,6 +80,8 @@ def select_diff_base(reflog: str, *, fallback: str) -> str:
     A two-parent merge adopts its incoming parent, retaining the first parent's
     work and any conflict resolution. Aborted rebases leave the previous base
     intact, including when the rebase had already replayed some commits.
+    Reset or rebase onto this worktree's own history resumes that earlier
+    stretch, preserving repairs that remain in the restored commit.
 
     ``fallback`` is the commit the worktree was created on, which is the honest
     answer when there is nothing to read -- a repository with
@@ -65,7 +92,10 @@ def select_diff_base(reflog: str, *, fallback: str) -> str:
         if (match := REFLOG_ENTRY_RE.match(line)) is not None
     ]
     aborted_rebases = 0
+    resume_at = 0
     for index, (commit, parents, message) in enumerate(entries):
+        if index < resume_at:
+            continue
         rebase = REBASE_REFLOG_RE.match(message)
         if rebase is not None:
             action = rebase.group(1)
@@ -74,8 +104,12 @@ def select_diff_base(reflog: str, *, fallback: str) -> str:
             elif action == "start":
                 if aborted_rebases:
                     aborted_rebases -= 1
-                elif index + 1 == len(entries) or entries[index + 1][0] != commit:
-                    return commit
+                else:
+                    previous_work = _previous_work_entry(entries, index, commit)
+                    if previous_work is not None:
+                        resume_at = previous_work
+                    elif index + 1 == len(entries) or entries[index + 1][0] != commit:
+                        return commit
             continue
         if aborted_rebases:
             continue
@@ -86,6 +120,11 @@ def select_diff_base(reflog: str, *, fallback: str) -> str:
             return parent_commits[1]
         if message.startswith(OWN_COMMIT_REFLOG_PREFIX):
             continue
+        if message.startswith("reset:"):
+            previous_work = _previous_work_entry(entries, index, commit)
+            if previous_work is not None:
+                resume_at = previous_work
+                continue
         # Creating a branch at the current HEAD does not adopt a new base.
         if index + 1 < len(entries) and entries[index + 1][0] == commit:
             continue
