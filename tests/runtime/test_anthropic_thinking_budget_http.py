@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
 
 from opencollab import OpenCollab
@@ -18,7 +17,7 @@ from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase
 from opencollab.domain.token_estimation import estimate_request_tokens
-from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport
+from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
 
 _THINKING = {"thinking": {"type": "enabled", "budget_tokens": 1024}}
 _MODEL = "claude-sonnet-4-6"
@@ -52,7 +51,7 @@ async def test_public_agent_preserves_tool_results_when_thinking_budget_runs_out
                                 "signature": "mock-signature"})
             content.append({"type": "tool_use", "id": "call_read", "name": "file_read",
                             "input": {"path": "sample.txt"}})
-            return httpx.Response(200, json={
+            return http_response(request, 200, json={
                 "id": "msg_first", "type": "message", "role": "assistant", "model": body["model"],
                 "content": content, "stop_reason": "tool_use", "stop_sequence": None,
                 "usage": {"input_tokens": 300, "output_tokens": 1800},

@@ -69,7 +69,7 @@ def test_distribution_does_not_claim_package_wide_typing() -> None:
     assert not (_PACKAGE_ROOT / "py.typed").exists()
 
 
-def test_anthropic_requirement_keeps_the_supported_sampling_api() -> None:
+def test_anthropic_requirement_keeps_the_supported_sdk_range() -> None:
     pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     declaration = next(
         line.strip().rstrip(",").strip('"')
@@ -77,13 +77,15 @@ def test_anthropic_requirement_keeps_the_supported_sampling_api() -> None:
         if line.strip().startswith('"anthropic')
     )
     requirement = Requirement(declaration)
+    assert "0.77.0" not in requirement.specifier
     assert "0.78.0" in requirement.specifier
     assert "0.102.0" in requirement.specifier
     assert "0.125.0" in requirement.specifier
-    # SDK 1.x removed temperature/top_p from AsyncMessages.create. The runtime
-    # still forwards explicit sampling settings through that public method.
-    assert "1.0.0" not in requirement.specifier
-    assert "1.9.0" not in requirement.specifier
+    # Sampling stays explicit on 0.x and travels through extra_body on 1.x.
+    assert "1.0.0" in requirement.specifier
+    assert "1.9.0" in requirement.specifier
+    assert "1.12.1" in requirement.specifier
+    assert "2.0.0" not in requirement.specifier
 
 
 def test_typer_requirement_starts_with_click_83_boolean_flag_support() -> None:

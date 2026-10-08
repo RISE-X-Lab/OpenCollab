@@ -5,14 +5,13 @@ from __future__ import annotations
 import json
 
 import anthropic
-import httpx
 import pytest
 
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.bootstrap import build_session
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase
-from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport
+from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
 from tests.support.session_characterization_test_support import FakeTool
 
 _MODEL = "claude-opus-5-5"
@@ -20,8 +19,8 @@ _CHOICE_ERROR = 'tool_choice: type "tool" and "any" are not supported for this m
 _NAMED_CHOICE = {"type": "function", "function": {"name": "submit_findings"}}
 
 
-def _error_response(message=_CHOICE_ERROR, **fields):
-    return httpx.Response(400, json={
+def _error_response(request, message=_CHOICE_ERROR, **fields):
+    return http_response(request, 400, json={
         "type": "error", "error": {"type": "invalid_request_error", "message": message, **fields},
     })
 
@@ -55,7 +54,7 @@ async def test_documented_rejection_retries_named_and_required_choices_once(monk
         body = json.loads(request.content)
         requests.append(body)
         if body.get("tool_choice", {}).get("type") != "auto":
-            return _error_response()
+            return _error_response(request)
         return completion_http_response(request, output_tokens=7)
 
     install_sdk_transport(monkeypatch, "anthropic", handler)
@@ -86,16 +85,16 @@ async def test_budget_wind_down_recovers_documented_rejection_and_preserves_seco
         body = json.loads(request.content)
         requests.append(body)
         if len(requests) == 1:
-            return httpx.Response(200, json={
+            return http_response(request, 200, json={
                 "id": "msg_read", "type": "message", "role": "assistant", "model": _MODEL,
                 "content": [{"type": "tool_use", "id": "toolu_read", "name": "read_info", "input": {}}],
                 "stop_reason": "tool_use", "stop_sequence": None,
                 "usage": {"input_tokens": 30_000, "output_tokens": 2},
             })
         if body.get("tool_choice", {}).get("type") == "tool":
-            return _error_response()
+            return _error_response(request)
         if fallback_fails:
-            return _error_response("Invalid tool input schema", param="tools")
+            return _error_response(request, "Invalid tool input schema", param="tools")
         return completion_http_response(request, output_tokens=7)
 
     install_sdk_transport(monkeypatch, "anthropic", handler)
@@ -136,7 +135,7 @@ async def test_explicit_unrelated_parameter_prevents_tool_choice_retry(monkeypat
 
     def handler(request):
         requests.append(json.loads(request.content))
-        return _error_response(param=param)
+        return _error_response(request, param=param)
 
     install_sdk_transport(monkeypatch, "anthropic", handler)
     async with _client() as client:
@@ -162,7 +161,7 @@ async def test_unrelated_validation_message_with_choice_echo_does_not_retry(monk
 
     def handler(request):
         requests.append(json.loads(request.content))
-        return _error_response(message)
+        return _error_response(request, message)
 
     install_sdk_transport(monkeypatch, "anthropic", handler)
     async with _client() as client:

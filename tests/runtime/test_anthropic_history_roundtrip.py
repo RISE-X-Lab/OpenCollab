@@ -2,12 +2,11 @@
 
 import json
 
-import anthropic
-import httpx
 import pytest
 
 from opencollab.adapters.llm.anthropic_provider import convert_to_anthropic_messages
 from opencollab.adapters.llm.client import LLMClient
+from tests.support.provider_sdk_http import http_response, install_sdk_transport
 
 
 @pytest.mark.parametrize("history_shape", ["null", "omitted", "provider_state"])
@@ -21,19 +20,14 @@ async def test_anthropic_tool_response_replays_standard_assistant_history(monkey
             if len(requests) == 1
             else [{"type": "text", "text": "done"}]
         )
-        return httpx.Response(200, json={
+        return http_response(request, 200, json={
             "id": "msg_roundtrip", "type": "message", "role": "assistant",
             "model": "claude-sonnet-4-6", "content": content,
             "stop_reason": "tool_use" if len(requests) == 1 else "end_turn",
             "stop_sequence": None, "usage": {"input_tokens": 25, "output_tokens": 10},
         })
 
-    sdk_type = anthropic.AsyncAnthropic
-
-    def create_sdk(**kwargs):
-        return sdk_type(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
-
-    monkeypatch.setattr(anthropic, "AsyncAnthropic", create_sdk)
+    install_sdk_transport(monkeypatch, "anthropic", handler)
     tool = {"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}
     async with LLMClient(
         model="claude-sonnet-4-6", provider="anthropic", api_key="test-placeholder",  # pragma: allowlist secret

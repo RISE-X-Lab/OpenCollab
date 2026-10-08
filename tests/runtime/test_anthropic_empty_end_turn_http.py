@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 
 import anthropic
-import httpx
 import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.tools.fs import FileReadTool
 from opencollab.application.session_run import _EMPTY_STOP_NUDGE
+from tests.support.provider_sdk_http import http_response, provider_http
 
 _ANSWER = "The project fact is cobalt-17."
 _TEXT = [{"type": "text", "text": _ANSWER}]
@@ -33,16 +33,17 @@ async def _run_native(tmp_path, replies, *, tools=(), max_steps=5, budget=10_000
     async def handler(request):
         requests.append(json.loads(request.content))
         assert len(requests) <= len(replies)
-        return httpx.Response(200, json=replies[len(requests) - 1])
+        return http_response(request, 200, json=replies[len(requests) - 1])
 
     client = LLMClient(
         model="claude-sonnet-4-5", provider="anthropic", api_key="unused",  # pragma: allowlist secret
         max_retries=0,
     )
     await client._anthropic.close()
+    http = provider_http("anthropic")
     client._anthropic = anthropic.AsyncAnthropic(
         api_key="unused", base_url="https://empty-turn.invalid", max_retries=0,  # pragma: allowlist secret
-        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        http_client=http.AsyncClient(transport=http.MockTransport(handler)),
     )
     (tmp_path / "facts.txt").write_text(_ANSWER + "\n", encoding="utf-8")
     artifacts = tmp_path / "artifacts"

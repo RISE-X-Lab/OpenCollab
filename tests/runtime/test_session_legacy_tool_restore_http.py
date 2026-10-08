@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
 
 from opencollab.adapters.llm.client import LLMClient
@@ -12,7 +11,7 @@ from opencollab.adapters.tools.base import Tool
 from opencollab.bootstrap import build_session, load_session
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase
-from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport
+from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
 
 
 def _save_session(session, path, snapshot_format):
@@ -34,13 +33,13 @@ def _save_session(session, path, snapshot_format):
 def _tool_request_response(request):
     model = json.loads(request.content)["model"]
     if request.url.path.endswith("/messages"):
-        return httpx.Response(200, json={
+        return http_response(request, 200, json={
             "id": "msg_saved_tool", "type": "message", "role": "assistant", "model": model,
             "content": [{"type": "tool_use", "id": "reused-call", "name": "saved_write", "input": {}}],
             "stop_reason": "tool_use", "stop_sequence": None,
             "usage": {"input_tokens": 2, "output_tokens": 2},
         })
-    return httpx.Response(200, json={
+    return http_response(request, 200, json={
         "id": "chatcmpl_saved_tool", "object": "chat.completion", "created": 1, "model": model,
         "choices": [{"index": 0, "message": {"role": "assistant", "tool_calls": [{
             "id": "reused-call", "type": "function",
@@ -93,7 +92,7 @@ async def test_saved_tool_exchange_can_continue_without_replaying_effects(
         requests.append(body)
         error = _tool_exchange_error(body["messages"], provider)
         if error:
-            return httpx.Response(400, json={
+            return http_response(request, 400, json={
                 "type": "error", "error": {"type": "invalid_request_error", "message": error},
             })
         if len(requests) <= 2:
