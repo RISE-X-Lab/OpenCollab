@@ -35,13 +35,9 @@
 ## 动态
 
 - 🎉 **2026-10-08** — [OpenCollab 0.9.3 (v1.0.0 PreRelease)](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.3)
-  改善候选保全、团队修复交付和 Git 历史处理，修复工具禁用约束与 Anthropic 输入预算预估。
-  详见[变更记录](CHANGELOG.md#093---2026-10-08)。
-
-- 🎉 **2026-10-06** — [OpenCollab 0.9.2](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.2)
   内置最新版 Duo V8，并完整提供论文中介绍的面向科研实验的统计功能。
-  经过充分测试与缺陷修复，框架在功能与稳定性上已接近 1.0.0 的目标。
-  我们将在论文录用后正式发布 1.0.0 版本。详见[变更记录](CHANGELOG.md#092---2026-10-06)。
+  经过充分测试与缺陷修复，框架现已具备 1.0.0 规划中的全部功能。
+  我们将在论文录用后正式发布 1.0.0 版本。详见[变更记录](CHANGELOG.md#093---2026-10-08)。
 - **2026-09-29**：论文已在 arXiv 公开：[*OpenCollab: A Multi-Agent Coding Framework with
   Programmable Collaboration and Controllable Runtime*](https://arxiv.org/abs/2609.38345)。
 - **2026-09-27**：[OpenCollab 0.8](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.8.0)
