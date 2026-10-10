@@ -102,6 +102,10 @@ will produce a usage error.
 [Edict](https://github.com/cft0808/edict), a multi-agent system of roughly
 24,000 lines, in 239 lines of team and workflow code.
 
+[ARC-Bench r6](examples/arcbench-evolution-r6/) schedules independent Single2
+instances over a shared application, with executable browser and database checks
+between implementation groups and repair rounds.
+
 ## Verify it happened
 
 In a Team, the agents decide the handoffs, and a declared team does not

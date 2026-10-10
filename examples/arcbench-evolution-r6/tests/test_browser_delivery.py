@@ -4,6 +4,9 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from arc_light.delivery import _digest, capture_baseline, database_values, preflight, verify
@@ -12,6 +15,107 @@ from arc_light.public_checks import write_public_checks
 from arc_light.reports import write_json
 
 pytestmark = pytest.mark.skipif(os.environ.get("ARCBENCH_BROWSER_TESTS") != "1", reason="Separate browser fixture job")
+
+
+def _task_file(workspace):
+    import yaml
+
+    captured = json.loads((workspace / ".arc/checks/public-prerequisites.json").read_text())
+    requirements = [
+        {
+            "id": row["requirement_id"],
+            "name": row["name"],
+            "description": "Modified Feature Description",
+            "scenarios": [
+                {"steps": [{"keyword": key.upper(), "content": row[key]} for key in ("given", "when", "then")]}
+            ],
+        }
+        for row in captured["evolution_checks"]
+    ]
+    task = workspace / "task.yaml"
+    task.write_text(yaml.safe_dump(requirements))
+    return task
+
+
+def test_competition_cli_uses_local_http_and_real_browser(tmp_path):
+    from tests.runtime.test_llm_chat_streaming_http import fake_chat_server
+
+    workspace = fixture_app(tmp_path)
+    task = _task_file(workspace)
+    entry = Path(__file__).resolve().parents[1] / "main.py"
+    platform = entry.parent / "platform/arcbench-agent-runtime/src"
+    with fake_chat_server() as (base_url, requests):
+        environment = dict(
+            os.environ,
+            MODEL="deepseek-competition-example",
+            OPENAI_API_KEY="fixture-key",  # pragma: allowlist secret
+            OPENAI_BASE_URL=base_url,
+            NO_PROXY="127.0.0.1,localhost",
+            PYTHONPATH=os.pathsep.join((str(platform), str(entry.parent))),
+        )
+        process = subprocess.run(
+            [sys.executable, str(entry), str(task), "--output-dir", str(workspace), "--fresh"],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    assert process.returncode == 0, process.stdout + process.stderr
+    outcome = json.loads((workspace / ".arc/checks/outcome.json").read_text())
+    assert outcome["delivery_ok"]
+    assert outcome["verification"]["coverage"]["passed"] == 2
+    assert len(requests) == 1 and requests[0]["model"] == "deepseek-competition-example"
+    assert requests[0]["messages"][0]["content"].startswith("You are a software engineer extending")
+
+
+@pytest.mark.asyncio
+async def test_native_workflow_runs_actual_browser_and_delivery_checks(tmp_path):
+    from dataclasses import asdict
+
+    import yaml
+    from arcbench_r6.settings import Settings
+    from arcbench_r6.workflow import weave
+
+    from opencollab import OpenCollab
+    from opencollab.adapters.llm.types import LLMResponse, Usage
+
+    workspace = fixture_app(tmp_path)
+    captured = json.loads((workspace / ".arc/checks/public-prerequisites.json").read_text())
+    requirements = [
+        {
+            "id": row["requirement_id"],
+            "name": row["name"],
+            "description": "Modified Feature Description",
+            "scenarios": [
+                {"steps": [{"keyword": key.upper(), "content": row[key]} for key in ("given", "when", "then")]}
+            ],
+        }
+        for row in captured["evolution_checks"]
+    ]
+    task = workspace / "task.yaml"
+    task.write_text(yaml.safe_dump(requirements))
+
+    class LocalModel:
+        async def complete(self, messages, **kwargs):
+            return LLMResponse(
+                content="The inherited implementation is ready for verification.",
+                usage=Usage(4, 2),
+                finish_reason="stop",
+            )
+
+    result = await OpenCollab(workspace, model="fixture-model").workflow(
+        weave,
+        {"requirements": str(task), "fresh": True, "settings": asdict(Settings())},
+        llm=LocalModel(),
+        agent_profile="single2",
+        limit_mode="explicit",
+        budget=16_000_000,
+        concurrency=1,
+    )
+    assert result.ok and result.output["delivery_ok"], result
+    assert result.output["verification"]["coverage"]["expected"] == 2
+    assert result.output["verification"]["coverage"]["passed"] == 2
+    assert result.tokens == result.output["total_tokens"] == 6
 
 
 def fixture_app(tmp_path, *, names=("alice", "bob"), unknown=False, empty=False):

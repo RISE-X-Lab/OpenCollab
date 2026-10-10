@@ -1,33 +1,107 @@
-# ARC-Bench evolution checks
+# ARC-Bench r6 Weave workflow
 
-This example checks a prepared Web application against public ARC-Bench requirements. Its checker layer comes from the r6 submission. It includes GitHub and spreadsheet scenario adapters, SQLite preservation checks, isolated builds and restarts, failure reports, and fresh-copy stability replays. Source attribution is recorded in [SOURCES.md](SOURCES.md).
+[Chinese guide](README.zh-CN.md)
 
-Supply an application workspace containing `frontend/package.json`, `backend/package.json`, the inherited database, installed application dependencies, and the matching public requirements YAML. The backend must support `npm run start`, a `PORT` environment variable and `/api/health`. The frontend must support `npm run build`. Browser checks resolve `@playwright/test` from the application's backend and use an installed Chromium. `ARC_BROWSER_EXECUTABLE` can select an existing compatible browser executable explicitly. Python requires PyYAML. Node 22.12 or newer runs the fixture application.
+This example adapts the r6 competition harness to OpenCollab's built-in Weave (`weave`) workflow. The core workflow schedules independent Single2 instances over one application workspace. Each requirement group and repair round has a fresh conversation. The instances hand off application files, requirement cards, progress and executable check reports.
 
-The first invocation captures the inherited SQLite data and test content before editing. The capture uses SQLite's backup API, including committed WAL data. Each verification copies the application to a temporary directory and restores the original database snapshot into that disposable copy. A matching existing dependency cache shares installed modules. Other installs run inside each copy, using npm's download cache and retaining generated source for that verification. Browser contexts are independent while ordinary scenarios execute in order. When multiple reaction scenarios are requested, each uses its own copy of the migrated application and database, reusing the completed installation and build. Each reaction copy verifies its writes through a backend restart. Application mutations remain in disposable copies, which are removed after verification.
+The competition adapter reads the public YAML and builds requirement cards and resource hints. It supplies the original prompts, tools, browser checks and repair evidence to `run_weave`. The core workflow orders groups, allocates execution opportunities, expands soft allowances within the active session and controls bounded repair. GitHub collaboration and spreadsheet adapters execute real browser and SQLite checks. The platform runtime, model compatibility wrapper and `.arc` reports remain in this example. [SOURCES.md](SOURCES.md) records the supplied package and its attributed compatibility observations.
 
-```bash
-python examples/arcbench-evolution-r6/check.py /path/to/application-copy \
-  --requirements /path/to/public-requirements.yaml --initialize
-```
+## Install and run
 
-Use `--requirement-id` repeatedly to specify the original requirements being delivered. Omitting it selects all atomic requirements in the supplied task. The report records both requested and mapped scenarios. Each scenario is associated with its original requirement ID and ordinal, preserving the feature name for readable reports. Unknown adapters, absent scenario inputs, repeated results and unexecuted scenarios remain unverified. Full delivery success requires the requested scenario set to pass. Requested persistence needs actual restart evidence.
+Use Linux or WSL2 with Python 3.10 or newer, Node 22.12 or newer and Git. Supply the matching public requirement YAML, inherited application and database. The application needs `frontend/package.json` with a build script and `backend/package.json` with a start script serving `/api/health` on `PORT`. Install the application's dependencies, `@playwright/test` and its Chromium before the competition run.
 
-Subsequent checks read the existing snapshot. A second initialization fails with an input error so resumed work continues to compare against the original data. Missing or damaged snapshots produce an unverified result and preserve the candidate application.
+From the OpenCollab repository root, install the current SDK and the supplied platform runtime.
 
 ```bash
-python examples/arcbench-evolution-r6/check.py /path/to/application-copy --confirm-stability
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+python -m pip install ./examples/arcbench-evolution-r6/platform/arcbench-agent-runtime
 ```
 
-`verification.json`, `scenario-ledger.json`, browser reports, backend logs and stability records are written under the application workspace's `.arc/checks/`. The CLI exits successfully only when its current verification passes. These reports contain local executable evidence. Platform evaluation supplies the official score.
+Set `MODEL` or `OPENCOLLAB_MODEL` explicitly. Provide the competition's OpenAI-compatible Chat endpoint through `OPENAI_BASE_URL` and its credential through `OPENAI_API_KEY`. The corresponding `OPENCOLLAB_` names are also accepted. The model wrapper preserves recorded reasoning in Chat continuations and uses automatic tool selection where the original competition alias required it. Explicitly disabled thinking and disabled tools retain their meanings.
 
-The Python integration API consists of `write_public_checks(document, workspace, requirement_ids=...)`, first-use `capture_baseline(workspace, run_id=..., input_source=...)`, resume `load_baseline(workspace, run_id=...)`, and `verify(workspace, scope=..., requirement_ids=..., output_dir=..., cancel_event=...)`. Focused scopes require a separate output directory and retain the original task denominator for their selected IDs. `arc_light.evidence` exposes check selection, source comparison, summaries and repair targets independently of model tools. `arc_light.reports.write_json` supplies the existing atomic report write used by stability and the coordinator. `preflight(workspace, cancel_event=...)` propagates cancellation through dependency installation, browser launch and backend health polling. An asynchronous caller sets the event and awaits the worker cleanup before passing workspace ownership to another stage.
+```bash
+python examples/arcbench-evolution-r6/main.py /absolute/path/to/requirements \
+  --output-dir /absolute/path/to/application-copy --type web
+```
 
-Preflight prepares the application's actual dependency directories and generated source for subsequent implementation. Its backend health probe uses a disposable copy. Verification runs any uncached installation in its disposable copy and checks migrated inherited data before browser execution.
+A requirement directory is searched for `requirements.yaml`, `requirements.yml`, then `task.yaml`. A direct YAML file is also accepted. Platform defaults use `ARCBENCH_TASK_DIR`, `ARCBENCH_OUTPUT_DIR` and `ARCBENCH_TASK_TYPE`. If both application package files are absent, missing files from the supplied starter template are copied into the workspace. The template is a generic skeleton; competition inputs supply the inherited application and data.
 
-The Release description observation in `compatibility.py` retains its user-supplied report source and exact scenario match. An explicit public GIVEN description takes precedence. The direct filter entry and persisted reaction total assertions remain in the r6 browser adapters. Their inherited provenance is described in SOURCES.md.
+## Original run settings
 
-The fixture tests execute the browser adapters against a small hand-written Node application with SQLite. They cover separate same-name requirement accounts, actual page input and reload, startup idempotence, restart persistence, HTTP 500 with an independent business failure, unmapped requirements and empty scenario sets. Python tests exercise committed WAL backup, original-row loss on resume, inherited tests, cancellation cleanup and stability streaks.
+| Setting | Default |
+| --- | ---: |
+| Total token allowance | 16,000,000 |
+| Main soft and hard allowances | 12,000,000 and 14,000,000 |
+| Reserved final repair allowance | 2,000,000 |
+| Cumulative main steps | 200 |
+| Scheduling time and coding-phase setting | 100 and 80 minutes |
+| Maximum response and context window | 32,768 and 1,000,000 tokens |
+| Final repair | At most three rounds, each at most 60 steps, 600 seconds and 2,000,000 tokens |
+
+The original check and cleanup reserves determine each group's actual window. Two repair rounds without observable progress stop repair. Soft allowance growth retains the same session and stays within its actual hard grant. The example uses explicit workflow limits, independently of another run's unbounded environment setting.
+
+`OPENCOLLAB_BUDGET`, `ARC_MAIN_BUDGET`, `ARC_MAIN_HARD_BUDGET`, `ARC_REPAIR_RESERVE`, `ARC_WALL_LIMIT_MIN`, `ARC_AGENT_LIMIT_MIN`, `OPENCOLLAB_MAX_STEPS` and `OPENCOLLAB_CONTEXT_WINDOW` retain their competition meanings. The optional `ARC_HISTORY_TRIGGER_TOKENS` is disabled by default. The native workflow implements r6's default grouped route; setting `ARC_GROUPED_MAIN=0` returns a configuration error.
+
+## Python Workflow entry
+
+Add this example directory to Python's import path. Install the platform runtime as above. Both this entry and the competition CLI call the same decorated workflow.
+
+```python
+import asyncio
+from dataclasses import asdict
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path("examples/arcbench-evolution-r6").resolve()))
+from opencollab import OpenCollab
+from arcbench_r6.model import CompetitionModel
+from arcbench_r6.settings import Settings
+from arcbench_r6.workflow import weave
+
+async def run():
+    settings = Settings.from_env()
+    client = OpenCollab(
+        "/absolute/path/to/application-copy",
+        model="your-competition-model",
+        config={"budget": settings.budget,
+                "context_window": settings.context_window,
+                "max_output_tokens": settings.max_output_tokens,
+                "wire_protocol": "chat_completions"},
+    )
+    model_client = client.create_model_client()
+    try:
+        return await client.workflow(
+            weave,
+            {"requirements": "/absolute/path/to/task.yaml", "settings": asdict(settings)},
+            agent_profile="single2", concurrency=1, budget=settings.budget,
+            max_steps=settings.max_steps, limit_mode="explicit",
+            llm=CompetitionModel(model_client), trace=False,
+            cleanup_timeout=settings.cleanup_seconds,
+        )
+    finally:
+        await model_client.close()
+
+result = asyncio.run(run())
+print(result.output)
+```
+
+## Results and continuation
+
+Preflight prepares dependencies and generated source in the implementation workspace. Verification executes uncached installation, build and checks in disposable copies. Multiple reaction scenarios use independent migrated database copies while reusing one installation and frontend build. Their exact persisted counts and restart checks remain part of the full result.
+
+The current application report is `.arc/checks/outcome.json`. `delivery_ok` describes complete local verification; the platform supplies `official_score`. SDK execution status and application correctness are separate. The CLI returns zero when this invocation completes and local delivery verification passes.
+
+Use `--resume` to continue the original run ID, requirement document, input snapshot, returned usage and phase records. Generated groups pending checks proceed to verification. Finished groups retain their outcome. Interrupted stages retain their candidate and handoff and continue with the remaining allowance. A repair round that already started remains part of the original three-round maximum. For a direct SDK continuation, pass the original `run_id` and the remaining token allowance to `client.workflow`.
+
+Use `--fresh` to declare a new input application explicitly. Prior reports move to `.arc/history/`; the dependency-install cache remains reusable only when its manifest matches. One run owns an application workspace at a time. Cancellation waits for managed generation, verification and preflight cleanup before releasing it.
+
+Reports include requirement coverage, phase results, cumulative session usage, the original input snapshot, repair history and platform events. Failed new inputs replace the current outcome with the new run's failure and preserve the earlier result as history. Credentials are supplied by the caller and excluded from failure summaries.
+
+## Execute the checks
+
+[CHECKS.md](CHECKS.md) documents the independent checker entry and its reports. Regular Python tests cover the native SDK workflow, repair, continuation, failure state, local HTTP request compatibility and cancellation. The browser job runs the actual Node adapters, SQLite and Chromium, including a complete native workflow with local model responses.
 
 ```bash
 uv run pytest -q examples/arcbench-evolution-r6/tests
@@ -37,4 +111,4 @@ npx playwright install chromium
 OPENCOLLAB_TEST_PYTHON=/path/to/OpenCollab/.venv/bin/python npm run test:browser
 ```
 
-The browser fixtures have a dedicated CI job and matching Playwright lockfile. The regular Python suite includes the example's pure Python tests. Application data, browser binaries and runtime credentials are supplied by the caller. The fixture inputs are synthetic.
+The test application and model responses are local fixtures. Reproducing the competition score uses the original GitHub and Sheet task inputs, inherited applications, model configuration and the platform's external evaluator.
