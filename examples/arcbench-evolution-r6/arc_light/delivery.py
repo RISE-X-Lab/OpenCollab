@@ -313,13 +313,14 @@ def isolated_application(workspace: Path, *, inherited=True):
         yield target
 
 
-def prepare_dependencies(workspace: Path, deadline: float, cancel_event=None) -> list[dict]:
+def prepare_dependencies(workspace: Path, deadline: float, cancel_event=None, *, cache_workspace=None) -> list[dict]:
     check_cancelled(cancel_event)
     output = workspace / ".arc/checks"
     output.mkdir(parents=True, exist_ok=True)
     cache_path = output / "dependency-cache.json"
+    existing_cache = (cache_workspace / ".arc/checks/dependency-cache.json") if cache_workspace else cache_path
     try:
-        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        cache = json.loads(existing_cache.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         cache = {}
     checks = []
@@ -341,6 +342,9 @@ def prepare_dependencies(workspace: Path, deadline: float, cancel_event=None) ->
             )
             continue
         diagnostic(name + "_install_start")
+        modules = package / "node_modules"
+        if modules.is_symlink():
+            modules.unlink()
         code, text = run_command(
             [npm, "install", "--no-audit", "--no-fund", "--include=dev"],
             package,
@@ -433,49 +437,51 @@ def preflight(workspace: Path, *, timeout=600, cancel_event=None) -> dict:
             )
             report["fatal"] = True
             return report
-        report["checks"].extend(prepare_dependencies(workspace, deadline, cancel_event=cancel_event))
-        check_cancelled(cancel_event)
-        failed = [c for c in report["checks"] if not c["ok"]]
-        if failed:
-            report["fatal"] = any(c.get("repairable") is False for c in failed)
-            return report
-        backend = workspace / "backend"
-        package = json.loads((backend / "package.json").read_text(encoding="utf-8"))
-        if "sqlite3" in {**package.get("dependencies", {}), **package.get("devDependencies", {})}:
+        with isolated_application(workspace) as isolated:
+            report["checks"].extend(
+                prepare_dependencies(isolated, deadline, cancel_event=cancel_event, cache_workspace=workspace)
+            )
+            check_cancelled(cancel_event)
+            failed = [c for c in report["checks"] if not c["ok"]]
+            if failed:
+                report["fatal"] = any(c.get("repairable") is False for c in failed)
+                return report
+            backend = isolated / "backend"
+            package = json.loads((backend / "package.json").read_text(encoding="utf-8"))
+            if "sqlite3" in {**package.get("dependencies", {}), **package.get("devDependencies", {})}:
+                code, text = run_command(
+                    [
+                        node,
+                        "-e",
+                        "const S=require('sqlite3'); "
+                        "const d=new S.Database(':memory:',e=>{"
+                        "if(e){console.error(e);process.exitCode=1;}else d.close();});",
+                    ],
+                    backend,
+                    max(0, min(20, deadline - time.monotonic())),
+                    cancel_event=cancel_event,
+                )
+                report["checks"].append(
+                    {"step": "sqlite3_module_load", "ok": code == 0, "detail": text[-3000:], "repairable": True}
+                )
             code, text = run_command(
                 [
                     node,
                     "-e",
-                    "const S=require('sqlite3'); "
-                    "const d=new S.Database(':memory:',e=>{"
-                    "if(e){console.error(e);process.exitCode=1;}else d.close();});",
+                    "const {chromium}=require('@playwright/test'); "
+                    "(async()=>{const b=await chromium.launch({headless:true,"
+                    "executablePath:process.env.ARC_BROWSER_EXECUTABLE||undefined});await b.close();})()"
+                    ".catch(e=>{console.error(e.message);process.exitCode=1;});",
                 ],
                 backend,
-                max(0, min(20, deadline - time.monotonic())),
+                max(0, min(30, deadline - time.monotonic())),
                 cancel_event=cancel_event,
             )
             report["checks"].append(
-                {"step": "sqlite3_module_load", "ok": code == 0, "detail": text[-3000:], "repairable": True}
+                {"step": "browser_launch", "ok": code == 0, "detail": text[-3000:], "repairable": False}
             )
-        code, text = run_command(
-            [
-                node,
-                "-e",
-                "const {chromium}=require('@playwright/test'); "
-                "(async()=>{const b=await chromium.launch({headless:true,"
-                "executablePath:process.env.ARC_BROWSER_EXECUTABLE||undefined});await b.close();})()"
-                ".catch(e=>{console.error(e.message);process.exitCode=1;});",
-            ],
-            backend,
-            max(0, min(30, deadline - time.monotonic())),
-            cancel_event=cancel_event,
-        )
-        report["checks"].append(
-            {"step": "browser_launch", "ok": code == 0, "detail": text[-3000:], "repairable": False}
-        )
-        check_cancelled(cancel_event)
-        if deadline - time.monotonic() > 5:
-            with isolated_application(workspace) as isolated:
+            check_cancelled(cancel_event)
+            if deadline - time.monotonic() > 5:
                 report["checks"].append(
                     probe_backend(
                         isolated / "backend",
@@ -484,10 +490,15 @@ def preflight(workspace: Path, *, timeout=600, cancel_event=None) -> dict:
                         cancel_event=cancel_event,
                     )
                 )
-        else:
-            report["checks"].append(
-                {"step": "backend_health", "ok": False, "detail": "preflight deadline exhausted", "repairable": False}
-            )
+            else:
+                report["checks"].append(
+                    {
+                        "step": "backend_health",
+                        "ok": False,
+                        "detail": "preflight deadline exhausted",
+                        "repairable": False,
+                    }
+                )
         check_cancelled(cancel_event)
         report["ok"] = all(c["ok"] for c in report["checks"])
         return report
@@ -883,12 +894,12 @@ def verify(
         report["checks"] = checks
         if any(not c["ok"] for c in checks):
             return report
-        checks += prepare_dependencies(workspace, deadline, cancel_event)
-        report["checks"] = checks
-        if any(not c["ok"] for c in checks):
-            return report
         with isolated_application(workspace) as isolated:
             check_cancelled(cancel_event)
+            checks += prepare_dependencies(isolated, deadline, cancel_event, cache_workspace=workspace)
+            report["checks"] = checks
+            if any(not c["ok"] for c in checks):
+                return report
             report = _verify_copy(
                 isolated, output, timeout=max(0, deadline - time.monotonic()), cancel_event=cancel_event
             )

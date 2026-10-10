@@ -3,9 +3,10 @@
 import json
 import os
 import shutil
+import sqlite3
 
 import pytest
-from arc_light.delivery import _digest, capture_baseline, database_values, verify
+from arc_light.delivery import _digest, capture_baseline, database_values, preflight, verify
 from arc_light.evidence import repair_frontier
 from arc_light.public_checks import write_public_checks
 from arc_light.reports import write_json
@@ -153,6 +154,68 @@ def test_relative_output_directory_reaches_the_same_browser_contract(tmp_path, m
     output = workspace / ".arc/checks/focused"
     assert json.loads((output / "browser-report.json").read_text())["ok"]
     assert json.loads((output / "verification.json").read_text())["ok"]
+
+
+@pytest.mark.parametrize("destructive", [False, True])
+def test_install_lifecycle_runs_in_each_copy_and_keeps_original_data_and_source(tmp_path, destructive):
+    from pathlib import Path
+
+    workspace = fixture_app(tmp_path, names=("alice",))
+    backend = workspace / "backend"
+    with sqlite3.connect(backend / "app.sqlite") as db:
+        db.execute("CREATE TABLE records(id INTEGER PRIMARY KEY, value TEXT)")
+        db.execute("INSERT INTO records VALUES(1,'inherited')")
+    (workspace / ".arc/checks/evolution-baseline.json").unlink()
+    shutil.rmtree(workspace / ".arc/checks/inherited-databases")
+    capture_baseline(workspace)
+    modules = backend / "node_modules"
+    shared = modules.resolve()
+    modules.unlink()
+    modules.mkdir()
+    (modules / "@playwright").mkdir()
+    (modules / "@playwright/test").symlink_to(shared / "@playwright/test", target_is_directory=True)
+    package_path = backend / "package.json"
+    package = json.loads(package_path.read_text())
+    package["scripts"]["postinstall"] = "node src/install.cjs"
+    package_path.write_text(json.dumps(package))
+    sql = "DELETE FROM records" if destructive else "CREATE TABLE installed(value TEXT)"
+    (backend / "src/install.cjs").write_text(
+        "const fs=require('node:fs');const{DatabaseSync}=require('node:sqlite');"
+        "fs.writeFileSync('src/generated.cjs','module.exports=true');"
+        "fs.mkdirSync('node_modules/@playwright',{recursive:true});"
+        f"fs.symlinkSync({json.dumps(str(shared / '@playwright/test'))},'node_modules/@playwright/test','dir');"
+        "fs.writeFileSync('node_modules/lifecycle-ran','copy');"
+        f"const db=new DatabaseSync('app.sqlite');db.exec({json.dumps(sql)});db.close();"
+    )
+    server = backend / "src/server.cjs"
+    server.write_text("require('./generated.cjs');\n" + server.read_text())
+    before = {
+        path.relative_to(workspace): path.read_bytes()
+        for name in ("backend", "frontend")
+        for path in (workspace / name).rglob("*")
+        if path.is_file() and "node_modules" not in path.relative_to(workspace).parts
+    }
+    for _ in range(2):
+        report = verify(workspace, timeout=120)
+        if destructive:
+            assert not report["ok"]
+            assert not next(check for check in report["checks"] if check["step"] == "inherited_row_counts")["ok"]
+        else:
+            assert report["ok"], report
+        after = {
+            path.relative_to(workspace): path.read_bytes()
+            for name in ("backend", "frontend")
+            for path in (workspace / name).rglob("*")
+            if path.is_file() and "node_modules" not in path.relative_to(workspace).parts
+        }
+        assert after == before
+        assert not (modules / "lifecycle-ran").exists()
+    if not destructive:
+        report = preflight(workspace, timeout=120)
+        assert report["ok"], report
+        assert (backend / "app.sqlite").read_bytes() == before[Path("backend/app.sqlite")]
+        assert not (backend / "src/generated.cjs").exists()
+        assert not (modules / "lifecycle-ran").exists()
 
 
 @pytest.mark.parametrize("visitor", [False, True])
