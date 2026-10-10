@@ -26,7 +26,7 @@ def parse_args(argv=None):
 async def execute(args):
     from arcbench_r6.model import CompetitionModel
     from arcbench_r6.settings import Settings
-    from arcbench_r6.workflow import evolution
+    from arcbench_r6.workflow import weave
 
     from opencollab import OpenCollab
 
@@ -59,7 +59,7 @@ async def execute(args):
     model_client = client.create_model_client()
     try:
         result = await client.workflow(
-            evolution,
+            weave,
             {
                 "requirements": str(Path(args.requirement_path).resolve()),
                 "task_type": args.task_type,

@@ -54,12 +54,12 @@ class Settings:
         ):
             raise ValueError("history_trigger_tokens must be at least 2")
 
-    def evolution_config(self):
-        from opencollab.builtin_workflows.evolution import EvolutionConfig
+    def weave_config(self):
+        from opencollab.builtin_workflows.weave import WeaveConfig
 
         from .prompts import SYSTEM_PROMPT
 
-        return EvolutionConfig(
+        return WeaveConfig(
             budget=self.budget,
             main_budget=self.main_budget,
             main_hard_budget=self.main_hard_budget,

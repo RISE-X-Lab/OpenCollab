@@ -142,7 +142,7 @@ class LocalModel:
 async def execute(root, task, model, **inputs):
     client = OpenCollab(root, model="test-model", config={"max_output_tokens": 128})
     return await client.workflow(
-        flow_module.evolution,
+        flow_module.weave,
         {"requirements": str(task), "settings": asdict(Settings()), **inputs},
         agent_profile="single2",
         budget=16_000_000,

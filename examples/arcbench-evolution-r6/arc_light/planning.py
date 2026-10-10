@@ -45,7 +45,7 @@ def resource_key(row):
 
 
 def feature_groups(index):
-    from opencollab.builtin_workflows.evolution import EvolutionGroup, plan_evolution_groups
+    from opencollab.builtin_workflows.weave import WeaveGroup, plan_weave_groups
 
     rows = target_rows(index)
     if not rows:
@@ -75,7 +75,7 @@ def feature_groups(index):
         identifier = f"arc-resource-{number}"
         while identifier in focused:
             identifier = "_" + identifier
-        groups.append(EvolutionGroup(
+        groups.append(WeaveGroup(
             id=identifier,
             prompt="Implement the current requirement group.",
             weight=sum(max(1, row.get("scenario_count", 0)) for row in unit),
@@ -86,7 +86,7 @@ def feature_groups(index):
         ))
     owners = {row["id"]: number for number, unit in enumerate(buckets.values()) for row in unit}
     result = []
-    for group in plan_evolution_groups(groups):
+    for group in plan_weave_groups(groups):
         selected = set(group.targets)
         grouped = [row for row in rows if row["id"] in selected]
         result.append(

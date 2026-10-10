@@ -1,4 +1,4 @@
-"""Competition operations and report translation for the native evolution workflow."""
+"""Competition operations and report translation for the native Weave workflow."""
 
 from __future__ import annotations
 
@@ -22,21 +22,21 @@ from arc_light.planning import (
 from arc_light.progress import monitor_tools
 from arc_light.reports import write_json
 from arc_light.spec import report_summary
-from opencollab.builtin_workflows.evolution import (
-    EvolutionAdapter,
-    EvolutionCheck,
-    EvolutionGroup,
-    EvolutionState,
-    run_evolution,
-)
 
+from opencollab.builtin_workflows.weave import (
+    WeaveAdapter,
+    WeaveCheck,
+    WeaveGroup,
+    WeaveState,
+    run_weave,
+)
 from opencollab.tools import builtin_tools, profile_tool_limits
 
 from .prompts import _repair_prompt, workspace_context
 from .session_control import SessionMetrics
 
 
-class EvolutionRunner(EvolutionAdapter):
+class WeaveRunner(WeaveAdapter):
     def __init__(self, ctx, workspace, index, product, settings, state, commit, emit, *, resume=False):
         super().__init__()
         self.ctx, self.workspace, self.index, self.product = ctx, workspace, index, product
@@ -61,8 +61,8 @@ class EvolutionRunner(EvolutionAdapter):
         self.metrics = SessionMetrics(workspace)
         self.verdicts = {}
         self.state.persist()
-        self.core_state = EvolutionState(self.state.data, run_id=self.state.run_id)
-        self.state.bind_evolution(self.core_state)
+        self.core_state = WeaveState(self.state.data, run_id=self.state.run_id)
+        self.state.bind_weave(self.core_state)
 
     def remaining(self):
         return self.settings.wall_seconds - self.core_state.elapsed
@@ -115,7 +115,7 @@ class EvolutionRunner(EvolutionAdapter):
 
     @staticmethod
     def _check(report, *, executed=True):
-        return EvolutionCheck(
+        return WeaveCheck(
             ok=bool(report.get("ok")),
             executed=executed,
             report=report,
@@ -235,7 +235,7 @@ class EvolutionRunner(EvolutionAdapter):
             identifier = f"arc-group-{number}"
             while identifier in targets:
                 identifier = "_" + identifier
-            groups.append(EvolutionGroup(
+            groups.append(WeaveGroup(
                 id=identifier,
                 prompt="Implement the current requirement group.",
                 weight=group_weight(group),
@@ -243,8 +243,8 @@ class EvolutionRunner(EvolutionAdapter):
                 resources=tuple(group["resources"]),
                 targets=tuple(group["ids"]),
             ))
-        result = await run_evolution(
-            self.ctx, groups, config=self.settings.evolution_config(), adapter=self, state=self.core_state
+        result = await run_weave(
+            self.ctx, groups, config=self.settings.weave_config(), adapter=self, state=self.core_state
         )
         return self.state.finish(
             status="completed",

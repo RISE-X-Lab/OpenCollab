@@ -1,4 +1,4 @@
-# ARC-Bench evolution checks
+# ARC-Bench r6 Weave checks
 
 This example checks a prepared Web application against public ARC-Bench requirements. Its checker layer comes from the r6 submission. It includes GitHub and spreadsheet scenario adapters, SQLite preservation checks, isolated builds and restarts, failure reports, and fresh-copy stability replays. Source attribution is recorded in [SOURCES.md](SOURCES.md).
 

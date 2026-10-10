@@ -1,4 +1,4 @@
-"""The competition harness as a native OC deterministic workflow."""
+"""The competition harness as a native OC Weave workflow."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from opencollab import workflow
 from .diagnostics import failure_message
 from .inputs import _persist_requirement_tree, copy_template_contents_to_output, read_task, resolve_requirements_file
 from .prompts import SPEC_DIR
-from .runner import EvolutionRunner
+from .runner import WeaveRunner
 from .settings import Settings
 from .state import RunState
 
@@ -54,11 +54,11 @@ async def _prepare_environment(workspace, timeout):
 
 
 @workflow(
-    name="arcbench-evolution-r6",
+    name="arcbench-weave-r6",
     description="Independent Single2 instances implement requirement groups, verify and repair a shared application.",
     phases=["prepare", "implement", "verify", "repair", "deliver"],
 )
-async def evolution(ctx, inputs):
+async def weave(ctx, inputs):
     workspace = Path(ctx.workspace_root).resolve()
     run_id = ctx.run_id or "arc-" + uuid.uuid4().hex
     (workspace / ".arc").mkdir(parents=True, exist_ok=True)
@@ -120,7 +120,7 @@ async def evolution(ctx, inputs):
                 except Exception as error:
                     emit({"diag": "commit_failed", "exception_type": type(error).__name__})
 
-            runner = EvolutionRunner(ctx, workspace, index, product, settings, state, commit, emit, resume=resume)
+            runner = WeaveRunner(ctx, workspace, index, product, settings, state, commit, emit, resume=resume)
             result = await runner.run()
             commit("r6 workflow delivery and verification")
             await ctx.phase("Delivery result")
