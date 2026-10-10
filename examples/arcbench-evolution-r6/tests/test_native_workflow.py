@@ -201,9 +201,54 @@ async def test_repair_is_a_new_instance_with_real_failure_feedback(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_resume_preserves_platform_traceability(tmp_path, monkeypatch):
-    from arcbench_agent_runtime import AgentRuntime
+async def test_database_source_change_rechecks_the_prior_requirement_group(tmp_path, monkeypatch):
+    task = application(tmp_path)
+    checks(monkeypatch)
+    original = delivery.verify
+    scopes = []
 
+    def verify(workspace, **kwargs):
+        scopes.append((kwargs.get("scope", "all"), kwargs.get("requirement_ids", ())))
+        return original(workspace, **kwargs)
+
+    monkeypatch.setattr(delivery, "verify", verify)
+    monkeypatch.setattr(runner_module, "verify", verify)
+
+    class DatabaseModel:
+        async def complete(self, messages, **options):
+            if any(row["role"] == "tool" for row in messages):
+                return LLMResponse(content="Unfinished: none", usage=Usage(4, 2), finish_reason="stop")
+            prompt = next(row["content"] for row in messages if row["role"] == "user")
+            current_group = prompt.split("Prior execution, claims and coordinator evidence")[0]
+            path = "backend/src/database/index.js" if "REQ-B |" in current_group else "backend/src/session.js"
+            return LLMResponse(
+                tool_calls=[{
+                    "id": "edit-source",
+                    "type": "function",
+                    "function": {
+                        "name": "file_write",
+                        "arguments": json.dumps({"path": path, "mode": "create", "content": "feature"}),
+                    },
+                }],
+                usage=Usage(4, 2),
+                finish_reason="tool_calls",
+            )
+
+    result = await execute(tmp_path, task, DatabaseModel())
+    assert result.ok and result.output["delivery_ok"], result
+    assert scopes == [
+        ("requirements", ["REQ-A"]),
+        ("requirements", ["REQ-A", "REQ-B"]),
+        ("all", ()),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_preserves_platform_traceability(tmp_path, monkeypatch):
+    from arcbench_agent_runtime import AgentRuntime, traceability
+
+    timestamp = ["2026-10-10 00:00:00"]
+    monkeypatch.setattr(traceability, "_utc_timestamp", lambda: timestamp[0])
     task = application(tmp_path)
     checks(monkeypatch)
     first = await execute(tmp_path, task, LocalModel())
@@ -214,7 +259,11 @@ async def test_resume_preserves_platform_traceability(tmp_path, monkeypatch):
         file_path="backend/src/feature.js", passed=True,
     )
     runtime.traceability.update_requirement_fields("REQ-A", description="Recorded implementation analysis")
+    assert runtime.traceability.get_node_state("REQ-A")["state"] == "IMPLEMENTING"
+    runtime.events.mark_test_passed("REQ-A", "Recorded real behavior result")
+    runtime.events.mark_implementation_failed("REQ-B", "Recorded unresolved implementation")
     before = runtime.traceability.export_snapshot()
+    timestamp[0] = "2026-10-10 00:00:01"
     resumed = await execute(tmp_path, task, LocalModel(), resume=True)
     assert resumed.ok and resumed.output["delivery_ok"], resumed
     assert runtime.traceability.export_snapshot() == before
@@ -278,6 +327,33 @@ async def test_preparation_cancellation_waits_for_the_writer(tmp_path, monkeypat
         await owner
     assert cleaned.is_set()
     assert json.loads((tmp_path / ".arc/checks/outcome.json").read_text())["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_delivery_cancellation_waits_for_the_verification_writer(tmp_path, monkeypatch):
+    task = application(tmp_path)
+    checks(monkeypatch)
+    original = runner_module.verify
+    started, cleaned = threading.Event(), threading.Event()
+
+    def verify(workspace, *, cancel_event, **kwargs):
+        started.set()
+        assert cancel_event.wait(5)
+        report = original(workspace, **kwargs)
+        (workspace / "verification-cleaned.txt").write_text("cleaned")
+        cleaned.set()
+        return report
+
+    monkeypatch.setattr(runner_module, "verify", verify)
+    owner = asyncio.create_task(execute(tmp_path, task, LocalModel()))
+    assert await asyncio.to_thread(started.wait, 5)
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    assert cleaned.is_set()
+    assert (tmp_path / "verification-cleaned.txt").read_text() == "cleaned"
+    outcome = json.loads((tmp_path / ".arc/checks/outcome.json").read_text())
+    assert outcome["status"] == "cancelled" and not outcome["delivery_ok"]
 
 
 @pytest.mark.asyncio
