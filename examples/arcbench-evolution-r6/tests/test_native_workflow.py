@@ -23,6 +23,7 @@ from arcbench_r6.settings import Settings
 
 from opencollab import OpenCollab
 from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.bootstrap.workflow_runtime import discover_workflows
 
 flow_module = importlib.import_module("arcbench_r6.workflow")
 runner_module = importlib.import_module("arcbench_r6.runner")
@@ -152,6 +153,35 @@ async def execute(root, task, model, **inputs):
         run_id="fixture-run",
         trace=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_discovered_weave_entry_runs_the_native_workflow(tmp_path, monkeypatch):
+    directory = Path(__file__).resolve().parents[1] / "workflows"
+    registry = discover_workflows(str(directory))
+    assert [spec.name for spec in registry.list_specs()] == ["arcbench-weave-r6"]
+    spec = registry.get("arcbench-weave-r6")
+    assert spec.description == flow_module.weave.__workflow_spec__.description
+    assert spec.phases == flow_module.weave.__workflow_spec__.phases
+    task = application(tmp_path)
+    checks(monkeypatch)
+    model = LocalModel()
+    result = await OpenCollab(tmp_path, model="test-model", config={"max_output_tokens": 128}).workflow(
+        spec,
+        {"requirements": str(task), "settings": asdict(Settings())},
+        agent_profile="single2",
+        budget=16_000_000,
+        concurrency=1,
+        limit_mode="explicit",
+        llm=model,
+        run_id="discovered-fixture-run",
+        trace=False,
+    )
+    assert result.ok and result.output["delivery_ok"], result
+    assert result.tokens == result.output["total_tokens"] == 18
+    assert (tmp_path / "backend/src/feature.js").read_text() == "initial"
+    assert len(model.calls) == 3
+    assert model.calls[0][0]["content"] == SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio
