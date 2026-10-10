@@ -166,6 +166,8 @@ class EvolutionRunner:
         self.save_check(len(rounds), report)
         stagnant = int(rounds[-1].get("stagnant_rounds", 0)) if rounds else 0
         stop_reason = "passed" if report["ok"] else "round_limit"
+        if not report["ok"] and stagnant >= 2:
+            return report, "two_rounds_without_observable_progress"
         while not report["ok"] and len(rounds) < 3:
             budget_left = self.settings.budget - self.state.tokens
             time_left = self.remaining() - 300

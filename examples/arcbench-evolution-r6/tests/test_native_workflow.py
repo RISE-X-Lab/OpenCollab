@@ -221,6 +221,27 @@ async def test_resume_preserves_platform_traceability(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resume_retains_the_two_stagnant_repair_round_stop(tmp_path, monkeypatch):
+    task = application(tmp_path)
+    checks(monkeypatch, repair=True)
+    model = LocalModel()
+    model.repaired = True  # This model returns without repairing the original failed behavior.
+    first = await execute(tmp_path, task, model)
+    reason = "two_rounds_without_observable_progress"
+    assert first.output["repair_stop_reason"] == reason and not first.output["delivery_ok"]
+    resumed_model = LocalModel()
+    resumed = await execute(tmp_path, task, resumed_model, resume=True)
+    assert resumed.output["repair_stop_reason"] == reason and not resumed.output["delivery_ok"]
+    assert resumed_model.calls == []
+    state = json.loads((tmp_path / ".arc/checks/run-state.json").read_text())
+    assert len(state["repair_rounds"]) == 2
+    (tmp_path / "backend/src/feature.js").write_text("fixed")
+    recovered = await execute(tmp_path, task, resumed_model, resume=True)
+    assert recovered.output["delivery_ok"] and recovered.output["repair_stop_reason"] == "passed"
+    assert resumed_model.calls == []
+
+
+@pytest.mark.asyncio
 async def test_old_success_is_replaced_when_new_inputs_fail(tmp_path):
     output = tmp_path / ".arc/checks/outcome.json"
     output.parent.mkdir(parents=True)
