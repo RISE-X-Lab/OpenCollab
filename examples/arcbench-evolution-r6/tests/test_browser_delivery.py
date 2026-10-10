@@ -302,6 +302,74 @@ def test_reaction_feedback_count_and_real_reload(tmp_path, visitor):
     assert report["inherited_snapshot_used"]
 
 
+def test_reaction_scenarios_keep_independent_given_and_reuse_one_build(tmp_path, monkeypatch):
+    workspace = fixture_app(tmp_path)
+    counter = tmp_path / "build-count.txt"
+    monkeypatch.setenv("ARC_FIXTURE_BUILD_COUNT", str(counter))
+    monkeypatch.setenv("ARC_VERIFY_CONTRACT", str(tmp_path / "other-run-contract.json"))
+    package_path = workspace / "frontend/package.json"
+    package = json.loads(package_path.read_text())
+    package["scripts"]["build"] = (
+        "node -e \"require('node:fs').appendFileSync(process.env.ARC_FIXTURE_BUILD_COUNT,'build\\n')\""
+    )
+    package_path.write_text(json.dumps(package))
+    write_json(
+        workspace / ".arc/checks/dependency-cache.json",
+        {name: _digest(workspace / name) for name in ("frontend", "backend")},
+    )
+    document = [
+        {
+            "id": "REQ-" + username,
+            "name": "Sign In with an Existing Account",
+            "scenarios": [
+                {
+                    "steps": [
+                        {
+                            "keyword": "GIVEN",
+                            "content": f"account `{username}` (`{username}@example.test`, `fixture-password`)",
+                        },
+                        {"keyword": "WHEN", "content": f"enters `{username}` and `fixture-password`"},
+                        {"keyword": "THEN", "content": "the signed-in username remains after reload"},
+                    ]
+                }
+            ],
+        }
+        for username in ("alice", "bob")
+    ]
+    given = "account `alice` (`alice@example.test`, `fixture-password`) and issue `Public issue`"
+    document.append(
+        {
+            "id": "REQ-reaction",
+            "name": "Add and Remove Issue Reactions",
+            "scenarios": [
+                {
+                    "steps": [
+                        {"keyword": "GIVEN", "content": given},
+                        {
+                            "keyword": "WHEN",
+                            "content": "add a reaction" if index == 0 else "add then remove a reaction",
+                        },
+                        {"keyword": "THEN", "content": "total remains after reload"},
+                    ]
+                }
+                for index in range(2)
+            ],
+        }
+    )
+    write_public_checks(document, workspace)
+    original = (workspace / "backend/app.sqlite").read_bytes()
+    report = verify(workspace, timeout=120)
+    assert report["ok"], report
+    assert report["scenario_coverage"]["expected"] == report["scenario_coverage"]["passed"] == 4
+    assert counter.read_text().splitlines() == ["build"]
+    assert len(report["reaction_runs"]) == 2
+    assert all(row["persistence_verified"] for row in report["reaction_runs"])
+    assert (workspace / "backend/app.sqlite").read_bytes() == original
+    from arc_light.stability import read_history
+
+    assert all(row["consecutive_passes"] == 1 for row in read_history(workspace)["checks"].values())
+
+
 def test_filter_duplicate_name_precedes_missing_filter_and_delete_survives_reload(tmp_path):
     workspace = fixture_app(tmp_path, names=("alice",))
     scenario = {

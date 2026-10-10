@@ -7,7 +7,7 @@ const output = process.env.ARC_VERIFY_OUTPUT;
 const base = process.env.ARC_VERIFY_URL;
 const report = { evidence_kind: 'browser_navigation_smoke_not_business_acceptance',
   pages: [], prerequisites: [], page_errors: [], server_errors: [], warnings: [], ok: false };
-const configPath = path.join(output, 'public-prerequisites.json');
+const configPath = process.env.ARC_VERIFY_CONTRACT || path.join(output, 'public-prerequisites.json');
 const contract = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, 'utf8')) : { kind: 'none' };
 const deadline = Date.now() + Math.max(1000, Number(process.env.ARC_BROWSER_SECONDS || 420) * 1000);
 

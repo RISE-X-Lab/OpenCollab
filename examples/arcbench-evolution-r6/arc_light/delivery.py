@@ -15,7 +15,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
 
 from arc_light.completion import scenario_coverage, scenario_key
@@ -540,6 +540,7 @@ def _verify_copy(workspace: Path, output: Path, *, timeout: float = 600, cancel_
     npm = shutil.which("npm.cmd" if os.name == "nt" else "npm") or "npm"
     node = shutil.which("node") or "node"
     process = None
+    copies = ExitStack()
 
     def record(step: str, ok: bool, detail: str = "", **extra) -> bool:
         report["checks"].append({"step": step, "ok": ok, "detail": detail[-5000:], **extra})
@@ -549,7 +550,7 @@ def _verify_copy(workspace: Path, output: Path, *, timeout: float = 600, cancel_
     def command(args: list[str], cwd: Path, cap: float = 300, env: dict | None = None):
         return run_command(args, cwd, max(0, min(cap, deadline - time.monotonic())), env, cancel_event)
 
-    def start(stage: str) -> tuple[subprocess.Popen, bool, str]:
+    def start(stage: str, *, app_backend=None, port_number=None) -> tuple[subprocess.Popen, bool, str]:
         check_cancelled(cancel_event)
         if time.monotonic() >= deadline:
             raise TimeoutError("Verification deadline exhausted before backend startup")
@@ -558,14 +559,16 @@ def _verify_copy(workspace: Path, output: Path, *, timeout: float = 600, cancel_
             for key, value in os.environ.items()
             if key not in {"ARC_DB_FILE", "ARC_E2E_DB_PATH", "DATABASE_FILE"}
         }
-        env["PORT"] = str(port)
+        selected_port = port if port_number is None else port_number
+        target_url = f"http://127.0.0.1:{selected_port}"
+        env["PORT"] = str(selected_port)
         log = open(output / "backend.log", "a", encoding="utf-8")
         log.write(f"\n[verification stage: {stage}]\n")
         log.flush()
         try:
             proc = subprocess.Popen(
                 [npm, "run", "start"],
-                cwd=backend,
+                cwd=backend if app_backend is None else app_backend,
                 env=env,
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -581,7 +584,7 @@ def _verify_copy(workspace: Path, output: Path, *, timeout: float = 600, cancel_
                 check_cancelled(cancel_event)
                 try:
                     with urllib.request.urlopen(
-                        base_url + "/api/health", timeout=max(0.1, min(2, health_deadline - time.monotonic()))
+                        target_url + "/api/health", timeout=max(0.1, min(2, health_deadline - time.monotonic()))
                     ) as response:
                         status = f"HTTP {response.status}"
                         ready = response.status == 200
@@ -675,11 +678,37 @@ def _verify_copy(workspace: Path, output: Path, *, timeout: float = 600, cancel_
             persistence_verified=False,
         ):
             return report
+        reaction_items = [
+            item for item in contract.get("evolution_checks", []) if item["name"] == "Add and Remove Issue Reactions"
+        ]
+        reaction_copies = []
+        if len(reaction_items) > 1:
+            # Clone the stopped, migrated GIVEN state once per reaction scenario.
+            # Dependencies and the completed frontend build are reused by each copy.
+            reaction_copies = [
+                (item, copies.enter_context(isolated_application(workspace, inherited=False)))
+                for item in reaction_items
+            ]
         process, ready, status = start("browser_backend_start")
         if not record("browser_backend_start", ready, status):
             return report
         module_root = Path(__file__).resolve().parent
-        env = dict(os.environ, ARC_VERIFY_URL=base_url, ARC_VERIFY_OUTPUT=str(output))
+        env = dict(
+            os.environ,
+            ARC_VERIFY_URL=base_url,
+            ARC_VERIFY_OUTPUT=str(output),
+            ARC_VERIFY_CONTRACT=str(output / "public-prerequisites.json"),
+        )
+        if reaction_copies:
+            browser_contract = dict(
+                contract,
+                evolution_checks=[
+                    item for item in contract["evolution_checks"] if item["name"] != "Add and Remove Issue Reactions"
+                ],
+            )
+            browser_input = output / "browser-main-input.json"
+            browser_input.write_text(json.dumps(browser_contract), encoding="utf-8")
+            env["ARC_VERIFY_CONTRACT"] = str(browser_input)
         (output / "browser-report.json").unlink(missing_ok=True)
         if os.environ.get("ARC_BROWSER_SMOKE", "1") == "1":
             browser_seconds = max(1, min(480, deadline - time.monotonic() - 60))
@@ -693,6 +722,77 @@ def _verify_copy(workspace: Path, output: Path, *, timeout: float = 600, cancel_
                 report["browser_capability"] = "unavailable; no install or model repair attempted"
                 record("browser_smoke", False, report["browser_capability"], repairable=False)
             else:
+                if reaction_copies:
+                    stop_process(process)
+                    process = None
+                    reaction_runs = []
+                    for ordinal, (item, isolated) in enumerate(reaction_copies, 1):
+                        check_cancelled(cancel_event)
+                        key = scenario_key(item)
+                        scenario_output = output / "reaction-scenarios" / str(ordinal)
+                        scenario_output.mkdir(parents=True, exist_ok=True)
+                        scenario_contract = dict(contract, scope="requirements", evolution_checks=[item])
+                        scenario_input = scenario_output / "public-prerequisites.json"
+                        scenario_input.write_text(json.dumps(scenario_contract), encoding="utf-8")
+                        scenario_port = _port()
+                        process, ready, status = start(
+                            key + ":browser_backend_start", app_backend=isolated / "backend", port_number=scenario_port
+                        )
+                        if not record(key + ":browser_backend_start", ready, status):
+                            stop_process(process)
+                            process = None
+                            browser["ok"] = False
+                            continue
+                        seconds = max(1, min(480, deadline - time.monotonic() - 60))
+                        scenario_env = dict(
+                            os.environ,
+                            ARC_VERIFY_URL=f"http://127.0.0.1:{scenario_port}",
+                            ARC_VERIFY_OUTPUT=str(scenario_output),
+                            ARC_VERIFY_CONTRACT=str(scenario_input),
+                            ARC_BROWSER_SECONDS=str(seconds - 5),
+                        )
+                        scenario_code, scenario_text = command(
+                            [node, str(module_root / "browser_check.cjs")], isolated / "backend", seconds, scenario_env
+                        )
+                        scenario_path = scenario_output / "browser-report.json"
+                        scenario_browser = json.loads(scenario_path.read_text()) if scenario_path.is_file() else {}
+                        browser["ok"] = bool(
+                            browser.get("ok") and scenario_code == 0 and scenario_browser.get("ok") is True
+                        )
+                        for field in ("pages", "prerequisites", "page_errors", "server_errors", "warnings"):
+                            browser.setdefault(field, []).extend(scenario_browser.get(field, []))
+                        if scenario_browser.get("error"):
+                            browser["error"] = scenario_browser["error"]
+                        record(
+                            key + ":browser_execution",
+                            scenario_code == 0 and scenario_browser.get("ok") is True,
+                            scenario_text[-1500:] if scenario_code else "Independent GIVEN copy executed",
+                            repairable=scenario_code not in {78, 124},
+                        )
+                        stop_process(process)
+                        process = None
+                        written_state = sqlite_snapshot(isolated / "backend", row_fingerprints=True)
+                        process, ready, status = start(
+                            key + ":written_state_restart", app_backend=isolated / "backend", port_number=scenario_port
+                        )
+                        stop_process(process)
+                        process = None
+                        restarted_state = sqlite_snapshot(isolated / "backend", row_fingerprints=True)
+                        delta = database_delta(written_state, restarted_state)
+                        (scenario_output / "restart-diff.json").write_text(json.dumps(delta), encoding="utf-8")
+                        persisted = ready and delta["unchanged"] and bool(written_state)
+                        record(
+                            key + ":written_state_restart",
+                            persisted,
+                            status + "\n" + json.dumps(delta),
+                            repairable=True,
+                            persistence_verified=persisted,
+                        )
+                        reaction_runs.append(
+                            {"scenario_id": key, "report_path": str(scenario_path), "persistence_verified": persisted}
+                        )
+                    report["reaction_runs"] = reaction_runs
+                    browser_path.write_text(json.dumps(browser, indent=2), encoding="utf-8")
                 report["browser"] = browser
                 errors = {
                     "page_errors": browser.get("page_errors", [])[:4],
@@ -755,7 +855,8 @@ def _verify_copy(workspace: Path, output: Path, *, timeout: float = 600, cancel_
                     repairable=False,
                 )
             # Browser contexts are closed: verify their writes survive an actual process restart.
-            stop_process(process)
+            if process is not None:
+                stop_process(process)
             process = None
             written = sqlite_snapshot(backend, row_fingerprints=True)
             process, ready, status = start("written_state_restart")
@@ -789,6 +890,7 @@ def _verify_copy(workspace: Path, output: Path, *, timeout: float = 600, cancel_
     finally:
         if process is not None:
             stop_process(process)
+        copies.close()
         report["seconds_remaining"] = round(max(0, deadline - time.monotonic()), 1)
         (output / "verification.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
