@@ -80,7 +80,7 @@ class Settings:
             minimum_session_seconds=60,
             cleanup_seconds=self.cleanup_seconds,
             tool_cleanup_seconds=self.tool_cleanup_seconds,
-            max_output_tokens=self.max_output_tokens,
+            output_reserve_tokens=self.max_output_tokens,
             history_trigger_tokens=self.history_trigger_tokens,
             extension_tokens=1_000_000,
             extension_margin_tokens=200_000,
