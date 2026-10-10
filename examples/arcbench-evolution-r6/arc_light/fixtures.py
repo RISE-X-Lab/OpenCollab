@@ -8,10 +8,12 @@ import re
 import sqlite3
 from contextlib import closing
 
+from .integrity import database_files
+
 
 def verify_fixtures(backend, contract):
     checks = []
-    files = sorted(p for p in backend.glob("*") if p.suffix in {".db", ".sqlite", ".sqlite3"})
+    files = [p for p in database_files(backend) if p.suffix in {".db", ".sqlite", ".sqlite3"}]
     accounts, workbooks = {}, set()
     has_accounts = has_workbooks = False
     for path in files:

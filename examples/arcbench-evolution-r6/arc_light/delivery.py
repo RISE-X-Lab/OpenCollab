@@ -22,6 +22,7 @@ from arc_light.completion import scenario_coverage, scenario_key
 from arc_light.fixtures import verify_fixtures
 from arc_light.integrity import (
     consistent_backup,
+    database_files,
     database_values,
     inherited_damage,
     protected_test_files,
@@ -100,20 +101,6 @@ def run_command(
     except BaseException:
         stop_process(proc)
         raise
-
-
-def database_files(backend: Path) -> list[Path]:
-    found = []
-    suffixes = (".db", ".sqlite", ".sqlite3")
-    for directory, dirs, files in os.walk(backend):
-        depth = len(Path(directory).relative_to(backend).parts)
-        dirs[:] = [name for name in dirs if name not in {"node_modules", ".git"} and depth < 3]
-        for name in files:
-            if name.endswith(suffixes) or any(
-                name.endswith(suffix + sidecar) for suffix in suffixes for sidecar in ("-wal", "-shm", "-journal")
-            ):
-                found.append(Path(directory) / name)
-    return sorted(found)
 
 
 def sqlite_snapshot(backend: Path, *, row_fingerprints=False) -> dict:
