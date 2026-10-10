@@ -138,6 +138,9 @@ Each group has a unique `id` and a nonempty `prompt`. `weight` defaults to one.
 shared files or other affected resources. `targets` defaults to the group id.
 Groups in a dependency cycle share one session. Later groups can read edits
 made by earlier groups while starting with fresh conversation histories.
+`plan_evolution_groups(groups)` returns the ordered groups with cycles combined
+and dependencies expressed as target ids. Application loaders can pass that
+plan directly to `run_evolution`.
 
 For application-specific checks, call `run_evolution` from a wrapper workflow
 and supply an `EvolutionAdapter`. The public types are exported from

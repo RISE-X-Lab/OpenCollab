@@ -236,7 +236,9 @@ class EvolutionAdapter:
         rows = report["checks"]
         return EvolutionCheck(
             report["ok"], report["executed"], report,
-            tuple(row["command"] for row in rows if row["executed"] and not row["ok"]),
+            tuple(row["command"] for row in rows if row["executed"] and not row["ok"] and (
+                row.get("exit_code") not in {0, 5} or row.get("expected_output") is not None
+            )),
             tuple(row["command"] for row in rows if row["ok"]),
         )
 
@@ -253,7 +255,13 @@ class EvolutionAdapter:
         pass
 
 
-def _ordered_groups(groups: Sequence[EvolutionGroup]) -> list[EvolutionGroup]:
+def plan_evolution_groups(groups: Sequence[EvolutionGroup]) -> list[EvolutionGroup]:
+    """Order groups by dependencies, combining a dependency cycle into one session.
+
+    Dependencies naming group ids become target ids. The planned descriptors
+    can consequently be passed through this function again after cycle merging.
+    Input order resolves independent ready groups and the order within a cycle.
+    """
     if not groups or any(not isinstance(group, EvolutionGroup) for group in groups):
         raise ValueError("groups must contain at least one EvolutionGroup")
     owners: dict[str, int] = {}
@@ -303,16 +311,19 @@ def _ordered_groups(groups: Sequence[EvolutionGroup]) -> list[EvolutionGroup]:
         pending.remove(number)
         done.add(number)
         members = [groups[item] for item in components[number]]
-        if len(members) == 1:
+        local = {key for group in members for key in (group.id, *group.targets)}
+        targets = {key for group in groups for key in group.targets}
+        dependencies = tuple(dict.fromkeys(
+            key if key in targets else groups[owners[key]].targets[0]
+            for group in members for key in group.dependencies if key not in local
+        ))
+        if len(members) == 1 and dependencies == members[0].dependencies:
             ordered.append(members[0])
             continue
-        local = {key for group in members for key in (group.id, *group.targets)}
         ordered.append(EvolutionGroup(
             id=members[0].id, prompt="\n\n".join(group.prompt for group in members),
             weight=sum(group.weight for group in members),
-            dependencies=tuple(dict.fromkeys(
-                key for group in members for key in group.dependencies if key not in local
-            )),
+            dependencies=dependencies,
             resources=tuple(dict.fromkeys(key for group in members for key in group.resources)),
             targets=tuple(key for group in members for key in group.targets),
         ))
@@ -362,7 +373,7 @@ class _EvolutionRun:
     def __init__(self, ctx: WorkflowContext, groups: Sequence[EvolutionGroup], config: EvolutionConfig,
                  adapter: EvolutionAdapter, state: EvolutionState) -> None:
         self.ctx, self.config, self.adapter, self.state = ctx, config, adapter, state
-        self.groups = _ordered_groups(groups)
+        self.groups = plan_evolution_groups(groups)
         target_owners = {key: group.id for group in self.groups for key in group.targets}
         self.dependency_owners = {key: target_owners[group.targets[0]]
                                   for group in groups for key in (group.id, *group.targets)}
@@ -660,4 +671,4 @@ async def evolution(ctx: WorkflowContext, args: dict[str, Any]) -> dict[str, Any
 
 
 __all__ = ["EvolutionAdapter", "EvolutionCheck", "EvolutionConfig", "EvolutionGroup", "EvolutionState",
-           "evolution", "run_evolution"]
+           "evolution", "plan_evolution_groups", "run_evolution"]

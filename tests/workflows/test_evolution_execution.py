@@ -18,6 +18,7 @@ from opencollab.builtin_workflows import (
     EvolutionConfig,
     EvolutionGroup,
     EvolutionState,
+    plan_evolution_groups,
     run_evolution,
 )
 from opencollab.tools import builtin_tools
@@ -122,11 +123,12 @@ async def test_missing_or_nonexecuting_check_never_verifies_delivery(tmp_path, c
 
 async def test_successful_command_without_behavior_evidence_is_unverified(tmp_path):
     command = f"{shlex.quote(sys.executable)} -c 'print(123)'"
+    model = FileModel(initial="correct\n")
     result = await _client(tmp_path).workflow(
         "evolution", {
             "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
-            "check_commands": [command], "config": {"max_repair_rounds": 0},
-        }, llm=FileModel(initial="correct\n"), budget=20_000, limit_mode="explicit", trace=False,
+            "check_commands": [command],
+        }, llm=model, budget=20_000, limit_mode="explicit", trace=False,
     )
     assert result.ok
     assert result.output["delivery_ok"] is False
@@ -134,17 +136,19 @@ async def test_successful_command_without_behavior_evidence_is_unverified(tmp_pa
     assert checks[0]["executed"] is True and checks[0]["exit_code"] == 0
     assert checks[0]["ok"] is False
     assert "123" in checks[0]["output"]
+    assert not result.output["repair_rounds"]
+    assert len(model.calls) == 2
 
 
 async def test_zero_collected_tests_with_expected_text_never_verifies_delivery(tmp_path):
     (tmp_path / "empty_tests").mkdir()
     command = f"{shlex.quote(sys.executable)} -m pytest -q empty_tests"
+    model = FileModel(initial="correct\n")
     result = await _client(tmp_path).workflow(
         "evolution", {
             "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
             "check_commands": [{"command": command, "expected_output": "no tests ran"}],
-            "config": {"max_repair_rounds": 0},
-        }, llm=FileModel(initial="correct\n"), budget=20_000, limit_mode="explicit", trace=False,
+        }, llm=model, budget=20_000, limit_mode="explicit", trace=False,
     )
     assert result.ok
     assert result.output["delivery_ok"] is False
@@ -152,6 +156,8 @@ async def test_zero_collected_tests_with_expected_text_never_verifies_delivery(t
     assert checks[0]["executed"] is True
     assert checks[0]["exit_code"] == 5
     assert "no tests ran" in checks[0]["output"]
+    assert not result.output["repair_rounds"]
+    assert len(model.calls) == 2
 
 
 @pytest.mark.parametrize("unbounded", [False, True])
@@ -214,6 +220,78 @@ async def test_failed_executable_check_is_repaired_in_a_new_session(tmp_path, mo
     assert result.output["groups"]["1"]["result"]["session_id"] != result.output["repair_rounds"][0]["session_id"]
     assert len(model.calls) == 4 and result.tokens == 24
     assert "write-stage" not in str(model.calls[2])
+
+
+@pytest.mark.parametrize("changed", [False, True])
+async def test_completed_native_edit_extends_soft_allowance_within_the_same_session(tmp_path, changed):
+    if not changed:
+        (tmp_path / "result.txt").write_text("correct\n")
+
+    class ProgressChecks(EvolutionAdapter):
+        def __init__(self):
+            super().__init__(check_commands=FileChecks(tmp_path).check_commands)
+            self.extensions = []
+            self.session_ids = set()
+
+        def on_update(self, kind, state, data):
+            if kind == "budget_extended":
+                self.extensions.append(copy.deepcopy(data))
+
+        def on_event(self, phase, event):
+            if event.session_id:
+                self.session_ids.add(event.session_id)
+
+    class ExpensiveFileModel(FileModel):
+        async def complete(self, messages, tools=None, **kwargs):
+            response = await super().complete(messages, tools, **kwargs)
+            response.usage = Usage(8_000, 500)
+            return response
+
+    adapter, model = ProgressChecks(), ExpensiveFileModel(initial="correct\n")
+
+    async def flow(ctx, _args):
+        return await run_evolution(ctx, [EvolutionGroup("result", "write-stage")],
+                                   config=_config(main_budget=10_000, extension_tokens=8_000), adapter=adapter)
+
+    result = await _client(tmp_path).workflow(
+        flow, llm=model, budget=20_000, limit_mode="explicit", agent_profile="single2", trace=False,
+    )
+    assert result.ok and result.output["delivery_ok"] is True, (result.reason, result.output)
+    assert (tmp_path / "result.txt").read_text() == "correct\n"
+    assert len(model.calls) == (2 if changed else 1)
+    assert result.tokens == (17_000 if changed else 8_500)
+    assert len(adapter.session_ids) == 1, (result.output, adapter.extensions)
+    assert not result.output["repair_rounds"]
+    if changed:
+        assert adapter.extensions and all(data["same_session"] is True for data in adapter.extensions)
+        assert all(data["old_cap"] < data["new_cap"] <= data["hard_cap"] for data in adapter.extensions)
+        assert result.output["groups"]["1"]["result"]["soft_budget_tokens"] > 10_000
+    else:
+        assert not adapter.extensions
+        assert result.output["groups"]["1"]["result"]["soft_budget_tokens"] == 10_000
+        assert result.output["groups"]["1"]["result"]["status"] == "stopped"
+
+
+async def test_executed_failures_stop_finite_repairs_after_measured_stagnation(tmp_path):
+    adapter, model = FileChecks(tmp_path), FileModel(repaired="wrong\n")
+
+    async def flow(ctx, _args):
+        return await run_evolution(ctx, [EvolutionGroup("result", "write-stage")],
+                                   config=_config(max_repair_rounds=5, stagnant_round_limit=2), adapter=adapter)
+
+    result = await _client(tmp_path).workflow(
+        flow, llm=model, budget=20_000, limit_mode="explicit", agent_profile="single2", trace=False,
+    )
+    assert result.ok
+    assert result.output["status"] == "failed" and result.output["delivery_ok"] is False
+    assert result.output["repair_stop_reason"] == "rounds_without_observable_progress"
+    rounds = result.output["repair_rounds"]
+    assert len(rounds) == 2 and rounds[-1]["stagnant_rounds"] == 2
+    assert len({row["session_id"] for row in rounds}) == 2
+    assert len(model.calls) == 6 and result.tokens == 36
+    assert len(adapter.checks) == 4 and all(check.executed and not check.ok for check in adapter.checks)
+    assert (tmp_path / "checks-ran.txt").read_text().splitlines() == ["executed"] * 4
+    assert (tmp_path / "result.txt").read_text() == "wrong\n"
 
 
 async def test_edit_to_ancestor_rechecks_transitive_dependent_targets(tmp_path):
@@ -280,6 +358,92 @@ async def test_edit_to_ancestor_rechecks_transitive_dependent_targets(tmp_path):
     assert (tmp_path / "a.txt").read_text() == "changed\n"
     assert len(result.output["groups"]) == 4
     assert result.tokens == len(model.calls) * 6 > 0
+
+
+async def test_planned_dependency_cycle_executes_one_shared_session_then_its_dependent(tmp_path):
+    (tmp_path / "check_cycle.py").write_text(
+        "from pathlib import Path\n"
+        "assert Path('a.txt').read_text() == 'a\\n'\n"
+        "assert Path('b.txt').read_text() == 'b\\n'\n"
+        "if Path('c.txt').exists():\n"
+        "    assert Path('c.txt').read_text() == 'a+b\\n'\n"
+        "with Path('checks-ran.txt').open('a') as stream:\n"
+        "    stream.write('executed\\n')\n"
+        "print('CYCLE_FILES_OK')\n",
+        encoding="utf-8",
+    )
+
+    class CycleChecks(EvolutionAdapter):
+        def __init__(self):
+            super().__init__(check_commands=[{
+                "command": f"{shlex.quote(sys.executable)} check_cycle.py", "expected_output": "CYCLE_FILES_OK",
+            }], tools=list(builtin_tools("file_read", "file_write", headless=False)))
+            self.targets, self.prompts = [], []
+
+        def group_prompt(self, group, state):
+            prompt = super().group_prompt(group, state)
+            self.prompts.append(prompt)
+            return prompt
+
+        def source_snapshot(self):
+            return {path.name: path.read_bytes() for path in tmp_path.glob("[abc].txt")}
+
+        async def verify(self, ctx, targets, seconds):
+            self.targets.append(targets)
+            return await super().verify(ctx, targets, seconds)
+
+    class CycleModel(FileModel):
+        async def complete(self, messages, tools=None, **kwargs):
+            self.calls.append(copy.deepcopy(messages))
+            prompt = next(message["content"] for message in messages if message["role"] == "user")
+            results = [message for message in messages if message["role"] == "tool"]
+            if "cycle-A" in prompt:
+                assert "cycle-B" in prompt
+                calls = [] if results else [
+                    ("file_write", {"path": "a.txt", "mode": "create", "content": "a\n"}),
+                    ("file_write", {"path": "b.txt", "mode": "create", "content": "b\n"}),
+                ]
+            elif not results:
+                calls = [("file_read", {"path": "a.txt"}), ("file_read", {"path": "b.txt"})]
+            elif len(results) == 2:
+                assert "a" in str(results[0]["content"]) and "b" in str(results[1]["content"])
+                calls = [("file_write", {"path": "c.txt", "mode": "create", "content": "a+b\n"})]
+            else:
+                calls = []
+            if not calls:
+                return LLMResponse(content="files saved", usage=Usage(4, 2), finish_reason="stop")
+            return LLMResponse(tool_calls=[{
+                "id": f"call-{len(self.calls)}-{number}", "type": "function", "function": {
+                    "name": name, "arguments": json.dumps(arguments),
+                },
+            } for number, (name, arguments) in enumerate(calls)], usage=Usage(4, 2), finish_reason="tool_calls")
+
+    groups = [
+        EvolutionGroup("A", "cycle-A creates a.txt", targets=("target-a",), dependencies=("B",)),
+        EvolutionGroup("B", "cycle-B creates b.txt", targets=("target-b",), dependencies=("A",)),
+        EvolutionGroup("C", "cycle-C reads both files and creates c.txt", targets=("target-c",), dependencies=("B",)),
+    ]
+    planned = plan_evolution_groups(groups)
+    assert len(planned) == 2
+    assert planned[0].targets == ("target-a", "target-b")
+    assert planned[1].dependencies == ("target-b",)
+    adapter, model = CycleChecks(), CycleModel()
+
+    async def flow(ctx, _args):
+        return await run_evolution(ctx, planned, config=_config(), adapter=adapter)
+
+    result = await _client(tmp_path).workflow(
+        flow, llm=model, budget=30_000, limit_mode="explicit", agent_profile="single2", trace=False,
+    )
+    assert result.ok and result.output["delivery_ok"] is True, (result.reason, result.output)
+    assert len(result.output["groups"]) == 2
+    assert len({row["result"]["session_id"] for row in result.output["groups"].values()}) == 2
+    assert "cycle-A" in adapter.prompts[0] and "cycle-B" in adapter.prompts[0]
+    assert "cycle-C" in adapter.prompts[1]
+    assert adapter.targets[:2] == [("target-a", "target-b"), ("target-a", "target-b", "target-c")]
+    assert (tmp_path / "c.txt").read_text() == "a+b\n"
+    assert (tmp_path / "checks-ran.txt").read_text().splitlines() == ["executed"] * 3
+    assert len(model.calls) == 5 and result.tokens == 30
 
 
 @pytest.mark.parametrize("failure_hook", ["save_state", "on_update"])

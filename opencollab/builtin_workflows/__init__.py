@@ -12,6 +12,7 @@ from .evolution import (
     EvolutionGroup,
     EvolutionState,
     evolution,
+    plan_evolution_groups,
     run_evolution,
 )
 
@@ -28,5 +29,6 @@ def get_builtin_workflows():
 
 __all__ = [
     "duo", "evolution", "get_builtin_workflows", "run_dual_coder", "CONTRACT_PROMPT",
-    "EvolutionAdapter", "EvolutionCheck", "EvolutionConfig", "EvolutionGroup", "EvolutionState", "run_evolution",
+    "EvolutionAdapter", "EvolutionCheck", "EvolutionConfig", "EvolutionGroup", "EvolutionState",
+    "plan_evolution_groups", "run_evolution",
 ]
