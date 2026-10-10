@@ -54,6 +54,56 @@ class Settings:
         ):
             raise ValueError("history_trigger_tokens must be at least 2")
 
+    def evolution_config(self):
+        from opencollab.builtin_workflows.evolution import EvolutionConfig
+
+        from .prompts import SYSTEM_PROMPT
+
+        return EvolutionConfig(
+            budget=self.budget,
+            main_budget=self.main_budget,
+            main_hard_budget=self.main_hard_budget,
+            repair_reserve=self.repair_reserve,
+            max_steps=self.max_steps,
+            wall_seconds=self.wall_seconds,
+            agent_seconds=self.agent_seconds,
+            minimum_group_tokens=200_000,
+            minimum_group_steps=3,
+            minimum_group_seconds=150,
+            main_agent_time_reserve=600,
+            main_wall_time_reserve=1500,
+            group_check_fraction=0.25,
+            group_check_min_seconds=60,
+            group_check_max_seconds=240,
+            group_check_grace_seconds=90,
+            group_check_timeout=450,
+            minimum_session_seconds=60,
+            cleanup_seconds=self.cleanup_seconds,
+            tool_cleanup_seconds=self.tool_cleanup_seconds,
+            max_output_tokens=self.max_output_tokens,
+            history_trigger_tokens=self.history_trigger_tokens,
+            extension_tokens=1_000_000,
+            extension_margin_tokens=200_000,
+            extension_margin_fraction=0.1,
+            budget_final_prompt=(
+                "Budget is near its current limit. Finish the current operation and focused verification; "
+                "record checkpoint states and next actions now. Do not start another audit or redesign. "
+                "Only recent source changes or new check evidence can unlock available contingency budget."
+            ),
+            max_repair_rounds=3,
+            stagnant_round_limit=2,
+            repair_budget=2_000_000,
+            repair_budget_fraction=0.65,
+            repair_time_reserve=300,
+            minimum_repair_seconds=120,
+            repair_agent_time_reserve=300,
+            repair_timeout=600,
+            repair_steps=60,
+            final_check_timeout=600,
+            final_check_time_reserve=60,
+            system_prompt=SYSTEM_PROMPT,
+        )
+
     @classmethod
     def from_env(cls, values=None):
         values = os.environ if values is None else values

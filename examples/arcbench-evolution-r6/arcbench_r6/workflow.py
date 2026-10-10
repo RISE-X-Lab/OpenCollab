@@ -93,10 +93,11 @@ async def evolution(ctx, inputs):
             write_public_checks(document, workspace, requirement_ids=targets)
             ids = _persist_requirement_tree(runtime, document, resume=resume)
             runtime.git.ensure_repo(create_initial_commit=True)
-            for key in ids:
-                runtime.events.mark_design_started(key, "Requirement loaded")
-                runtime.events.mark_design_done(key, "Requirement card recorded")
-                runtime.events.mark_implementation_started(key, "Workflow implementation started")
+            if not resume:
+                for key in ids:
+                    runtime.events.mark_design_started(key, "Requirement loaded")
+                    runtime.events.mark_design_done(key, "Requirement card recorded")
+                    runtime.events.mark_implementation_started(key, "Workflow implementation started")
             # Preparation retains r6's original dependency and browser checks.
             environment = await _prepare_environment(
                 workspace,
@@ -121,7 +122,7 @@ async def evolution(ctx, inputs):
 
             runner = EvolutionRunner(ctx, workspace, index, product, settings, state, commit, emit, resume=resume)
             result = await runner.run()
-            commit("r6 workflow delivery and verification")
+            commit("r6 工作流交付与验证")
             await ctx.phase("Delivery result")
             if result["delivery_ok"]:
                 runtime.events.mark_run_completed("r6 local delivery checks passed")

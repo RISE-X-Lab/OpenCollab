@@ -44,41 +44,14 @@ def resource_key(row):
     return "feature:" + row["id"]
 
 
-def _components(nodes, edges):
-    """Tarjan SCC: a dependency cycle is scheduled together instead of silently ignored."""
-    indices, low, stack, active, result = {}, {}, [], set(), []
-
-    def visit(node):
-        indices[node] = low[node] = len(indices)
-        stack.append(node)
-        active.add(node)
-        for dependency in sorted(edges[node]):
-            if dependency not in indices:
-                visit(dependency)
-                low[node] = min(low[node], low[dependency])
-            elif dependency in active:
-                low[node] = min(low[node], indices[dependency])
-        if low[node] == indices[node]:
-            component = []
-            while True:
-                member = stack.pop()
-                active.remove(member)
-                component.append(member)
-                if member == node:
-                    break
-            result.append(component)
-
-    for node in nodes:
-        if node not in indices:
-            visit(node)
-    return result
-
-
 def feature_groups(index):
+    from opencollab.builtin_workflows.evolution import EvolutionGroup, plan_evolution_groups
+
     rows = target_rows(index)
+    if not rows:
+        return []
     by_id = {row["id"]: row for row in index}
     focused = {row["id"] for row in rows}
-    dependencies = {}
 
     def focus_dependencies(key, seen):
         if key in seen:
@@ -93,47 +66,39 @@ def feature_groups(index):
         return found
 
     buckets = {}
+    dependencies = {}
     for row in rows:
         dependencies[row["id"]] = focus_dependencies(row["id"], set()) - {row["id"]}
         buckets.setdefault(resource_key(row), []).append(row)
-    units = list(buckets.values())
-    owners = {row["id"]: n for n, unit in enumerate(units) for row in unit}
-    edges = {
-        n: {owners[dep] for row in unit for dep in dependencies[row["id"]] if owners[dep] != n}
-        for n, unit in enumerate(units)
-    }
-    components = _components(range(len(units)), edges)
-    position = {row["id"]: n for n, row in enumerate(rows)}
     groups = []
-    for component in components:
-        grouped = sorted((row for n in component for row in units[n]), key=lambda r: position[r["id"]])
-        ids = {row["id"] for row in grouped}
-        groups.append(
+    for number, (resource, unit) in enumerate(buckets.items(), 1):
+        identifier = f"arc-resource-{number}"
+        while identifier in focused:
+            identifier = "_" + identifier
+        groups.append(EvolutionGroup(
+            id=identifier,
+            prompt="Implement the current requirement group.",
+            weight=sum(max(1, row.get("scenario_count", 0)) for row in unit),
+            targets=tuple(row["id"] for row in unit),
+            dependencies=tuple(sorted({key for row in unit for key in dependencies[row["id"]]}
+                                      - {row["id"] for row in unit})),
+            resources=(resource,),
+        ))
+    owners = {row["id"]: number for number, unit in enumerate(buckets.values()) for row in unit}
+    result = []
+    for group in plan_evolution_groups(groups):
+        selected = set(group.targets)
+        grouped = [row for row in rows if row["id"] in selected]
+        result.append(
             {
                 "ids": [row["id"] for row in grouped],
                 "rows": grouped,
-                "resources": sorted({resource_key(row) for row in grouped}),
-                "dependencies": sorted({dep for row in grouped for dep in dependencies[row["id"]]} - ids),
-                "dependency_cycle_merged": len(component) > 1,
+                "resources": sorted(group.resources),
+                "dependencies": sorted(group.dependencies),
+                "dependency_cycle_merged": len({owners[key] for key in group.targets}) > 1,
             }
         )
-    pending, ordered = list(groups), []
-    while pending:
-        done = {key for group in ordered for key in group["ids"]}
-        ready = [group for group in pending if set(group["dependencies"]) <= done]
-        group = min(ready, key=lambda g: min(position[key] for key in g["ids"]))
-        pending.remove(group)
-        ordered.append(group)
-    return ordered
-
-
-def allocation(remaining, weights, *, minimum=200_000):
-    """Fair weighted share, preserving a floor for every later group."""
-    if not weights or remaining < minimum:
-        return 0
-    floor = min(minimum, remaining // len(weights))
-    share = int(remaining * weights[0] / sum(weights))
-    return min(remaining - floor * (len(weights) - 1), max(minimum, share))
+    return result
 
 
 def group_weight(group):
@@ -161,10 +126,9 @@ def source_inventory(workspace):
     return result
 
 
-def affected_requirements(group, completed, changed_files):
-    """Recheck prior groups sharing edited files/resources or a dependency edge."""
-    affected = set(group["ids"])
-    broad = any(
+def affects_prior_groups(changed_files):
+    """Shared application paths require checks for all prior requirement groups."""
+    return any(
         path.endswith(("package.json", "package-lock.json"))
         or any(
             part in path.lower()
@@ -184,20 +148,6 @@ def affected_requirements(group, completed, changed_files):
         )
         for path in changed_files
     )
-    changed = set(changed_files)
-    while True:
-        before = set(affected)
-        for prior in completed:
-            if (
-                broad
-                or changed.intersection(prior["changed_files"])
-                or set(group["resources"]).intersection(prior["resources"])
-                or set(prior["dependencies"]).intersection(affected)
-                or set(group["dependencies"]).intersection(prior["ids"])
-            ):
-                affected.update(prior["ids"])
-        if affected == before:
-            return sorted(affected)
 
 
 def group_prompt(group, progress, directory=".arc/evolution-spec/by-id"):

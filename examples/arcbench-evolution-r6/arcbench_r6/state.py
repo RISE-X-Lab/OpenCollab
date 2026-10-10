@@ -19,6 +19,7 @@ class RunState:
         self.path = self.directory / "run-state.json"
         self.started = time.monotonic()
         self.elapsed_before = 0.0
+        self._evolution_state = None
         if resume:
             self.data = json.loads(self.path.read_text(encoding="utf-8"))
             if run_id is not None and self.data["run_id"] != run_id:
@@ -57,21 +58,18 @@ class RunState:
 
     @property
     def tokens(self):
+        if self._evolution_state is not None:
+            return self._evolution_state.tokens
         return sum(row["tokens"] for row in self.data["sessions"].values())
-
-    def phase_totals(self, prefix):
-        rows = [row for row in self.data["sessions"].values() if row["phase"].startswith(prefix)]
-        return sum(row["tokens"] for row in rows), sum(row["steps"] for row in rows)
 
     @property
     def elapsed(self):
+        if self._evolution_state is not None:
+            return self._evolution_state.elapsed
         return self.elapsed_before + time.monotonic() - self.started
 
-    def observe(self, phase, session_id, tokens, steps):
-        row = self.data["sessions"].setdefault(str(session_id), {"phase": phase, "tokens": 0, "steps": 0})
-        row["tokens"] = max(row["tokens"], int(tokens))
-        row["steps"] = max(row["steps"], int(steps))
-        self.persist()
+    def bind_evolution(self, state):
+        self._evolution_state = state
 
     def persist(self):
         self.data["elapsed_seconds"] = self.elapsed
