@@ -52,9 +52,9 @@ def read_task(requirement_file: Path) -> str:
     return text
 
 
-def _persist_requirement_tree(runtime: Any, document: Any) -> list[str]:
+def _persist_requirement_tree(runtime: Any, document: Any, *, resume: bool = False) -> list[str]:
     """Persist the input requirement tree without inventing requirement IDs."""
-    runtime.traceability.init_db(reset=True)
+    runtime.traceability.init_db(reset=not resume)
     requirement_ids: list[str] = []
 
     def visit(node: dict[str, Any], parent_id: str | None = None) -> None:
@@ -66,20 +66,21 @@ def _persist_requirement_tree(runtime: Any, document: Any) -> list[str]:
             children = []
         requirement_ids.append(req_id)
         scenarios = node.get("scenarios")
-        runtime.traceability.upsert_requirement(
-            req_id=req_id,
-            name=str(node.get("name") or node.get("title") or req_id),
-            description=str(node.get("description") or node.get("text") or ""),
-            visual_reference=node.get("visual_reference") or node.get("visual_references"),
-            scenarios=scenarios if isinstance(scenarios, list) else [],
-            parent_id=parent_id,
-            children_ids=[
-                str(child.get("id") or child.get("req_id") or "").strip()
-                for child in children
-                if isinstance(child, dict) and str(child.get("id") or child.get("req_id") or "").strip()
-            ],
-            dependencies=node.get("dependencies") if isinstance(node.get("dependencies"), list) else [],
-        )
+        if not resume or runtime.traceability.get_requirement(req_id) is None:
+            runtime.traceability.upsert_requirement(
+                req_id=req_id,
+                name=str(node.get("name") or node.get("title") or req_id),
+                description=str(node.get("description") or node.get("text") or ""),
+                visual_reference=node.get("visual_reference") or node.get("visual_references"),
+                scenarios=scenarios if isinstance(scenarios, list) else [],
+                parent_id=parent_id,
+                children_ids=[
+                    str(child.get("id") or child.get("req_id") or "").strip()
+                    for child in children
+                    if isinstance(child, dict) and str(child.get("id") or child.get("req_id") or "").strip()
+                ],
+                dependencies=node.get("dependencies") if isinstance(node.get("dependencies"), list) else [],
+            )
         for child in children:
             if isinstance(child, dict):
                 visit(child, req_id)

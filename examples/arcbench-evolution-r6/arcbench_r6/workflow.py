@@ -91,7 +91,7 @@ async def evolution(ctx, inputs):
             if not targets:
                 raise ValueError("The supplied document contains no executable requirement leaves")
             write_public_checks(document, workspace, requirement_ids=targets)
-            ids = _persist_requirement_tree(runtime, document)
+            ids = _persist_requirement_tree(runtime, document, resume=resume)
             runtime.git.ensure_repo(create_initial_commit=True)
             for key in ids:
                 runtime.events.mark_design_started(key, "Requirement loaded")

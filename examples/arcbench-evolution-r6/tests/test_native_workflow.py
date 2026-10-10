@@ -201,6 +201,26 @@ async def test_repair_is_a_new_instance_with_real_failure_feedback(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_resume_preserves_platform_traceability(tmp_path, monkeypatch):
+    from arcbench_agent_runtime import AgentRuntime
+
+    task = application(tmp_path)
+    checks(monkeypatch)
+    first = await execute(tmp_path, task, LocalModel())
+    assert first.output["delivery_ok"]
+    runtime = AgentRuntime.from_env(project_dir=str(tmp_path))
+    runtime.traceability.upsert_test(
+        test_id="implemented-check", req_id="REQ-A", type="integration",
+        file_path="backend/src/feature.js", passed=True,
+    )
+    runtime.traceability.update_requirement_fields("REQ-A", description="Recorded implementation analysis")
+    before = runtime.traceability.export_snapshot()
+    resumed = await execute(tmp_path, task, LocalModel(), resume=True)
+    assert resumed.ok and resumed.output["delivery_ok"], resumed
+    assert runtime.traceability.export_snapshot() == before
+
+
+@pytest.mark.asyncio
 async def test_old_success_is_replaced_when_new_inputs_fail(tmp_path):
     output = tmp_path / ".arc/checks/outcome.json"
     output.parent.mkdir(parents=True)
