@@ -1,4 +1,4 @@
-"""Native tools with execution observations for the evolution workflow."""
+"""Native tools with execution observations for the weave workflow."""
 
 from __future__ import annotations
 

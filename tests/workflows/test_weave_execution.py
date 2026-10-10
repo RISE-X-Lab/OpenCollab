@@ -1,4 +1,4 @@
-"""Evolution performs normal file work, verified repair and managed continuation."""
+"""Weave performs normal file work, verified repair and managed continuation."""
 
 from __future__ import annotations
 
@@ -14,15 +14,15 @@ from opencollab import OpenCollab
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.bootstrap import _workflow_runtime_session as wiring
 from opencollab.builtin_workflows import (
-    EvolutionAdapter,
-    EvolutionConfig,
-    EvolutionGroup,
-    EvolutionState,
-    plan_evolution_groups,
-    run_evolution,
+    WeaveAdapter,
+    WeaveConfig,
+    WeaveGroup,
+    WeaveState,
+    plan_weave_groups,
+    run_weave,
 )
 from opencollab.tools import builtin_tools
-from tests.support.installed_evolution_smoke import exercise_evolution
+from tests.support.installed_weave_smoke import exercise_weave
 
 
 class FileModel:
@@ -46,7 +46,7 @@ class FileModel:
         }], usage=Usage(4, 2), finish_reason="tool_calls")
 
 
-class FileChecks(EvolutionAdapter):
+class FileChecks(WeaveAdapter):
     def __init__(self, workspace):
         (workspace / "check_result.py").write_text(
             "from pathlib import Path\n"
@@ -91,11 +91,11 @@ def _config(**overrides):
     values = {"main_budget": 10_000, "max_steps": 12, "output_reserve_tokens": 128,
               "max_repair_rounds": 2, "repair_reserve": 2_000, "cleanup_seconds": .2}
     values.update(overrides)
-    return EvolutionConfig(**values)
+    return WeaveConfig(**values)
 
 
-async def test_sdk_named_evolution_writes_shared_files_in_independent_sessions(tmp_path):
-    report = await exercise_evolution(tmp_path)
+async def test_sdk_named_weave_writes_shared_files_in_independent_sessions(tmp_path):
+    report = await exercise_weave(tmp_path)
     assert report["model_calls"] == 5
     assert report["tokens"] == 30
     assert report["checks"] >= 2
@@ -108,7 +108,7 @@ async def test_sdk_named_evolution_writes_shared_files_in_independent_sessions(t
 ])
 async def test_missing_or_nonexecuting_check_never_verifies_delivery(tmp_path, commands):
     result = await _client(tmp_path).workflow(
-        "evolution", {
+        "weave", {
             "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
             "check_commands": commands,
             "config": {"max_steps": 4, "max_repair_rounds": 0},
@@ -125,7 +125,7 @@ async def test_successful_command_without_behavior_evidence_is_unverified(tmp_pa
     command = f"{shlex.quote(sys.executable)} -c 'print(123)'"
     model = FileModel(initial="correct\n")
     result = await _client(tmp_path).workflow(
-        "evolution", {
+        "weave", {
             "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
             "check_commands": [command],
         }, llm=model, budget=20_000, limit_mode="explicit", trace=False,
@@ -145,7 +145,7 @@ async def test_zero_collected_tests_with_expected_text_never_verifies_delivery(t
     command = f"{shlex.quote(sys.executable)} -m pytest -q empty_tests"
     model = FileModel(initial="correct\n")
     result = await _client(tmp_path).workflow(
-        "evolution", {
+        "weave", {
             "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
             "check_commands": [{"command": command, "expected_output": "no tests ran"}],
         }, llm=model, budget=20_000, limit_mode="explicit", trace=False,
@@ -168,9 +168,9 @@ async def test_real_sessions_preserve_weighted_finite_and_unbounded_allowances(t
     config = _config(main_budget=None, budget=None if unbounded else 10_000)
 
     async def flow(ctx, _args):
-        return await run_evolution(ctx, [
-            EvolutionGroup("first", "first-stage", weight=1),
-            EvolutionGroup("second", "second-stage", weight=3),
+        return await run_weave(ctx, [
+            WeaveGroup("first", "first-stage", weight=1),
+            WeaveGroup("second", "second-stage", weight=3),
         ], config=config, adapter=adapter)
 
     result = await _client(tmp_path).workflow(
@@ -204,7 +204,7 @@ async def test_failed_executable_check_is_repaired_in_a_new_session(tmp_path, mo
     monkeypatch.setattr(wiring, "build_session", capture)
 
     async def flow(ctx, _args):
-        return await run_evolution(ctx, [EvolutionGroup("result", "write-stage writes result.txt")],
+        return await run_weave(ctx, [WeaveGroup("result", "write-stage writes result.txt")],
                                    config=_config(), adapter=adapter)
 
     result = await _client(tmp_path).workflow(
@@ -227,7 +227,7 @@ async def test_completed_native_edit_extends_soft_allowance_within_the_same_sess
     if not changed:
         (tmp_path / "result.txt").write_text("correct\n")
 
-    class ProgressChecks(EvolutionAdapter):
+    class ProgressChecks(WeaveAdapter):
         def __init__(self):
             super().__init__(check_commands=FileChecks(tmp_path).check_commands)
             self.extensions = []
@@ -250,7 +250,7 @@ async def test_completed_native_edit_extends_soft_allowance_within_the_same_sess
     adapter, model = ProgressChecks(), ExpensiveFileModel(initial="correct\n")
 
     async def flow(ctx, _args):
-        return await run_evolution(ctx, [EvolutionGroup("result", "write-stage")],
+        return await run_weave(ctx, [WeaveGroup("result", "write-stage")],
                                    config=_config(main_budget=10_000, extension_tokens=8_000), adapter=adapter)
 
     result = await _client(tmp_path).workflow(
@@ -276,7 +276,7 @@ async def test_executed_failures_stop_finite_repairs_after_measured_stagnation(t
     adapter, model = FileChecks(tmp_path), FileModel(repaired="wrong\n")
 
     async def flow(ctx, _args):
-        return await run_evolution(ctx, [EvolutionGroup("result", "write-stage")],
+        return await run_weave(ctx, [WeaveGroup("result", "write-stage")],
                                    config=_config(max_repair_rounds=5, stagnant_round_limit=2), adapter=adapter)
 
     result = await _client(tmp_path).workflow(
@@ -306,7 +306,7 @@ async def test_edit_to_ancestor_rechecks_transitive_dependent_targets(tmp_path):
         encoding="utf-8",
     )
 
-    class TargetChecks(EvolutionAdapter):
+    class TargetChecks(WeaveAdapter):
         def __init__(self):
             super().__init__(check_commands=[{
                 "command": f"{shlex.quote(sys.executable)} check_targets.py", "expected_output": "FILES_CHECKED",
@@ -342,11 +342,11 @@ async def test_edit_to_ancestor_rechecks_transitive_dependent_targets(tmp_path):
     adapter, model = TargetChecks(), TargetModel()
 
     async def flow(ctx, _args):
-        return await run_evolution(ctx, [
-            EvolutionGroup("A", "stage-A", targets=("a",), resources=("a.txt",)),
-            EvolutionGroup("B", "stage-B", targets=("b",), resources=("b.txt",), dependencies=("A",)),
-            EvolutionGroup("C", "stage-C", targets=("c",), resources=("c.txt",), dependencies=("B",)),
-            EvolutionGroup("D", "stage-D", targets=("d",), resources=("a.txt",)),
+        return await run_weave(ctx, [
+            WeaveGroup("A", "stage-A", targets=("a",), resources=("a.txt",)),
+            WeaveGroup("B", "stage-B", targets=("b",), resources=("b.txt",), dependencies=("A",)),
+            WeaveGroup("C", "stage-C", targets=("c",), resources=("c.txt",), dependencies=("B",)),
+            WeaveGroup("D", "stage-D", targets=("d",), resources=("a.txt",)),
         ], config=_config(max_steps=16), adapter=adapter)
 
     result = await _client(tmp_path).workflow(
@@ -373,7 +373,7 @@ async def test_planned_dependency_cycle_executes_one_shared_session_then_its_dep
         encoding="utf-8",
     )
 
-    class CycleChecks(EvolutionAdapter):
+    class CycleChecks(WeaveAdapter):
         def __init__(self):
             super().__init__(check_commands=[{
                 "command": f"{shlex.quote(sys.executable)} check_cycle.py", "expected_output": "CYCLE_FILES_OK",
@@ -419,18 +419,18 @@ async def test_planned_dependency_cycle_executes_one_shared_session_then_its_dep
             } for number, (name, arguments) in enumerate(calls)], usage=Usage(4, 2), finish_reason="tool_calls")
 
     groups = [
-        EvolutionGroup("A", "cycle-A creates a.txt", targets=("target-a",), dependencies=("B",)),
-        EvolutionGroup("B", "cycle-B creates b.txt", targets=("target-b",), dependencies=("A",)),
-        EvolutionGroup("C", "cycle-C reads both files and creates c.txt", targets=("target-c",), dependencies=("B",)),
+        WeaveGroup("A", "cycle-A creates a.txt", targets=("target-a",), dependencies=("B",)),
+        WeaveGroup("B", "cycle-B creates b.txt", targets=("target-b",), dependencies=("A",)),
+        WeaveGroup("C", "cycle-C reads both files and creates c.txt", targets=("target-c",), dependencies=("B",)),
     ]
-    planned = plan_evolution_groups(groups)
+    planned = plan_weave_groups(groups)
     assert len(planned) == 2
     assert planned[0].targets == ("target-a", "target-b")
     assert planned[1].dependencies == ("target-b",)
     adapter, model = CycleChecks(), CycleModel()
 
     async def flow(ctx, _args):
-        return await run_evolution(ctx, planned, config=_config(), adapter=adapter)
+        return await run_weave(ctx, planned, config=_config(), adapter=adapter)
 
     result = await _client(tmp_path).workflow(
         flow, llm=model, budget=30_000, limit_mode="explicit", agent_profile="single2", trace=False,
@@ -463,7 +463,7 @@ async def test_state_and_update_callback_failures_retain_execution_failure(tmp_p
     model = FileModel(initial="correct\n")
 
     async def flow(ctx, _args):
-        return await run_evolution(ctx, [EvolutionGroup("result", "write-stage")],
+        return await run_weave(ctx, [WeaveGroup("result", "write-stage")],
                                    config=_config(), adapter=adapter)
 
     result = await _client(tmp_path).workflow(flow, llm=model, budget=20_000, trace=False)
@@ -490,7 +490,7 @@ async def test_observation_failure_after_real_generation_prevents_verified_hando
     model = FileModel(initial="correct\n")
 
     async def flow(ctx, _args):
-        return await run_evolution(ctx, [EvolutionGroup("result", "write-stage")],
+        return await run_weave(ctx, [WeaveGroup("result", "write-stage")],
                                    config=_config(), adapter=adapter)
 
     result = await _client(tmp_path).workflow(
@@ -502,7 +502,7 @@ async def test_observation_failure_after_real_generation_prevents_verified_hando
     assert not adapter.checks
     assert adapter.saved[-1]["status"] == "failed"
     assert adapter.saved[-1]["delivery_ok"] is False
-    assert EvolutionState(adapter.saved[-1]).tokens == 12
+    assert WeaveState(adapter.saved[-1]).tokens == 12
 
 
 async def test_cancelled_generated_group_resumes_at_executed_check(tmp_path):
@@ -520,7 +520,7 @@ async def test_cancelled_generated_group_resumes_at_executed_check(tmp_path):
     model = FileModel(initial="correct\n")
 
     async def first(ctx, _args):
-        return await run_evolution(ctx, [EvolutionGroup("result", "write-stage")],
+        return await run_weave(ctx, [WeaveGroup("result", "write-stage")],
                                    config=_config(), adapter=interrupted)
 
     running = asyncio.create_task(_client(tmp_path).workflow(
@@ -533,12 +533,12 @@ async def test_cancelled_generated_group_resumes_at_executed_check(tmp_path):
     assert settled.is_set()
     assert (tmp_path / "result.txt").read_text() == "correct\n"
     assert len(model.calls) == 2
-    state = EvolutionState(interrupted.saved[-1])
+    state = WeaveState(interrupted.saved[-1])
     original_tokens = state.tokens
     resumed = FileChecks(tmp_path)
 
     async def second(ctx, _args):
-        return await run_evolution(ctx, [EvolutionGroup("result", "write-stage")],
+        return await run_weave(ctx, [WeaveGroup("result", "write-stage")],
                                    config=_config(), adapter=resumed, state=state)
 
     result = await _client(tmp_path).workflow(
@@ -585,8 +585,8 @@ async def test_cancelled_writer_settles_before_return_without_later_group_or_che
     model = LateModel()
 
     async def flow(ctx, _args):
-        return await run_evolution(ctx, [EvolutionGroup("first", "write-stage"),
-                                        EvolutionGroup("later", "later-stage")],
+        return await run_weave(ctx, [WeaveGroup("first", "write-stage"),
+                                        WeaveGroup("later", "later-stage")],
                                    config=_config(cleanup_seconds=1), adapter=adapter)
 
     running = asyncio.create_task(_client(tmp_path).workflow(

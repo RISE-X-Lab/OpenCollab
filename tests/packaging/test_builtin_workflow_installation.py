@@ -49,23 +49,23 @@ for name in modules:
     imported = importlib.import_module(name)
     assert Path(imported.__file__).resolve().is_relative_to(package_root), name
 names = sorted(spec.name for spec in builtins.get_builtin_workflows().list_specs())
-assert names == ["duo", "evolution"], names
+assert names == ["duo", "weave"], names
 workspace = package_root.parent / "ordinary-task"
 workspace.mkdir()
 probe = runpy.run_path(sys.argv[3])
-execution = asyncio.run(probe["exercise_evolution"](workspace))
+execution = asyncio.run(probe["exercise_weave"](workspace))
 print(json.dumps({"modules": modules, "workflows": names, "execution": execution}))
 """
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     completed = subprocess.run(
         [sys.executable, "-I", "-c", source, str(package_root), str(REPO_ROOT),
-         str(REPO_ROOT / "tests/support/installed_evolution_smoke.py")],
+         str(REPO_ROOT / "tests/support/installed_weave_smoke.py")],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
     )
     assert completed.returncode == 0, (completed.stdout, completed.stderr)
     report = json.loads(completed.stdout)
-    assert "opencollab.builtin_workflows.evolution" in report["modules"]
-    assert report["workflows"] == ["duo", "evolution"]
+    assert "opencollab.builtin_workflows.weave" in report["modules"]
+    assert report["workflows"] == ["duo", "weave"]
     assert report["execution"]["content"] == "alpha\nbeta\n"
     assert report["execution"]["delivery_ok"] is True

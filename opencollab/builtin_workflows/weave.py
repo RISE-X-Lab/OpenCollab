@@ -17,7 +17,7 @@ from opencollab.sdk import BudgetDecision, BudgetSnapshot, RunControl, RunEvent
 from opencollab.tools import Tool
 from opencollab.workflows import WorkflowContext, workflow
 
-from ._evolution_execution import _coding_tools, _verify_commands
+from ._weave_execution import _coding_tools, _verify_commands
 
 
 def _positive(value: Any, name: str, *, integer: bool = False, zero: bool = False) -> None:
@@ -30,7 +30,7 @@ def _positive(value: Any, name: str, *, integer: bool = False, zero: bool = Fals
 
 
 @dataclass
-class EvolutionGroup:
+class WeaveGroup:
     id: str
     prompt: str
     weight: float = 1
@@ -56,7 +56,7 @@ class EvolutionGroup:
 
 
 @dataclass
-class EvolutionCheck:
+class WeaveCheck:
     ok: bool
     executed: bool
     report: dict[str, Any] = field(default_factory=dict)
@@ -76,7 +76,7 @@ class EvolutionCheck:
 
 
 @dataclass
-class EvolutionConfig:
+class WeaveConfig:
     """Optional resource limits and scheduling ratios for a concrete invocation."""
 
     budget: int | None = None
@@ -149,7 +149,7 @@ class EvolutionConfig:
             raise ValueError("history_trigger_tokens must be at least two")
 
 
-class EvolutionState:
+class WeaveState:
     """Ordinary serializable progress with cumulative per-session accounting."""
 
     def __init__(self, data: Mapping[str, Any] | None = None, *, run_id: str | None = None) -> None:
@@ -157,7 +157,7 @@ class EvolutionState:
         existing = self.data.get("run_id")
         if existing is not None and run_id is not None and existing != run_id:
             raise ValueError("continuation requires the original run_id")
-        self.data.setdefault("run_id", run_id or "evolution-" + uuid.uuid4().hex)
+        self.data.setdefault("run_id", run_id or "weave-" + uuid.uuid4().hex)
         for name, value in (("sessions", {}), ("groups", {}), ("repair_rounds", [])):
             self.data.setdefault(name, value)
         self._elapsed_before = float(self.data.get("elapsed_seconds", 0))
@@ -190,7 +190,7 @@ class EvolutionState:
         return copy.deepcopy(self.data)
 
 
-class EvolutionAdapter:
+class WeaveAdapter:
     """Domain prompts, native tools, executed checks and optional state storage."""
 
     def __init__(self, *, check_commands: Sequence[Any] = (), tools: Sequence[Tool] | str | None = None) -> None:
@@ -208,12 +208,12 @@ class EvolutionAdapter:
         if path is not None:
             self._source_versions[path] = self._progress_version
 
-    def group_prompt(self, group: EvolutionGroup, state: EvolutionState) -> str:
+    def group_prompt(self, group: WeaveGroup, state: WeaveState) -> str:
         return group.prompt + "\n\nPrior executed groups and their checks\n" + json.dumps(
             state.data["groups"], ensure_ascii=False,
         )
 
-    def repair_prompt(self, check: EvolutionCheck, state: EvolutionState) -> str:
+    def repair_prompt(self, check: WeaveCheck, state: WeaveState) -> str:
         return "Repair the failures shown by these executed checks and verify the changed behavior.\n" + json.dumps(
             check.report, ensure_ascii=False,
         )
@@ -231,10 +231,10 @@ class EvolutionAdapter:
         return self._progress_version, time.monotonic() - self._last_progress <= 60
 
     async def verify(self, ctx: WorkflowContext, targets: tuple[str, ...] | None,
-                     seconds: float | None) -> EvolutionCheck:
+                     seconds: float | None) -> WeaveCheck:
         report = await _verify_commands(ctx, self.check_commands, seconds)
         rows = report["checks"]
-        return EvolutionCheck(
+        return WeaveCheck(
             report["ok"], report["executed"], report,
             tuple(row["command"] for row in rows if row["executed"] and not row["ok"] and (
                 row.get("exit_code") not in {0, 5} or row.get("expected_output") is not None
@@ -242,28 +242,28 @@ class EvolutionAdapter:
             tuple(row["command"] for row in rows if row["ok"]),
         )
 
-    def improved(self, before: EvolutionCheck, after: EvolutionCheck) -> bool:
+    def improved(self, before: WeaveCheck, after: WeaveCheck) -> bool:
         return after.passed or bool(set(after.progress_markers) - set(before.progress_markers))
 
     def save_state(self, data: dict[str, Any]) -> None:
         pass
 
-    def on_update(self, kind: str, state: EvolutionState, data: dict[str, Any]) -> None:
+    def on_update(self, kind: str, state: WeaveState, data: dict[str, Any]) -> None:
         pass
 
     def on_event(self, phase: str, event: RunEvent) -> None:
         pass
 
 
-def plan_evolution_groups(groups: Sequence[EvolutionGroup]) -> list[EvolutionGroup]:
+def plan_weave_groups(groups: Sequence[WeaveGroup]) -> list[WeaveGroup]:
     """Order groups by dependencies, combining a dependency cycle into one session.
 
     Dependencies naming group ids become target ids. The planned descriptors
     can consequently be passed through this function again after cycle merging.
     Input order resolves independent ready groups and the order within a cycle.
     """
-    if not groups or any(not isinstance(group, EvolutionGroup) for group in groups):
-        raise ValueError("groups must contain at least one EvolutionGroup")
+    if not groups or any(not isinstance(group, WeaveGroup) for group in groups):
+        raise ValueError("groups must contain at least one WeaveGroup")
     owners: dict[str, int] = {}
     for number, group in enumerate(groups):
         for key in (group.id, *group.targets):
@@ -320,7 +320,7 @@ def plan_evolution_groups(groups: Sequence[EvolutionGroup]) -> list[EvolutionGro
         if len(members) == 1 and dependencies == members[0].dependencies:
             ordered.append(members[0])
             continue
-        ordered.append(EvolutionGroup(
+        ordered.append(WeaveGroup(
             id=members[0].id, prompt="\n\n".join(group.prompt for group in members),
             weight=sum(group.weight for group in members),
             dependencies=dependencies,
@@ -348,7 +348,7 @@ def _optional(value: float) -> float | None:
     return value if math.isfinite(value) else None
 
 
-def _affected(group: EvolutionGroup, completed: Sequence[tuple[EvolutionGroup, Sequence[str]]],
+def _affected(group: WeaveGroup, completed: Sequence[tuple[WeaveGroup, Sequence[str]]],
               changed: Sequence[str], *, broad: bool = False,
               dependency_owners: Mapping[str, str] | None = None) -> tuple[str, ...]:
     affected = set(group.targets)
@@ -369,11 +369,11 @@ def _affected(group: EvolutionGroup, completed: Sequence[tuple[EvolutionGroup, S
             return tuple(sorted(affected))
 
 
-class _EvolutionRun:
-    def __init__(self, ctx: WorkflowContext, groups: Sequence[EvolutionGroup], config: EvolutionConfig,
-                 adapter: EvolutionAdapter, state: EvolutionState) -> None:
+class _WeaveRun:
+    def __init__(self, ctx: WorkflowContext, groups: Sequence[WeaveGroup], config: WeaveConfig,
+                 adapter: WeaveAdapter, state: WeaveState) -> None:
         self.ctx, self.config, self.adapter, self.state = ctx, config, adapter, state
-        self.groups = plan_evolution_groups(groups)
+        self.groups = plan_weave_groups(groups)
         target_owners = {key: group.id for group in self.groups for key in group.targets}
         self.dependency_owners = {key: target_owners[group.targets[0]]
                                   for group in groups for key in (group.id, *group.targets)}
@@ -486,13 +486,13 @@ class _EvolutionRun:
                 "soft_budget_tokens": result.soft_budget_tokens, "hard_budget_tokens": result.hard_budget_tokens,
                 "compactions": compactions}
 
-    async def check(self, targets: tuple[str, ...] | None, seconds: float | None) -> EvolutionCheck:
+    async def check(self, targets: tuple[str, ...] | None, seconds: float | None) -> WeaveCheck:
         check = await self.adapter.verify(self.ctx, targets, seconds)
-        if not isinstance(check, EvolutionCheck):
-            raise TypeError("verify must return an EvolutionCheck")
+        if not isinstance(check, WeaveCheck):
+            raise TypeError("verify must return an WeaveCheck")
         return check
 
-    async def full_check(self) -> EvolutionCheck:
+    async def full_check(self) -> WeaveCheck:
         seconds = max(0, min(self.seconds_left() - self.config.final_check_time_reserve,
                              _minimum(self.config.final_check_timeout)))
         check = await self.check(None, _optional(seconds))
@@ -500,7 +500,7 @@ class _EvolutionRun:
         self.persist("check_finished", number=len(self.state.data["repair_rounds"]), check=check)
         return check
 
-    async def repair(self) -> tuple[EvolutionCheck, str]:
+    async def repair(self) -> tuple[WeaveCheck, str]:
         await self.ctx.phase("Full delivery verification")
         report = await self.full_check()
         rounds, config = self.state.data["repair_rounds"], self.config
@@ -630,14 +630,14 @@ class _EvolutionRun:
         return result
 
 
-async def run_evolution(ctx: WorkflowContext, groups: Sequence[EvolutionGroup], *,
-                        config: EvolutionConfig | None = None, adapter: EvolutionAdapter | None = None,
-                        state: EvolutionState | None = None) -> dict[str, Any]:
+async def run_weave(ctx: WorkflowContext, groups: Sequence[WeaveGroup], *,
+                        config: WeaveConfig | None = None, adapter: WeaveAdapter | None = None,
+                        state: WeaveState | None = None) -> dict[str, Any]:
     """Run supplied groups on the context's shared workspace using fresh managed sessions."""
-    config = config or EvolutionConfig()
-    adapter = adapter or EvolutionAdapter()
-    state = state or EvolutionState(run_id=getattr(ctx, "run_id", None))
-    runner = _EvolutionRun(ctx, groups, config, adapter, state)
+    config = config or WeaveConfig()
+    adapter = adapter or WeaveAdapter()
+    state = state or WeaveState(run_id=getattr(ctx, "run_id", None))
+    runner = _WeaveRun(ctx, groups, config, adapter, state)
     try:
         return await runner.run()
     except BaseException as error:
@@ -648,11 +648,11 @@ async def run_evolution(ctx: WorkflowContext, groups: Sequence[EvolutionGroup], 
 
 
 @workflow(
-    name="evolution",
+    name="weave",
     description="Independent agents execute weighted task groups with real checks and bounded repair",
     phases=["implement", "verify", "repair", "deliver"],
 )
-async def evolution(ctx: WorkflowContext, args: dict[str, Any]) -> dict[str, Any]:
+async def weave(ctx: WorkflowContext, args: dict[str, Any]) -> dict[str, Any]:
     """Execute JSON groups and check commands through the native workflow runtime.
 
     Each group supplies an id and prompt, with optional weight, dependencies,
@@ -662,13 +662,13 @@ async def evolution(ctx: WorkflowContext, args: dict[str, Any]) -> dict[str, Any
     values = args.get("groups")
     if isinstance(values, str) or not isinstance(values, Sequence):
         raise ValueError("groups must be a sequence of JSON objects")
-    groups = [EvolutionGroup(**value) for value in values]
-    config = EvolutionConfig(**args.get("config", {}))
-    adapter = EvolutionAdapter(check_commands=args.get("check_commands", ()))
+    groups = [WeaveGroup(**value) for value in values]
+    config = WeaveConfig(**args.get("config", {}))
+    adapter = WeaveAdapter(check_commands=args.get("check_commands", ()))
     saved = args.get("state")
-    state = EvolutionState(saved, run_id=getattr(ctx, "run_id", None))
-    return await run_evolution(ctx, groups, config=config, adapter=adapter, state=state)
+    state = WeaveState(saved, run_id=getattr(ctx, "run_id", None))
+    return await run_weave(ctx, groups, config=config, adapter=adapter, state=state)
 
 
-__all__ = ["EvolutionAdapter", "EvolutionCheck", "EvolutionConfig", "EvolutionGroup", "EvolutionState",
-           "evolution", "plan_evolution_groups", "run_evolution"]
+__all__ = ["WeaveAdapter", "WeaveCheck", "WeaveConfig", "WeaveGroup", "WeaveState",
+           "weave", "plan_weave_groups", "run_weave"]

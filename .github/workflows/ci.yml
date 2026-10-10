@@ -288,13 +288,13 @@ jobs:
           plain_workflow_list = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", workflow_list.stdout)
           from opencollab.builtin_workflows import get_builtin_workflows
 
-          expected_names = {"duo", "evolution"}
+          expected_names = {"duo", "weave"}
           assert {spec.name for spec in get_builtin_workflows().list_specs()} == expected_names
           listed_names = {line.split()[0] for line in plain_workflow_list.splitlines() if line.strip()}
           assert expected_names <= listed_names, workflow_list.stdout
           print("Installed package and SDK probes passed.")
           PY
-          "$install_root/bin/python" "$GITHUB_WORKSPACE/tests/support/installed_evolution_smoke.py"
+          "$install_root/bin/python" "$GITHUB_WORKSPACE/tests/support/installed_weave_smoke.py"
       - name: Exercise the minimum Typer with Click 8.5
         shell: bash
         run: |

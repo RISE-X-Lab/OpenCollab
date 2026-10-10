@@ -1,13 +1,13 @@
-# Evolution workflow
+# Weave workflow
 
-Evolution executes ordered groups of work in fresh agent sessions against the
+Weave executes ordered groups of work in fresh agent sessions against the
 same workspace. Each group receives a share of the available token, step and
 time allowance. Executed checks provide the evidence for handoffs and determine
 whether the final delivery passes. Failed checks can trigger a bounded sequence
 of fresh repair sessions.
 
-Evolution ships with the installed OpenCollab package. The public SDK resolves
-`"evolution"` by name, and `opencollab workflow list` displays it alongside Duo.
+Weave ships with the installed OpenCollab package. The public SDK resolves
+`"weave"` by name, and `opencollab workflow list` displays it alongside Duo.
 
 ## Run a file task from the CLI
 
@@ -16,8 +16,8 @@ The verifier imports the module, calls its public function, and compares the
 returned value with the requested greeting.
 
 ```bash
-mkdir -p /tmp/evolution-greeting
-cat > /tmp/evolution-greeting/check_greeting.py <<'PY'
+mkdir -p /tmp/weave-greeting
+cat > /tmp/weave-greeting/check_greeting.py <<'PY'
 from greeting import greet
 
 assert greet("Ada") == "Hello, Ada!"
@@ -25,7 +25,7 @@ assert greet("Lin") == "Hello, Lin!"
 print("GREETING_CHECK_PASSED")
 PY
 
-cat > /tmp/evolution-greeting/flow.json <<'JSON'
+cat > /tmp/weave-greeting/flow.json <<'JSON'
 {
   "groups": [
     {
@@ -48,12 +48,12 @@ cat > /tmp/evolution-greeting/flow.json <<'JSON'
 }
 JSON
 
-uv run opencollab workflow run evolution \
-  --workspace /tmp/evolution-greeting \
-  --args "$(cat /tmp/evolution-greeting/flow.json)" \
+uv run opencollab workflow run weave \
+  --workspace /tmp/weave-greeting \
+  --args "$(cat /tmp/weave-greeting/flow.json)" \
   --budget 30000 --agent-profile single2
 
-cd /tmp/evolution-greeting
+cd /tmp/weave-greeting
 python check_greeting.py
 python greeting.py Ada
 ```
@@ -85,7 +85,7 @@ from opencollab import OpenCollab
 
 
 async def main():
-    workspace = Path("/tmp/evolution-sdk-greeting")
+    workspace = Path("/tmp/weave-sdk-greeting")
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "check_greeting.py").write_text(
         "from greeting import greet\n"
@@ -94,7 +94,7 @@ async def main():
         encoding="utf-8",
     )
     result = await OpenCollab(workspace).workflow(
-        "evolution",
+        "weave",
         {
             "groups": [
                 {
@@ -141,27 +141,27 @@ Each group has a unique `id` and a nonempty `prompt`. `weight` defaults to one.
 shared files or other affected resources. `targets` defaults to the group id.
 Groups in a dependency cycle share one session. Later groups can read edits
 made by earlier groups while starting with fresh conversation histories.
-`plan_evolution_groups(groups)` returns the ordered groups with cycles combined
+`plan_weave_groups(groups)` returns the ordered groups with cycles combined
 and dependencies expressed as target ids. Application loaders can pass that
-plan directly to `run_evolution`.
+plan directly to `run_weave`.
 
-For application-specific checks, call `run_evolution` from a wrapper workflow
-and supply an `EvolutionAdapter`. The public types are exported from
+For application-specific checks, call `run_weave` from a wrapper workflow
+and supply a `WeaveAdapter`. The public types are exported from
 `opencollab.builtin_workflows`.
 
 ```python
 from opencollab.builtin_workflows import (
-    EvolutionAdapter,
-    EvolutionCheck,
-    EvolutionGroup,
-    run_evolution,
+    WeaveAdapter,
+    WeaveCheck,
+    WeaveGroup,
+    run_weave,
 )
 
 
-class ApplicationChecks(EvolutionAdapter):
+class ApplicationChecks(WeaveAdapter):
     async def verify(self, ctx, targets, seconds):
         report = await run_application_checks(ctx, targets, timeout=seconds)
-        return EvolutionCheck(
+        return WeaveCheck(
             ok=report["passed"],
             executed=report["executed"],
             report=report,
@@ -171,22 +171,22 @@ class ApplicationChecks(EvolutionAdapter):
 
 
 async def application_workflow(ctx, args):
-    return await run_evolution(
+    return await run_weave(
         ctx,
-        [EvolutionGroup("greeting", "Implement the greeting function")],
+        [WeaveGroup("greeting", "Implement the greeting function")],
         adapter=ApplicationChecks(),
     )
 ```
 
 `run_application_checks` is the application's executable verifier. Its report
-should describe the checks that ran and the behavior they observed. Evolution
+should describe the checks that ran and the behavior they observed. Weave
 requires both `ok` and `executed` for a passing check. Repair targets select the
 remaining work, and progress markers provide measured improvement between
 rounds. `max_repair_rounds` and `stagnant_round_limit` bound repair attempts.
 
 An adapter's `save_state(data)` hook receives independent JSON snapshots for
 storage. Supply a saved snapshot as the JSON `state` input or through
-`EvolutionState(saved_snapshot)` with `run_evolution`. Reuse the saved `run_id`
+`WeaveState(saved_snapshot)` with `run_weave`. Reuse the saved `run_id`
 when calling the SDK. Generated groups continue at their checks, checked groups
 retain their generation results, and consumed repair rounds remain counted.
 The saved group fields must agree with the supplied groups.

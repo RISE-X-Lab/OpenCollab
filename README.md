@@ -126,7 +126,7 @@ See [how Adherence is measured](docs/adherence.md).
 | [Package guide](opencollab/README.md) | CLI, Python API, architecture, and runtime behavior |
 | [Configuration guide](configs/README.md) | Providers, models, and team files |
 | [Duo guide](docs/duo.md) · [Chinese](docs/duo/README.zh-CN.md) | Running the dual-coder workflow from the CLI and SDK |
-| [Evolution guide](docs/evolution.md) | Ordered sessions, executable checks, bounded repair and continuation |
+| [Weave guide](docs/weave.md) | Ordered sessions, executable checks, bounded repair and continuation |
 | [Benchmark results](docs/results.md) | Tokens, cost, the paired Duo–Base test, and how to run an evaluation |
 | [Adherence](docs/adherence.md) | What the runtime records, and how we measure Adherence |
 | [OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme) | Running agents on software-engineering benchmarks |

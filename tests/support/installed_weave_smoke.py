@@ -1,4 +1,4 @@
-"""Run installed evolution with local model responses and real file checks."""
+"""Run installed weave with local model responses and real file checks."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ class FileEditingModel:
         self.closed += 1
 
 
-async def exercise_evolution(workspace: Path) -> dict:
+async def exercise_weave(workspace: Path) -> dict:
     model = FileEditingModel()
     probe = workspace / "check_file.py"
     probe.write_text(
@@ -61,7 +61,7 @@ async def exercise_evolution(workspace: Path) -> dict:
         encoding="utf-8",
     )
     result = await OpenCollab(workspace, model="local-file-model", config={"max_output_tokens": 128}).workflow(
-        "evolution", {
+        "weave", {
             "groups": [
                 {"id": "alpha", "prompt": "create-alpha writes alpha to shared.txt", "resources": ["shared.txt"]},
                 {"id": "beta", "prompt": "append-beta reads shared.txt and adds beta", "dependencies": ["alpha"],
@@ -97,7 +97,7 @@ def main() -> None:
     assert package.is_relative_to(Path(sys.prefix).resolve()), package
     assert not (package.parent.parent / "examples").exists()
     cli = Path(sys.executable).with_name("opencollab")
-    with tempfile.TemporaryDirectory(prefix="opencollab-installed-evolution-") as directory:
+    with tempfile.TemporaryDirectory(prefix="opencollab-installed-weave-") as directory:
         workspace = Path(directory)
         env = {key: value for key, value in os.environ.items() if not key.startswith("OPENCOLLAB_")}
         env.pop("PYTHONPATH", None)
@@ -106,8 +106,8 @@ def main() -> None:
             cwd=workspace, env=env, capture_output=True, text=True, timeout=30,
         )
         assert listed.returncode == 0, (listed.stdout, listed.stderr)
-        assert "evolution" in listed.stdout, listed.stdout
-        report = asyncio.run(exercise_evolution(workspace))
+        assert "weave" in listed.stdout, listed.stdout
+        report = asyncio.run(exercise_weave(workspace))
     print(json.dumps({"package": str(package), "execution": report}, indent=2))
 
 

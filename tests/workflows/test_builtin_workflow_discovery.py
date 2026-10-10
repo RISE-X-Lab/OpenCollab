@@ -11,11 +11,11 @@ from opencollab import OpenCollab
 from opencollab.adapters.cli import workflow as workflow_cli
 from opencollab.bootstrap.programmatic import ProgrammaticResult
 from opencollab.bootstrap.workflow_runtime import discover_workflows
-from opencollab.builtin_workflows import duo, evolution, get_builtin_workflows
+from opencollab.builtin_workflows import duo, get_builtin_workflows, weave
 from opencollab.sdk import client as sdk_client
 from opencollab.workflows import workflow
 
-_BUILTIN_NAMES = {"duo", "evolution"}
+_BUILTIN_NAMES = {"duo", "weave"}
 
 
 def _write_workflow(directory, *, name="local-flow"):
@@ -34,7 +34,7 @@ def test_builtin_registry_is_fresh_and_exposes_installed_workflows():
     second = get_builtin_workflows()
     assert {spec.name for spec in first.list_specs()} == _BUILTIN_NAMES
     assert second.get("duo").fn is duo
-    assert second.get("evolution").fn is evolution
+    assert second.get("weave").fn is weave
 
     @workflow(name="caller-only")
     async def caller(ctx, args):
@@ -70,7 +70,7 @@ def test_cli_lists_installed_workflows_in_workspace_without_workflow_directory(t
     result = CliRunner().invoke(workflow_cli.app, ["list", "--workspace", str(tmp_path)])
     assert result.exit_code == 0
     assert "duo" in result.stdout
-    assert "evolution" in result.stdout
+    assert "weave" in result.stdout
     assert "duo-v3" not in result.stdout
     assert "validation-council-dual-coder-selection" not in result.stdout
 
@@ -93,7 +93,7 @@ def test_cli_runs_installed_workflow_and_forwards_agent_profile(tmp_path, monkey
     )
     assert result.exit_code == 0
     assert json.loads(result.stdout) == {"status": "done"}
-    assert captured["spec"].fn is {"duo": duo, "evolution": evolution}[name]
+    assert captured["spec"].fn is {"duo": duo, "weave": weave}[name]
     assert captured["args"] == {"goal": "repair"}
     assert captured["agent_profile"] == "single2"
 

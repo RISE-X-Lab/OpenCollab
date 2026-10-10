@@ -5,15 +5,15 @@ from __future__ import annotations
 from ._dual_coder import run_dual_coder
 from ._prompts import CONTRACT_PROMPT
 from .duo import duo
-from .evolution import (
-    EvolutionAdapter,
-    EvolutionCheck,
-    EvolutionConfig,
-    EvolutionGroup,
-    EvolutionState,
-    evolution,
-    plan_evolution_groups,
-    run_evolution,
+from .weave import (
+    WeaveAdapter,
+    WeaveCheck,
+    WeaveConfig,
+    WeaveGroup,
+    WeaveState,
+    plan_weave_groups,
+    run_weave,
+    weave,
 )
 
 
@@ -23,12 +23,12 @@ def get_builtin_workflows():
 
     registry = Registry()
     registry.register(duo.__workflow_spec__)
-    registry.register(evolution.__workflow_spec__)
+    registry.register(weave.__workflow_spec__)
     return registry
 
 
 __all__ = [
-    "duo", "evolution", "get_builtin_workflows", "run_dual_coder", "CONTRACT_PROMPT",
-    "EvolutionAdapter", "EvolutionCheck", "EvolutionConfig", "EvolutionGroup", "EvolutionState",
-    "plan_evolution_groups", "run_evolution",
+    "duo", "weave", "get_builtin_workflows", "run_dual_coder", "CONTRACT_PROMPT",
+    "WeaveAdapter", "WeaveCheck", "WeaveConfig", "WeaveGroup", "WeaveState",
+    "plan_weave_groups", "run_weave",
 ]
