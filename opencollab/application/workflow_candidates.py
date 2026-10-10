@@ -14,8 +14,11 @@ from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.workflow_budget import _BudgetLease
 
 
-def _candidate_budget_total(budget: int | None) -> int | None:
-    if os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower() in {"1", "true"}:
+def _candidate_budget_total(budget: int | None, limit_mode: str = "environment") -> int | None:
+    if (
+        limit_mode == "environment"
+        and os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower() in {"1", "true"}
+    ):
         return None
     return budget
 
@@ -418,7 +421,8 @@ class WorkflowCandidatesMixin:
                     tracer=self._tracer,
                     max_concurrency=self._max_concurrency,
                     task_concurrency=self._task_concurrency,
-                    budget_total=_candidate_budget_total(budget_lease.total),
+                    budget_total=_candidate_budget_total(budget_lease.total, self._limit_mode),
+                    limit_mode=self._limit_mode,
                     tree_probe=_CandidateLeaseTreeProbe(lease),
                     candidate_workspace=None,
                     deadline_monotonic=self._deadline_monotonic,

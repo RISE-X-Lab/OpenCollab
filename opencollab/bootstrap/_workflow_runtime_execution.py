@@ -94,6 +94,8 @@ async def run_workflow(
     defer_manifest_completion: bool = False,
     candidate_workspace: Any | None = None,
     run_id: str | None = None,
+    llm: Any | None = None,
+    limit_mode: str = "environment",
 ) -> Any:
     """Run one workflow and return only after cleanup and evidence persistence."""
     cleanup_timeout = _positive_cleanup_timeout(cleanup_timeout)
@@ -131,6 +133,9 @@ async def run_workflow(
             max_steps=max_steps,
             system_prompt=system_prompt,
             agent_profile=agent_profile,
+            llm=llm,
+            limit_mode=limit_mode,
+            run_id=run_id,
             candidate_workspace=candidate_workspace,
             save_dir=save_dir,
             env=env,

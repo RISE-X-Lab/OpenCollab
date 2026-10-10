@@ -99,7 +99,11 @@ class WorkflowSessionFactory:
         save_dir: str | None = None,
         env: Any | None = None,
         llm_stream_chat: bool = False,
+        llm: Any | None = None,
+        run_id: str | None = None,
     ) -> None:
+        self._llm = llm
+        self._run_id = run_id
         self._model = model
         self._provider = provider
         self._wire_protocol = wire_protocol
@@ -251,6 +255,9 @@ class WorkflowSessionFactory:
         tool_choice: Any = None,
         thinking: bool | None = None,
         env: Any | None = None,
+        system_prompt: str | None = None,
+        max_steps: int | None = None,
+        run_control: Any | None = None,
     ) -> Any:
         use_thinking = self._thinking if thinking is None else thinking
         use_reasoning_effort = None if thinking is False else self._reasoning_effort
@@ -268,10 +275,11 @@ class WorkflowSessionFactory:
                 if self._workspace
                 else LocalEnvironment()
             )
-        system_prompt = self._system_prompt
+        explicit_prompt = system_prompt is not None
+        system_prompt = self._system_prompt if system_prompt is None else system_prompt
         environment_workspace = getattr(session_env, "workspace", None)
         if (
-            isinstance(self._workspace, str) and self._workspace
+            not explicit_prompt and isinstance(self._workspace, str) and self._workspace
             and isinstance(environment_workspace, str) and environment_workspace
             and environment_workspace != self._workspace
         ):
@@ -283,7 +291,7 @@ class WorkflowSessionFactory:
             if self._agent_profile is None
             else self._agent_profile.resolve_tools(tools)
         )
-        if self._agent_profile is not None:
+        if self._agent_profile is not None and not explicit_prompt:
             system_prompt = self._profile_prompt(system_prompt, resolved_tools, label)
         if self._wire_protocol == RESPONSES:
             validate_responses_model_controls(
@@ -324,13 +332,16 @@ class WorkflowSessionFactory:
             env=session_env,
             tracer=self._tracer,
             max_budget_tokens=budget,
-            max_steps=self._max_steps,
+            max_steps=self._max_steps if max_steps is None else max_steps,
             event_sink=self._event_sink,
             llm_timeout=self._llm_timeout,
             provider_retry_budget=self._provider_retry_budget,
             aid=aid,
             auto_save_path=self._save_path(aid, label),
             agent_profile=self._agent_profile,
+            **({"llm": self._llm} if self._llm is not None else {}),
+            **({"run_control": run_control} if run_control is not None else {}),
+            **({"run_id": self._run_id} if self._run_id is not None else {}),
         )
 
     def _profile_prompt(
@@ -426,6 +437,9 @@ def build_workflow_context(
     deadline_monotonic: float | None = None,
     deadline_margin_seconds: float = 120.0,
     candidate_workspace: Any | None = None,
+    llm: Any | None = None,
+    limit_mode: str = "environment",
+    run_id: str | None = None,
 ) -> WorkflowContext:
     """Build a :class:`WorkflowContext` wired to the concrete session factory.
 
@@ -440,6 +454,8 @@ def build_workflow_context(
     """
     environment = env if env is not None else _WORKFLOW_ENV_OVERRIDE.get()
     factory = WorkflowSessionFactory(
+        llm=llm,
+        run_id=run_id,
         model=cfg["model"],
         provider=cfg["provider"],
         wire_protocol=cfg.get("wire_protocol", "chat_completions"),
@@ -470,7 +486,7 @@ def build_workflow_context(
     )
     budget_total = (
         None
-        if os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower()
+        if limit_mode == "environment" and os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower()
         in {"1", "true"}
         else budget if budget is not None else cfg.get("budget")
     )
@@ -505,6 +521,7 @@ def build_workflow_context(
         max_concurrency=max_concurrency,
         task_concurrency=task_concurrency,
         budget_total=budget_total,
+        limit_mode=limit_mode,
         tree_probe=tree_probe,
         candidate_workspace=candidate_workspace,
         workspace_root=source_root if source_root is not None else workspace,

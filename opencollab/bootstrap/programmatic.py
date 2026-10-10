@@ -520,6 +520,8 @@ async def run_workflow(
     agent_profile: Any | None = None,
     candidate_workspace: Any | None = None,
     run_id: str | None = None,
+    llm: Any | None = None,
+    limit_mode: str = "environment",
 ) -> ProgrammaticResult:
     """Run one workflow and return its live metrics directly."""
     run_id = run_id if run_id is not None else f"workflow-{uuid.uuid4().hex}"
@@ -562,6 +564,8 @@ async def run_workflow(
                 max_steps=max_steps,
                 system_prompt=system_prompt or WORKFLOW_AGENT_PROMPT,
                 agent_profile=agent_profile,
+                llm=llm,
+                limit_mode=limit_mode,
                 candidate_workspace=candidate_workspace,
                 run_id=run_id,
                 return_details=True,

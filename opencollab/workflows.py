@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Protocol
 
+from opencollab.application.workflow_agent_run import WorkflowAgentResult
 from opencollab.application.workflow_candidates import CandidateRun
 from opencollab.application.workflow_registry import workflow
 from opencollab.tools import Tool, VerificationTool
@@ -30,6 +31,21 @@ class WorkflowContext(Protocol):
         thinking: bool | None = None,
         over_budget_ok: bool = False,
     ) -> str | dict[str, Any] | None: ...
+
+    async def agent_run(
+        self,
+        prompt: str,
+        *,
+        label: str | None = None,
+        tools: str | Sequence[Tool] | None = None,
+        isolation: bool = False,
+        budget: int | None = None,
+        timeout: float | None = None,
+        max_steps: int | None = None,
+        system_prompt: str | None = None,
+        run_control: Any | None = None,
+        cleanup_timeout: float = 2.0,
+    ) -> WorkflowAgentResult: ...
 
     async def draft_findings(
         self,
@@ -100,4 +116,4 @@ class WorkflowContext(Protocol):
     def time_low(self) -> bool: ...
 
 
-__all__ = ["CandidateRun", "WorkflowContext", "workflow"]
+__all__ = ["CandidateRun", "WorkflowAgentResult", "WorkflowContext", "workflow"]

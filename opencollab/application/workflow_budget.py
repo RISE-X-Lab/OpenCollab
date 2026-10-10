@@ -126,7 +126,7 @@ class WorkflowBudgetMixin:
         from overshooting the shared pool while the cap bounds a single runaway
         session; ``None`` reproduces the prior whole-pool behaviour."""
         base = self._session_budget()
-        if _unbounded_limits_enabled():
+        if getattr(self, "_limit_mode", "environment") == "environment" and _unbounded_limits_enabled():
             return None
         if base is None:
             return max(0, cap) if cap is not None else None
@@ -209,7 +209,7 @@ class WorkflowBudgetMixin:
         ``budget_refusal`` / ``budget_escape`` and changes no allocation.
         """
         cap = _positive_budget(cap)
-        if _unbounded_limits_enabled():
+        if getattr(self, "_limit_mode", "environment") == "environment" and _unbounded_limits_enabled():
             return _BudgetLease(total=None, reserved=0, sessions=[])
         self._budget_waiters += 1
         try:
