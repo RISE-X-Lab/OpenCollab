@@ -81,8 +81,9 @@ sessions and the workflow manifest, while `--no-save` disables run artifacts.
 
 ## Python SDK
 
-The package root exposes `OpenCollab`, `RunResult`, `RunError`, and the
-`workflow` decorator. Compatibility follows package SemVer.
+The package root exposes `OpenCollab`, `RunResult`, `RunError`, the
+`workflow` decorator, and `RunControl`, `BudgetSnapshot`, `BudgetDecision`,
+and `RunEvent` for controlled agent runs. Compatibility follows package SemVer.
 
 ```python
 import asyncio
@@ -124,6 +125,63 @@ compatibility aliases for Base. Run metrics record the concrete profile name.
 `opencollab.profiles.resolve_profile_name(...)` exposes this resolution to
 integrations. Team configuration and workflow role configuration keep their
 own selection paths.
+
+`agent(...)` and `agent2(...)` accept an optional `run_control`. The effective
+`budget` authorizes a hard token ceiling. `initial_soft_budget_tokens` starts a
+smaller allowance, clipped to that actual authorization. A synchronous or async
+`decide_budget(snapshot)` callback may keep or increase the soft allowance by
+returning `BudgetDecision(soft_budget_tokens, final_prompt=None)`. The runner
+checks the callback before a soft-budget stop, budget-driven wind-down, and
+provider attempts whose estimated input plus minimum output exceeds the soft
+allowance. Each snapshot includes the run and session IDs, token and step
+counters, both allowances, input reservation, minimum output requirement, and
+trigger reason. Suggestions that decrease the allowance, increase it to a value below actual
+spend, or exceed the hard authorization produce a failed result carrying the
+policy error. Keeping the current allowance after usage crosses it produces
+the ordinary soft-budget stop. Exhausting the hard authorization produces the ordinary budget
+stop. A `final_prompt` enters the current request and its input reservation is
+recomputed before the provider call.
+
+```python
+from opencollab import BudgetDecision, RunControl
+
+
+def decide(snapshot):
+    allowance = snapshot.soft_budget_tokens
+    if snapshot.used_tokens > 0 and progress_evidence_is_available():
+        allowance = min(snapshot.hard_budget_tokens, allowance + 50_000)
+    return BudgetDecision(allowance)
+
+
+result = await oc.agent2(
+    "Fix the failing regression.",
+    budget=200_000,
+    run_control=RunControl(initial_soft_budget_tokens=100_000, decide_budget=decide),
+)
+```
+
+An `on_event(event)` receiver runs synchronously and independently of `trace`.
+Its compact `RunEvent` carries `type`, `run_id`, `session_id`, `aid`,
+`used_tokens`, `steps`, and a detached `data` mapping. `usage` events report
+normalized input, output, and total tokens at each successful or failed
+provider attempt's accounting point, including summary and late responses.
+The `purpose` and `late` fields identify those paths. `context_shaping` events
+report normal and emergency compaction. `budget_decision`, `error`, and
+`session_stopped` events expose decisions and lifecycle state. The stopped
+event records outstanding provider requests. The receiver stays attached to its
+original run through late accounting and cleanup, then receives
+`cleanup_completed`. Receiver exceptions remain readable in
+`result.metrics["observation_errors"]` after accounting and cleanup finish.
+
+`RunControl.history_trigger_tokens` optionally caps the history-compaction
+trigger for this run. It must be an integer of at least two. For a known model
+window, the effective trigger is the smaller of the cap and the model-derived
+trigger, and the target remains 75 percent of that trigger. Unknown windows
+retain the fixed default thresholds. Omission uses the ordinary model-derived
+thresholds. Enabled trajectories record the effective threshold and its source.
+`RunControl.tool_cancellation_cleanup_timeout` sets this session's existing
+tool cancellation cleanup wait. It accepts a finite positive number of seconds.
+Omission retains the configured runtime default.
 
 `RunResult.status` can be `completed`, `stopped`, or `failed`. A completed result
 has `ok=True`, while stopped and failed results have `ok=False`. Stopped results

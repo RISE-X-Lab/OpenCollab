@@ -9,7 +9,6 @@ import logging
 import math
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from types import MappingProxyType
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -108,7 +107,7 @@ class _SessionRunControlMixin:
         event = RunEvent(
             type=event_type, run_id=self._run_id, session_id=self._response_session_id,
             aid=self.state.aid, used_tokens=self.state.used_tokens, steps=self.state.step_count,
-            data=MappingProxyType(copy.deepcopy(data)),
+            data=copy.deepcopy(data),
         )
         try:
             result = receiver(event)
