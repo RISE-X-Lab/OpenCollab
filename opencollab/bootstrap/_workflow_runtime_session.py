@@ -286,11 +286,14 @@ class WorkflowSessionFactory:
             system_prompt = system_prompt.replace(self._workspace, environment_workspace)
         # The workflow owns role permissions and verification-tool instances.
         # Profile resolution keeps explicit tools, including evidence wrappers.
-        resolved_tools = list(
-            (tools or [])
-            if self._agent_profile is None
-            else self._agent_profile.resolve_tools(tools)
-        )
+        if self._agent_profile is None and isinstance(tools, str):
+            from opencollab.bootstrap.programmatic import resolve_tools
+
+            resolved_tools = list(resolve_tools(tools))
+        else:
+            resolved_tools = list(
+                (tools or []) if self._agent_profile is None else self._agent_profile.resolve_tools(tools)
+            )
         if self._agent_profile is not None and not explicit_prompt:
             system_prompt = self._profile_prompt(system_prompt, resolved_tools, label)
         if self._wire_protocol == RESPONSES:

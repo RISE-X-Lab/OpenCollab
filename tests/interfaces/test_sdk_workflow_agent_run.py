@@ -292,3 +292,37 @@ async def test_incomplete_cleanup_stops_later_generation_and_verification(tmp_pa
     assert result.ok
     assert result.output.reason == "cleanup incomplete"
     assert result.tokens == 6
+
+
+@pytest.mark.asyncio
+async def test_call_result_includes_cleanup_observer_failure_and_finishes_receiver(tmp_path):
+    received = []
+
+    def observer(event):
+        received.append(event.type)
+        if event.type == "cleanup_completed":
+            raise RuntimeError("controlled receiver failure")
+
+    async def flow(ctx, _args):
+        result = await ctx.agent_run("finish", tools=[], run_control=RunControl(on_event=observer))
+        assert received[-1] == "cleanup_completed"
+        assert result.observation_errors and "controlled receiver failure" in result.observation_errors[0]
+        return result
+
+    llm = ReplyLLM()
+    result = await client(tmp_path).workflow(flow, llm=llm, budget=10_000, agent_profile="single2")
+    assert result.ok and result.output.cleanup_complete
+    assert received.count("cleanup_completed") == 1
+    assert llm.closed == 0
+
+
+@pytest.mark.asyncio
+async def test_named_tools_work_without_a_workflow_profile(tmp_path):
+    llm = ReplyLLM()
+
+    async def flow(ctx, _args):
+        return await ctx.agent_run("finish", tools="coding")
+
+    result = await client(tmp_path).workflow(flow, llm=llm, budget=100_000)
+    assert result.ok and result.output.status == "completed"
+    assert "file_write" in {tool["function"]["name"] for tool in llm.calls[0][1]}

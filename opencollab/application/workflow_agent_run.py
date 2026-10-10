@@ -142,6 +142,14 @@ class WorkflowAgentRunMixin:
                         self._record_agent_failure(label, exc)
                         status, reason = "failed", f"run failed: {type(exc).__name__}"
                     quiet = await self._settle_agent_run(lease, cleanup_timeout)
+                    close = getattr(session, "aclose", None)
+                    if quiet and callable(close):
+                        try:
+                            await self._run_with_timeout(close(), cleanup_timeout)
+                            quiet = await self._settle_agent_run(lease, cleanup_timeout)
+                        except (CallerTimeoutError, Exception) as exc:
+                            self._record_agent_failure(label, exc)
+                            quiet = False
                     if not quiet:
                         self._agent_run_environment_unsafe = True
                         status, reason = "failed", "cleanup incomplete"
