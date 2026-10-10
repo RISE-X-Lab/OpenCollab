@@ -1,0 +1,4 @@
+interface:
+  display_name: "ARC Bench Checkpoint"
+  short_description: "Create git checkpoints and restore ARC Bench workspaces."
+  default_prompt: "Use $arcbench-checkpoint to save or restore ARC Bench workspace checkpoints."

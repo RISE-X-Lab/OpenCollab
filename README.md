@@ -102,6 +102,11 @@ will produce a usage error.
 [Edict](https://github.com/cft0808/edict), a multi-agent system of roughly
 24,000 lines, in 239 lines of team and workflow code.
 
+[ARC-Bench r6](examples/arcbench-evolution-r6/) adapts the built-in Weave (`weave`)
+workflow to the competition's requirement cards, prompts, limits and platform
+records. Independent Single2 instances share application files, with executable
+browser and database checks between implementation groups and repair rounds.
+
 ## Verify it happened
 
 In a Team, the agents decide the handoffs, and a declared team does not

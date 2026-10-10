@@ -1,0 +1,38 @@
+schema_version: "1.0"
+id: web-react-express
+name: Web Application (React + Express)
+type: web_app
+version: 1.0.0
+description: Full-stack React and Express application template for generation agents.
+stack:
+  frontend:
+    framework: Vite
+    library: React
+    language: JavaScript
+    styling: TailwindCSS
+  backend:
+    framework: Express
+    language: JavaScript
+    database: SQLite
+  tests:
+    frontend: Vitest
+    backend: Vitest
+    e2e: Playwright
+copy:
+  exclude:
+    - template.yaml
+    - frontend/node_modules
+    - frontend/dist
+    - backend/node_modules
+    - backend/.arc-test-db
+preview:
+  html: frontend/dist/index.html
+  assets: frontend/dist/assets
+agent_guidance:
+  ui_root: frontend/src
+  api_root: backend/src/app.js
+  function_root: backend/src
+  db_root: backend/src/database
+  frontend_test_root: frontend/src
+  backend_test_root: backend/src
+  e2e_test_root: backend/test-e2e

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ARC Bench Runtime Signals"
+  short_description: "Emit ARC Bench run states and frontend refresh signals."
+  default_prompt: "Use $arcbench-runtime-signals to report progress and notify the ARC Bench frontend."
