@@ -6,17 +6,20 @@ state. Existing `ctx.agent` calls keep their text or structured-output result.
 
 ```python
 from opencollab import OpenCollab, RunControl, workflow
+from opencollab.tools import builtin_tools
 
 @workflow(name="incremental-edit")
 async def incremental_edit(ctx, inputs):
+    tools = builtin_tools("bash", "file_read", "apply_patch", "git_diff", headless=False)
     first = await ctx.agent_run(
         inputs["first_task"], label="first", budget=100_000,
+        tools=tools,
         max_steps=40, system_prompt="Implement the assigned change and verify it.",
         run_control=RunControl(initial_soft_budget_tokens=80_000),
     )
     if not first.workspace_ready:
         return {"status": "cleanup_failed", "first": first.status}
-    second = await ctx.agent_run(inputs["second_task"], label="second", budget=100_000)
+    second = await ctx.agent_run(inputs["second_task"], label="second", budget=100_000, tools=tools)
     return {"first": first.status, "second": second.status}
 
 result = await OpenCollab("/path/to/application").workflow(

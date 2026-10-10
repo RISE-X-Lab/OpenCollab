@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import subprocess
 
 import pytest
 
@@ -13,6 +14,7 @@ from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.application.workflow import WorkflowBudgetExceeded
 from opencollab.bootstrap import _workflow_runtime_session as wiring
 from opencollab.bootstrap.single2_prompt import SINGLE2_SYSTEM_PROMPT
+from opencollab.sdk import BudgetDecision, RunControl
 from opencollab.tools import builtin_tools
 
 
@@ -198,3 +200,95 @@ async def test_step_limit_is_reported_instead_of_success(tmp_path):
     assert "step limit" in result.output.reason
     assert result.output.steps == 1
     assert (tmp_path / "one.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_run_control_receives_actual_grant_and_matches_usage_events(tmp_path):
+    seen = []
+    events = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    class Hold(ReplyLLM):
+        async def complete(self, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                entered.set()
+            await release.wait()
+            return await super().complete(*args, **kwargs)
+
+    def decide(snapshot):
+        seen.append(snapshot)
+        return BudgetDecision(snapshot.soft_budget_tokens)
+
+    control = RunControl(initial_soft_budget_tokens=4_000, decide_budget=decide, on_event=events.append)
+
+    async def flow(ctx, _args):
+        pending = [asyncio.create_task(ctx.agent_run(
+            "finish", tools=[], budget=2_000, system_prompt="brief", run_control=control,
+        )) for _ in range(2)]
+        await asyncio.wait_for(entered.wait(), 2)
+        release.set()
+        return await asyncio.gather(*pending)
+
+    result = await client(tmp_path).workflow(flow, llm=Hold(), budget=3_000, limit_mode="explicit")
+    assert result.ok
+    assert {r.hard_budget_tokens for r in result.output} == {1_000, 2_000}
+    assert all(s.soft_budget_tokens <= s.hard_budget_tokens for s in seen)
+    assert sum(e.data["total_tokens"] for e in events if e.type == "usage") == result.tokens == 12
+    assert {e.session_id for e in events} == {r.session_id for r in result.output}
+
+
+@pytest.mark.asyncio
+async def test_explicit_mode_and_injected_llm_reach_candidate_child(tmp_path, monkeypatch):
+    (tmp_path / "source.txt").write_text("initial\n")
+    for args in (("init", "-q"), ("add", "source.txt"),
+                 ("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false",
+                  "commit", "-qm", "initial")):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+    monkeypatch.setenv("OPENCOLLAB_UNBOUNDED_LIMITS", "true")
+    llm = ReplyLLM()
+
+    async def flow(ctx, _args):
+        async def nested(child, _inputs):
+            assert child.budget.total == 2_000
+            assert child.run_id == ctx.run_id
+            return await child.agent_run("finish", tools=[], budget=1_000, system_prompt="brief")
+        return await ctx.candidate_workflow(nested, {}, label="nested", budget=2_000)
+
+    result = await client(tmp_path).workflow(
+        flow, llm=llm, budget=5_000, limit_mode="explicit", agent_profile="single2",
+    )
+    assert result.ok
+    assert result.output.output.hard_budget_tokens == 1_000
+    assert result.tokens == 6
+    assert llm.closed == 0
+
+
+@pytest.mark.asyncio
+async def test_incomplete_cleanup_stops_later_generation_and_verification(tmp_path):
+    from opencollab.application.workflow import WorkflowEnvironmentRevoked
+
+    class Late(ReplyLLM):
+        async def complete(self, *args, **kwargs):
+            try:
+                await asyncio.sleep(.5)
+            except asyncio.CancelledError:
+                await asyncio.sleep(.1)
+            return await super().complete(*args, **kwargs)
+
+    async def flow(ctx, _args):
+        first = await ctx.agent_run("first", tools=[], timeout=.01, cleanup_timeout=.01)
+        assert not first.cleanup_complete and not first.workspace_ready
+        with pytest.raises(WorkflowEnvironmentRevoked):
+            await ctx.agent_run("second")
+        with pytest.raises(WorkflowEnvironmentRevoked):
+            await ctx.execute_verification(object(), {})
+        return first
+
+    result = await client(tmp_path).workflow(flow, llm=Late(), budget=10_000)
+    assert result.ok
+    assert result.output.reason == "cleanup incomplete"
+    assert result.tokens == 6
