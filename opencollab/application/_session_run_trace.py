@@ -33,10 +33,13 @@ class _SessionRunTraceMixin:
             if isinstance(self.shaper, ShaperPipeline)
             else ShaperPipeline(() if self.shaper is None else (self.shaper,))
         )
-        if self.tracer is None:
+        if self.tracer is None and self._run_event_receiver is None:
             return await pipeline.ashape(messages)
         shaped, reports = await pipeline.ashape_with_report(messages)
         for report in reports:
+            self._emit_run_event("context_shaping", emergency=False, **report)
+            if self.tracer is None:
+                continue
             self.tracer.log_step(
                 step_type="context_shaping",
                 payload={

@@ -14,6 +14,7 @@ from opencollab.application.async_timeout import (
     force_task_terminal,
 )
 from opencollab.application.ports import LLMPort, TracePort
+from opencollab.application.run_control import RunControl
 from opencollab.application.session_lifecycle import close_session_resources
 from opencollab.bootstrap.container import build_workspace_safety_policy
 from opencollab.bootstrap.session_factory import build_session
@@ -38,6 +39,7 @@ class AgentRuntimeResult:
     environment_cleanup_quiesced: bool | None
     environment_quiesced: bool | None
     persistence_errors: tuple[str, ...]
+    observation_errors: tuple[str, ...] = ()
 
 
 async def _run_session(session: Any, prompt: str) -> str:
@@ -132,6 +134,10 @@ async def _finalize_session(
         timeout,
     )
     llm_quiesced = await close_session_resources((session,), timeout=timeout)
+    if quiesced and persistence_quiesced and cleanup_quiesced and llm_quiesced:
+        runner = getattr(session, "runner", None)
+        if runner is not None:
+            runner.finish_run_control()
     return (
         quiesced
         and persistence_ready
@@ -164,6 +170,7 @@ def _result(
         environment_cleanup_quiesced=True if cleanup_environment else None,
         environment_quiesced=True if cleanup_environment else None,
         persistence_errors=tuple(str(error) for error in session.persistence_errors),
+        observation_errors=getattr(getattr(session, "runner", None), "observation_errors", ()),
     )
 
 
@@ -183,6 +190,7 @@ async def run_agent(
     cleanup_environment: bool = False,
     agent_profile: Any | None = None,
     run_id: str | None = None,
+    run_control: RunControl | None = None,
 ) -> AgentRuntimeResult:
     """Run one Agent and return only after cleanup and final save quiesce."""
     session = build_session(
@@ -197,6 +205,7 @@ async def run_agent(
         llm_timeout=llm_timeout_seconds,
         agent_profile=agent_profile,
         run_id=run_id,
+        run_control=run_control,
     )
     owner = asyncio.create_task(_run_session(session, prompt))
     finalization_task: asyncio.Task[bool] | None = None

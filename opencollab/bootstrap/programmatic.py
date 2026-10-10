@@ -37,6 +37,7 @@ from opencollab.adapters.trace import Tracer
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import EnvironmentPort
+from opencollab.application.run_control import RunControl
 from opencollab.bootstrap._workflow_runtime_cleanup import _sticky_tracer_failure
 from opencollab.bootstrap.agent_profiles import SingleAgentProfile, resolve_agent_profile
 from opencollab.bootstrap.agent_runtime import (
@@ -352,6 +353,7 @@ async def run_agent(
     llm: Any | None = None,
     agent_profile: SingleAgentProfile | None = None,
     run_id: str | None = None,
+    run_control: RunControl | None = None,
 ) -> ProgrammaticResult:
     """Run the selected single-agent implementation behind the owned lifecycle."""
     # One id per run, on every trajectory record and in the result, so two
@@ -415,6 +417,7 @@ async def run_agent(
                 cleanup_environment=owned_environment,
                 agent_profile=resolved_profile,
                 run_id=run_id,
+                run_control=run_control,
             )
         except AgentRuntimeLifecycleError as exc:
             raise ProgrammaticLifecycleError(str(exc)) from exc
@@ -441,6 +444,7 @@ async def run_agent(
                 "terminal_reason": internal.terminal_reason,
                 "markup_recovered": internal.markup_recovered,
                 **quiescence,
+                **({"observation_errors": list(internal.observation_errors)} if run_control is not None else {}),
                 "agent_profile": resolved_profile.name,
                 "agent_tool_names": [tool.name for tool in agent.tools],
             },

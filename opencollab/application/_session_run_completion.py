@@ -474,6 +474,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             len(messages),
             len(forced),
         )
+        self._emit_run_event("context_shaping", emergency=True, before_messages=len(messages),
+                             after_messages=len(forced))
         await self.event_publisher.emit(self.event_factory.error("context_overflow_recompacted"))
         try:
             return await self._complete(
@@ -565,6 +567,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         top_p = getattr(self.agent, "top_p", None)
         if top_p is not None:
             extra["top_p"] = top_p
+        await self._prepare_request_budget(messages, tools, thinking=getattr(self.agent, "thinking", False))
         max_output_tokens = self._request_output_limit(
             messages, tools, thinking=getattr(self.agent, "thinking", False)
         )
@@ -591,45 +594,61 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             **extra,
         )
 
-    def _request_output_limit(self, messages: list[dict], tools: list[dict] | None, *, thinking: bool) -> int:
-        # Summary calls await provider work after PRECHECK. Their usage, or a
-        # sibling's concurrent usage, can exhaust the shared allowance meanwhile.
-        if self._team_budget_exhausted is not None and self._team_budget_exhausted():
-            raise _TeamBudgetStop
-        configured_output_tokens = getattr(
-            self.agent,
-            "max_tokens_per_step",
-            DEFAULT_MAX_TOKENS_PER_STEP,
-        )
-        max_output_tokens = max(1, int(configured_output_tokens))
-        minimum_output_tokens = 1
+    def _request_budget_requirements(
+        self, messages: list[dict], tools: list[dict] | None, *, thinking: bool, estimate_input: bool = True,
+    ) -> tuple[int, int, int]:
+        configured = max(1, int(getattr(self.agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)))
+        minimum = 1
         if isinstance(self.llm, RequestOutputRequirementPort):
-            minimum_output_tokens = self.llm.minimum_output_tokens(
-                max_output_tokens=max_output_tokens,
-                thinking=thinking,
+            minimum = self.llm.minimum_output_tokens(
+                max_output_tokens=configured, thinking=thinking,
                 thinking_params=getattr(self.agent, "thinking_params", None) if thinking else None,
             )
-        if self.max_budget_tokens is not None:
-            remaining_budget = int(self.max_budget_tokens) - int(
-                self.state.used_tokens
+        if not estimate_input:
+            reserved = 0
+        elif isinstance(self.llm, RequestTokenEstimatorPort):
+            reserved = self.llm.estimate_request_tokens(
+                messages, tools, thinking=thinking,
+                thinking_params=getattr(self.agent, "thinking_params", None) if thinking else None,
             )
-            # The provider owns history adaptation, including thinking replay.
-            # Injected clients without that optional capability use the common
-            # estimate with all continuation fields included.
-            if isinstance(self.llm, RequestTokenEstimatorPort):
-                reserved_input_tokens = self.llm.estimate_request_tokens(
-                    messages,
-                    tools,
-                    thinking=thinking,
-                    thinking_params=getattr(self.agent, "thinking_params", None) if thinking else None,
-                )
-            else:
-                reserved_input_tokens = estimate_request_tokens(messages, tools)
+        else:
+            reserved = estimate_request_tokens(messages, tools)
+        return configured, minimum, reserved
+
+    async def _prepare_request_budget(
+        self, messages: list[dict], tools: list[dict] | None, *, thinking: bool,
+    ) -> None:
+        if self._run_control is None:
+            return
+        _configured, minimum, reserved = self._request_budget_requirements(messages, tools, thinking=thinking)
+        if self.max_budget_tokens is not None and self.state.used_tokens + reserved + minimum > self.max_budget_tokens:
+            await self._decide_run_budget(reason="request", reserved_input_tokens=reserved,
+                                          minimum_output_tokens=minimum)
+        if self._run_final_prompt is not None:
+            prompt = {"role": "system", "content": self._run_final_prompt}
+            if prompt not in messages:
+                messages.append(prompt)
+
+    def _request_output_limit(self, messages: list[dict], tools: list[dict] | None, *, thinking: bool) -> int:
+        if self._team_budget_exhausted is not None and self._team_budget_exhausted():
+            raise _TeamBudgetStop
+        max_output_tokens, minimum_output_tokens, reserved_input_tokens = self._request_budget_requirements(
+            messages, tools, thinking=thinking,
+            estimate_input=self.max_budget_tokens is not None or (
+                self._run_control is not None and self.hard_budget_tokens is not None
+            ),
+        )
+        ceilings = [self.max_budget_tokens]
+        if self._run_control is not None:
+            ceilings.append(self.hard_budget_tokens)
+        for ceiling in ceilings:
+            if ceiling is None:
+                continue
+            remaining_budget = int(ceiling) - int(self.state.used_tokens)
             output_budget = remaining_budget - reserved_input_tokens
             if output_budget < minimum_output_tokens:
                 raise _TokenBudgetStop(
-                    reserved_input_tokens=reserved_input_tokens,
-                    remaining_budget=remaining_budget,
+                    reserved_input_tokens=reserved_input_tokens, remaining_budget=remaining_budget,
                     minimum_output_tokens=minimum_output_tokens,
                 )
             max_output_tokens = min(max_output_tokens, output_budget)
@@ -657,6 +676,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict], **kwargs: Any
     ) -> CompletionResponse:
         """Reserve, own and charge a summary call exactly once."""
+        await self._prepare_request_budget(messages, None, thinking=False)
         max_output_tokens = self._request_output_limit(messages, None, thinking=False)
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
             kwargs["max_output_tokens"] = max_output_tokens
@@ -673,6 +693,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         def account_response(response: CompletionResponse) -> None:
             input_tokens, total_tokens = _normalize_completion_usage(response.usage)
             self.state.add_used_tokens(total_tokens)
+            self._record_usage_event(response.usage, total_tokens, purpose="summary", late=abandoned)
             self._mark_budget_reserve_consumed(protected_call=protected_call)
             self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
             self.state.set_context_tokens(input_tokens)
@@ -685,10 +706,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         async def complete_owned() -> CompletionResponse:
             try:
                 return await _complete_with_error_usage(
-                    self, complete, messages, protected_call=protected_call, on_response=account_response, **kwargs,
+                    self, complete, messages, protected_call=protected_call,
+                    usage_purpose="summary", on_response=account_response, **kwargs,
                 )
             finally:
                 self._draining_provider_tasks.discard(asyncio.current_task())
+                self._finish_run_control_if_quiesced()
 
         owner = asyncio.create_task(complete_owned())
         self._track_provider_task(owner)

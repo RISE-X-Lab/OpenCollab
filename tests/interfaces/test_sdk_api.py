@@ -23,7 +23,9 @@ from opencollab.workflows import WorkflowContext
 
 
 def test_root_and_sdk_export_one_small_surface() -> None:
-    expected = ["OpenCollab", "RunError", "RunResult", "workflow"]
+    expected = [
+        "BudgetDecision", "BudgetSnapshot", "OpenCollab", "RunControl", "RunError", "RunEvent", "RunResult", "workflow",
+    ]
     assert opencollab.__version__ == "0.9.3"
     assert opencollab.__all__ == expected
     assert sdk.__all__ == expected
@@ -68,6 +70,7 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             # The id written to every file the run leaves; a harness passes its
             # own so its records join the run's. ``team`` and ``workflow`` too.
             "run_id",
+            "run_control",
         ),
         sdk.OpenCollab.agent2: ("self", "prompt", "kwargs"),
         sdk.OpenCollab.team: (

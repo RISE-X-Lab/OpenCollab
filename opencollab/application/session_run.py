@@ -37,6 +37,7 @@ from opencollab.application.ports import (
     ShaperPort,
     TracePort,
 )
+from opencollab.application.run_control import RunControl, _SessionRunControlMixin
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.events import SessionRuntimeEvent
 from opencollab.domain.session import SessionPhase, SessionState
@@ -67,7 +68,7 @@ __all__ = [
 ]
 
 
-class SessionRunUseCase(_SessionRunCompletionMixin):
+class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
     """Application use case for the session run loop.
 
     The LLM response is structural (``CompletionResponse`` in
@@ -97,6 +98,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         submit_tool_name: str = SUBMIT_TOOL_NAME,
         watchdog_k: int = DEFAULT_WATCHDOG_K,
         low_yield_m: int = DEFAULT_LOW_YIELD_M,
+        run_control: RunControl | None = None,
+        run_id: str | None = None,
     ):
         self.agent = agent
         self._initial_agent_tools = tuple(getattr(agent, "tools", ()) or ())
@@ -113,6 +116,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.tool_execution = tool_execution
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
+        self._initialize_run_control(run_control, run_id)
         self.max_steps = max_steps
         self.deferrable_tool_names = deferrable_tool_names
         self.shaper = shaper
@@ -239,6 +243,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
 
     def _provider_task_done(self, task: asyncio.Task[Any]) -> None:
         self._provider_tasks.discard(task)
+        self._finish_run_control_if_quiesced()
         try:
             task.result()
         except BaseException:
@@ -267,6 +272,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
             self._late_provider_usage += (total_tokens,)
             self.state.add_used_tokens(total_tokens)
+            self._record_usage_event(response.usage, total_tokens, purpose="completion", late=True)
             self._mark_budget_reserve_consumed(protected_call=protected_call)
             if self.late_provider_usage_checkpoint is not None:
                 self.late_provider_usage_checkpoint()
@@ -274,6 +280,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             pass
         finally:
             self._draining_provider_tasks.discard(task)
+            self._finish_run_control_if_quiesced()
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
@@ -295,6 +302,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             raise
         except Exception as exc:
             self.state.fail(reason=f"{type(exc).__name__}: {exc}")
+            self._emit_run_event("error", error_type=type(exc).__name__, message=str(exc))
             self._trace_session_terminal()
             raise
 
@@ -375,6 +383,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         Observation only, and guarded: a record that cannot be built must not
         change how the session ended.
         """
+        if getattr(self, "_run_control", None) is not None:
+            self._record_run_terminal()
         if self._session_terminal_traced or self.tracer is None:
             return
         self._session_terminal_traced = True
@@ -606,6 +616,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         low_yield_tripped = (
             progress_known and self._brake_on() and self.state.turn.low_yield_since_progress >= self._low_yield_m
         )
+        if budget_spent and not watchdog_tripped and not low_yield_tripped:
+            await self._decide_run_budget(reason="wind_down")
+            budget_spent = (self.max_budget_tokens is not None
+                            and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve)
         brake = budget_spent or watchdog_tripped or low_yield_tripped
         if not brake or not self.state.pending_events.is_empty():
             return False
@@ -661,6 +675,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             await self._stop_precheck(reason)
             return
 
+        if self.max_budget_tokens is not None and self.state.used_tokens >= self.max_budget_tokens:
+            await self._decide_run_budget(reason="precheck")
         if (
             self.max_budget_tokens is not None
             and self.state.used_tokens >= self.max_budget_tokens
@@ -734,11 +750,15 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         latency = time.monotonic() - start
         input_tokens, total_tokens = _normalize_completion_usage(response.usage)
         self.state.add_used_tokens(total_tokens)
+        self._record_usage_event(response.usage, total_tokens, purpose="completion")
+        self._run_final_prompt = None
         self._mark_budget_reserve_consumed()
         self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
         self.state.set_context_tokens(input_tokens)
 
         self.record_llm_trace(response, latency)
+        if self.max_budget_tokens is not None and self.state.used_tokens > self.max_budget_tokens:
+            await self._decide_run_budget(reason="after_response")
         if (
             self.max_budget_tokens is not None
             and self.state.used_tokens > self.max_budget_tokens

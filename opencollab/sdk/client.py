@@ -11,6 +11,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from opencollab.application.run_control import RunControl
 from opencollab.bootstrap.config import build_config, resolve_provider_base_url
 from opencollab.bootstrap.programmatic import (
     DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS,
@@ -219,6 +220,7 @@ class OpenCollab:
         llm: Any | None = None,
         profile: str | None = None,
         run_id: str | None = None,
+        run_control: RunControl | None = None,
     ) -> RunResult[str]:
         """Run a single agent using Base or an explicitly named profile.
 
@@ -227,6 +229,8 @@ class OpenCollab:
         """
         _non_empty(prompt, "prompt")
         _optional_run_id(run_id)
+        if run_control is not None and not isinstance(run_control, RunControl):
+            raise TypeError("run_control must be a RunControl or None")
         from opencollab.bootstrap.agent_profiles import resolve_agent_profile
 
         agent_profile = resolve_agent_profile(profile)
@@ -289,6 +293,7 @@ class OpenCollab:
                 llm=llm,
                 agent_profile=agent_profile,
                 run_id=run_id,
+                run_control=run_control,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc

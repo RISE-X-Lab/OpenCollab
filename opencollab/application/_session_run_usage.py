@@ -39,6 +39,7 @@ async def _complete_with_error_usage(
     complete: Callable[..., Awaitable[Any]],
     *args: Any,
     protected_call: bool,
+    usage_purpose: str = "completion",
     **kwargs: Any,
 ) -> Any:
     """Charge reported error usage inside the provider owner exactly once."""
@@ -49,6 +50,10 @@ async def _complete_with_error_usage(
         if usage is not None:
             _input_tokens, total_tokens = _normalize_completion_usage(usage)
             runner.state.add_used_tokens(total_tokens)
+            record_usage = getattr(runner, "_record_usage_event", None)
+            if callable(record_usage):
+                record_usage(usage, total_tokens, purpose=usage_purpose,
+                             late=asyncio.current_task() in runner._draining_provider_tasks, error=exc)
             runner._mark_budget_reserve_consumed(protected_call=protected_call)
             if asyncio.current_task() in runner._draining_provider_tasks:
                 runner._late_provider_usage += (total_tokens,)

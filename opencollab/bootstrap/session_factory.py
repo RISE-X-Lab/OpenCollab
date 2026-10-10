@@ -38,6 +38,7 @@ from opencollab.application.ports import (
     ShaperPort,
     SnapshotStorePort,
 )
+from opencollab.application.run_control import RunControl
 from opencollab.application.scheduler import LaunchSpec
 from opencollab.application.session import Session
 from opencollab.bootstrap.agent_profiles import (
@@ -221,6 +222,7 @@ def build_session(
     agent_profile: Any | None = None,
     context_policy: Any | None = None,
     run_id: str | None = None,
+    run_control: RunControl | None = None,
 ) -> Session:
     """Self-wiring ``Session`` factory.
 
@@ -254,6 +256,7 @@ def build_session(
         agent_profile=agent_profile,
         context_policy=context_policy,
         run_id=run_id,
+        run_control=run_control,
     )
     Session.__init__(
         session,
@@ -261,7 +264,7 @@ def build_session(
         runtime=runtime,
         env=env,
         tracer=tracer,
-        max_budget_tokens=max_budget_tokens,
+        max_budget_tokens=runtime.runner.max_budget_tokens,
         max_steps=max_steps,
         auto_save_path=auto_save_path,
         permission_policy=permission_policy,
