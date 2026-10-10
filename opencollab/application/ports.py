@@ -321,6 +321,9 @@ class WorkflowSessionFactoryPort(Protocol):
         tool_choice: Any = None,
         thinking: bool | None = None,
         env: Any | None = None,
+        system_prompt: str | None = None,
+        max_steps: int | None = None,
+        run_control: Any | None = None,
     ) -> Any:
         ...    # ``thinking`` None -> factory default; False -> force reasoning off.
 

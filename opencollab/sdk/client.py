@@ -438,6 +438,8 @@ class OpenCollab:
         trace: bool = True,
         candidate_workspace: Any | None = None,
         run_id: str | None = None,
+        llm: Any | None = None,
+        limit_mode: str = "environment",
     ) -> RunResult[Any]:
         """Run a workflow name, decorated function, or plain async function.
 
@@ -488,7 +490,9 @@ class OpenCollab:
             _non_empty(system_prompt, "system_prompt")
         if not isinstance(trace, bool):
             raise ValueError("trace must be a boolean")
-        unbounded_limits = _unbounded_limits_requested()
+        if limit_mode not in {"environment", "explicit"}:
+            raise ValueError("limit_mode must be environment or explicit")
+        unbounded_limits = limit_mode == "environment" and _unbounded_limits_requested()
         resolved_budget = (
             None
             if unbounded_limits
@@ -519,6 +523,8 @@ class OpenCollab:
                 max_steps=resolved_max_steps,
                 system_prompt=system_prompt,
                 agent_profile=resolved_agent_profile,
+                llm=llm,
+                limit_mode=limit_mode,
                 cleanup_timeout=_required_positive_timeout(
                     cleanup_timeout,
                     "cleanup_timeout",

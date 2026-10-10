@@ -14,8 +14,11 @@ from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.workflow_budget import _BudgetLease
 
 
-def _candidate_budget_total(budget: int | None) -> int | None:
-    if os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower() in {"1", "true"}:
+def _candidate_budget_total(budget: int | None, limit_mode: str = "environment") -> int | None:
+    if (
+        limit_mode == "environment"
+        and os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower() in {"1", "true"}
+    ):
         return None
     return budget
 
@@ -251,13 +254,16 @@ class WorkflowCandidatesMixin:
         tool_choice: Any = None,
         thinking: bool | None = None,
     ) -> CandidateRun:
+        self._raise_if_environment_revoked()
         if self._candidate_workspace is None:
             raise RuntimeError("candidate workspaces are not available")
         timeout = self._normalize_timeout(timeout)
         selected_tools = _candidate_verification_tools(tools or ())
 
         async def run() -> CandidateRun:
+            self._raise_if_environment_revoked()
             source_before = await self._candidate_source_state()
+            self._raise_if_environment_revoked()
             lease = await self._candidate_workspace.acquire(label)
             budget_lease = None
             token = None
@@ -265,11 +271,13 @@ class WorkflowCandidatesMixin:
             failure: BaseException | None = None
             preserve_lease = False
             try:
+                self._raise_if_environment_revoked()
                 budget_lease = await self._acquire_budget_lease(
                     budget,
                     over_budget_ok=False,
                 )
                 token = self._active_budget_lease.set(budget_lease)
+                self._raise_if_environment_revoked()
                 session = self._factory.build_workflow_session(
                     prompt=prompt,
                     budget=self._capped_session_budget(budget),
@@ -388,6 +396,7 @@ class WorkflowCandidatesMixin:
         budget: int | None = None,
     ) -> CandidateRun:
         """Run a complete workflow in one isolated candidate worktree."""
+        self._raise_if_environment_revoked()
         if self._candidate_workspace is None:
             raise RuntimeError("candidate workspaces are not available")
         if not callable(workflow_fn):
@@ -396,7 +405,9 @@ class WorkflowCandidatesMixin:
             raise TypeError("candidate workflow args must be a dict")
 
         async def run() -> CandidateRun:
+            self._raise_if_environment_revoked()
             source_before = await self._candidate_source_state()
+            self._raise_if_environment_revoked()
             lease = await self._candidate_workspace.acquire(label)
             budget_lease = None
             child = None
@@ -404,10 +415,12 @@ class WorkflowCandidatesMixin:
             failure: BaseException | None = None
             preserve_lease = False
             try:
+                self._raise_if_environment_revoked()
                 budget_lease = await self._acquire_budget_lease(
                     budget,
                     over_budget_ok=False,
                 )
+                self._raise_if_environment_revoked()
                 workspace = getattr(lease.environment, "workspace", None)
                 child = type(self)(
                     _CandidateWorkflowSessionFactory(
@@ -418,7 +431,9 @@ class WorkflowCandidatesMixin:
                     tracer=self._tracer,
                     max_concurrency=self._max_concurrency,
                     task_concurrency=self._task_concurrency,
-                    budget_total=_candidate_budget_total(budget_lease.total),
+                    budget_total=_candidate_budget_total(budget_lease.total, self._limit_mode),
+                    limit_mode=self._limit_mode,
+                    run_id=self.run_id,
                     tree_probe=_CandidateLeaseTreeProbe(lease),
                     candidate_workspace=None,
                     deadline_monotonic=self._deadline_monotonic,
@@ -548,6 +563,7 @@ class WorkflowCandidatesMixin:
         *,
         preserve_paths: Sequence[str] = (),
     ) -> None:
+        self._raise_if_environment_revoked()
         if self._candidate_workspace is None:
             raise RuntimeError("candidate workspaces are not available")
         if not isinstance(candidate, CandidateRun):
@@ -561,6 +577,7 @@ class WorkflowCandidatesMixin:
             raise CandidateWorkspaceTrackingError(
                 f"source worktree changed before candidate adoption {candidate.label}"
             )
+        self._raise_if_environment_revoked()
         adopt_run = getattr(self._candidate_workspace, "adopt_run", None)
         if callable(adopt_run):
             # Full-environment backends must retain the chosen candidate's

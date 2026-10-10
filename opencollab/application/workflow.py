@@ -51,6 +51,7 @@ from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE as DEFAULT
 from opencollab.application.session_run import ENFORCEMENT_OFF
 from opencollab.application.structured_output import TOOL_NAME as STRUCTURED_OUTPUT_TOOL_NAME
 from opencollab.application.submit_findings import SUBMIT_TOOL_NAME
+from opencollab.application.workflow_agent_run import WorkflowAgentRunMixin
 from opencollab.application.workflow_agents import WorkflowAgentsMixin
 from opencollab.application.workflow_budget import UNBOUNDED_SESSION_BUDGET as UNBOUNDED_SESSION_BUDGET
 from opencollab.application.workflow_budget import (
@@ -131,6 +132,7 @@ def _failure_exception_chain(error: BaseException) -> list[dict[str, Any]]:
 
 
 class WorkflowContext(
+    WorkflowAgentRunMixin,
     WorkflowAgentsMixin,
     WorkflowBudgetMixin,
     WorkflowCandidatesMixin,
@@ -166,6 +168,8 @@ class WorkflowContext(
         deadline_margin_seconds: float = DEFAULT_DEADLINE_MARGIN_SECONDS,
         workspace_root: str | None = None,
         host_workspace: str | None = None,
+        limit_mode: str = "environment",
+        run_id: str | None = None,
     ) -> None:
         max_concurrency = _positive_concurrency(
             max_concurrency,
@@ -178,6 +182,11 @@ class WorkflowContext(
                 task_concurrency,
                 "task_concurrency",
             )
+        if limit_mode not in {"environment", "explicit"}:
+            raise ValueError("limit_mode must be environment or explicit")
+        self._limit_mode = limit_mode
+        self.run_id = run_id
+        self._agent_run_environment_unsafe = False
         self._factory = factory
         self._event_sink = event_sink
         self._tracer = tracer
@@ -234,6 +243,7 @@ class WorkflowContext(
         params: Mapping[str, object],
     ) -> str:
         """Run one verification tool in this workflow's bound environment."""
+        self._raise_if_environment_revoked()
         if not callable(getattr(tool, "execute_with_runtime", None)):
             raise TypeError("tool must satisfy the verification tool contract")
         if not isinstance(params, Mapping):
@@ -748,7 +758,7 @@ class WorkflowContext(
     # -- observability ----------------------------------------------------- #
 
     def _raise_if_environment_revoked(self) -> None:
-        if bool(getattr(self._factory, "environment_revoked", False)):
+        if self._agent_run_environment_unsafe or bool(getattr(self._factory, "environment_revoked", False)):
             raise WorkflowEnvironmentRevoked(
                 "shared workflow execution environment has been revoked"
             )
