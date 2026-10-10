@@ -1,0 +1,33 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
+    "db:seed": "node src/database/seed_db.js",
+    "db:prepare:e2e": "node src/database/prepare_e2e.js",
+    "test": "vitest run --config vitest.config.js",
+    "test:watch": "vitest --config vitest.config.js",
+    "test:e2e": "playwright test",
+    "test:all": "npm run test && npm run test:e2e"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "body-parser": "^2.2.1",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.57.0",
+    "bcrypt": "^6.0.0",
+    "nodemon": "^3.1.11",
+    "playwright": "^1.28.0",
+    "supertest": "^7.1.4",
+    "vitest": "^4.0.16"
+  }
+}

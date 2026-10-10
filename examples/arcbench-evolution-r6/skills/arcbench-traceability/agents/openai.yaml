@@ -1,0 +1,4 @@
+interface:
+  display_name: "ARC Bench Traceability"
+  short_description: "Record and query requirements, interfaces, tests, and states."
+  default_prompt: "Use $arcbench-traceability to record generated interfaces, tests, requirement states, and traceability links."
