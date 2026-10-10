@@ -86,6 +86,7 @@ def run_command(
                 return 124, stdout + "\nCommand exceeded its verification deadline"
             try:
                 stdout, _ = proc.communicate(timeout=min(2 if cancel_event is not None else 30, remaining))
+                check_cancelled(cancel_event)
                 return proc.returncode, stdout
             except subprocess.TimeoutExpired:
                 if time.monotonic() - last_notice >= 29:
@@ -326,6 +327,7 @@ def isolated_application(workspace: Path, *, inherited=True):
 
 
 def prepare_dependencies(workspace: Path, deadline: float, cancel_event=None) -> list[dict]:
+    check_cancelled(cancel_event)
     output = workspace / ".arc/checks"
     output.mkdir(parents=True, exist_ok=True)
     cache_path = output / "dependency-cache.json"
@@ -379,12 +381,14 @@ def prepare_dependencies(workspace: Path, deadline: float, cancel_event=None) ->
         diagnostic(name + "_install_end", ok=code == 0, code=code)
         if code:
             break
+        check_cancelled(cancel_event)
         cache[name] = _digest(package)
         cache_path.write_text(json.dumps(cache), encoding="utf-8")
     return checks
 
 
-def probe_backend(backend: Path, log_path: Path, deadline: float) -> dict:
+def probe_backend(backend: Path, log_path: Path, deadline: float, cancel_event=None) -> dict:
+    check_cancelled(cancel_event)
     npm = shutil.which("npm.cmd" if os.name == "nt" else "npm") or "npm"
     port = _port()
     env = {k: v for k, v in os.environ.items() if k not in {"ARC_DB_FILE", "ARC_E2E_DB_PATH", "DATABASE_FILE"}}
@@ -401,6 +405,7 @@ def probe_backend(backend: Path, log_path: Path, deadline: float) -> dict:
     ready, status = False, "health endpoint not ready"
     try:
         while time.monotonic() < deadline and process.poll() is None:
+            check_cancelled(cancel_event)
             try:
                 with urllib.request.urlopen(
                     f"http://127.0.0.1:{port}/api/health", timeout=max(0.1, min(2, deadline - time.monotonic()))
@@ -410,9 +415,13 @@ def probe_backend(backend: Path, log_path: Path, deadline: float) -> dict:
                         break
             except (OSError, urllib.error.URLError) as exc:
                 status = str(exc)
-            time.sleep(0.2)
+            if cancel_event is None:
+                time.sleep(0.2)
+            else:
+                cancel_event.wait(0.2)
     finally:
         stop_process(process)
+    check_cancelled(cancel_event)
     return {
         "step": "backend_health",
         "ok": ready,
@@ -421,7 +430,7 @@ def probe_backend(backend: Path, log_path: Path, deadline: float) -> dict:
     }
 
 
-def preflight(workspace: Path, *, timeout=600) -> dict:
+def preflight(workspace: Path, *, timeout=600, cancel_event=None) -> dict:
     """Early executable checks; failed app startup is evidence for the main agent, not acceptance."""
     output = workspace / ".arc/checks"
     output.mkdir(parents=True, exist_ok=True)
@@ -429,6 +438,7 @@ def preflight(workspace: Path, *, timeout=600) -> dict:
     report = {"ok": False, "fatal": False, "evidence_kind": "environment_preflight", "checks": []}
     diagnostic("preflight_start")
     try:
+        check_cancelled(cancel_event)
         node = shutil.which("node")
         if not node:
             report["checks"].append(
@@ -436,7 +446,8 @@ def preflight(workspace: Path, *, timeout=600) -> dict:
             )
             report["fatal"] = True
             return report
-        report["checks"].extend(prepare_dependencies(workspace, deadline))
+        report["checks"].extend(prepare_dependencies(workspace, deadline, cancel_event=cancel_event))
+        check_cancelled(cancel_event)
         failed = [c for c in report["checks"] if not c["ok"]]
         if failed:
             report["fatal"] = any(c.get("repairable") is False for c in failed)
@@ -454,6 +465,7 @@ def preflight(workspace: Path, *, timeout=600) -> dict:
                 ],
                 backend,
                 max(0, min(20, deadline - time.monotonic())),
+                cancel_event=cancel_event,
             )
             report["checks"].append(
                 {"step": "sqlite3_module_load", "ok": code == 0, "detail": text[-3000:], "repairable": True}
@@ -469,24 +481,32 @@ def preflight(workspace: Path, *, timeout=600) -> dict:
             ],
             backend,
             max(0, min(30, deadline - time.monotonic())),
+            cancel_event=cancel_event,
         )
         report["checks"].append(
             {"step": "browser_launch", "ok": code == 0, "detail": text[-3000:], "repairable": False}
         )
+        check_cancelled(cancel_event)
         if deadline - time.monotonic() > 5:
             with isolated_application(workspace) as isolated:
                 report["checks"].append(
                     probe_backend(
-                        isolated / "backend", output / "preflight-backend.log", min(deadline, time.monotonic() + 45)
+                        isolated / "backend",
+                        output / "preflight-backend.log",
+                        min(deadline, time.monotonic() + 45),
+                        cancel_event=cancel_event,
                     )
                 )
         else:
             report["checks"].append(
                 {"step": "backend_health", "ok": False, "detail": "preflight deadline exhausted", "repairable": False}
             )
+        check_cancelled(cancel_event)
         report["ok"] = all(c["ok"] for c in report["checks"])
         return report
     except Exception as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            report["cancelled"] = True
         report["checks"].append(
             {"step": "preflight_error", "ok": False, "detail": f"{type(exc).__name__}: {exc}", "repairable": False}
         )
