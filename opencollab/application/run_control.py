@@ -81,6 +81,10 @@ class _RunCancelled(Exception):
     """The current turn's explicit cancellation signal was set."""
 
 
+class _RunControlPolicyError(ValueError):
+    """A host budget policy failed or returned an invalid decision."""
+
+
 class _SessionRunControlMixin:
     def _raise_if_run_cancelled(self) -> None:
         if self._run_cancel_event is not None and self._run_cancel_event.is_set():
@@ -194,7 +198,7 @@ class _SessionRunControlMixin:
             self._emit_run_event("budget_decision", reason=reason, accepted=False,
                                  suggested_budget=getattr(decision, "soft_budget_tokens", None),
                                  error=str(exc))
-            raise ValueError(f"run-control budget policy failed: {exc}") from exc
+            raise _RunControlPolicyError(f"run-control budget policy failed: {exc}") from exc
         self.max_budget_tokens = decision.soft_budget_tokens
         if decision.final_prompt is not None:
             self._run_final_prompt = decision.final_prompt

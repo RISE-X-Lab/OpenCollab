@@ -22,6 +22,7 @@ from opencollab.application.compaction_prompt import (
     format_compact_summary,
     transcript_recovery_note,
 )
+from opencollab.application.run_control import _RunControlPolicyError
 
 # An async completion: given the summary request messages, return an object
 # exposing ``.content`` (the model's raw text). Kept abstract so the summarizer
@@ -123,7 +124,7 @@ class ReadTimeSummarizer:
             response = await self._acomplete(request)
             raw = getattr(response, "content", None) or ""
             summary = format_compact_summary(raw)
-        except (GenerationTimeoutError, _TeamBudgetStop, _TokenBudgetStop):
+        except (GenerationTimeoutError, _TeamBudgetStop, _TokenBudgetStop, _RunControlPolicyError):
             raise
         except Exception:
             return self._fallback(segment)

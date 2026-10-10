@@ -184,6 +184,40 @@ async def test_summary_spend_reaches_soft_cap_and_next_request_uses_host_extensi
     assert any(event.type == "context_shaping" and event.data["rung"] == "auto_compact" for event in events)
 
 
+@pytest.mark.parametrize("failure", ["invalid_decision", "callback_error"])
+async def test_summary_budget_policy_failure_stops_before_fallback_answer(tmp_path, monkeypatch, failure):
+    original = agent_runtime.build_session
+    events, snapshots = [], []
+
+    def seeded_session(**kwargs):
+        session = original(**kwargs)
+        session.messages = history()
+        return session
+
+    monkeypatch.setattr(agent_runtime, "build_session", seeded_session)
+
+    def decide(snapshot):
+        snapshots.append(snapshot)
+        if snapshot.reason == "request" and len([item for item in snapshots if item.reason == "request"]) == 1:
+            if failure == "callback_error":
+                raise RuntimeError("fixture budget service failed")
+            return BudgetDecision(snapshot.hard_budget_tokens + 1)
+        return BudgetDecision(snapshot.soft_budget_tokens)
+
+    model = AccountingModel(summary_tokens=20)
+    result = await client(tmp_path).agent2(
+        "finish", system_prompt="sys", tools=(), budget=40_000, llm=model, trace=False,
+        run_control=RunControl(decide_budget=decide, on_event=events.append),
+    )
+    assert result.status == "failed" and result.tokens == 0
+    assert "run-control budget policy failed" in str(result.error)
+    assert model.calls == []
+    assert [snapshot.reason for snapshot in snapshots] == ["precheck", "request"]
+    rejected = next(event for event in events if event.type == "budget_decision" and not event.data["accepted"])
+    assert rejected.data["reason"] == "request"
+    assert events[-1].type == "cleanup_completed"
+
+
 @pytest.mark.parametrize("summary_error", [False, True])
 async def test_usage_on_provider_exception_is_accounted_and_emitted_once(tmp_path, monkeypatch, summary_error):
     events = []
@@ -219,6 +253,7 @@ async def test_usage_on_provider_exception_is_accounted_and_emitted_once(tmp_pat
     assert len([event for event in usages if event.data["error_type"] == "ChargedError"]) == 1
     assert sum(event.data["total_tokens"] for event in usages) == result.tokens
     assert result.tokens == (47 if summary_error else 37)
+    assert result.status == ("completed" if summary_error else "failed")
     assert events[-1].type == "cleanup_completed"
 
 
