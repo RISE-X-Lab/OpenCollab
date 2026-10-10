@@ -121,6 +121,8 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "trace",
             "candidate_workspace",
             "run_id",
+            "llm",
+            "limit_mode",
         ),
     }
     for target, expected in expected_parameters.items():
@@ -205,7 +207,7 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
         "worktree_environment",
     ]
     assert models.__all__ == ["inspect_model_runtime"]
-    assert workflows.__all__ == ["CandidateRun", "WorkflowContext", "workflow"]
+    assert workflows.__all__ == ["CandidateRun", "WorkflowAgentResult", "WorkflowContext", "workflow"]
     assert profiles.__all__ == ["BASE_PROFILE", "resolve_profile_name"]
     assert profiles.BASE_PROFILE == profiles.resolve_profile_name(None) == "single2"
     assert Tool is not None

@@ -169,6 +169,7 @@ class WorkflowContext(
         workspace_root: str | None = None,
         host_workspace: str | None = None,
         limit_mode: str = "environment",
+        run_id: str | None = None,
     ) -> None:
         max_concurrency = _positive_concurrency(
             max_concurrency,
@@ -184,6 +185,7 @@ class WorkflowContext(
         if limit_mode not in {"environment", "explicit"}:
             raise ValueError("limit_mode must be environment or explicit")
         self._limit_mode = limit_mode
+        self.run_id = run_id
         self._agent_run_environment_unsafe = False
         self._factory = factory
         self._event_sink = event_sink

@@ -423,6 +423,7 @@ class WorkflowCandidatesMixin:
                     task_concurrency=self._task_concurrency,
                     budget_total=_candidate_budget_total(budget_lease.total, self._limit_mode),
                     limit_mode=self._limit_mode,
+                    run_id=self.run_id,
                     tree_probe=_CandidateLeaseTreeProbe(lease),
                     candidate_workspace=None,
                     deadline_monotonic=self._deadline_monotonic,

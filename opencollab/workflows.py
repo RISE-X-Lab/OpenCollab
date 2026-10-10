@@ -16,6 +16,7 @@ class WorkflowContext(Protocol):
 
     workspace_root: str | None
     host_workspace: str | None
+    run_id: str | None
 
     async def agent(
         self,

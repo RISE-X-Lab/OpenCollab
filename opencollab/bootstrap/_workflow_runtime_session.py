@@ -522,6 +522,7 @@ def build_workflow_context(
         task_concurrency=task_concurrency,
         budget_total=budget_total,
         limit_mode=limit_mode,
+        run_id=run_id,
         tree_probe=tree_probe,
         candidate_workspace=candidate_workspace,
         workspace_root=source_root if source_root is not None else workspace,
