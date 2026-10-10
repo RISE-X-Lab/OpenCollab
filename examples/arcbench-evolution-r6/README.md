@@ -6,6 +6,44 @@ This example adapts the r6 competition harness to OpenCollab's built-in Weave (`
 
 The competition adapter reads the public YAML and builds requirement cards and resource hints. It supplies the original prompts, tools, browser checks and repair evidence to `run_weave`. The core workflow orders groups, allocates execution opportunities, expands soft allowances within the active session and controls bounded repair. GitHub collaboration and spreadsheet adapters execute real browser and SQLite checks. The platform runtime, model compatibility wrapper and `.arc` reports remain in this example. [SOURCES.md](SOURCES.md) records the supplied package and its attributed compatibility observations.
 
+## Build a competition submission ZIP
+
+Treat this example directory as the submission project. Its existing `main.py`
+becomes the ZIP's root entry. The exporter includes an OpenCollab wheel built
+from the same Git revision, so the submission installs the matching Weave core.
+The wheel contains the OC runtime; the example contains the competition adapter,
+checks, prompts and resources.
+
+Install Python 3.10+, Git and `uv` on the packaging machine. From the OC repository
+root, run the following command. Choose an output path that does not exist.
+
+```bash
+python examples/arcbench-evolution-r6/build_submission.py \
+  --output /tmp/weave-submission.zip
+```
+
+The exporter reads committed `HEAD`. To export another committed version, add
+`--ref <commit-or-tag>`. It exports tracked example files, builds the matching OC
+wheel and writes `requirements.txt` and `SUBMISSION.json`. Local credentials,
+virtual environments and untracked run artifacts stay outside the archive.
+Building the wheel may download build dependencies.
+
+Unzip the archive into a new directory. `main.py`, `requirements.txt`, `wheels/`,
+`platform/`, `arcbench_r6/`, `template/` and `skills/` are directly at its root.
+The competition platform installs and starts it from that directory.
+
+```bash
+python -m pip install -r requirements.txt
+python main.py "$TASK_DIR" --output-dir "$APP_WORKSPACE" --type web
+```
+
+The platform supplies the task and application directories plus `MODEL`,
+`OPENAI_BASE_URL` and `OPENAI_API_KEY`. Installation can download Python runtime
+dependencies. The Linux/WSL2, Node, application dependencies and browser setup
+below still apply. Upload this ZIP using the original competition submission
+procedure. The packaging script runs from an OC Git checkout; the exported
+`main.py` runs directly from the extracted submission project.
+
 ## Install and run
 
 Use Linux or WSL2 with Python 3.10 or newer, Node 22.12 or newer and Git. Supply the matching public requirement YAML, inherited application and database. The application needs `frontend/package.json` with a build script and `backend/package.json` with a start script serving `/api/health` on `PORT`. Install the application's dependencies, `@playwright/test` and its Chromium before the competition run.
