@@ -88,7 +88,7 @@ def _client(workspace):
 
 
 def _config(**overrides):
-    values = {"main_budget": 10_000, "max_steps": 12, "max_output_tokens": 128,
+    values = {"main_budget": 10_000, "max_steps": 12, "output_reserve_tokens": 128,
               "max_repair_rounds": 2, "repair_reserve": 2_000, "cleanup_seconds": .2}
     values.update(overrides)
     return EvolutionConfig(**values)

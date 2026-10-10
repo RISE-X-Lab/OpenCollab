@@ -128,7 +128,10 @@ selects unbounded limits. The SDK derives the workflow's default allowance from
 its current remaining budget. `config.main_budget` can set the initial soft
 allowance, while the actual hard allowance remains bounded by the SDK grant.
 Completed native edits and observed passing tests can support soft allowance
-extensions during a session. The persisted usage records keep cumulative tokens
+extensions during a session. `config.output_reserve_tokens` reserves room for a
+response when deciding whether to extend a soft allowance. Configure the actual
+per-response output limit through the model client
+(`OpenCollab(config={"max_output_tokens": ...})`). The persisted usage records keep cumulative tokens
 and steps for continuation.
 
 ## Groups and custom verification

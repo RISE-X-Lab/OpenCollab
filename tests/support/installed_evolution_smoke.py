@@ -70,7 +70,7 @@ async def exercise_evolution(workspace: Path) -> dict:
             "check_commands": [{
                 "command": f"{shlex.quote(sys.executable)} check_file.py", "expected_output": "SHARED_FILE_OK",
             }],
-            "config": {"main_budget": 20_000, "max_steps": 12, "max_output_tokens": 128},
+            "config": {"main_budget": 20_000, "max_steps": 12, "output_reserve_tokens": 128},
         },
         llm=model, budget=30_000, limit_mode="explicit", agent_profile="single2", trace=False,
     )

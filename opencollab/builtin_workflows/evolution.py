@@ -99,7 +99,7 @@ class EvolutionConfig:
     minimum_session_seconds: float = 0
     cleanup_seconds: float = 2
     tool_cleanup_seconds: float | None = None
-    max_output_tokens: int = 1
+    output_reserve_tokens: int = 1
     history_trigger_tokens: int | None = None
     extension_tokens: int = 1
     extension_margin_tokens: int | None = None
@@ -122,7 +122,7 @@ class EvolutionConfig:
     def __post_init__(self) -> None:
         integers = {
             "budget", "main_budget", "main_hard_budget", "max_steps", "minimum_group_tokens",
-            "minimum_group_steps", "max_output_tokens", "history_trigger_tokens", "extension_tokens",
+            "minimum_group_steps", "output_reserve_tokens", "history_trigger_tokens", "extension_tokens",
             "extension_margin_tokens", "stagnant_round_limit", "repair_budget", "repair_steps",
         }
         zeroes = {
@@ -438,7 +438,7 @@ class _EvolutionRun:
             cap = snapshot.soft_budget_tokens
             if cap is None:
                 return BudgetDecision(None)
-            headroom = max(snapshot.minimum_output_tokens, config.max_output_tokens)
+            headroom = max(snapshot.minimum_output_tokens, config.output_reserve_tokens)
             margin = max(1, int(cap * config.extension_margin_fraction))
             if config.extension_margin_tokens is not None:
                 margin = min(config.extension_margin_tokens, margin)
