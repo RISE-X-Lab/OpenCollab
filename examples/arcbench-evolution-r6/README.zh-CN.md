@@ -4,6 +4,28 @@
 
 赛事适配层读取公开 YAML，生成需求卡和共享资源提示，并向 `run_weave` 提供原提示、工具、浏览器检查和修复证据。核心工作流安排分组顺序、分配执行额度、根据实际进展扩展当前会话软额度，并控制修复轮次。每组实现后检查当前功能和可能受影响的旧功能，最后执行完整检查与稳定性复查。平台运行库、模型兼容包装和 `.arc` 报告留在赛事示例中。GitHub 协作应用和 Sheet 表格应用的检查器、历史反馈适配及材料归属见 [SOURCES.md](SOURCES.md)。
 
+## 生成赛事提交包
+
+把这个 example 目录当作一个独立的参赛小项目。打包后，它现有的 `main.py` 就在 ZIP 根目录，赛事平台直接执行这个文件。通用 OC 代码会从同一个 Git 提交构建成 wheel 安装包，放进提交包的 `wheels/`。这样 example 负责赛事适配，wheel 提供对应版本的 OC 和 Weave。
+
+打包电脑需要 Python 3.10 以上、Git 和 `uv`。在 OC 仓库根目录执行下面的命令，输出路径选择一个尚不存在的文件。
+
+```bash
+python examples/arcbench-evolution-r6/build_submission.py \
+  --output /tmp/weave-submission.zip
+```
+
+脚本读取已提交的 `HEAD`。需要指定其他已提交版本时，增加 `--ref <提交号或标签>`。脚本导出该版本的 example，构建同一版本的 OC wheel，生成依赖文件 `requirements.txt` 和版本记录 `SUBMISSION.json`，然后打成 ZIP 并逐文件回读核对。构建时可能下载构建依赖。导出范围是 Git 中已提交的文件，本地凭据、虚拟环境和未跟踪的运行产物留在本地。
+
+解压到新目录后，根目录直接包含 `main.py`、`requirements.txt`、`wheels/`、`platform/`、`arcbench_r6/`、`template/` 和 `skills/`。将这个 ZIP 按原来的赛事提交流程上传。赛事平台从解压目录安装并启动。
+
+```bash
+python -m pip install -r requirements.txt
+python main.py "$TASK_DIR" --output-dir "$APP_WORKSPACE" --type web
+```
+
+平台提供任务目录、应用工作区，以及 `MODEL`、`OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。安装过程可能下载 Python 运行依赖。下面说明的 Linux/WSL2、Node、应用依赖和浏览器准备要求仍然适用。打包脚本在 OC 的 Git 工作区运行，导出的 `main.py` 在解压后的参赛小项目中直接运行。
+
 ## 安装与启动
 
 在 Linux 或 WSL2 环境准备 Python 3.10 以上、Node 22.12 以上、Git，以及赛题要求的应用依赖和 Chromium。比赛工作区需要已有的前后端源码、数据库与对应需求 YAML。
