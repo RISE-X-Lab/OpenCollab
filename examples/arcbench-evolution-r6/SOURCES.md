@@ -1,0 +1,9 @@
+# Source attribution
+
+The checker modules were migrated from the r6 ARC-Bench submission supplied for this integration. The original package records OpenCollab 0.9.2 and commit `d4780297a2835d713f727500876d1276ff4d734d` as its SDK source. This example uses the repository's installed SDK and keeps its task-specific checking code in the example directory.
+
+`public_checks.py`, `browser_check.cjs`, `plus_checks.cjs`, `delivery.py`, `integrity.py`, `fixtures.py`, `stability.py`, `compatibility.py`, `spec.py` and `completion.py` retain the r6 adapters and protection semantics. Requirement association now uses original IDs and scenario ordinals. Verification derives coverage from the caller's requested public requirements. Snapshot initialization and resumed reads are separate operations. Report writing and pure evidence functions were separated from the model-tool classes.
+
+`compatibility.py` retains the source string identifying the user-supplied `evo-plusr3-github.zip` report, the Release visitor scenario and the observed `Evolution release` description. Matching uses the original scenario content, and explicit public descriptions take precedence. `plus_checks.cjs` retains the direct `Create filter` entry check and persisted reaction count assertions from the supplied r6 code. The original adapter comments attribute the reaction total and filter duplicate-name ordering to user-supplied r4 feedback. The code keeps those references and the exact public UI paths.
+
+The inherited package cites the OpenCollab project at https://github.com/RISE-X-Lab/OpenCollab and retains its MulanPSL-2.0 attribution. The repository LICENSE, NOTICE and THIRD_PARTY_NOTICES.md cover the existing project material. Playwright test dependencies retain their Apache-2.0 licenses through the package distribution. Test pages, Node servers, SQLite data and public scenario inputs in this example were written for this integration.

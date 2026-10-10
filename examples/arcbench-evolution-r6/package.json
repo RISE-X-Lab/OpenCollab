@@ -1,0 +1,8 @@
+{
+  "name": "opencollab-arcbench-checkers",
+  "private": true,
+  "version": "0.1.0",
+  "devDependencies": {"@playwright/test": "1.62.1"},
+  "scripts": {"test:browser": "node --test tests/browser.test.cjs"},
+  "engines": {"node": ">=22.12"}
+}
