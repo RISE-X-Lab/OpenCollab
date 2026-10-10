@@ -22,6 +22,7 @@ from opencollab import workflow
 
 from .diagnostics import failure_message
 from .inputs import _persist_requirement_tree, copy_template_contents_to_output, read_task, resolve_requirements_file
+from .prompts import SPEC_DIR
 from .runner import EvolutionRunner
 from .settings import Settings
 from .state import RunState
@@ -85,7 +86,7 @@ async def evolution(ctx, inputs):
                 load_baseline(workspace, run_id=run_id)
             else:
                 capture_baseline(workspace, run_id=run_id, input_source=str(requirement_file))
-            index = write_cards(document, workspace)
+            index = write_cards(document, workspace, directory_name=SPEC_DIR)
             targets = [row["id"] for row in target_rows(index)]
             if not targets:
                 raise ValueError("The supplied document contains no executable requirement leaves")

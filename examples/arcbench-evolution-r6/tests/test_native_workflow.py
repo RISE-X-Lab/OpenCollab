@@ -157,6 +157,9 @@ async def execute(root, task, model, **inputs):
 @pytest.mark.asyncio
 async def test_two_instances_share_files_but_not_history_and_resume_without_generation(tmp_path, monkeypatch):
     task = application(tmp_path)
+    inherited = tmp_path / "requirements/by-id/REQ-A.yaml"
+    inherited.parent.mkdir(parents=True)
+    inherited.write_text("Original inherited application requirement")
     checks(monkeypatch)
     model = LocalModel()
     result = await execute(tmp_path, task, model)
@@ -165,6 +168,10 @@ async def test_two_instances_share_files_but_not_history_and_resume_without_gene
     assert len(model.calls) == 3
     assert model.calls[0][0]["content"] == SYSTEM_PROMPT
     assert model.calls[2][0]["content"] == SYSTEM_PROMPT
+    for key in ("REQ-A", "REQ-B"):
+        card = tmp_path / ".arc/evolution-spec/by-id" / f"{key}.yaml"
+        assert yaml.safe_load(card.read_text())["id"] == key
+    assert inherited.read_text() == "Original inherited application requirement"
     assert not any(row.get("role") == "tool" for row in model.calls[2])
     assert (tmp_path / "backend/src/feature.js").read_text() == "initial"
     state = json.loads((tmp_path / ".arc/checks/run-state.json").read_text())
