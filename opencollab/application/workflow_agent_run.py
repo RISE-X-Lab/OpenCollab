@@ -173,6 +173,18 @@ class WorkflowAgentRunMixin:
                         quiet and not bool(getattr(self._factory, "environment_revoked", False)),
                         tuple(getattr(runner, "observation_errors", ())),
                     )
+                except asyncio.CancelledError:
+                    try:
+                        quiet = await self._settle_agent_run(lease, cleanup_timeout)
+                        close = getattr(session, "aclose", None)
+                        if quiet and callable(close):
+                            await self._run_with_timeout(close(), cleanup_timeout)
+                            quiet = await self._settle_agent_run(lease, cleanup_timeout)
+                    except BaseException:
+                        quiet = False
+                    if not quiet:
+                        self._agent_run_environment_unsafe = True
+                    raise
                 finally:
                     released = True
                     if quiet:

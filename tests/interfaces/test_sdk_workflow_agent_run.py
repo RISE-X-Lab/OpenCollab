@@ -221,9 +221,9 @@ async def test_run_control_receives_actual_grant_and_matches_usage_events(tmp_pa
 
     def decide(snapshot):
         seen.append(snapshot)
-        return BudgetDecision(snapshot.soft_budget_tokens)
+        return BudgetDecision(snapshot.hard_budget_tokens)
 
-    control = RunControl(initial_soft_budget_tokens=4_000, decide_budget=decide, on_event=events.append)
+    control = RunControl(initial_soft_budget_tokens=10, decide_budget=decide, on_event=events.append)
 
     async def flow(ctx, _args):
         pending = [asyncio.create_task(ctx.agent_run(
@@ -236,6 +236,7 @@ async def test_run_control_receives_actual_grant_and_matches_usage_events(tmp_pa
     result = await client(tmp_path).workflow(flow, llm=Hold(), budget=3_000, limit_mode="explicit")
     assert result.ok
     assert {r.hard_budget_tokens for r in result.output} == {1_000, 2_000}
+    assert {s.hard_budget_tokens for s in seen} == {1_000, 2_000}
     assert all(s.soft_budget_tokens <= s.hard_budget_tokens for s in seen)
     assert sum(e.data["total_tokens"] for e in events if e.type == "usage") == result.tokens == 12
     assert {e.session_id for e in events} == {r.session_id for r in result.output}
@@ -326,3 +327,51 @@ async def test_named_tools_work_without_a_workflow_profile(tmp_path):
     result = await client(tmp_path).workflow(flow, llm=llm, budget=100_000)
     assert result.ok and result.output.status == "completed"
     assert "file_write" in {tool["function"]["name"] for tool in llm.calls[0][1]}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_writer_cannot_race_a_later_verification(tmp_path):
+    from opencollab.application.workflow import WorkflowEnvironmentRevoked
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class LateWrite:
+        name, description = "late_write", "write after controlled cleanup"
+        parameters = {"type": "object", "properties": {}}
+
+        def to_openai_schema(self):
+            return {"type": "function", "function": {
+                "name": self.name, "description": self.description, "parameters": self.parameters,
+            }}
+
+        async def execute_with_runtime(self, params, runtime):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+                (tmp_path / "late.txt").write_text("settled")
+                return "written"
+
+    class WritingLLM(ReplyLLM):
+        async def complete(self, messages, tools=None, **kwargs):
+            return LLMResponse(tool_calls=[{
+                "id": "write", "type": "function", "function": {"name": "late_write", "arguments": "{}"},
+            }], usage=Usage(4, 2), finish_reason="tool_calls")
+
+    async def flow(ctx, _args):
+        owner = asyncio.create_task(ctx.agent_run("write", tools=[LateWrite()], cleanup_timeout=.02))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            owner.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await owner
+            with pytest.raises(WorkflowEnvironmentRevoked):
+                await ctx.execute_verification(object(), {})
+        finally:
+            release.set()
+            await ctx.wait_for_pending_cleanup()
+        return (tmp_path / "late.txt").read_text()
+
+    result = await client(tmp_path).workflow(flow, llm=WritingLLM(), budget=10_000)
+    assert result.ok and result.output == "settled"
