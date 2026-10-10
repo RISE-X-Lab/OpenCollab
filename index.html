@@ -443,7 +443,7 @@ footer a{color:var(--muted)}
 <header class="hero bleed" id="top">
   <div class="wrap hero-grid">
     <div>
-      <a class="pill" href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/duo.md" target="_blank" rel="noopener"><b>new in v0.8</b>Duo ships built in <span aria-hidden="true">→</span></a>
+      <a class="pill" href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.3" target="_blank" rel="noopener"><b>v0.9.3</b>1.0 pre-release, Duo ships built in <span aria-hidden="true">→</span></a>
       <p class="kicker"><img src="fig/mark.svg" alt="">OpenCollab</p>
       <h1><span class="ln">Do your agents</span> <span class="ln hl">really collaborate?</span></h1>
       <p class="lede">OpenCollab is an open-source multi-agent coding framework. Declare a team in one file, run it on a runtime that holds everything else fixed, and check in the event stream whether the team you declared is the team that ran.</p>
@@ -793,7 +793,7 @@ footer a{color:var(--muted)}
   <div class="sec-head">
     <span class="ev"><span class="node"></span>results · <b>system-level performance</b></span>
     <h2>OpenCollab (Duo) sets the highest Pass@1 on all three benchmarks</h2>
-    <p>Five harnesses run with GPT-5.6-Luna on SWE-bench Pro, Terminal-Bench 2.1 and DeepSWE. OpenCollab (Base) is the single agent. OpenCollab (Duo) is a Workflow in which code issues every handoff, so both Coders run on every task.</p>
+    <p>Six harnesses run with GPT-5.6-Luna on SWE-bench Pro, Terminal-Bench 2.1 and DeepSWE. OpenCollab (Base) is the single agent. OpenCollab (Duo) is a Workflow in which code issues every handoff, so both Coders run on every task; the results use Duo v8, which ships in v0.9.3.</p>
   </div>
   <div class="tabs" role="tablist" id="benchTabs" aria-label="Benchmark"></div>
   <div class="bench" role="tabpanel">
@@ -804,8 +804,8 @@ footer a{color:var(--muted)}
   </div>
   <p class="note" id="benchNote"></p>
   <div class="bench-notes">
-    <div><b>Widest gain on DeepSWE</b><p>Duo 69.91% against Base 55.75%. Paired by task, Duo solves far more tasks the single agent fails than the other way round.</p></div>
-    <div><b>Fewest tokens</b><p>OpenCollab (Base) uses the fewest tokens and the lowest cost on all three benchmarks. Duo spends more, since it runs two complete solving processes and selects between their candidates, yet costs less than Claude Code on each.</p></div>
+    <div><b>Widest gain on DeepSWE</b><p>Duo 65.49% against Base 55.75%. Paired by task, 18.58% of the tasks are solved only by Duo and 8.85% only by Base.</p></div>
+    <div><b>Fewest tokens</b><p>OpenCollab (Base) uses the fewest tokens and the lowest cost on all three benchmarks. Duo spends more, since it runs two complete solving processes and selects between their candidates, yet it uses fewer tokens than Claude Code on each benchmark. On DeepSWE its cost ($8.42) is above Claude Code's ($7.66), reflecting a lower cache hit rate (73.28% against 91.16%).</p></div>
   </div>
 </section>
 
@@ -991,12 +991,12 @@ footer a{color:var(--muted)}
 
   /* benchmarks (Table cross-harness): [harness, pass, tokens, cost, cache] */
   var B=[
-    ['SWE-bench Pro',[['Mini-SWE-Agent',61.66,4.16,0.90,36.65],['Codex CLI',63.73,7.31,0.73,90.27],['Claude Code',58.03,9.38,2.54,12.50],['OpenCollab (Base)',63.21,3.89,0.41,88.03],['OpenCollab (Duo)',64.25,6.50,0.73,84.95]],
-      'Duo reaches 64.25%, the highest of the five harnesses; Base uses the fewest tokens (3.89M) at the lowest cost ($0.41).'],
-    ['Terminal-Bench 2.1',[['Mini-SWE-Agent',76.40,2.97,0.45,67.36],['Codex CLI',80.90,2.86,0.26,93.88],['Claude Code',77.53,21.95,2.73,79.32],['OpenCollab (Base)',79.78,1.54,0.19,78.38],['OpenCollab (Duo)',83.15,4.60,0.60,76.47]],
-      'Duo 83.15% against Base 79.78%; paired by task, too few tasks differ to separate the two.'],
-    ['DeepSWE',[['Mini-SWE-Agent',61.95,19.36,3.27,58.81],['Codex CLI',47.79,15.01,1.30,96.47],['Claude Code',56.64,77.90,7.66,91.16],['OpenCollab (Base)',55.75,11.95,1.19,90.53],['OpenCollab (Duo)',69.91,26.11,2.67,89.36]],
-      'Duo 69.91% against Base 55.75%; paired by task, it solves far more tasks the single agent fails than the other way round.']
+    ['SWE-bench Pro',[['Mini-SWE-Agent',61.66,4.16,0.90,36.65],['OpenHands',64.77,6.16,0.87,71.82],['Codex CLI',63.73,7.31,0.73,90.27],['Claude Code',58.03,9.38,2.54,12.50],['OpenCollab (Base)',63.21,3.89,0.41,88.03],['OpenCollab (Duo)',68.91,4.79,0.47,91.50]],
+      'Duo reaches 68.91%, the highest of the six harnesses; Base uses the fewest tokens (3.89M) at the lowest cost ($0.41).'],
+    ['Terminal-Bench 2.1',[['Mini-SWE-Agent',76.40,2.97,0.45,67.36],['OpenHands',76.40,6.63,1.03,65.17],['Codex CLI',80.90,2.86,0.26,93.88],['Claude Code',77.53,21.95,2.73,79.32],['OpenCollab (Base)',79.78,1.54,0.19,78.38],['OpenCollab (Duo)',83.15,4.71,0.77,61.77]],
+      'Duo 83.15% against Base 79.78%; paired by task, 10.11% of the tasks are solved only by Duo and 6.74% only by Base, too close to separate the two.'],
+    ['DeepSWE',[['Mini-SWE-Agent',61.95,19.36,3.27,58.81],['OpenHands',62.83,26.85,3.64,74.17],['Codex CLI',47.79,15.01,1.30,96.47],['Claude Code',56.64,77.90,7.66,91.16],['OpenCollab (Base)',55.75,11.95,1.19,90.53],['OpenCollab (Duo)',65.49,61.30,8.42,73.28]],
+      'Duo 65.49% against Base 55.75%; paired by task, 18.58% of the tasks are solved only by Duo and 8.85% only by Base.']
   ];
   var bb=document.getElementById('benchBody');
   tabs(document.getElementById('benchTabs'),B.map(function(b){return b[0];}),function(i){
