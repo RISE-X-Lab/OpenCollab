@@ -34,6 +34,7 @@
 
 ## 动态
 
+- **2026-10-11** — 使用 OpenCollab 获得 OAIC Agentic Software Factory Hackathon 第一名！🏆
 - 🎉 **2026-10-08** — [OpenCollab 0.9.3 (v1.0.0 PreRelease)](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.3)
   内置最新版 Duo V8，并完整提供论文中介绍的面向科研实验的统计功能。
   经过充分测试与缺陷修复，框架现已具备 1.0.0 规划中的全部功能。
