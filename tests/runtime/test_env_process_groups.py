@@ -21,9 +21,13 @@ def _stat(pid=101, group=101, started=123, state=b"Z", name=b"parent") -> bytes:
     return str(pid).encode() + b" (" + name + b") " + b" ".join(fields)
 
 
-def _fake_proc(monkeypatch, entries, stats, *, mountinfo=None) -> None:
+def _fake_proc(monkeypatch, entries, stats, *, mountinfo=None, status=None, tasks=None) -> None:
     if mountinfo is None:
         mountinfo = "1 0 0:1 / /proc rw,nosuid - proc proc rw\n"
+    if status is None:
+        status = f"NStgid:\t{os.getpid()}\n"
+    if tasks is None:
+        tasks = {}
     stats = {"self": _stat(os.getpid(), os.getpgrp()), **stats}
     original_listdir = os.listdir
     original_stat = os.stat
@@ -33,6 +37,12 @@ def _fake_proc(monkeypatch, entries, stats, *, mountinfo=None) -> None:
             if isinstance(entries, BaseException):
                 raise entries
             return entries() if callable(entries) else entries
+        if isinstance(path, str) and path.startswith("/proc/") and path.endswith("/task"):
+            pid = path.split("/")[2]
+            value = tasks.get(pid, [pid])
+            if isinstance(value, BaseException):
+                raise value
+            return value
         return original_listdir(path)
 
     def open_proc(path, *args, **kwargs):
@@ -41,6 +51,10 @@ def _fake_proc(monkeypatch, entries, stats, *, mountinfo=None) -> None:
             if isinstance(value, BaseException):
                 raise value
             return io.StringIO(value)
+        if path == "/proc/self/status":
+            if isinstance(status, BaseException):
+                raise status
+            return io.StringIO(status)
         pid = path.removeprefix("/proc/").removesuffix("/stat")
         value = stats[pid]
         value = value() if callable(value) else value
@@ -184,6 +198,27 @@ def test_linux_group_proc_namespace_mismatch_remains_unknown(monkeypatch) -> Non
     assert process_module._group_exists(101) is True
 
 
+@pytest.mark.parametrize("status", ["", "NStgid:\t1 1\n", PermissionError(), "NStgid:\tbad\n"])
+def test_linux_group_proc_namespace_hierarchy_must_be_complete(monkeypatch, status) -> None:
+    _fake_proc(monkeypatch, ["101"], {"101": _stat()}, status=status)
+
+    assert process_module._group_exists(101) is True
+
+
+def test_linux_group_matching_pids_in_ancestor_namespace_remain_unknown(monkeypatch) -> None:
+    pid = os.getpid()
+    _fake_proc(monkeypatch, ["101"], {"101": _stat()}, status=f"NStgid:\t{pid} {pid}\n")
+
+    assert process_module._group_exists(101) is True
+
+
+@pytest.mark.parametrize("tasks", [[], ["101", "102"], PermissionError(), FileNotFoundError()])
+def test_linux_group_zombie_leader_requires_complete_exited_task_group(monkeypatch, tasks) -> None:
+    _fake_proc(monkeypatch, ["101"], {"101": _stat()}, tasks={"101": tasks})
+
+    assert process_module._group_exists(101) is True
+
+
 def test_linux_group_enumeration_failure_remains_unknown(monkeypatch) -> None:
     _fake_proc(monkeypatch, PermissionError(), {})
 
@@ -215,6 +250,7 @@ _GROUP_SUPERVISOR = textwrap.dedent("""\
     import pathlib
     import signal
     import sys
+    import threading
     import time
 
     if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
@@ -228,6 +264,15 @@ _GROUP_SUPERVISOR = textwrap.dedent("""\
         if mode == 'fork':
             while not (workspace / 'fork').exists():
                 time.sleep(0.001)
+        if mode == 'threaded':
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            def keep_running():
+                (workspace / 'child').write_text(str(threading.get_native_id()))
+                while True:
+                    time.sleep(1)
+            threading.Thread(target=keep_running).start()
+            ctypes.CDLL(None).pthread_exit(None)
+            os._exit(1)
         if mode != 'zombie':
             child = os.fork()
             if child == 0:
@@ -278,7 +323,7 @@ async def linux_group(tmp_path):
         await _wait_until(lambda: (workspace / "ready").exists())
         if mode != "fork":
             await _wait_until(lambda: process_module._read_proc_stat(str(group))[3] == b"Z")
-        if mode == "mixed":
+        if mode in {"mixed", "threaded"}:
             await _wait_until(lambda: (workspace / "child").exists())
         return group, workspace
 
@@ -307,6 +352,18 @@ async def test_linux_kernel_mixed_group_waits_for_active_child(linux_group) -> N
     os.killpg(group, signal.SIGKILL)
 
     assert await process_module._wait_for_group_exit(group, timeout=1)
+
+
+async def test_linux_kernel_zombie_leader_with_live_thread_keeps_cleanup_running(linux_group) -> None:
+    group, workspace = await linux_group("threaded")
+    thread_id = int((workspace / "child").read_text())
+    assert process_module._read_proc_stat(str(group))[3] == b"Z"
+    assert process_module._read_proc_stat(str(thread_id))[3] != b"Z"
+    assert process_module._group_exists(group) is True
+
+    process = SimpleNamespace(pid=group, wait=lambda: asyncio.sleep(0))
+    assert await process_module.terminate_process(process)
+    assert not os.path.exists(f"/proc/{thread_id}")
 
 
 async def test_linux_kernel_fork_between_enumeration_and_stat_keeps_child_visible(linux_group, monkeypatch) -> None:

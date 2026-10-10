@@ -111,6 +111,11 @@ def _proc_has_complete_visibility() -> bool:
         pid, group_id, _started, _state = _read_proc_stat("self")
         if pid != os.getpid() or group_id != os.getpgrp():
             return False
+        with open("/proc/self/status", encoding="utf-8") as status:
+            namespace_ids = [line.split()[1:] for line in status if line.startswith("NStgid:")]
+        # Equal numeric PIDs alone can coincide across nested namespaces.
+        if namespace_ids != [[str(pid)]]:
+            return False
         with open("/proc/self/mountinfo", encoding="utf-8") as mounts:
             proc_mounts = 0
             for line in mounts:
@@ -162,6 +167,11 @@ def _exited_proc_group_members(group_id: int) -> frozenset[tuple[int, int, int]]
             if member_group != group_id:
                 continue
             if state not in {b"Z", b"X", b"x"}:
+                return None
+            # A thread-group leader can become a zombie via pthread_exit while
+            # its other threads keep running. Require a complete singleton task
+            # directory before treating that leader as an exited process.
+            if os.listdir(f"/proc/{entry}/task") != [entry]:
                 return None
             members.add((pid, started, member_group))
     except (OSError, ValueError, IndexError):
