@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -91,6 +92,93 @@ async def _read_bounded(
     return retained, max(0, total - len(retained))
 
 
+def _read_proc_stat(pid: str) -> tuple[int, int, int, bytes]:
+    with open(f"/proc/{pid}/stat", "rb") as stat_file:
+        value = stat_file.read()
+    name_start = value.index(b"(")
+    name_end = value.rindex(b")")
+    fields = value[name_end + 1 :].split()
+    # comm can contain spaces, parentheses and arbitrary bytes. The remaining
+    # fields start at field 3 (state), with pgrp at 5 and starttime at 22.
+    if name_end <= name_start or len(fields) < 20 or len(fields[0]) != 1:
+        raise ValueError("incomplete process stat")
+    return int(value[:name_start]), int(fields[2]), int(fields[19]), fields[0]
+
+
+def _proc_has_complete_visibility() -> bool:
+    """Require an unrestricted proc mount in our own PID namespace."""
+    try:
+        pid, group_id, _started, _state = _read_proc_stat("self")
+        if pid != os.getpid() or group_id != os.getpgrp():
+            return False
+        with open("/proc/self/status", encoding="utf-8") as status:
+            namespace_ids = [line.split()[1:] for line in status if line.startswith("NStgid:")]
+        # Equal numeric PIDs alone can coincide across nested namespaces.
+        if namespace_ids != [[str(pid)]]:
+            return False
+        with open("/proc/self/mountinfo", encoding="utf-8") as mounts:
+            proc_mounts = 0
+            for line in mounts:
+                mount, filesystem = line.split(" - ", 1)
+                fields = mount.split()
+                fs_fields = filesystem.split()
+                mountpoint = fields[4]
+                if mountpoint.startswith("/proc/"):
+                    component = mountpoint.removeprefix("/proc/").split("/", 1)[0]
+                    if component.isdecimal() or component in {"self", "thread-self"}:
+                        return False
+                if mountpoint != "/proc":
+                    continue
+                proc_mounts += 1
+                if fields[3] != "/" or fs_fields[0] != "proc":
+                    return False
+                options = fields[5].split(",") + fs_fields[2].split(",")
+                if any(
+                    option.startswith("hidepid=") and option not in {"hidepid=0", "hidepid=off"}
+                    for option in options
+                ):
+                    return False
+            return proc_mounts == 1
+    except (OSError, ValueError, IndexError, UnicodeError):
+        return False
+
+
+def _exited_proc_group_members(group_id: int) -> frozenset[tuple[int, int, int]] | None:
+    """Return exited identities after a complete scan, or an unknown/live result."""
+    if not _proc_has_complete_visibility():
+        return None
+    members: set[tuple[int, int, int]] = set()
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdecimal():
+                continue
+            try:
+                pid, member_group, started, state = _read_proc_stat(entry)
+            except (FileNotFoundError, ProcessLookupError):
+                # A missing stat can also belong to a partial/overlaid proc view.
+                # Only a vanished process directory proves an enumeration race.
+                try:
+                    os.stat(f"/proc/{entry}")
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+                return None
+            if pid != int(entry):
+                return None
+            if member_group != group_id:
+                continue
+            if state not in {b"Z", b"X", b"x"}:
+                return None
+            # A thread-group leader can become a zombie via pthread_exit while
+            # its other threads keep running. Require a complete singleton task
+            # directory before treating that leader as an exited process.
+            if os.listdir(f"/proc/{entry}/task") != [entry]:
+                return None
+            members.add((pid, started, member_group))
+    except (OSError, ValueError, IndexError):
+        return None
+    return frozenset(members)
+
+
 def _group_exists(group_id: int) -> bool:
     if os.name != "posix":
         return False
@@ -100,6 +188,13 @@ def _group_exists(group_id: int) -> bool:
         return False
     except PermissionError:
         return True
+    if sys.platform == "linux":
+        members = _exited_proc_group_members(group_id)
+        if members and members == _exited_proc_group_members(group_id):
+            # Once every enumerated member is exited it cannot fork. A second
+            # complete scan catches children forked before the first stat read,
+            # and comparing start times also catches PID reuse or group changes.
+            return False
     return True
 
 
