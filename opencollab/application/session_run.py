@@ -37,6 +37,7 @@ from opencollab.application.ports import (
     ShaperPort,
     TracePort,
 )
+from opencollab.application.run_control import RunControl, _RunCancelled, _SessionRunControlMixin
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.events import SessionRuntimeEvent
 from opencollab.domain.session import SessionPhase, SessionState
@@ -67,7 +68,7 @@ __all__ = [
 ]
 
 
-class SessionRunUseCase(_SessionRunCompletionMixin):
+class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
     """Application use case for the session run loop.
 
     The LLM response is structural (``CompletionResponse`` in
@@ -97,6 +98,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         submit_tool_name: str = SUBMIT_TOOL_NAME,
         watchdog_k: int = DEFAULT_WATCHDOG_K,
         low_yield_m: int = DEFAULT_LOW_YIELD_M,
+        run_control: RunControl | None = None,
+        run_id: str | None = None,
     ):
         self.agent = agent
         self._initial_agent_tools = tuple(getattr(agent, "tools", ()) or ())
@@ -113,6 +116,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.tool_execution = tool_execution
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
+        self._initialize_run_control(run_control, run_id)
         self.max_steps = max_steps
         self.deferrable_tool_names = deferrable_tool_names
         self.shaper = shaper
@@ -191,6 +195,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._turn_start_message_index: int | None = None
         self._provider_tasks: set[asyncio.Task[Any]] = set()
         self._llm_step_started = False
+        self._run_cancel_event: asyncio.Event | None = None
         self._draining_provider_tasks: set[asyncio.Task[Any]] = set()
         # Successful responses returned after caller cancellation or timeout.
         # They count against the budget but never enter a later turn's history.
@@ -239,6 +244,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
 
     def _provider_task_done(self, task: asyncio.Task[Any]) -> None:
         self._provider_tasks.discard(task)
+        self._finish_run_control_if_quiesced()
         try:
             task.result()
         except BaseException:
@@ -267,6 +273,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
             self._late_provider_usage += (total_tokens,)
             self.state.add_used_tokens(total_tokens)
+            self._record_usage_event(response.usage, total_tokens, purpose="completion", late=True)
             self._mark_budget_reserve_consumed(protected_call=protected_call)
             if self.late_provider_usage_checkpoint is not None:
                 self.late_provider_usage_checkpoint()
@@ -274,6 +281,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             pass
         finally:
             self._draining_provider_tasks.discard(task)
+            self._finish_run_control_if_quiesced()
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
@@ -284,19 +292,25 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         """
         if self.pending_cleanup_tasks:
             raise RuntimeError("prior provider generation is still draining")
+        self._run_cancel_event = cancel_event
         try:
             self._prepare_turn()
             while not self._should_suspend():
                 await self.advance(cancel_event)
 
+        except _RunCancelled:
+            await self._stop_for_run_cancellation()
         except asyncio.CancelledError:
             if self.tracer:
                 self.tracer.flush()
             raise
         except Exception as exc:
             self.state.fail(reason=f"{type(exc).__name__}: {exc}")
+            self._emit_run_event("error", error_type=type(exc).__name__, message=str(exc))
             self._trace_session_terminal()
             raise
+        finally:
+            self._run_cancel_event = None
 
         answer = self._last_turn_answer()
         if self.is_terminal_phase():
@@ -375,6 +389,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         Observation only, and guarded: a record that cannot be built must not
         change how the session ended.
         """
+        if getattr(self, "_run_control", None) is not None:
+            self._record_run_terminal()
         if self._session_terminal_traced or self.tracer is None:
             return
         self._session_terminal_traced = True
@@ -606,6 +622,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         low_yield_tripped = (
             progress_known and self._brake_on() and self.state.turn.low_yield_since_progress >= self._low_yield_m
         )
+        if budget_spent and not watchdog_tripped and not low_yield_tripped:
+            await self._decide_run_budget(reason="wind_down")
+            budget_spent = (self.max_budget_tokens is not None
+                            and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve)
         brake = budget_spent or watchdog_tripped or low_yield_tripped
         if not brake or not self.state.pending_events.is_empty():
             return False
@@ -645,10 +665,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         """
         self._ensure_tool_environment_active()
         if cancel_event and cancel_event.is_set():
-            await self._stop_precheck(
-                "interrupted by user",
-                message="[Session interrupted by user]",
-            )
+            await self._stop_for_run_cancellation()
             return
 
         environment = getattr(self.tool_execution, "environment", None)
@@ -661,6 +678,11 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             await self._stop_precheck(reason)
             return
 
+        try:
+            await self._decide_run_budget(reason="precheck")
+        except _RunCancelled:
+            await self._stop_for_run_cancellation()
+            return
         if (
             self.max_budget_tokens is not None
             and self.state.used_tokens >= self.max_budget_tokens
@@ -705,6 +727,9 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         tools = self.build_tool_schemas()
         try:
             response = await self.call_llm(tools)
+        except _RunCancelled:
+            await self._stop_for_run_cancellation()
+            return
         except asyncio.CancelledError as cancellation:
             try:
                 self.record_llm_cancelled()
@@ -734,11 +759,15 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         latency = time.monotonic() - start
         input_tokens, total_tokens = _normalize_completion_usage(response.usage)
         self.state.add_used_tokens(total_tokens)
+        self._record_usage_event(response.usage, total_tokens, purpose="completion")
+        self._run_final_prompt = None
         self._mark_budget_reserve_consumed()
         self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
         self.state.set_context_tokens(input_tokens)
 
         self.record_llm_trace(response, latency)
+        if self.max_budget_tokens is not None and self.state.used_tokens > self.max_budget_tokens:
+            await self._decide_run_budget(reason="after_response")
         if (
             self.max_budget_tokens is not None
             and self.state.used_tokens > self.max_budget_tokens

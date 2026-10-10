@@ -47,6 +47,7 @@ from opencollab.application.ports import (
     SkillStorePort,
     TracePort,
 )
+from opencollab.application.run_control import RunControl
 from opencollab.application.session import SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.shaping import (
@@ -235,7 +236,9 @@ def _build_summarizer(
     )
 
 
-def _history_compaction_settings(resolved_llm: LLMPort) -> dict[str, Any]:
+def _history_compaction_settings(
+    resolved_llm: LLMPort, history_trigger_tokens: int | None = None,
+) -> dict[str, Any]:
     """The history-compaction thresholds a session will actually run under.
 
     One resolution point for two consumers: the shaper wiring below, which hands
@@ -245,6 +248,9 @@ def _history_compaction_settings(resolved_llm: LLMPort) -> dict[str, Any]:
     """
     context_window = getattr(resolved_llm, "context_window", lambda: None)()
     history_trigger, history_target = history_trigger_target(context_window)
+    if history_trigger_tokens is not None and context_window and context_window > 0:
+        history_trigger = min(history_trigger, history_trigger_tokens)
+        history_target = int(history_trigger * 0.75)
     return {
         "context_window_tokens": context_window,
         "history_trigger_tokens": history_trigger,
@@ -254,7 +260,7 @@ def _history_compaction_settings(resolved_llm: LLMPort) -> dict[str, Any]:
         # window degrades to. Stated rather than left to be re-derived from
         # ``context_window_tokens`` by a reader who knows the rule.
         "history_thresholds_from": (
-            "context_window"
+            ("context_window_with_run_control" if history_trigger_tokens is not None else "context_window")
             if context_window and context_window > 0
             else "fixed_default"
         ),
@@ -269,6 +275,7 @@ def _trace_history_compaction(
     resolved_llm: LLMPort,
     shaper_injected: bool,
     context_policy: ContextPolicy,
+    history_trigger_tokens: int | None = None,
 ) -> None:
     """Record, once per session, the compaction thresholds it runs under.
 
@@ -314,7 +321,7 @@ def _trace_history_compaction(
                 }
             )
         else:
-            payload.update(_history_compaction_settings(resolved_llm))
+            payload.update(_history_compaction_settings(resolved_llm, history_trigger_tokens))
         tracer.log_step(step_type="session.history_compaction", payload=payload)
     except Exception as exc:  # noqa: BLE001 - observability is non-authoritative
         logger.error("history compaction trace failed: %s", exc)
@@ -327,6 +334,7 @@ def _build_default_shaper(
     preserve_tool_result_tail: bool = False,
     history_compaction: bool = True,
     tool_result_budget: int = DEFAULT_TOOL_RESULT_BUDGET,
+    history_trigger_tokens: int | None = None,
 ) -> ShaperPort:
     """Assemble the default lazy-degradation shaper pipeline.
 
@@ -374,7 +382,7 @@ def _build_default_shaper(
     )
     if not history_compaction:
         return ShaperPipeline((per_result,))
-    settings = _history_compaction_settings(resolved_llm)
+    settings = _history_compaction_settings(resolved_llm, history_trigger_tokens)
     history_trigger = settings["history_trigger_tokens"]
     history_target = settings["history_target_tokens"]
     # A small input allowance cannot retain the same number of maximum-size
@@ -459,6 +467,7 @@ def build_session_runtime(
     agent_profile: Any | None = None,
     context_policy: ContextPolicy | None = None,
     run_id: str | None = None,
+    run_control: RunControl | None = None,
 ) -> SessionRuntime:
     """Build a ``SessionRuntime`` with the same construction order
     ``Session.__init__`` used to perform inline.
@@ -505,6 +514,9 @@ def build_session_runtime(
             safety_policy,
             resolved_env.workspace,
         )
+    tool_options: dict[str, Any] = {}
+    if run_control is not None and run_control.tool_cancellation_cleanup_timeout is not None:
+        tool_options["cancellation_cleanup_timeout"] = run_control.tool_cancellation_cleanup_timeout
     tool_execution = ToolExecutionUseCase(
         agent=agent,
         environment=resolved_env,
@@ -514,6 +526,7 @@ def build_session_runtime(
         permission_policy=permission_policy,
         ask_policy=ask_policy,
         safety_policy=safety_policy,
+        **tool_options,
     )
     runner = SessionRunUseCase(
         agent=agent,
@@ -526,6 +539,8 @@ def build_session_runtime(
         max_steps=max_steps,
         shaper=shaper,
         team_budget_exhausted=team_budget_exhausted,
+        run_control=run_control,
+        run_id=run_id,
         # The context-overflow classifier lives in the adapter layer; injected
         # as a plain callable so the application use case never imports it (same
         # boundary pattern as the team-budget predicate). Enables the
@@ -536,6 +551,8 @@ def build_session_runtime(
         # eat the whole run wall (P7).
         per_call_timeout=llm_timeout,
     )
+    if run_control is not None:
+        event_bus.subscribe(runner._observe_runtime_event)
     summarizer = _build_summarizer(
         agent,
         llm,
@@ -545,16 +562,19 @@ def build_session_runtime(
         provider_retry_budget,
         completion_handler=runner._invoke_summary,
     )
+    shaper_options = resolved_context.shaper_options()
+    if run_control is not None and run_control.history_trigger_tokens is not None:
+        shaper_options["history_trigger_tokens"] = run_control.history_trigger_tokens
     resolved_shaper: ShaperPort
     if shaper is not None:
         resolved_shaper = shaper
     elif agent_profile is not None:
         resolved_shaper = agent_profile.build_shaper(
-            resolved_llm, summarizer, **resolved_context.shaper_options()
+            resolved_llm, summarizer, **shaper_options
         )
     else:
         resolved_shaper = _build_default_shaper(
-            resolved_llm, summarizer, **resolved_context.shaper_options()
+            resolved_llm, summarizer, **shaper_options
         )
     # A profile shaper is NOT an injected one: ``build_shaper`` routes back
     # through ``_build_default_shaper``, so it runs on the very thresholds
@@ -567,6 +587,7 @@ def build_session_runtime(
         resolved_llm=resolved_llm,
         shaper_injected=shaper is not None,
         context_policy=resolved_context,
+        history_trigger_tokens=None if run_control is None else run_control.history_trigger_tokens,
     )
     runner.shaper = resolved_shaper
 

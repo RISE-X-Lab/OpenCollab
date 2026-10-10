@@ -183,7 +183,7 @@ class Session:
 
     @property
     def max_budget_tokens(self) -> int | None:
-        return self._max_budget_tokens
+        return self.runner.max_budget_tokens if hasattr(self, "runner") else self._max_budget_tokens
 
     @max_budget_tokens.setter
     def max_budget_tokens(self, value: int | None) -> None:
@@ -250,6 +250,7 @@ class Session:
         if self._llm_close_error is not None:
             raise self._llm_close_error
         if not self._owns_llm or self._llm_closed:
+            self.runner.finish_run_control()
             return
         self._llm_closed = True
         close = getattr(self._llm, "close", None)
@@ -262,7 +263,9 @@ class Session:
                     await outcome
             except BaseException as exc:
                 self._llm_close_error = exc
+                self.runner._emit_run_event("error", error_type=type(exc).__name__, message=str(exc))
                 raise
+        self.runner.finish_run_control()
 
     @property
     def messages(self) -> list[dict]:
@@ -352,6 +355,7 @@ class Session:
                 primary_error = exc
                 raise
             finally:
+                self.runner._record_run_terminal()
                 try:
                     await self._checkpoint_terminal_snapshot()
                 except Exception as checkpoint_error:
