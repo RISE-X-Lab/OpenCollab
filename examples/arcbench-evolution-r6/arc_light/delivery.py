@@ -807,7 +807,7 @@ def verify(
 
     workspace = workspace.resolve()
     source_output = workspace / ".arc/checks"
-    output = Path(output_dir) if output_dir is not None else source_output
+    output = Path(output_dir).resolve() if output_dir is not None else source_output
     output.mkdir(parents=True, exist_ok=True)
     contract_file = source_output / "public-prerequisites.json"
     try:

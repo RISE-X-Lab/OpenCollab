@@ -136,6 +136,25 @@ def test_half_application_reports_missing_package_before_generation(tmp_path):
     assert not next(check for check in report["checks"] if check["step"] == "frontend_install")["ok"]
 
 
+def test_relative_output_directory_reaches_the_same_browser_contract(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    workspace = fixture_app(tmp_path, names=("alice",))
+    monkeypatch.chdir(workspace)
+    report = verify(
+        workspace,
+        timeout=120,
+        scope="requirements",
+        requirement_ids=["REQ-alice"],
+        output_dir=Path(".arc/checks/focused"),
+    )
+    assert report["ok"], report
+    assert report["scenario_coverage"]["passed"] == 1
+    output = workspace / ".arc/checks/focused"
+    assert json.loads((output / "browser-report.json").read_text())["ok"]
+    assert json.loads((output / "verification.json").read_text())["ok"]
+
+
 @pytest.mark.parametrize("visitor", [False, True])
 def test_reaction_feedback_count_and_real_reload(tmp_path, visitor):
     workspace = fixture_app(tmp_path, names=("alice",))
