@@ -129,7 +129,8 @@ class WorkflowAgentRunMixin:
                         return WorkflowAgentResult(
                             None, "failed", f"build failed: {type(exc).__name__}",
                             0, 0, None, lease.total, None, True,
-                            not bool(getattr(self._factory, "environment_revoked", False)),
+                            not self._agent_run_environment_unsafe
+                            and not bool(getattr(self._factory, "environment_revoked", False)),
                         )
                     self._track_session(session)
                     try:
@@ -170,7 +171,8 @@ class WorkflowAgentRunMixin:
                         str(getattr(runner, "_response_session_id", getattr(state, "aid", ""))),
                         lease.total, getattr(session, "max_budget_tokens", lease.total),
                         quiet,
-                        quiet and not bool(getattr(self._factory, "environment_revoked", False)),
+                        quiet and not self._agent_run_environment_unsafe
+                        and not bool(getattr(self._factory, "environment_revoked", False)),
                         tuple(getattr(runner, "observation_errors", ())),
                     )
                 except asyncio.CancelledError:

@@ -375,3 +375,148 @@ async def test_cancelled_writer_cannot_race_a_later_verification(tmp_path):
 
     result = await client(tmp_path).workflow(flow, llm=WritingLLM(), budget=10_000)
     assert result.ok and result.output == "settled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_write", [False, True])
+async def test_concurrent_result_reports_shared_workspace_readiness(tmp_path, late_write):
+    from opencollab.application.workflow import WorkflowEnvironmentRevoked
+
+    slow_started, fast_started = asyncio.Event(), asyncio.Event()
+    release_slow, release_fast = asyncio.Event(), asyncio.Event()
+    marker = tmp_path / "marker.txt"
+    marker.write_text("before")
+
+    class LateWrite:
+        name, description = "late_write", "write during controlled cancellation cleanup"
+        parameters = {"type": "object", "properties": {}}
+
+        def to_openai_schema(self):
+            return {"type": "function", "function": {
+                "name": self.name, "description": self.description, "parameters": self.parameters,
+            }}
+
+        async def execute_with_runtime(self, params, runtime):
+            slow_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release_slow.wait()
+                marker.write_text("after")
+                return "written"
+
+    class ConcurrentLLM(ReplyLLM):
+        async def complete(self, messages, tools=None, **kwargs):
+            if "slow" in str(messages[-1]["content"]):
+                if late_write:
+                    return LLMResponse(tool_calls=[{
+                        "id": "late-write", "type": "function", "function": {
+                            "name": "late_write", "arguments": "{}",
+                        },
+                    }], usage=Usage(4, 2), finish_reason="tool_calls")
+                slow_started.set()
+                await release_slow.wait()
+            else:
+                fast_started.set()
+                await release_fast.wait()
+            return await super().complete(messages, tools, **kwargs)
+
+    async def flow(ctx, _args):
+        calls = [
+            asyncio.create_task(ctx.agent_run(
+                "slow", tools=[LateWrite()] if late_write else [], budget=2_000,
+                timeout=.1 if late_write else None, cleanup_timeout=.02,
+                system_prompt="brief",
+            )),
+            asyncio.create_task(ctx.agent_run(
+                "fast", tools=[], budget=2_000, system_prompt="brief",
+            )),
+        ]
+        try:
+            await asyncio.wait_for(slow_started.wait(), 2)
+            await asyncio.wait_for(fast_started.wait(), 2)
+            if not late_write:
+                release_slow.set()
+            first = await calls[0]
+            release_fast.set()
+            second = await calls[1]
+            assert second.status == "completed"
+            assert second.cleanup_complete
+            assert second.workspace_ready is (not late_write)
+            if late_write:
+                assert first.reason == "cleanup incomplete"
+                assert not first.cleanup_complete
+                assert ctx.pending_cleanup_tasks
+                assert marker.read_text() == "before"
+                with pytest.raises(WorkflowEnvironmentRevoked):
+                    await ctx.agent_run("next", tools=[], budget=100)
+            else:
+                assert first.status == "completed"
+                assert first.cleanup_complete and first.workspace_ready
+                assert not ctx.pending_cleanup_tasks
+            return first, second
+        finally:
+            release_slow.set()
+            release_fast.set()
+            await asyncio.gather(*calls, return_exceptions=True)
+            await ctx.wait_for_pending_cleanup()
+
+    result = await client(tmp_path).workflow(
+        flow, llm=ConcurrentLLM(), budget=5_000, concurrency=2,
+        limit_mode="explicit", agent_profile="single2",
+    )
+    assert result.ok
+    assert marker.read_text() == ("after" if late_write else "before")
+
+
+@pytest.mark.asyncio
+async def test_isolated_build_failure_reports_shared_workspace_readiness(tmp_path, monkeypatch):
+    (tmp_path / "source.txt").write_text("initial\n")
+    for args in (("init", "-q"), ("add", "source.txt"),
+                 ("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false",
+                  "commit", "-qm", "initial")):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+    acquired, release_build, release_provider = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    acquire = wiring.WorkflowSessionFactory.acquire_isolated_env
+
+    async def hold_acquire(self, **kwargs):
+        environment = await acquire(self, **kwargs)
+        acquired.set()
+        await release_build.wait()
+        return environment
+
+    monkeypatch.setattr(wiring.WorkflowSessionFactory, "acquire_isolated_env", hold_acquire)
+
+    class LateLLM(ReplyLLM):
+        async def complete(self, *args, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release_provider.wait()
+                return await super().complete(*args, **kwargs)
+
+    async def flow(ctx, _args):
+        building = asyncio.create_task(ctx.agent_run(
+            "invalid tools", tools="unknown-preset", isolation=True, budget=2_000,
+        ))
+        try:
+            await asyncio.wait_for(acquired.wait(), 2)
+            first = await ctx.agent_run("slow", tools=[], budget=2_000, timeout=.01, cleanup_timeout=.01)
+            assert first.reason == "cleanup incomplete"
+            release_build.set()
+            failed = await building
+            assert failed.status == "failed" and failed.reason == "build failed: ValueError"
+            assert failed.cleanup_complete
+            assert not failed.workspace_ready
+            assert ctx.pending_cleanup_tasks
+            return failed
+        finally:
+            release_build.set()
+            release_provider.set()
+            await asyncio.gather(building, return_exceptions=True)
+            await ctx.wait_for_pending_cleanup()
+
+    result = await client(tmp_path).workflow(
+        flow, llm=LateLLM(), budget=5_000, concurrency=2, limit_mode="explicit",
+    )
+    assert result.ok
