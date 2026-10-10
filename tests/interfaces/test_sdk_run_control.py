@@ -634,3 +634,41 @@ async def test_usage_events_preserve_cache_reasoning_and_estimation_without_addi
     assert usage["input_tokens"] == 96 and usage["output_tokens"] == 15
     assert usage["cache_read_tokens"] == 7 and usage["cache_creation_tokens"] == 3
     assert usage["reasoning_tokens"] == 13 and usage["estimated"] is True
+
+
+@pytest.mark.parametrize("stage", ["precheck", "request"])
+@pytest.mark.parametrize("proposed", [600, 1_500])
+async def test_event_cancellation_during_budget_await_stops_before_provider(stage, proposed):
+    entered, release, cancel_event = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    events = []
+    model = Model()
+
+    async def policy(snapshot):
+        if snapshot.reason == stage:
+            entered.set()
+            await release.wait()
+            return BudgetDecision(proposed)
+        return BudgetDecision(snapshot.soft_budget_tokens)
+
+    session = build_session(
+        agent=Agent(name="cancel-budget", system_prompt="sys"), llm=model, max_budget_tokens=1_000,
+        run_control=RunControl(initial_soft_budget_tokens=500, decide_budget=policy, on_event=events.append),
+    )
+    await session.add_user_message("finish")
+    owner = asyncio.create_task(session.run_loop(cancel_event))
+    try:
+        await asyncio.wait_for(entered.wait(), 0.5)
+        cancel_event.set()
+        release.set()
+        assert await asyncio.wait_for(owner, 0.5) == ""
+    finally:
+        owner.cancel()
+        release.set()
+        await asyncio.gather(owner, return_exceptions=True)
+        await session.aclose()
+    assert model.calls == [] and session.used_tokens == 0
+    assert session.max_budget_tokens == 500
+    assert session.phase.value == "stopped" and session.state.terminal_reason == "interrupted by user"
+    assert session.messages[-1]["content"] == "[Session interrupted by user]"
+    assert not any(event.type == "budget_decision" and not event.data["accepted"] for event in events)
+    assert events[-1].type == "cleanup_completed" and session.pending_cleanup_tasks == ()

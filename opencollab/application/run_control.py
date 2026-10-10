@@ -77,7 +77,18 @@ class RunControl:
                 raise TypeError(f"{name} must be callable or None")
 
 
+class _RunCancelled(Exception):
+    """The current turn's explicit cancellation signal was set."""
+
+
 class _SessionRunControlMixin:
+    def _raise_if_run_cancelled(self) -> None:
+        if self._run_cancel_event is not None and self._run_cancel_event.is_set():
+            raise _RunCancelled
+
+    async def _stop_for_run_cancellation(self) -> None:
+        await self._stop_precheck("interrupted by user", message="[Session interrupted by user]")
+
     def _initialize_run_control(self, control: RunControl | None, run_id: str | None) -> None:
         if control is not None and not isinstance(control, RunControl):
             raise TypeError("run_control must be a RunControl or None")
@@ -141,6 +152,7 @@ class _SessionRunControlMixin:
         control = self._run_control
         if control is None or control.decide_budget is None:
             return
+        self._raise_if_run_cancelled()
         if self.hard_budget_tokens is not None and self.state.used_tokens >= self.hard_budget_tokens:
             return
         snapshot = BudgetSnapshot(
@@ -155,6 +167,7 @@ class _SessionRunControlMixin:
             decision = control.decide_budget(snapshot)
             if inspect.isawaitable(decision):
                 decision = await decision
+            self._raise_if_run_cancelled()
             if not isinstance(decision, BudgetDecision):
                 raise ValueError("budget callback must return BudgetDecision")
             proposed = decision.soft_budget_tokens
@@ -175,7 +188,7 @@ class _SessionRunControlMixin:
                 or "\x00" in decision.final_prompt
             ):
                 raise ValueError("final_prompt must be non-empty text or None")
-        except asyncio.CancelledError:
+        except (_RunCancelled, asyncio.CancelledError):
             raise
         except Exception as exc:
             self._emit_run_event("budget_decision", reason=reason, accepted=False,
@@ -210,4 +223,3 @@ class _SessionRunControlMixin:
         self._emit_run_event("cleanup_completed", pending_provider_requests=0)
         self._run_event_receiver = None
         self._run_control = None
-

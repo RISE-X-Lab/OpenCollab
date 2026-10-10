@@ -624,6 +624,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         await self._decide_run_budget(
             reason="request", reserved_input_tokens=reserved, minimum_output_tokens=minimum,
         )
+        self._raise_if_run_cancelled()
         if self._run_final_prompt is not None:
             prompt = {"role": "system", "content": self._run_final_prompt}
             if prompt not in messages:
@@ -705,6 +706,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
         async def complete_owned() -> CompletionResponse:
             try:
+                if self._run_control is not None:
+                    self._raise_if_run_cancelled()
                 return await _complete_with_error_usage(
                     self, complete, messages, protected_call=protected_call,
                     usage_purpose="summary", on_response=account_response, **kwargs,
@@ -749,6 +752,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         already in the working tree). ``None`` disables the ceiling.
         """
         await self._start_llm_step()
+        if self._run_control is not None:
+            self._raise_if_run_cancelled()
         protected_call = self.state.wind_down_done
         operation = _complete_with_error_usage(self, self.llm.complete, protected_call=protected_call, **kwargs)
         if self._per_call_timeout is None:
