@@ -131,9 +131,10 @@ own selection paths.
 smaller allowance, clipped to that actual authorization. A synchronous or async
 `decide_budget(snapshot)` callback may keep or increase the soft allowance by
 returning `BudgetDecision(soft_budget_tokens, final_prompt=None)`. The runner
-checks the callback before a soft-budget stop, budget-driven wind-down, and
-provider attempts whose estimated input plus minimum output exceeds the soft
-allowance. Each snapshot includes the run and session IDs, token and step
+calls the callback at each PRECHECK after cancellation and loop checks, before
+budget-driven wind-down, and after input estimation for every provider attempt.
+The host policy chooses when to extend or issue a closing prompt while there
+is still enough allowance for the current request. Each snapshot includes the run and session IDs, token and step
 counters, both allowances, input reservation, minimum output requirement, and
 trigger reason. Suggestions that decrease the allowance, increase it to a value below actual
 spend, or exceed the hard authorization produce a failed result carrying the
@@ -165,7 +166,9 @@ Its compact `RunEvent` carries `type`, `run_id`, `session_id`, `aid`,
 `used_tokens`, `steps`, and a detached `data` mapping. `usage` events report
 normalized input, output, and total tokens at each successful or failed
 provider attempt's accounting point, including summary and late responses.
-The `purpose` and `late` fields identify those paths. `context_shaping` events
+The `purpose` and `late` fields identify those paths. Cache-read,
+cache-creation, reasoning, and estimated-usage fields preserve provider
+metadata. Cached input is already included in input and total token counters. `context_shaping` events
 report normal and emergency compaction. `budget_decision`, `error`, and
 `session_stopped` events expose decisions and lifecycle state. The stopped
 event records outstanding provider requests. The receiver stays attached to its

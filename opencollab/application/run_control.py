@@ -129,6 +129,10 @@ class _SessionRunControlMixin:
         self._emit_run_event(
             "usage", total_tokens=total_tokens, input_tokens=usage.input_tokens,
             output_tokens=total_tokens - usage.input_tokens, purpose=purpose, late=late,
+            cache_read_tokens=getattr(usage, "cache_read_tokens", 0),
+            cache_creation_tokens=getattr(usage, "cache_creation_tokens", 0),
+            reasoning_tokens=getattr(usage, "reasoning_tokens", None),
+            estimated=getattr(usage, "estimated", False),
             error_type=None if error is None else type(error).__name__,
         )
 

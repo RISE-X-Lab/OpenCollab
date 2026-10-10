@@ -675,8 +675,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self._stop_precheck(reason)
             return
 
-        if self.max_budget_tokens is not None and self.state.used_tokens >= self.max_budget_tokens:
-            await self._decide_run_budget(reason="precheck")
+        await self._decide_run_budget(reason="precheck")
         if (
             self.max_budget_tokens is not None
             and self.state.used_tokens >= self.max_budget_tokens

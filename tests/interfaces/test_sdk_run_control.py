@@ -78,6 +78,8 @@ async def test_soft_allowance_extension_continues_the_same_sdk_session(tmp_path)
     async def decide(snapshot):
         snapshots.append(snapshot)
         await asyncio.sleep(0)
+        if snapshot.used_tokens < 100:
+            return BudgetDecision(snapshot.soft_budget_tokens)
         return BudgetDecision(200, final_prompt="Finish from the collected evidence.")
 
     result = await client(tmp_path).agent2(
@@ -86,10 +88,11 @@ async def test_soft_allowance_extension_continues_the_same_sdk_session(tmp_path)
     )
     assert result.ok and result.tokens == 110
     assert len(model.calls) == 2
-    assert snapshots[0].reason == "precheck"
-    assert snapshots[0].used_tokens == snapshots[0].soft_budget_tokens == 100
-    assert snapshots[0].hard_budget_tokens == 200
-    assert snapshots[0].steps == 1
+    extension = next(snapshot for snapshot in snapshots if snapshot.used_tokens == 100)
+    assert extension.reason == "precheck"
+    assert extension.soft_budget_tokens == 100
+    assert extension.hard_budget_tokens == 200
+    assert extension.steps == 1
     assert len(model.calls[1]["messages"]) > len(model.calls[0]["messages"])
     assert model.calls[1]["messages"][-1]["content"] == "Finish from the collected evidence."
     assert {event.session_id for event in events} == {snapshots[0].session_id}
@@ -103,12 +106,14 @@ async def test_illegal_runtime_budget_suggestions_fail_before_the_next_provider_
     result = await client(tmp_path).agent(
         "finish", tools=(), system_prompt="sys", budget=200, llm=model, trace=False,
         run_control=RunControl(initial_soft_budget_tokens=100,
-                               decide_budget=lambda _: BudgetDecision(suggestion), on_event=events.append),
+                               decide_budget=lambda snapshot: BudgetDecision(
+                                   suggestion if snapshot.used_tokens >= 100 else snapshot.soft_budget_tokens
+                               ), on_event=events.append),
     )
     assert result.status == "failed"
     assert result.tokens == 100 and len(model.calls) == 1
     assert "run-control budget policy failed" in str(result.error)
-    rejected = next(event for event in events if event.type == "budget_decision")
+    rejected = next(event for event in events if event.type == "budget_decision" and not event.data["accepted"])
     assert rejected.data["accepted"] is False
     assert rejected.data["suggested_budget"] == suggestion
     assert events[-1].type == "cleanup_completed"
@@ -122,7 +127,8 @@ async def test_hard_exhaustion_keeps_ordinary_budget_stop(tmp_path):
         run_control=RunControl(decide_budget=lambda snapshot: decisions.append(snapshot) or BudgetDecision(200)),
     )
     assert result.status == "stopped" and result.tokens == 201
-    assert "budget" in result.reason and decisions == []
+    assert "budget" in result.reason
+    assert decisions and all(snapshot.used_tokens < 200 for snapshot in decisions)
 
 
 @pytest.mark.parametrize("too_long", [False, True])
@@ -130,7 +136,10 @@ async def test_final_prompt_is_present_in_current_http_request_and_reserves_inpu
     events = []
     prompt = "Finish using the evidence already collected." if not too_long else "x" * 20_000
     with fake_chat_server() as (base_url, requests):
-        result = await client(tmp_path, api_key="fixture-key", base_url=base_url, llm_max_retries=0).agent2(  # pragma: allowlist secret
+        result = await client(
+            tmp_path, api_key="fixture-key",  # pragma: allowlist secret
+            base_url=base_url, llm_max_retries=0,
+        ).agent2(
             "finish", system_prompt="sys", tools=(), budget=500, trace=False,
             run_control=RunControl(initial_soft_budget_tokens=10,
                                    decide_budget=lambda _: BudgetDecision(500, final_prompt=prompt),
@@ -162,7 +171,9 @@ async def test_summary_spend_reaches_soft_cap_and_next_request_uses_host_extensi
     result = await client(tmp_path).agent2(
         "finish", system_prompt="sys", tools=(), budget=40_000, llm=model, trace=False,
         run_control=RunControl(initial_soft_budget_tokens=20_000,
-                               decide_budget=lambda snapshot: snapshots.append(snapshot) or BudgetDecision(40_000),
+                               decide_budget=lambda snapshot: snapshots.append(snapshot) or BudgetDecision(
+                                   40_000 if snapshot.used_tokens >= 20_000 else snapshot.soft_budget_tokens
+                               ),
                                on_event=events.append),
     )
     assert result.ok and result.tokens == 20_010
@@ -319,8 +330,8 @@ async def test_policy_can_hold_soft_cap_and_stop_after_retaining_prior_usage(tmp
                                decide_budget=lambda snapshot: snapshots.append(snapshot) or BudgetDecision(100)),
     )
     assert result.status == "stopped" and result.tokens == 100
-    assert len(model.calls) == len(snapshots) == 1
-    assert snapshots[0].reason == "precheck"
+    assert len(model.calls) == 1
+    assert snapshots[-1].used_tokens == 100 and snapshots[-1].reason == "precheck"
 
 
 async def test_completed_summary_at_precheck_can_extend_before_local_stop():
@@ -329,14 +340,16 @@ async def test_completed_summary_at_precheck_can_extend_before_local_stop():
     session = build_session(
         agent=Agent(name="summary-precheck", system_prompt="sys"), llm=model, max_budget_tokens=40_000,
         run_control=RunControl(initial_soft_budget_tokens=20_000, on_event=events.append,
-                               decide_budget=lambda snapshot: snapshots.append(snapshot) or BudgetDecision(40_000)),
+                               decide_budget=lambda snapshot: snapshots.append(snapshot) or BudgetDecision(
+                                   40_000 if snapshot.used_tokens >= 20_000 else snapshot.soft_budget_tokens
+                               )),
     )
     session.messages = history()
     await session.runner._shape_and_trace(session.messages)
     assert session.used_tokens == 20_000
     assert await session.run_loop() == "answer"
     await session.aclose()
-    assert snapshots[0].reason == "precheck"
+    assert next(snapshot for snapshot in snapshots if snapshot.used_tokens == 20_000).reason == "precheck"
     assert [call["summary"] for call in model.calls] == [True, False]
     assert sum(event.data["total_tokens"] for event in consumption(events)) == session.used_tokens == 20_010
 
@@ -368,12 +381,15 @@ async def test_each_retry_reserves_again_and_reports_each_attempt_usage(tmp_path
     result = await client(tmp_path).agent2(
         "finish", system_prompt="sys", tools=(), llm=model, budget=100, trace=False,
         run_control=RunControl(initial_soft_budget_tokens=50, on_event=events.append,
-                               decide_budget=lambda snapshot: snapshots.append(snapshot) or BudgetDecision(100)),
+                               decide_budget=lambda snapshot: snapshots.append(snapshot) or BudgetDecision(
+                                   100 if snapshot.used_tokens else snapshot.soft_budget_tokens
+                               )),
     )
     assert result.ok and result.tokens == 47
     assert len(model.calls) == 2
-    assert snapshots[0].used_tokens == 37 and snapshots[0].reason == "request"
-    assert snapshots[0].reserved_input_tokens == 13
+    retry_snapshot = next(snapshot for snapshot in snapshots if snapshot.used_tokens == 37)
+    assert retry_snapshot.reason == "request"
+    assert retry_snapshot.reserved_input_tokens == 13
     assert [event.data["total_tokens"] for event in consumption(events)] == [37, 10]
     if retry == "context":
         assert any(event.type == "context_shaping" and event.data["emergency"] for event in events)
@@ -480,8 +496,9 @@ async def test_output_minimum_is_exposed_before_a_request_that_cannot_fit(tmp_pa
                                decide_budget=lambda snapshot: snapshots.append(snapshot) or BudgetDecision(30)),
     )
     assert result.status == "stopped" and model.calls == []
-    assert snapshots[0].reserved_input_tokens == 13
-    assert snapshots[0].minimum_output_tokens == 20
+    request_snapshot = next(snapshot for snapshot in snapshots if snapshot.reason == "request")
+    assert request_snapshot.reserved_input_tokens == 13
+    assert request_snapshot.minimum_output_tokens == 20
     assert "less than 20 output tokens" in result.reason
 
 
@@ -489,6 +506,8 @@ async def test_policy_callback_exception_preserves_accounted_usage_and_finishes_
     events = []
 
     def failed_policy(snapshot):
+        if snapshot.used_tokens < 100:
+            return BudgetDecision(snapshot.soft_budget_tokens)
         raise RuntimeError("fixture policy failed")
 
     result = await client(tmp_path).agent2(
@@ -513,5 +532,105 @@ async def test_holding_soft_cap_after_response_overspend_keeps_ordinary_budget_s
     assert result.status == "stopped" and result.tokens == 101
     assert result.error is None and "budget exceeded after model call" in result.reason
     assert len(model.calls) == 1
-    assert snapshots[0].reason == "after_response"
-    assert snapshots[0].soft_budget_tokens == 100 and snapshots[0].used_tokens == 101
+    assert snapshots[-1].reason == "after_response"
+    assert snapshots[-1].soft_budget_tokens == 100 and snapshots[-1].used_tokens == 101
+
+
+@pytest.mark.parametrize("stage,spent,reserved", [("precheck", 450_000, 20_000), ("request", 400_000, 90_000)])
+async def test_progress_policy_can_extend_before_minimum_output_is_exhausted(
+    tmp_path, monkeypatch, stage, spent, reserved,
+):
+    sessions, decisions = [], []
+    original = agent_runtime.build_session
+
+    def seeded_session(**kwargs):
+        session = original(**kwargs)
+        session.used_tokens = spent
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(agent_runtime, "build_session", seeded_session)
+
+    class ExpensiveInput(Model):
+        def estimate_request_tokens(self, messages, tools, **kwargs):
+            return reserved
+
+        async def complete(self, messages, tools=None, **kwargs):
+            self.calls.append({"messages": copy.deepcopy(messages), **kwargs})
+            return LLMResponse(content="finished", usage=Usage(input_tokens=reserved, output_tokens=100),
+                               finish_reason="stop")
+
+    def progress_policy(snapshot):
+        cap = snapshot.soft_budget_tokens
+        margin = min(200_000, max(1, cap // 10))
+        if cap - snapshot.used_tokens < snapshot.reserved_input_tokens + 32_768 + margin:
+            proposed = min(snapshot.hard_budget_tokens, cap + 1_000_000)
+            if proposed > cap:
+                decisions.append(snapshot)
+            return BudgetDecision(proposed)
+        return BudgetDecision(cap)
+
+    model = ExpensiveInput()
+    result = await client(tmp_path, max_output_tokens=32_768).agent2(
+        "finish", tools=(), system_prompt="sys", budget=1_500_000, llm=model, trace=False,
+        run_control=RunControl(initial_soft_budget_tokens=500_000, decide_budget=progress_policy),
+    )
+    assert result.ok and len(model.calls) == 1
+    assert model.calls[0]["max_output_tokens"] == 32_768
+    assert 500_000 - spent - reserved < 32_768
+    assert 500_000 - spent - reserved >= 1
+    assert len(decisions) == 1 and decisions[0].reason == stage
+    assert sessions[0].max_budget_tokens == 1_500_000
+
+
+async def test_no_progress_closing_prompt_reaches_http_before_soft_cap_is_exhausted(tmp_path, monkeypatch):
+    original = agent_runtime.build_session
+    decisions = []
+
+    def seeded_session(**kwargs):
+        session = original(**kwargs)
+        session.used_tokens = 8_000
+        return session
+
+    monkeypatch.setattr(agent_runtime, "build_session", seeded_session)
+
+    def no_progress(snapshot):
+        cap = snapshot.soft_budget_tokens
+        margin = min(200_000, max(1, cap // 10))
+        if cap - snapshot.used_tokens < snapshot.reserved_input_tokens + 1_000 + margin:
+            decisions.append(snapshot)
+            return BudgetDecision(cap, final_prompt="Finish the focused check and record the handoff now.")
+        return BudgetDecision(cap)
+
+    with fake_chat_server() as (base_url, requests):
+        result = await client(
+            tmp_path, api_key="fixture-key",  # pragma: allowlist secret
+            base_url=base_url, max_output_tokens=1_000, llm_max_retries=0,
+        ).agent2(
+            "finish", tools=(), system_prompt="sys", budget=20_000, trace=False,
+            run_control=RunControl(initial_soft_budget_tokens=10_000, decide_budget=no_progress),
+        )
+    assert result.ok and len(requests) == 1
+    assert decisions[0].reason == "request"
+    assert decisions[0].used_tokens + decisions[0].reserved_input_tokens + 1 <= 10_000
+    body = requests[0]
+    assert body["messages"][-1]["content"] == "Finish the focused check and record the handoff now."
+    assert body["max_tokens"] == min(1_000, 2_000 - estimate_request_tokens(body["messages"]))
+
+
+async def test_usage_events_preserve_cache_reasoning_and_estimation_without_adding_cache_to_total(tmp_path):
+    events = []
+    response = LLMResponse(
+        content="finished", finish_reason="stop",
+        usage=Usage(input_tokens=96, output_tokens=15, cache_read_tokens=7,
+                    cache_creation_tokens=3, reasoning_tokens=13, estimated=True),
+    )
+    result = await client(tmp_path).agent2(
+        "finish", tools=(), system_prompt="sys", llm=Model([response]), trace=False,
+        run_control=RunControl(on_event=events.append),
+    )
+    usage = consumption(events)[0].data
+    assert result.ok and result.tokens == usage["total_tokens"] == 111
+    assert usage["input_tokens"] == 96 and usage["output_tokens"] == 15
+    assert usage["cache_read_tokens"] == 7 and usage["cache_creation_tokens"] == 3
+    assert usage["reasoning_tokens"] == 13 and usage["estimated"] is True

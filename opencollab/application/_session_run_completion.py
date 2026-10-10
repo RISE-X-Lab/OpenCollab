@@ -621,9 +621,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if self._run_control is None:
             return
         _configured, minimum, reserved = self._request_budget_requirements(messages, tools, thinking=thinking)
-        if self.max_budget_tokens is not None and self.state.used_tokens + reserved + minimum > self.max_budget_tokens:
-            await self._decide_run_budget(reason="request", reserved_input_tokens=reserved,
-                                          minimum_output_tokens=minimum)
+        await self._decide_run_budget(
+            reason="request", reserved_input_tokens=reserved, minimum_output_tokens=minimum,
+        )
         if self._run_final_prompt is not None:
             prompt = {"role": "system", "content": self._run_final_prompt}
             if prompt not in messages:
