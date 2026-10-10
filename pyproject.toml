@@ -70,5 +70,5 @@ DEP001 = ["fontTools"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
-testpaths = ["tests", "examples/mini-edict/tests"]
+testpaths = ["tests", "examples/mini-edict/tests", "examples/arcbench-evolution-r6/tests"]
 norecursedirs = [".git", ".venv", "__pycache__"]
