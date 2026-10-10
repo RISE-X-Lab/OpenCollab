@@ -122,7 +122,7 @@ async def evolution(ctx, inputs):
 
             runner = EvolutionRunner(ctx, workspace, index, product, settings, state, commit, emit, resume=resume)
             result = await runner.run()
-            commit("r6 工作流交付与验证")
+            commit("r6 workflow delivery and verification")
             await ctx.phase("Delivery result")
             if result["delivery_ok"]:
                 runtime.events.mark_run_completed("r6 local delivery checks passed")

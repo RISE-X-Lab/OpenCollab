@@ -187,7 +187,7 @@ class EvolutionRunner(EvolutionAdapter):
                 info = self._session_report(data["result"])
                 self.ledger.finish_group(group, info, data["changed_files"])
                 state.data["groups"][str(data["number"])]["result"] = info
-                self.commit(f"r6 第 {data['number']} 组需求实现")
+                self.commit(f"r6 implementation group {data['number']}")
         elif kind == "group_checked":
             verdict = self.verdicts.get(tuple(data["targets"]))
             if verdict is not None:
