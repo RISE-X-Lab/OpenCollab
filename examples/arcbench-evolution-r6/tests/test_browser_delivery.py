@@ -158,8 +158,6 @@ def test_relative_output_directory_reaches_the_same_browser_contract(tmp_path, m
 
 @pytest.mark.parametrize("destructive", [False, True])
 def test_install_lifecycle_runs_in_each_copy_and_keeps_original_data_and_source(tmp_path, destructive):
-    from pathlib import Path
-
     workspace = fixture_app(tmp_path, names=("alice",))
     backend = workspace / "backend"
     with sqlite3.connect(backend / "app.sqlite") as db:
@@ -210,12 +208,55 @@ def test_install_lifecycle_runs_in_each_copy_and_keeps_original_data_and_source(
         }
         assert after == before
         assert not (modules / "lifecycle-ran").exists()
-    if not destructive:
+
+
+def test_preflight_installs_real_working_dependencies_and_retains_generated_source(tmp_path):
+    from arc_light.delivery import run_command
+
+    (tmp_path / "app").mkdir()
+    workspace = fixture_app(tmp_path / "app", names=("alice",))
+    shared = (workspace / "backend/node_modules").resolve()
+    dependency = tmp_path / "dependency"
+    dependency.mkdir()
+    (dependency / "package.json").write_text(json.dumps({"name": "fixture-local-module", "version": "1.0.0"}))
+    (dependency / "index.js").write_text("module.exports='installed'")
+    for name in ("backend", "frontend"):
+        directory = workspace / name
+        (directory / "node_modules").unlink()
+        package_path = directory / "package.json"
+        package = json.loads(package_path.read_text())
+        package["dependencies"] = {"fixture-local-module": "file:" + str(dependency)}
+        if name == "backend":
+            package["scripts"]["postinstall"] = "node src/install.cjs"
+            (directory / "src/install.cjs").write_text(
+                "const fs=require('node:fs');"
+                "fs.writeFileSync('src/generated.cjs','module.exports=true');"
+                "fs.mkdirSync('node_modules/@playwright',{recursive:true});"
+                f"fs.symlinkSync({json.dumps(str(shared / '@playwright/test'))},'node_modules/@playwright/test','dir');"
+            )
+            server = directory / "src/server.cjs"
+            server.write_text("require('./generated.cjs');require('fixture-local-module');\n" + server.read_text())
+        else:
+            package["scripts"]["build"] = (
+                "node -e \"if(require('fixture-local-module')!=='installed')throw Error('missing dependency')\""
+            )
+        package_path.write_text(json.dumps(package))
+    for iteration in range(2):
         report = preflight(workspace, timeout=120)
         assert report["ok"], report
-        assert (backend / "app.sqlite").read_bytes() == before[Path("backend/app.sqlite")]
-        assert not (backend / "src/generated.cjs").exists()
-        assert not (modules / "lifecycle-ran").exists()
+        for name in ("backend", "frontend"):
+            assert (workspace / name / "node_modules/fixture-local-module").is_dir()
+        assert (workspace / "backend/src/generated.cjs").is_file()
+        if iteration:
+            installs = [check for check in report["checks"] if check["step"].endswith("_install")]
+            assert all("install cached" in check["detail"] for check in installs)
+    code, text = run_command(["npm", "run", "build"], workspace / "frontend", 20)
+    assert code == 0, text
+    code, text = run_command(
+        ["node", "-e", "require('./src/generated.cjs');require('fixture-local-module')"], workspace / "backend", 20
+    )
+    assert code == 0, text
+    assert (workspace / "backend/node_modules/@playwright/test").is_dir()
 
 
 @pytest.mark.parametrize("visitor", [False, True])

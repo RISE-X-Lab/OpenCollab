@@ -87,8 +87,9 @@ def test_cancelled_preflight_waits_for_real_writer_exit(tmp_path, monkeypatch, p
         time.sleep(0.1)
         assert heartbeat.stat().st_size == size
         assert (workspace / "backend/source.txt").read_text() == "candidate source"
-        assert Path(child["cwd"]) != workspace / "backend"
-        assert not Path(child["cwd"]).parent.exists()
+        if phase == "health":
+            assert Path(child["cwd"]) != workspace / "backend"
+            assert not Path(child["cwd"]).parent.exists()
         saved = json.loads((workspace / ".arc/checks/preflight.json").read_text())
         assert saved["cancelled"] and not saved["ok"]
     finally:
