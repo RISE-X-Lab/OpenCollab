@@ -10,6 +10,8 @@ The [Base and Single2 guide](single2.md) explains the default agent profile and
 its implementation. The [Duo guide](duo.md) covers dual-coder execution,
 candidate selection, evidence, and patch adoption through the CLI and SDK.
 The [Chinese Duo guide](duo/README.zh-CN.md) provides localized instructions.
+The [Evolution guide](evolution.md) covers ordered shared-workspace sessions,
+executed checks, bounded repair and continuation through the CLI and SDK.
 The [configuration guide](../configs/README.md) covers providers, models, and
 team files. The [skills guide](../skills/README.md) explains on-demand agent
 skills. The [collaborating team guide](2026-08-31-collab-team.md) describes the

@@ -11,11 +11,11 @@ from opencollab import OpenCollab
 from opencollab.adapters.cli import workflow as workflow_cli
 from opencollab.bootstrap.programmatic import ProgrammaticResult
 from opencollab.bootstrap.workflow_runtime import discover_workflows
-from opencollab.builtin_workflows import duo, get_builtin_workflows
+from opencollab.builtin_workflows import duo, evolution, get_builtin_workflows
 from opencollab.sdk import client as sdk_client
 from opencollab.workflows import workflow
 
-_BUILTIN_NAMES = {"duo"}
+_BUILTIN_NAMES = {"duo", "evolution"}
 
 
 def _write_workflow(directory, *, name="local-flow"):
@@ -29,11 +29,12 @@ def _write_workflow(directory, *, name="local-flow"):
     )
 
 
-def test_builtin_registry_is_fresh_and_exposes_one_duo():
+def test_builtin_registry_is_fresh_and_exposes_installed_workflows():
     first = get_builtin_workflows()
     second = get_builtin_workflows()
     assert {spec.name for spec in first.list_specs()} == _BUILTIN_NAMES
     assert second.get("duo").fn is duo
+    assert second.get("evolution").fn is evolution
 
     @workflow(name="caller-only")
     async def caller(ctx, args):
@@ -64,16 +65,18 @@ def test_caller_module_using_builtin_name_raises_existing_duplicate_error(tmp_pa
         discover_workflows(str(directory), include_builtin=True)
 
 
-def test_cli_lists_installed_duo_in_workspace_without_workflow_directory(tmp_path, monkeypatch):
+def test_cli_lists_installed_workflows_in_workspace_without_workflow_directory(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENCOLLAB_WORKFLOWS_DIR", raising=False)
     result = CliRunner().invoke(workflow_cli.app, ["list", "--workspace", str(tmp_path)])
     assert result.exit_code == 0
     assert "duo" in result.stdout
+    assert "evolution" in result.stdout
     assert "duo-v3" not in result.stdout
     assert "validation-council-dual-coder-selection" not in result.stdout
 
 
-def test_cli_runs_installed_duo_and_forwards_agent_profile(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name", sorted(_BUILTIN_NAMES))
+def test_cli_runs_installed_workflow_and_forwards_agent_profile(tmp_path, monkeypatch, name):
     monkeypatch.delenv("OPENCOLLAB_WORKFLOWS_DIR", raising=False)
     monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *args: False)
     captured = {}
@@ -85,12 +88,12 @@ def test_cli_runs_installed_duo_and_forwards_agent_profile(tmp_path, monkeypatch
     monkeypatch.setattr(workflow_cli, "run_workflow", run)
     result = CliRunner().invoke(
         workflow_cli.app,
-        ["run", "duo", "--workspace", str(tmp_path), "--args", '{"goal":"repair"}',
+        ["run", name, "--workspace", str(tmp_path), "--args", '{"goal":"repair"}',
          "--agent-profile", "single2", "--no-save"],
     )
     assert result.exit_code == 0
     assert json.loads(result.stdout) == {"status": "done"}
-    assert captured["spec"].fn is duo
+    assert captured["spec"].fn is {"duo": duo, "evolution": evolution}[name]
     assert captured["args"] == {"goal": "repair"}
     assert captured["agent_profile"] == "single2"
 
