@@ -34,8 +34,9 @@ class SessionPolicy:
                 **data,
             }
         )
-        if event.type == "usage":
+        if event.session_id:
             self.state.observe(self.phase, event.session_id, event.used_tokens, event.steps)
+        if event.type == "usage":
             with (self.path.parent / "wire-usage.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(
                     json.dumps({"phase": self.phase, "run_id": event.run_id, "session_id": event.session_id, **data})

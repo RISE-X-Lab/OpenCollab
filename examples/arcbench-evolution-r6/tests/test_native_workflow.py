@@ -239,6 +239,34 @@ async def test_preparation_cancellation_waits_for_the_writer(tmp_path, monkeypat
     assert json.loads((tmp_path / ".arc/checks/outcome.json").read_text())["status"] == "cancelled"
 
 
+@pytest.mark.asyncio
+async def test_cancelled_request_without_usage_retains_its_step_on_resume(tmp_path, monkeypatch):
+    task = application(tmp_path)
+    checks(monkeypatch)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class InterruptedModel:
+        async def complete(self, *args, **kwargs):
+            started.set()
+            await release.wait()
+            raise RuntimeError("Controlled provider ended without usage")
+
+    owner = asyncio.create_task(execute(tmp_path, task, InterruptedModel()))
+    await asyncio.wait_for(started.wait(), 10)
+    owner.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    state = json.loads((tmp_path / ".arc/checks/run-state.json").read_text())
+    assert state["status"] == "cancelled"
+    assert sum(row["steps"] for row in state["sessions"].values()) == 1
+    assert sum(row["tokens"] for row in state["sessions"].values()) == 0
+    model = LocalModel()
+    resumed = await execute(tmp_path, task, model, resume=True)
+    assert resumed.ok and resumed.output["delivery_ok"], resumed
+    assert resumed.output["main_steps"] == 1 + len(model.calls)
+
+
 def test_cli_configuration_failure_cannot_reuse_old_success(tmp_path, monkeypatch):
     monkeypatch.delenv("MODEL", raising=False)
     monkeypatch.delenv("OPENCOLLAB_MODEL", raising=False)
