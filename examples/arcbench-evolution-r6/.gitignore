@@ -1,0 +1,4 @@
+node_modules/
+.arc/
+test-results/
+playwright-report/
