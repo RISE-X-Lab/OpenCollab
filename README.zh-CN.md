@@ -22,6 +22,8 @@
   <sub><a href="README.md">English</a> · <b>简体中文</b></sub>
 </p>
 
+OpenCollab 遵循**严谨而克制的软件工程理念**。在 [0.9.3 版本](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.3)中，其位于 [OpenCollab/opencollab 目录](https://github.com/RISE-X-Lab/OpenCollab/tree/v0.9.3/opencollab)的 Harness 核心以**不到 5 万行源码**，提供完整的科研观测与统计能力，并在若干[编程 Benchmark](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/results.md) 上**超越 Claude Code、Codex CLI 和 OpenHands**。这些成熟竞品的核心实现规模**远超 10 万行源码**。OpenCollab 还在奖金池达 **2.4 万美元**的 [OAIC Agentic Software Factory Hackathon](https://create.gosim.org/factory26/) 中**获得第一名**。
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-hero-dark.svg">
