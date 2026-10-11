@@ -20,6 +20,8 @@
   <sub><b>English</b> · <a href="README.zh-CN.md">Chinese</a></sub>
 </p>
 
+OpenCollab follows a **rigorous and restrained software engineering philosophy**. In [version 0.9.3](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.3), its harness core in the [OpenCollab/opencollab directory](https://github.com/RISE-X-Lab/OpenCollab/tree/v0.9.3/opencollab), written in **under 50,000 lines**, provides comprehensive research instrumentation and statistics while **outperforming Claude Code, Codex CLI and OpenHands** across several [coding benchmarks](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/results.md). The core implementations of these mature competitors have codebases spanning **well over 100,000 lines**. OpenCollab also **won first place** at the [OAIC Agentic Software Factory Hackathon](https://create.gosim.org/factory26/), which featured a **$24,000 prize pool**.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-hero-dark.svg">
