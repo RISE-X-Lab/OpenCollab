@@ -33,7 +33,7 @@
 
 ## News
 
-- 🏆 **2026-10-11** — Won first place at the OAIC Agentic Software Factory Hackathon using OpenCollab! 🏆
+- 🏆 **2026-10-11** — **[Won first place](https://create.gosim.org/factory26/)** at the OAIC Agentic Software Factory Hackathon using OpenCollab! 🏆
 - 🎉 **2026-10-08** — [OpenCollab 0.9.3 (v1.0.0 PreRelease)](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.3)
   includes the latest Duo V8 workflow and all the statistical features described
   in our paper to support research experiments. Following extensive testing and
