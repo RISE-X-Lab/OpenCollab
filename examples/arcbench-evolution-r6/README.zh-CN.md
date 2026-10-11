@@ -8,7 +8,58 @@
 
 把这个 example 目录当作一个独立的参赛小项目。打包后，它现有的 `main.py` 就在 ZIP 根目录，赛事平台直接执行这个文件。通用 OC 代码会从同一个 Git 提交构建成 wheel 安装包，放进提交包的 `wheels/`。这样 example 负责赛事适配，wheel 提供对应版本的 OC 和 Weave。
 
-打包电脑需要 Python 3.10 以上、Git 和 `uv`。在 OC 仓库根目录执行下面的命令，输出路径选择一个尚不存在的文件。
+打包电脑需要 Python 3.10 以上、Git、tar 和 `uv`，并能访问 GitHub 与 Python 包下载源。macOS、Linux 或 Windows 的 WSL2 都可以执行下面的流程。打包阶段读取源码并构建 Python wheel，Node、Chromium、赛题与模型凭据在平台实际运行时准备。
+
+### 准备打包工具
+
+先查看电脑已有的工具。
+
+```bash
+python3 --version
+git --version
+tar --version
+```
+
+Python 显示 3.10 或更高版本，另外两条命令显示版本信息时，可以继续创建打包环境。缺少工具时，macOS 可通过已安装的 [Homebrew](https://brew.sh/) 安装。
+
+```bash
+brew install python@3.12 git
+"$(brew --prefix python@3.12)/bin/python3.12" -m venv "$HOME/.venvs/oc-package"
+```
+
+Ubuntu 22.04 及更新版本，或者对应的 WSL2 Ubuntu，可执行下面的命令。
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv git tar
+python3 -m venv "$HOME/.venvs/oc-package"
+```
+
+工具已经齐全时，直接创建环境即可。
+
+```bash
+python3 -m venv "$HOME/.venvs/oc-package"
+```
+
+上述三种方式任选对应的一种。随后激活环境并安装打包工具，每次打开新终端时重新执行激活命令。
+
+```bash
+source "$HOME/.venvs/oc-package/bin/activate"
+python -m pip install uv
+python --version
+uv --version
+```
+
+### 获取仓库并生成 ZIP
+
+首次获取仓库时执行下面的命令。已有仓库时，在对应 Git 工作区中进入包含打包脚本的已提交版本。
+
+```bash
+git clone https://github.com/RISE-X-Lab/OpenCollab.git
+cd OpenCollab
+```
+
+在这个仓库根目录执行打包命令。输出路径选择一个尚不存在的文件，重复打包时可以换一个文件名。
 
 ```bash
 python examples/arcbench-evolution-r6/build_submission.py \

@@ -14,8 +14,66 @@ from the same Git revision, so the submission installs the matching Weave core.
 The wheel contains the OC runtime; the example contains the competition adapter,
 checks, prompts and resources.
 
-Install Python 3.10+, Git and `uv` on the packaging machine. From the OC repository
-root, run the following command. Choose an output path that does not exist.
+The packaging machine needs Python 3.10+, Git, tar and `uv`, with access to
+GitHub and Python package downloads. Use macOS, Linux or WSL2 on Windows.
+Packaging reads source files and builds a Python wheel. Node, Chromium, task
+inputs and model credentials are required when the platform runs the submission.
+
+### Prepare the packaging tools
+
+Check the tools already installed on your machine.
+
+```bash
+python3 --version
+git --version
+tar --version
+```
+
+Continue when Python reports 3.10 or newer and the other commands report their
+versions. On macOS, install missing tools using an existing
+[Homebrew](https://brew.sh/) installation and create the packaging environment.
+
+```bash
+brew install python@3.12 git
+"$(brew --prefix python@3.12)/bin/python3.12" -m venv "$HOME/.venvs/oc-package"
+```
+
+On Ubuntu 22.04 or newer, including WSL2 Ubuntu, use these commands.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv git tar
+python3 -m venv "$HOME/.venvs/oc-package"
+```
+
+When the required tools are already installed, create the environment directly.
+
+```bash
+python3 -m venv "$HOME/.venvs/oc-package"
+```
+
+Choose the applicable setup above. Then activate the environment and install
+`uv`. Repeat the activation command in each new terminal session.
+
+```bash
+source "$HOME/.venvs/oc-package/bin/activate"
+python -m pip install uv
+python --version
+uv --version
+```
+
+### Obtain the repository and export the ZIP
+
+For a new checkout, run these commands. For an existing checkout, use a committed
+revision containing the packaging script in that Git working tree.
+
+```bash
+git clone https://github.com/RISE-X-Lab/OpenCollab.git
+cd OpenCollab
+```
+
+Run the export command from this repository root. Choose an output file that
+does not exist; use a new filename for another export.
 
 ```bash
 python examples/arcbench-evolution-r6/build_submission.py \
