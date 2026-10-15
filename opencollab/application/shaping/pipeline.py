@@ -6,7 +6,7 @@ import math
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from opencollab.application.ports import ShaperPort
+from opencollab.application.ports import ShaperPort, TokenEstimatorPort
 from opencollab.domain.token_estimation import estimate_request_message_tokens
 
 # History-compaction thresholds (token estimates over the whole view). The
@@ -91,20 +91,11 @@ def history_trigger_target(
 def approx_messages_tokens(messages: list[dict[str, Any]]) -> int:
     """Cheap, additive context-size estimate over a message list.
 
-    Additive per message so subtracting a group's estimate equals the estimate
-    of the remainder — lets the history layers re-estimate incrementally. A
-    real tokenizer-backed estimator is injected at wiring time; this fallback
-    uses the same serialized request fields as budget accounting, provider
-    state included, so a thinking-heavy history is not read as shorter here
-    than the budget check reads it. The once-per-request framing allowance is
-    excluded because a constant term would break additivity.
-
-    Deliberately keeps ``keep_reasoning_content`` at its default (True), unlike
-    the pre-call budget reservation, which drops recorded reasoning when
-    streaming strips it from the outbound request. This is a compaction
-    threshold, not a reservation: the recorded reasoning still occupies the
-    local history that compaction is sizing, and shrinking the estimate here
-    would move every arm's compaction trigger. See ``test_shaping_pipeline``.
+    Fallback for clients without an input-message estimator. Retain recorded
+    reasoning and provider state conservatively because their replay policy is
+    unknown. The composition root injects the actual client's additive request
+    estimator when available. Once-per-request framing is excluded so history
+    layers can subtract the estimate of an individual message or group.
     """
     return estimate_request_message_tokens(messages)
 
@@ -166,8 +157,14 @@ class ShaperPipeline:
     output of the previous one; the original ``messages`` is never mutated.
     """
 
-    def __init__(self, shapers: tuple[ShaperPort, ...] = ()):
+    def __init__(
+        self,
+        shapers: tuple[ShaperPort, ...] = (),
+        *,
+        estimate_tokens: TokenEstimatorPort = approx_messages_tokens,
+    ):
         self._shapers = tuple(shapers)
+        self._estimate = estimate_tokens
 
     def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result = messages
@@ -194,7 +191,7 @@ class ShaperPipeline:
         """
         result = messages
         reports: list[dict[str, Any]] = []
-        tokens = approx_messages_tokens(result)
+        tokens = self._estimate(result)
         for shaper in self._shapers:
             result, entries = self._run_rung(shaper, result, tokens)
             if entries:
@@ -234,7 +231,7 @@ class ShaperPipeline:
             {
                 "rung": _rung_label(shaper),
                 "tokens_before": tokens_before,
-                "tokens_after": approx_messages_tokens(result),
+                "tokens_after": self._estimate(result),
             }
         ]
 

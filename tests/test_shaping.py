@@ -712,14 +712,12 @@ def test_forced_shape_through_pipeline_reaches_nested_layers():
     assert not any(m.get("role") == "tool" for m in out)
 
 
-def test_compaction_estimate_still_counts_reasoning_content():
-    """B3 guard: shaping is a compaction threshold, not a budget reservation.
+def test_fallback_compaction_estimate_counts_unclassified_reasoning():
+    """Clients without a request estimator keep the conservative fallback.
 
-    The pre-call reservation now drops ``reasoning_content`` because streaming
-    strips it from the outbound request. This estimator must NOT follow: the
-    recorded reasoning still sits in the local history that compaction sizes,
-    and shrinking it here would move every arm's compaction trigger — a new
-    behaviour change on all arms, which is exactly what the plan declined.
+    The default wiring selects the client's outbound projection when known.
+    The standalone helper cannot know whether recorded reasoning is replayed,
+    so it must not silently exclude potentially real model input.
     """
     messages = [
         {"role": "system", "content": "sys"},

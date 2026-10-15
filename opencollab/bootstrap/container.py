@@ -337,12 +337,13 @@ def _build_default_shaper(
     # tool exchanges as a large window. Keep the latest location/evidence pair.
     affordable_groups = max(2, history_target // (DEFAULT_TOOL_RESULT_BUDGET // 4))
 
-    # Inject the shaping module's own estimator rather than reaching past it:
-    # the layers must size history the way the *request* is sized, provider
-    # state included, or compaction fires late by exactly the thinking traces
-    # it cannot see. Passing a different callable here silently overrode that.
+    # Size the client's outbound projection, not the complete saved transcript.
+    # Inject the same additive estimator into the decision and its trace report.
+    # Custom clients without the capability retain the conservative fallback.
+    client_estimator = getattr(resolved_llm, "estimate_input_message_tokens", None)
+    estimate_input = client_estimator if callable(client_estimator) else approx_messages_tokens
     history_kwargs = {
-        "estimate_tokens": approx_messages_tokens,
+        "estimate_tokens": estimate_input,
         "trigger_tokens": history_trigger,
         "target_tokens": history_target,
         "keep_recent_groups": min(DEFAULT_HISTORY_KEEP_RECENT_GROUPS, affordable_groups),
@@ -360,7 +361,8 @@ def _build_default_shaper(
             ),
             OldHistorySnipShaper(**history_kwargs),
             AutoCompactShaper(summarizer=summarizer, **history_kwargs),
-        )
+        ),
+        estimate_tokens=estimate_input,
     )
 
 

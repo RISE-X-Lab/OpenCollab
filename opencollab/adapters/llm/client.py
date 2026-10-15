@@ -15,6 +15,7 @@ import openai
 
 from opencollab.adapters.llm.anthropic_provider import complete_anthropic
 from opencollab.adapters.llm.first_token import recording
+from opencollab.adapters.llm.input_tokens import estimate_input_message_tokens
 from opencollab.adapters.llm.openai_provider import complete_openai
 from opencollab.adapters.llm.providers import (
     RESPONSES,
@@ -168,6 +169,15 @@ class LLMClient:
     def context_window(self) -> int | None:
         """The model's context window in tokens, or ``None`` if unknown."""
         return self._context_window or model_context_window(self.model)
+
+    def estimate_input_message_tokens(self, messages: list[dict[str, Any]]) -> int:
+        """Additive history estimate using this client's outbound field policy."""
+        return estimate_input_message_tokens(
+            messages,
+            provider=self.provider,
+            wire_protocol=self.wire_protocol,
+            stream_chat=self.stream_chat,
+        )
 
     async def complete(
         self,

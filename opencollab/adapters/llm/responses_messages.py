@@ -122,8 +122,15 @@ def _verify_replay_tool_calls(
 
 def messages_to_input(
     messages: list[dict[str, Any]],
+    *,
+    allow_unmatched_tool_outputs: bool = False,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    """Convert stored chat messages into native Responses input items."""
+    """Convert stored chat messages into native Responses input items.
+
+    Input estimation sizes individual history fragments without their preceding
+    calls. Only that use may allow unmatched tool outputs; requests retain the
+    default requirement that every output has a matching earlier call.
+    """
     instructions: list[str] = []
     items: list[dict[str, Any]] = []
     call_ids: set[str] = set()
@@ -142,7 +149,7 @@ def messages_to_input(
             call_id = message.get("tool_call_id")
             if not isinstance(call_id, str) or not call_id:
                 raise ResponsesProtocolError("function_call_output is missing call_id")
-            if call_id not in call_ids:
+            if call_id not in call_ids and not allow_unmatched_tool_outputs:
                 raise ResponsesProtocolError(f"function_call_output has no matching call_id {call_id!r}")
             if call_id in answered_ids:
                 raise ResponsesProtocolError(f"duplicate function_call_output for {call_id!r}")
