@@ -7,6 +7,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+`reconstruct` is a built-in workflow for black-box program reconstruction. It
+runs the FromIO paper's active-exploration protocol (batched oracle queries
+granted on promotion, early stop, archived candidates scored by the paper's
+stage score) with optional evidence disciplines: hypothesis-independent
+random inputs, a structural coverage gate, memorisation and complexity
+checks, and a numeric domain check. The hidden program is bound through a
+`ReconstructionTask`, directly from the SDK or as a `module:callable` factory
+from the CLI. See [docs/reconstruct.md](docs/reconstruct.md).
+
 ## [0.9.4] - 2026-10-17
 
 ### Added

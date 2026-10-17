@@ -49,7 +49,7 @@ for name in modules:
     imported = importlib.import_module(name)
     assert Path(imported.__file__).resolve().is_relative_to(package_root), name
 names = sorted(spec.name for spec in builtins.get_builtin_workflows().list_specs())
-assert names == ["duo", "weave"], names
+assert names == ["duo", "reconstruct", "weave"], names
 workspace = package_root.parent / "ordinary-task"
 workspace.mkdir()
 probe = runpy.run_path(sys.argv[3])
@@ -66,6 +66,6 @@ print(json.dumps({"modules": modules, "workflows": names, "execution": execution
     assert completed.returncode == 0, (completed.stdout, completed.stderr)
     report = json.loads(completed.stdout)
     assert "opencollab.builtin_workflows.weave" in report["modules"]
-    assert report["workflows"] == ["duo", "weave"]
+    assert report["workflows"] == ["duo", "reconstruct", "weave"]
     assert report["execution"]["content"] == "alpha\nbeta\n"
     assert report["execution"]["delivery_ok"] is True

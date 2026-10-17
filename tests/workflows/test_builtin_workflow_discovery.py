@@ -12,11 +12,11 @@ from opencollab import OpenCollab
 from opencollab.adapters.cli import workflow as workflow_cli
 from opencollab.bootstrap.programmatic import ProgrammaticResult
 from opencollab.bootstrap.workflow_runtime import discover_workflows
-from opencollab.builtin_workflows import duo, get_builtin_workflows, weave
+from opencollab.builtin_workflows import duo, get_builtin_workflows, reconstruct, weave
 from opencollab.sdk import client as sdk_client
 from opencollab.workflows import workflow
 
-_BUILTIN_NAMES = {"duo", "weave"}
+_BUILTIN_NAMES = {"duo", "reconstruct", "weave"}
 
 
 def _write_workflow(directory, *, name="local-flow"):
@@ -94,7 +94,7 @@ def test_cli_runs_installed_workflow_and_forwards_agent_profile(tmp_path, monkey
     )
     assert result.exit_code == 0
     assert json.loads(result.stdout) == {"status": "done"}
-    assert captured["spec"].fn is {"duo": duo, "weave": weave}[name]
+    assert captured["spec"].fn is {"duo": duo, "reconstruct": reconstruct, "weave": weave}[name]
     assert captured["args"] == {"goal": "repair"}
     assert captured["agent_profile"] == "single2"
 

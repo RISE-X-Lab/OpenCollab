@@ -12,6 +12,9 @@ candidate selection, evidence, and patch adoption through the CLI and SDK.
 The [Chinese Duo guide](duo/README.zh-CN.md) provides localized instructions.
 The [Weave guide](weave.md) covers ordered shared-workspace sessions,
 executed checks, bounded repair and continuation through the CLI and SDK.
+The [Reconstruct guide](reconstruct.md) covers black-box program
+reconstruction: batched active exploration of a hidden program and the
+optional verification disciplines.
 The [configuration guide](../configs/README.md) covers providers, models, and
 team files. The [skills guide](../skills/README.md) explains on-demand agent
 skills. The [collaborating team guide](2026-08-31-collab-team.md) describes the
