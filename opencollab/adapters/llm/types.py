@@ -228,6 +228,15 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_responses_reasoning=True,
         honors_workflow_thinking_override=False,
     ),
+    # The native Responses endpoint on 2026-10-14 rejected ``temperature`` for
+    # this model ("Unsupported parameter"). Published limits: 1.05M total
+    # context, 922K input, 128K output. As with qwen3.8-flash, the input
+    # ceiling is recorded because it is what an oversized request hits.
+    "gpt-6-luna": ModelCapabilities(
+        context_window=922_000,
+        supports_responses_sampling=False,
+        supports_responses_reasoning=True,
+    ),
     # DashScope input ceilings recorded on 2026-09-06: 983,616 with thinking
     # and 991,808 without thinking. The adapter's reasoning_effort=max path
     # uses the former. The separate output limit is 131,072. Endpoint probes

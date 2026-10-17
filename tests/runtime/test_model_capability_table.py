@@ -72,3 +72,15 @@ def test_other_models_retain_their_own_windows_and_thinking_policy():
     assert flash.honors_workflow_thinking_override is True
     assert model_capabilities("deepseek-v4-pro").context_window == 1_000_000
     assert model_capabilities("qwen-unmeasured").context_window == 131_072
+
+
+def test_gpt6_luna_exact_entry_records_input_ceiling_and_reasoning():
+    luna = model_capabilities("gpt-6-luna")
+
+    assert luna.context_window == 922_000
+    assert luna.supports_responses_sampling is False
+    assert luna.supports_responses_reasoning is True
+    # Provider prefixes and date suffixes resolve to the same exact entry.
+    assert model_capabilities("gateway/gpt-6-luna-2026-10-14") == luna
+    # gpt-5.6-luna keeps its own, larger window: the two are separate entries.
+    assert model_capabilities("gpt-5.6-luna").context_window == 1_048_576

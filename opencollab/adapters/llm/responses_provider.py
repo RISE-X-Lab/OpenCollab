@@ -88,6 +88,10 @@ _PASSIVE_EVENT_TYPES = frozenset(
         "response.reasoning_summary_text.done",
         "response.reasoning_text.delta",
         "response.reasoning_text.done",
+        # Sent by OpenAI during long generations (minutes of reasoning) to keep
+        # the stream open; carries no content.
+        "keepalive",
+        "response.keepalive",
     }
 )
 

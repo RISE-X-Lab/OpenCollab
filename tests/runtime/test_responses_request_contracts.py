@@ -284,6 +284,18 @@ def test_native_gpt5_omits_unsupported_temperature(model, effort):
     assert "temperature" not in kwargs
 
 
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6-luna-2026-10-14"])
+@pytest.mark.parametrize("effort", [None, "none", "medium", "high"])
+def test_native_gpt6_luna_omits_unsupported_temperature(model, effort):
+    # The native endpoint rejects ``temperature`` for this model at every
+    # effort level, so the exact capability entry turns sampling off.
+    kwargs = _build_request_kwargs(
+        model, [{"role": "user", "content": "work"}], None, 0.2, reasoning_effort=effort,
+    )
+
+    assert "temperature" not in kwargs
+
+
 @pytest.mark.parametrize("model", [
     "gpt-5.1", "gpt-5.2", "gpt-5.2-2025-12-11", "gpt-5.4", "gpt-5.4-2026-03-05",
 ])

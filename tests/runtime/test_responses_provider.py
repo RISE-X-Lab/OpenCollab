@@ -55,6 +55,31 @@ async def test_stream_text_requires_matching_completed_output():
 
 
 @pytest.mark.asyncio
+async def test_stream_tolerates_keepalive_events_between_content():
+    # OpenAI emits content-free keepalive events while a model reasons for
+    # minutes; they must not be treated as unsupported events.
+    item = message_item("OK")
+    response = completed_response(output=[item])
+    stream = FakeStream(
+        [
+            ns(type="response.created"),
+            ns(type="keepalive"),
+            ns(type="response.keepalive"),
+            ns(type="response.output_text.delta", delta="OK", output_index=0),
+            ns(type="keepalive"),
+            ns(type="response.output_item.done", output_index=0, item=item),
+            ns(type="response.completed", response=response),
+        ]
+    )
+
+    state = await _consume_stream(stream, 1, 1)
+    parsed = _parse_stream(state, [{"role": "user", "content": "Reply OK"}], "gpt-fake")
+
+    assert parsed.content == "OK"
+    assert parsed.provider_items == [message_item("OK")]
+
+
+@pytest.mark.asyncio
 async def test_terminal_mismatch_remains_strict_by_default():
     streamed = message_item("streamed")
     terminal = message_item("terminal")
