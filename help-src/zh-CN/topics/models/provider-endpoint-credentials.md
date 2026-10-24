@@ -41,7 +41,7 @@
     "model-routing-request-capacity",
     "configuration-diagnostics"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -138,6 +138,10 @@ print(client.configuration["model"])
 - 能不能连上：只能通过实际请求观察。
 
 报告问题时，记下状态码、出错阶段，以及去掉凭据后的有效配置。
+
+## 成员自编 Workflow 与远端环境
+
+通过 `manage_workflow` 启动源码时，桥接层的模型端点、认证凭据和请求槽位保留在控制端，子进程接收模型名称和非敏感生成设置。工作区文件会按快照规则复制，把认证 env 文件放在项目之外，并通过 `OPENCOLLAB_CONFIG_FILE` 指定控制端的绝对路径。SSH 私钥由控制端 OpenSSH 使用，`identity_file` 引用该本地文件。操作步骤见 [VM 指南](../isolation/vm-environment-extension.md)。
 
 ## 来源
 

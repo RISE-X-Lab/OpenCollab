@@ -12,7 +12,9 @@
     "worktree",
     "docker-group",
     "docker-session",
-    "custom"
+    "custom",
+    "vm-group",
+    "vm-session"
   ],
   "keywords": [
     "隔离",
@@ -33,19 +35,22 @@
     "custom-environment-providers",
     "shell-permissions-execution",
     "execution-environments",
-    "candidate-delivery"
+    "candidate-delivery",
+    "vm-environment-extension",
+    "member-authored-workflow",
+    "model-routing-request-capacity"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
 # 隔离怎么选
 
-OC 里的 `isolation` 参数决定每个 Agent 会话的文件工具和命令落在哪个执行环境：直接用父目录、独立 Git worktree，还是 Docker 容器。它可以在整次运行、Team 角色或单次 `ctx.agent` 调用上设置。和很多框架“所有 agent 共用一个沙箱”不同，OC 把对话、文件、进程、网络分开考虑，而且隔离环境里的改动不会自动写回项目，要经过采纳。
+OC 里的 `isolation` 参数决定每个 Agent 会话的文件工具和命令落在哪个执行环境：直接用父目录、创建独立 Git worktree、进入 Docker 容器，或连接已经准备好的 Linux VM。它可以在整次运行、Team 角色或单次 `ctx.agent` 调用上设置。和很多框架“所有 agent 共用一个沙箱”不同，OC 把对话、文件、进程、网络分开考虑，而且隔离环境里的改动不会自动写回项目，要经过采纳。
 
 最小用法：`OpenCollab(".").workflow(flow, inputs, isolation="worktree")`。下表帮你挑策略。
 
-## 先看结论：四种内置策略
+## 先看结论：六种内置策略
 
 | 策略 | 文件 | 进程和网络 | 适合什么 |
 | --- | --- | --- | --- |
@@ -53,7 +58,11 @@ OC 里的 `isolation` 参数决定每个 Agent 会话的文件工具和命令落
 | `worktree` | 每人一个独立工作树；不是 Git 仓库时用目录副本 | 和父环境一样 | 并行改代码、比较几种改法 |
 | `docker-group` | 同一个容器里，每个会话各有一个工作树 | 同组成员共用这个容器的进程和网络 | 一组任务要共用装好的依赖和临时服务 |
 | `docker-session` | 每个会话一个独立容器和目录 | 每个会话用自己的容器 | 代码执行会互相影响的任务 |
+| `vm-group` | 当前运行的策略池共用一台 VM，每个会话各有一个工作树 | 共用来宾内核、进程与网络 | 一组任务需要独立的来宾系统 |
+| `vm-session` | 每个会话领取一台 VM 并准备工作区 | 每个会话使用自己的来宾系统 | 安装依赖、后台服务会互相影响的任务 |
 | 你注册的策略名 | 由提供器决定 | 由提供器决定 | 接入专门的环境服务 |
+
+`group` 指每次运行中对应环境池的共享范围。成员启动的子 Workflow 会创建自己的环境池，要让子 Agent 留在父成员的 VM 中，将子运行设为 `worktree`。单次子调用选择 `vm-session` 时，需要父 VM 之外的空闲机器。
 
 OC 名词：
 
@@ -67,6 +76,8 @@ OC 名词：
 2. 要同时改代码：用 `worktree`。
 3. 要运行代码，而且怕它们互相干扰（端口、后台进程、临时文件）：用 `docker-session`。
 4. 要运行代码，但想共用一次装好的依赖和服务：用 `docker-group`。
+
+任务需要独立内核或来宾系统状态时，可以选择 `vm-group` 共用一台已准备的 VM，或选择 `vm-session` 按会话分配。配置步骤见 [在现有 Linux VM 中运行任务](vm-environment-extension.md)。
 
 ## 最小示例：运行和单次调用分别设置
 
@@ -158,9 +169,11 @@ asyncio.run(main())
 ## 常见问题
 
 - 如果遇到权限被拒绝：先判断是哪一层拦的，是角色工具、命令授权、路径检查，还是环境限制，再改对应的设置。
-- 如果想用 `custom`：`custom` 是注册自定义提供器后才能用的策略名。内置提供器只支持 `shared`、`worktree`、`docker-group` 和 `docker-session`。见 [接入自己的执行环境](custom-environment-providers.md)。
-- 如果想用虚拟机：VM 专用后端属于[后续扩展规划](../../reserved/vm-environment-extension.md)。目前可以由调用方自己实现环境端口再接入。
+
+`custom` 是注册自定义提供器后使用的策略名，见 [接入自己的执行环境](custom-environment-providers.md)。VM 策略需要先配置来宾、SSH 与共享租约数据库，完整步骤见 [在现有 Linux VM 中运行任务](vm-environment-extension.md)。
+
+VM 工具在来宾执行，模型请求在控制端处理，Team 通信继续遵循拓扑。子运行过程见 [让成员编写并管理自己的子 Workflow](../workflow/member-authored-workflow.md)，模型容量见 [逻辑模型路由与共享请求容量](../models/model-routing-request-capacity.md)。
 
 ## 参考
 
-策略的含义和实际分配方式，可对照[隔离指南](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/session-isolation.zh-CN.md)和[环境池实现](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/session_environments.py)。
+策略的含义和实际分配方式，可对照[隔离指南](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/session-isolation.zh-CN.md)和[环境池实现](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/session_environments.py)。

@@ -13,7 +13,11 @@
     "ctx.agent",
     "ctx.agent_run",
     "OpenCollab.team",
-    "OpenCollab.workflow"
+    "OpenCollab.workflow",
+    "vm-group",
+    "vm-session",
+    "OPENCOLLAB_VM",
+    "cleanup_timeout"
   ],
   "keywords": [
     "隔离配置",
@@ -30,9 +34,11 @@
   "related": [
     "isolation-overview",
     "worktree-workspaces",
-    "candidate-delivery"
+    "candidate-delivery",
+    "vm-environment-extension",
+    "member-authored-workflow"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -116,11 +122,21 @@ await client.team(task, config="team.yaml", isolation="docker-session")
 - 只在子角色里写隔离时，入口仍用原工作目录。
 - `--no-worktrees` 对应原来那种子成员目录选择方式。团队文件里显式写的策略，仍按上面的优先级生效。
 
+## VM 配置与子运行继承
+
+SDK 构造参数 `config={"vm": profile}` 注册 `vm-group` 和 `vm-session`，其中 `profile` 包含来宾资源、控制端共享 SQLite 路径、容量等待和清理时间。可直接修改的 JSON 与完整调用见 [在现有 Linux VM 中运行任务](vm-environment-extension.md)。显式传入的 `environment_providers` 同名工厂优先。
+
+`group` 是每次运行中对应环境池的范围。成员启动自己编写的子 Workflow 后，子运行拥有自己的环境池。需要让子 Agent 留在成员当前 VM 中时，在 `manage_workflow` 的 `launch` 中设置 `isolation="worktree"`。省略 `launch.isolation` 时继承成员策略，单次子调用仍可覆盖。使用 `vm-session` 申请其他来宾时，需要父 VM 之外的空闲机器。示例见 [让成员编写并管理自己的子 Workflow](../workflow/member-authored-workflow.md)。
+
+VM profile 的 `cleanup_timeout` 默认为 `60` 秒，显式 SDK 运行参数与子运行 `launch.cleanup_timeout` 优先。它控制清理等待时间，机器容量等待由 `wait_timeout` 单独配置。
+
 ## 命令行
 
-- Workflow：`workflow run NAME` 后面加 `--isolation shared` 或 `--isolation worktree`。
+- Workflow：`workflow run NAME` 后面用 `--isolation` 指定策略名，例如 `shared`、`worktree`、`vm-group` 或 `vm-session`。
 - Team：根命令从 `--team-config team.yaml` 读取隔离配置。
 - 需要 DockerOptions 或自定义环境提供器时，用 SDK 组合。见 [在容器中运行任务](docker-isolation.md)。
+
+VM CLI 从 `OPENCOLLAB_VM` 读取完整 JSON，Workflow 可用 `--cleanup-timeout` 覆盖清理时间。Team 文件中的策略使用同一份 VM 配置。来宾准备和 JSON 示例见 [在现有 Linux VM 中运行任务](vm-environment-extension.md)。
 
 ## 设置后怎样确认生效
 
@@ -137,6 +153,8 @@ await client.team(task, config="team.yaml", isolation="docker-session")
 - 如果提示该策略需要 environment provider：名字格式没问题，但还没注册对应的提供器。见 [接入自己的执行环境](custom-environment-providers.md)。
 - 如果环境申请成功了，却在准备工作区时失败：比如普通工作树的源目录有未提交改动。检查工作区内容和走的是哪种创建方式，处理方法见 [让多个任务在独立工作区改代码](worktree-workspaces.md)。
 
+选择 VM 策略却缺少资源时，错误会要求提供 `config.vm` 或对应环境提供器。
+
 ## 参考
 
-这些规则分别来自[入口策略解析](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/bootstrap/isolation.py)、[策略名解析](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/isolation.py)和[隔离指南](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/session-isolation.zh-CN.md)。
+这些规则分别来自[入口策略解析](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/isolation.py)、[策略名解析](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/isolation.py)和[隔离指南](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/session-isolation.zh-CN.md)。

@@ -36,7 +36,7 @@
     "tool-selection",
     "native-test-evidence"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -105,6 +105,8 @@ OC 的 `bash` 工具在 Agent 绑定的执行环境里运行命令：本地环�
 | 测试断言失败 | 这是真实的测试结果，按项目问题处理 |
 
 保留原命令、退出状态和相关环境设置，比重新启动整个任务更容易定位原因。
+
+VM 策略下，命令由配置的 SSH 账号在来宾执行，网络和系统权限由来宾环境决定。成员自编 DW 的 Python 子进程也位于成员的执行环境中，准备方式见 [VM 指南](../isolation/vm-environment-extension.md)。
 
 ## 源码与进一步阅读
 

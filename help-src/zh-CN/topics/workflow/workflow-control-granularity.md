@@ -34,7 +34,7 @@
     "workflow-agent-calls",
     "workflow-public-api-map"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 

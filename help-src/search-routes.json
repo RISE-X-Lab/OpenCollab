@@ -42,6 +42,22 @@
     },
     {
       "queries": [
+        "VM",
+        "虚拟机",
+        "vm-group",
+        "vm-session",
+        "OPENCOLLAB_VM",
+        "VM资源池"
+      ],
+      "target_id": "vm-environment-extension",
+      "mode": "direct",
+      "also_show": [
+        "isolation-overview",
+        "member-authored-workflow"
+      ]
+    },
+    {
+      "queries": [
         "对话隔离",
         "上下文隔离",
         "Agent能看到彼此对话吗"
@@ -108,12 +124,18 @@
         "自己写工作流再运行",
         "manage_workflow",
         "动态编写工作流",
-        "子工作流状态"
+        "子工作流状态",
+        "自编DW",
+        "成员自己编写DW",
+        "manage_workflow describe",
+        "launch isolation",
+        "子DW并发"
       ],
       "target_id": "member-authored-workflow",
       "mode": "direct",
       "also_show": [
-        "team-run-workflow"
+        "team-run-workflow",
+        "vm-environment-extension"
       ]
     },
     {

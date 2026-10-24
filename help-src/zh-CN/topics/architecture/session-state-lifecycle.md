@@ -32,7 +32,7 @@
     "service-integration-lifecycle",
     "workspace-recovery"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 

@@ -1,10 +1,10 @@
 # OpenCollab Wiki
 
-OpenCollab（OC）是一个多 Agent 编码框架：同一套 Session 与工具运行时之上，支持三种组织方式，单 Agent、由模型自主派发的 Team，以及用 Python 显式编排的 Workflow。隔离（工作树、Docker）、预算和运行记录可以分别配置。
+OpenCollab（OC）是一个多 Agent 编码框架：同一套 Session 与工具运行时之上，支持三种组织方式，单 Agent、由模型自主派发的 Team，以及用 Python 显式编排的 Workflow。隔离（工作树、Docker、VM）、预算和运行记录可以分别配置。
 
 这里的指南按"你想做什么"来组织。第一次接触 OC，建议先读[先认识 Agent、Session、Team 和 Workflow](topics/orientation/concepts-and-modes.md)，再照着[在自己的项目中完成第一次运行](topics/setup/first-run-workspace.md)动手试一遍，大约十几分钟。遇到具体问题，可以直接用页面上方的搜索，或者翻[问题导航](questions.md)。
 
-本帮助对应 [OpenCollab 0.9.5](https://github.com/RISE-X-Lab/OpenCollab/tree/e7946a42be378e0bf6dc02e24f9ded9752ce2a41)。
+本 Wiki 依据 [main 提交 0c47f74a](https://github.com/RISE-X-Lab/OpenCollab/tree/0c47f74a27441888286a22012b23b658185f8b8f) 核对，该源码的包版本为 0.9.5。使用 VM 和运行时能力查询时，按 [源码安装指南](topics/setup/install-source-checkout.md) 安装这一提交。
 
 [返回项目站主页](https://rise-x-lab.github.io/OpenCollab/) · [GitHub 源码](https://github.com/RISE-X-Lab/OpenCollab) · [阅读路径](reading-paths.md) · [问题导航](questions.md)
 
@@ -16,7 +16,7 @@ OpenCollab（OC）是一个多 Agent 编码框架：同一套 Session 与工具�
 | Session | 一次 agent loop 的状态：消息历史、阶段、token 用量、等待状态，可保存和恢复。 |
 | Team | 多 agent 协作，由成员模型通过 `spawn_agent`、消息等协作工具自主派发，配置写在 `team.yaml`。默认 CLI 启动的就是内置团队。 |
 | Workflow | 用 async Python 显式编排 Agent 调用，控制流（顺序、并行、重试、选优）由代码决定。 |
-| 隔离 / 执行环境 | Agent 的文件和命令在哪执行：当前目录、Git 工作树或 Docker 容器。结果以补丁形式交回，需要显式采纳。 |
+| 隔离 / 执行环境 | Agent 的文件和命令在哪执行：当前目录、Git 工作树、Docker 容器或 Linux VM。结果以补丁形式交回，需要显式采纳。 |
 
 ## 从你的目标开始
 
@@ -66,7 +66,7 @@ OC 是什么，几种用法有什么区别。
 
 ## 执行环境与隔离
 
-决定 Agent 在哪里干活：直接在项目目录、独立的副本目录，还是容器里。
+决定 Agent 在哪里干活：直接在项目目录、独立的副本目录、容器或虚拟机里。
 
 | 指南 | 读完你能做到 |
 | --- | --- |
@@ -74,6 +74,7 @@ OC 是什么，几种用法有什么区别。
 | [默认隔离与单次覆盖怎么配](topics/isolation/isolation-configuration.md) | 设置整次运行的默认隔离方式，并在某个角色或某次调用上单独改掉它。 |
 | [让多个任务在独立工作区改代码](topics/isolation/worktree-workspaces.md) | 让几个任务同时改同一个项目而不互相踩到，并知道改动最后去了哪里。 |
 | [在容器中运行任务](topics/isolation/docker-isolation.md) | 让 Agent 在 Docker 容器里执行命令，并设置共用范围、网络和资源上限。 |
+| [在现有 Linux VM 中运行任务](topics/isolation/vm-environment-extension.md) | 配好已有虚拟机，让一组会话共用一台机器或每个会话独占一台，并在结束后收回结果。 |
 | [让任务在指定目录或现有容器里执行](topics/isolation/execution-environments.md) | 把 Agent 的读写文件和执行命令接到你指定的目录或容器，并弄清谁负责清理。 |
 | [接入自己的执行环境](topics/isolation/custom-environment-providers.md) | 注册一个自己的隔离策略名，让 Agent 跑在你提供的环境里，并负责好分配和清理。 |
 | [把候选结果采纳到交付目录](topics/isolation/candidate-delivery.md) | Agent 在隔离环境里改的代码不会自动回到项目，本文教你挑一个结果并采纳回来。 |

@@ -37,7 +37,7 @@
     "compose-workflow-candidates",
     "weave-workflow"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -97,7 +97,7 @@ async def inspect_and_explain(ctx, args):
 
 ### 什么时候返回 `None`
 
-- 带 `schema` 时：OC 通过结构化捕获工具取得并校验字典。第一次不满足时，会带着已有历史再纠正一次，仍不满足就返回 `None`。
+- 带 `schema` 时：OC 通过结构化捕获工具取得并校验字典。捕获未满足要求时，运行时会带着已有历史作一次纠正尝试。
 - 自由文本时：常见的会话构建失败、运行失败或到达调用时限，都可能返回 `None`。
 
 schema 只校验结构。字段内容和业务判断，要结合任务依据和调用方规则验证。
@@ -173,10 +173,12 @@ async def inspect_files(ctx, args):
 | 省略 | 继承本次运行的策略 |
 | `False` | `shared` |
 | `True` | `worktree` |
-| 字符串 | `shared`、`worktree`，或已配置的容器策略、自定义策略 |
+| 字符串 | `shared`、`worktree`、Docker、已配置的 `vm-group`、`vm-session` 或自定义策略 |
 
 - 会话历史每次调用都重新建立。文件是否共享由隔离策略决定。
-- Docker 策略只把工具放进容器，普通 Workflow 的 Python 编排仍在调用方进程里执行。
+- Docker 与 VM 策略将工具放入对应环境，普通 SDK Workflow 的 Python 编排继续在调用方进程执行。
+
+成员自编 DW 的 Python 子进程位于成员当前环境。省略单次 `isolation` 时，继承 `launch` 选择的默认策略。父成员在 VM 内、子 DW 使用 `worktree` 时，会话工具继续位于同一 guest 的独立工作树。单次选择 `vm-session` 会申请另一台可租用 VM，见[成员自编 DW 教程](member-authored-workflow.md)与[VM 环境扩展](../isolation/vm-environment-extension.md)。
 
 ## 失败如何传到顶层
 
@@ -186,7 +188,7 @@ async def inspect_files(ctx, args):
 
 ## 源码依据
 
-[opencollab/workflows.py](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/workflows.py#L21)、[opencollab/application/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/workflow.py#L503)、[opencollab/application/workflow_agent_run.py](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/workflow_agent_run.py#L17)。
+[opencollab/workflows.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/workflows.py#L21)、[opencollab/application/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow.py#L503)、[opencollab/application/workflow_agent_run.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_agent_run.py#L17)。
 
 ## 相关章节
 

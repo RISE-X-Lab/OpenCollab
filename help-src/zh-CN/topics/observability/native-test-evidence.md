@@ -27,7 +27,7 @@
     "测试通过后 Agent 又改了文件，记录还算数吗？"
   ],
   "related": [],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 

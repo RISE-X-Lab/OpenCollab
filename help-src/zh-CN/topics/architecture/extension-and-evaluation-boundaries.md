@@ -34,7 +34,7 @@
     "custom-environment-providers",
     "service-integration-lifecycle"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -132,7 +132,7 @@ README 里的图表由 `docs/benchmark-results.json` 经 `scripts/generate_bench
 ## 常见问题
 
 - 能接入通用记忆或 RAG 吗？当前的上下文来源包括角色、团队、技能、派发任务和项目概览。通用记忆或 RAG 需要你自己接入，并决定内容从哪来、保留多久。
-- 能接虚拟机吗？环境提供器可以扩展专用后端。VM 后端的规划见[相关说明](../../reserved/vm-environment-extension.md)。
+- 能接虚拟机吗？环境提供器可以扩展专用后端。内置 `vm-group` 和 `vm-session` 已支持已有 Linux VM，配置与恢复步骤见 [VM 指南](../isolation/vm-environment-extension.md)。
 
 ## 下一步读什么
 

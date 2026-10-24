@@ -25,15 +25,17 @@
     "Team 成员怎样调用 Duo？",
     "run_workflow 会等到运行结束吗？",
     "子 Workflow 花费算到谁的预算？",
-    "run_workflow 能传哪些参数？"
+    "run_workflow 能传哪些参数？",
+    "Team 成员怎样发现 Duo、Weave 或自定义流程的输入？"
   ],
   "related": [
     "run-registered-workflow",
     "member-authored-workflow",
     "compose-workflow-candidates",
-    "wait-for-team-results"
+    "wait-for-team-results",
+    "workflow-composition-hierarchy"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -51,7 +53,7 @@
 entry: coordinator
 roles:
   coordinator:
-    prompt: 按任务需要调用注册工作流，并核对返回的交付结果。
+    prompt: 先用 run_workflow describe 读取输入说明，再按任务调用流程并核对交付结果。
     tools: [file_read, bash, run_workflow]
 ```
 
@@ -63,10 +65,19 @@ opencollab workflow list --workspace ...
 
 注册来源和普通 Workflow 入口相同，包括内置工作流和工作区目录。运行时会根据已发现的工作流，自动生成 `name` 的可选值和说明。
 
-3. 成员调用工具时传入 JSON 参数，例如：
+3. 成员先读取所选 Workflow 的输入说明。
+
+```json
+{"action": "describe", "name": "duo"}
+```
+
+返回 `name`、`description`、`inputs` 和 `phases`。`inputs` 来自流程函数的 docstring，缺少 docstring 时采用流程说明。自定义作者在这里提供必填字段、类型和输入示例，成员按所选流程的说明构造 `args`。Duo、Weave 与 Reconstruct 各自接受不同输入。
+
+4. 成员按说明执行流程，例如下面的 Duo 调用。
 
 ```json
 {
+  "action": "run",
   "name": "duo",
   "args": {"goal": "修复配置读取错误并验证"},
   "budget": 50000,
@@ -78,12 +89,13 @@ opencollab workflow list --workspace ...
 
 | 字段 | 要求 | 默认值 | 作用 |
 | --- | --- | --- | --- |
+| `action` | 可选，`describe` 或 `run` | `run` | 读取说明或执行流程 |
 | `name` | 必填，注册名称 | 无 | 选择要跑的 Workflow |
-| `args` | 必填，JSON 对象 | 无 | 原样作为 Workflow 输入 |
+| `args` | `run` 时必填，JSON 对象 | 无 | 原样作为 Workflow 输入 |
 | `budget` | 可选，正整数 | 成员剩余额度 | 本次上限，与剩余额度取较小值 |
 | `concurrency` | 可选，正整数 | 4 | 限制 Workflow 内同时活跃的 Agent 会话数 |
 
-工具只开放这四个字段。SDK 的其他运行参数，要在宿主调用或 Workflow 源代码里设置。
+工具开放上表中的字段，`budget` 和 `concurrency` 用于执行阶段。SDK 的其他运行参数在宿主调用或 Workflow 源代码里设置。
 
 ## 运行环境和额度
 
@@ -141,7 +153,7 @@ Team 的成员创建操作仍属于同一个 Team。Workflow 的 `ctx` 只提供
 
 ## 源码依据
 
-[opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/README.md#L263)、[opencollab/bootstrap/team_workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/bootstrap/team_workflow.py#L25)、[tests/interfaces/test_team_workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/tests/interfaces/test_team_workflow.py#L24)。
+[opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md#L263)、[opencollab/bootstrap/team_workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/team_workflow.py#L25)、[tests/interfaces/test_team_workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/tests/interfaces/test_team_workflow.py#L24)。
 
 ## 相关章节
 

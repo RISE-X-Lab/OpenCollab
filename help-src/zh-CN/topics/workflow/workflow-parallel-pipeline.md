@@ -36,7 +36,7 @@
     "workflow-agent-calls",
     "compose-workflow-candidates"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -117,6 +117,10 @@ async def prepare_then_explain(ctx, args):
 
 建议把大量输入交给集合方法，运行时会按 `task_concurrency` 维持有限数量的 worker。如果你自己对大量调用用 `asyncio.gather`，创建多少宿主任务由你负责；不过 `ctx` 的会话上限仍然生效。
 
+成员自编 DW 使用 `manage_workflow launch` 的 `concurrency` 设置子运行的活跃会话容量，集合容量默认沿用它。成员可以现场写出任务列表再交给 `ctx.parallel`，完整的三任务例子见[成员自编 DW 教程](member-authored-workflow.md)。
+
+宿主 `request_capacity` 限制模型客户端同时执行的原生请求，通过共享 `request_pool` 配置。多个 Team 与 DW 可以共享这项服务容量，各工作流的局部容量继续分别生效。扩大输入前，可以测量小任务的实际耗时和用量，再按服务能力选择并发。
+
 ## 预算分配
 
 - 额度有限时，OC 按集合大小给每个单元规划额度。单元内的 Agent 调用从该单元和工作流的剩余额度里扣。
@@ -146,7 +150,7 @@ async def prepare_then_explain(ctx, args):
 
 ## 源码依据
 
-[opencollab/application/workflow_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/workflow_collections.py#L137)、[tests/interfaces/test_sdk_workflow_nested_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/tests/interfaces/test_sdk_workflow_nested_collections.py#L10)、[opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/README.md#L136)。
+[opencollab/application/workflow_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_collections.py#L137)、[tests/interfaces/test_sdk_workflow_nested_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/tests/interfaces/test_sdk_workflow_nested_collections.py#L10)、[opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md#L136)。
 
 ## 相关章节
 

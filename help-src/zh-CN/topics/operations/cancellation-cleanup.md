@@ -41,7 +41,7 @@
     "workspace-recovery",
     "run-results"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -129,6 +129,12 @@ asyncio.run(main())
 4. 仍在收尾的任务继续由该运行追踪，工具结果会带出清理失败信息。
 
 这三个进程变量在模块导入时读取。要调整，就在启动 Python 或 CLI 之前导出有限正数。单 Agent 或 `ctx.agent_run` 里的 `RunControl.tool_cancellation_cleanup_timeout` 可以只覆盖本次会话的第 1 段等待。SDK 的 `cleanup_timeout` 管的是运行结束后的资源清理，调用方应根据返回的清理状态安排下一步。具体实现见[工具取消与环境中止实现](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/tool_execution_runtime.py)。
+
+## VM 清理等待
+
+配置 VM profile 后，Team、Workflow、CLI 和成员自编子运行采用 `vm.cleanup_timeout`，默认 60 秒。SDK 调用或子运行 `launch` 中的显式值优先。未配置 VM profile 时，Team 默认 10 秒，Workflow 默认 2 秒。`agent()` 的默认清理等待仍为 2 秒。
+
+VM 清理停止命令、导出产物并执行管理员重置，完成后释放租约。失败时保留现场供恢复，同一对象可重试清理。控制进程重启后的资源恢复见 [VM 指南](../isolation/vm-environment-extension.md)。
 
 ## 来源
 

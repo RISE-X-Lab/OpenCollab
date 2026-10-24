@@ -28,7 +28,7 @@
     "哪些运行文件可以删，哪些要留着？"
   ],
   "related": [],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 

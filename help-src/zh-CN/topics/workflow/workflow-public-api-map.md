@@ -33,7 +33,7 @@
     "compose-workflow-candidates",
     "workflow-testing-debugging"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -94,7 +94,7 @@ async def run_example(workspace):
 | `max_steps` | 100，可为 `None` | 各角色默认的步数上限 |
 | `system_prompt` | 可选，非空文字 | 工作流角色的默认系统提示 |
 | `agent_profile` | 可选 | 选择共用的 Agent 实现配置 |
-| `cleanup_timeout` | 2.0，有限正数 | 等待所属任务清理的时间 |
+| `cleanup_timeout` | 省略时按配置选择，显式值为有限正数 | Workflow 采用 `config.vm.cleanup_timeout`，VM profile 默认 60 秒，未配置 VM 时为 2 秒 |
 | `artifacts` | 可选路径 | 持久产物目录，须为新目录或空目录 |
 | `trace` | `True` | 保存编排观察记录 |
 | `candidate_workspace` | 可选后端对象 | 注入候选的分配、捕获和采用方式 |
@@ -216,6 +216,8 @@ SDK 和 CLI 的参数覆盖范围各自定义。CLI 可以用 `workflow run NAME
 ## 评测集成
 
 评测集成使用上面的 SDK、环境和验证工具入口，使用文档见[配置评测运行时](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/evaluation-runtime.md)。数据集加载、隐藏测试和正式评分由外部评测包负责，详见[用 OCE 评测 OC 的 Agent、Team 和 Workflow](../observability/evaluation-boundary.md)。
+
+`opencollab.environments` 也公开导出 `VMConnection`、`VMEnvironment`、`VMResource` 和 `vm_isolation_provider`，完整用法见 [VM 指南](../isolation/vm-environment-extension.md)。
 
 ## 源码依据
 

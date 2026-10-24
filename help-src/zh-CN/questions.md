@@ -55,3 +55,8 @@
 | 怎样把 OC 加到 Web 服务或后台任务系统里 | [把 OpenCollab 接进自己的服务](topics/architecture/service-integration-lifecycle.md) |
 | 版本升级后旧团队文件和旧示例怎样检查 | [升级 OpenCollab 后怎样迁移和验证](topics/architecture/upgrade-existing-integration.md) |
 | 遇到问题时应该带哪些材料来反馈 | [遇到问题怎么反馈、求助或提建议](topics/architecture/report-problem-and-request-help.md) |
+| vm-group 和 vm-session 怎样选择 | [在现有 Linux VM 中运行任务](topics/isolation/vm-environment-extension.md) |
+| 怎样让每个成员独占一台 VM 并运行自己写的 DW | [让成员自己写并运行子 Workflow](topics/workflow/member-authored-workflow.md) |
+| 如何让子 DW 的 Agent 留在父成员的 VM 内 | [让成员自己写并运行子 Workflow](topics/workflow/member-authored-workflow.md) |
+| VM 资源不足时如何排队 | [在现有 Linux VM 中运行任务](topics/isolation/vm-environment-extension.md) |
+| 模型怎样查看当前可用的隔离策略和工具 | [让成员自己写并运行子 Workflow](topics/workflow/member-authored-workflow.md) |

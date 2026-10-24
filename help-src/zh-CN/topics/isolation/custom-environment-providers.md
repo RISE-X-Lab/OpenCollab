@@ -27,9 +27,11 @@
   ],
   "related": [
     "execution-environments",
-    "workspace-recovery"
+    "workspace-recovery",
+    "vm-environment-extension",
+    "isolation-configuration"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -80,6 +82,40 @@ client = OpenCollab(".", environment_providers={
 
 策略名要合法，并且和注册的键一致。
 
+## 使用现有 VM 提供器
+
+已有 Linux VM 可以使用内置 `vm_isolation_provider`。下面的工厂与 Docker 工厂接受同一组运行参数，可按需要注册策略名。连接、目录和管理员重置程序应先按 [VM 指南](vm-environment-extension.md) 准备。
+
+```python
+from opencollab import OpenCollab
+from opencollab.environments import VMConnection, VMResource, vm_isolation_provider
+
+resources = [VMResource(
+    resource_id="worker-01",
+    connection=VMConnection(
+        host="vm-a.example.net", user="worker",
+        python="/home/worker/.venvs/oc/bin/python",
+        identity_file="/home/controller/.ssh/vm-key",
+        known_hosts_file="/home/controller/.ssh/known_hosts",
+    ),
+    workspace_root="/home/worker/oc-workspaces",
+    state_directory="/home/worker/oc-state",
+    reset_command="/usr/local/sbin/reset-opencollab-guest",
+)]
+client = OpenCollab(".", environment_providers={
+    "vm-group": vm_isolation_provider(
+        resources,
+        lease_database="/home/controller/oc-state/vm-leases.sqlite3",
+        scope="group",
+        wait_timeout=0,
+    ),
+})
+```
+
+之后调用 `await client.workflow(flow, inputs, isolation="vm-group", cleanup_timeout=60)`。显式提供器模式由运行参数设置清理等待时间。需要通过 SDK、CLI 和 Team 共用可序列化配置时，使用 `config["vm"]` 或 `OPENCOLLAB_VM`，其中 `cleanup_timeout` 默认是 `60` 秒。
+
+同一控制主机的进程通过同一个本地 SQLite 文件协调 VM 租约。多个控制主机共用机器池时，可以把外部分配服务接成自己的 EnvironmentPool，由服务维护跨机器分配与归还。稳定资源 ID 应与实际机器对应。
+
 ## 工厂收到的参数
 
 | 参数 | 含义 |
@@ -101,7 +137,7 @@ client = OpenCollab(".", environment_providers={
 | `release_env(environment)` | 归还一次分配 |
 | `release()` | 结束池拥有的全部资源 |
 
-Environment 需要提供：准备、文件读写、命令执行、撤销、停止、清理。详细签名见[公开端口](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/ports.py)。
+Environment 需要提供：准备、文件读写、命令执行、撤销、停止、清理。详细签名见[公开端口](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/ports.py)。
 
 几条要注意的规则：
 
@@ -132,8 +168,8 @@ Environment 需要提供：准备、文件读写、命令执行、撤销、停�
 ## 常见问题
 
 - 如果提示该策略需要 environment provider：说明这个策略名还没注册。检查 `environment_providers` 的键和 `isolation` 写的名字是否一致。
-- 如果想用虚拟机：VM 专用后端仍在[扩展规划](../../reserved/vm-environment-extension.md)里。自己实现 VM 环境时，上面的生命周期同样要完成。
+内置 VM 提供器已经实现机器租约、项目复制、内容导出与归还重置，操作步骤见 [在现有 Linux VM 中运行任务](vm-environment-extension.md)。接入其他远端服务时，按服务的资源所有权完成对应生命周期。
 
 ## 参考
 
-环境池的组合方式见[策略池实现](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/session_environments.py)。已有环境由谁负责清理，见 [让任务在指定目录或现有容器里执行](execution-environments.md)。
+环境池的组合方式见[策略池实现](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/session_environments.py)。已有环境由谁负责清理，见 [让任务在指定目录或现有容器里执行](execution-environments.md)。

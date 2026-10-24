@@ -29,7 +29,7 @@
     "怎样确认 Agent 实际拿到了哪些工具？"
   ],
   "related": [],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 

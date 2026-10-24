@@ -5,8 +5,8 @@ guides on first visit. A global Chinese and English switch selects the wiki
 edition. The browser remembers the selected edition when entering through `help/`
 again. Explicit article URLs open their specified edition. The English
 page at `help/en/` uses the same reader layout and displays "Coming soon."
-Chinese article URLs remain under `help/zh-CN/`. The 69 guides are
-maintained in `zh-CN/topics/`. Navigation pages and VM integration planning live alongside them. Each Markdown document is rendered to an
+Chinese article URLs remain under `help/zh-CN/`. The 70 guides are
+maintained in `zh-CN/topics/`. Navigation pages link the guides by task and reader questions. Each Markdown document is rendered to an
 independent HTML page, so article links work with JavaScript disabled. Browser
 search reads a local static index.
 

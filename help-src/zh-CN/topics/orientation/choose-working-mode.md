@@ -33,7 +33,7 @@
     "duo-workflow",
     "weave-workflow"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -96,6 +96,8 @@ Team 和 Workflow 只管"怎么组织任务"。文件和命令实际在哪里运
 - 设计新的协作流程：先读 Workflow 编程模型，再查公开 API、数据流和调试方法。
 
 Skill 只提供任务上的指导。真正的流程要通过程序和运行接口来实现。
+
+隔离策略还包括 `vm-group` 和 `vm-session`，分别让一次运行共用 VM 或每个 Session 领取独立 VM。成员自编 DW 可以通过 `worktree` 在自己的 VM 内创建子工作区，具体见 [成员自编 Workflow](../workflow/member-authored-workflow.md)。
 
 ## 源码与进一步阅读
 

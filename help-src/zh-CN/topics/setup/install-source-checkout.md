@@ -36,7 +36,7 @@
     "python-sdk-entrypoints",
     "configuration-diagnostics"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -52,14 +52,14 @@ OpenCollab 支持 Linux 和 macOS，需要 Python 3.10 及以上。从源码安�
 git clone https://github.com/RISE-X-Lab/OpenCollab.git
 cd OpenCollab
 # 切到这些指南所对应的源码提交
-git checkout e7946a42be378e0bf6dc02e24f9ded9752ce2a41
+git checkout 0c47f74a27441888286a22012b23b658185f8b8f
 # 确认 Python 版本，应为 3.10 或更高
 python3 --version
 ```
 
 如果你已经有这个仓库，进入仓库后切到目标标签或提交即可。后面所有安装命令都在仓库根目录执行。
 
-切换源码版本后，请看该版本自带的文档和锁文件。
+该提交包含本 Wiki 介绍的 VM 隔离与 `manage_workflow describe`。源码包版本仍为 0.9.5，安装这些新功能时以提交为准。控制端与执行成员自编代码的容器或 VM 使用同一份源码构建的 wheel。切换源码版本后，请看该版本自带的文档和锁文件。
 
 ## 第二步：安装依赖
 

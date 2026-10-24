@@ -8,7 +8,7 @@
   "keywords": ["OpenCollabConfig", "OPENCOLLAB_CONFIG_FILE", "OPENCOLLAB_MODEL_ROUTES", "配置参数", "SDK config", "运行参数"],
   "questions": ["有哪些配置项以及默认值是什么", "环境变量和 SDK 参数怎样对应", "这个设置应该写在 env 文件、Team YAML 还是函数参数里"],
   "related": ["configuration-precedence", "provider-endpoint-credentials", "model-routing-request-capacity", "thinking-reasoning-sampling", "configuration-diagnostics", "token-step-concurrency-limits"],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -133,6 +133,10 @@ for name in ("model", "budget", "max_output_tokens", "llm_timeout"):
 - 有些运行时控制变量由进程直接读取，按各篇指南说的位置设置即可。
 - `filter_messages` 是旧版兼容字段。当前终端会为每个 Agent 保留完整历史。
 - `logical_model` 和 `thinking_params_explicit` 是运行时记录的解析状态，不需要手动设置。平时用模型路由和 thinking 参数表达你的意图。
+
+## VM 资源配置
+
+`OPENCOLLAB_VM` 对应 SDK `config["vm"]`，默认未设置，传入 JSON 后注册 `vm-group` 和 `vm-session`。字段包含 `resources`、本地绝对路径 `lease_database`、默认 `0` 秒的 `wait_timeout` 和默认 `60` 秒的 `cleanup_timeout`。JSON 中的 `null` 等待时限表示等待空闲资源或取消。完整字段与重置要求见 [VM 指南](../isolation/vm-environment-extension.md)。
 
 ## 来源
 

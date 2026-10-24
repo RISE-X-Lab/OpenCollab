@@ -1,5 +1,5 @@
 {
-  "verified_ref": "e7946a42",
+  "verified_ref": "0c47f74a",
   "categories": [
     {
       "id": "orientation",
@@ -60,6 +60,7 @@
     "isolation-configuration",
     "worktree-workspaces",
     "docker-isolation",
+    "vm-environment-extension",
     "execution-environments",
     "custom-environment-providers",
     "candidate-delivery",
@@ -113,6 +114,6 @@
     "upgrade-existing-integration",
     "report-problem-and-request-help"
   ],
-  "source_commit_url": "https://github.com/RISE-X-Lab/OpenCollab/commit/e7946a42be378e0bf6dc02e24f9ded9752ce2a41",
+  "source_commit_url": "https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f",
   "documented_version": "0.9.5"
 }

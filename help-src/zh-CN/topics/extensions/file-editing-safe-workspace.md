@@ -36,7 +36,7 @@
     "worktree-workspaces",
     "shell-permissions-execution"
   ],
-  "verified_ref": "e7946a42"
+  "verified_ref": "0c47f74a"
 }
 ---
 
@@ -140,6 +140,8 @@ OC 内置的文件工具是 `file_read`、`grep`、`file_write`、`apply_patch` 
 - 想让各自独立实现、再挑结果，用工作树或候选环境，再通过明确的采用动作交付。
 
 如果出现"Agent 已经改好，但源目录没变"：先看当前环境和候选的交付状态，再怀疑编辑工具。隔离任务在自己的目录里修改后，要通过采用或恢复补丁把结果带回目标目录。
+
+`FileWriteTool(allow_create=False)` 的模型可见 schema 会列出 `str_replace`。自编 Workflow 继承父成员的创建限制后，子会话的工具说明随实际权限更新。
 
 ## 源码与进一步阅读
 
