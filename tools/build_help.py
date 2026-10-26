@@ -227,6 +227,44 @@ def render_english_placeholder() -> str:
 '''
 
 
+def render_redirect(old_id: str, target: str, by_id: dict[str, Page]) -> str:
+    """Keep a merged guide's published URL working by forwarding to its new section."""
+    target_id, _, fragment = target.partition("#")
+    page = by_id[target_id]
+    destination = OUTPUT / old_id / "index.html"
+    href = relative(page.destination, destination) + (f"#{quote(fragment)}" if fragment else "")
+    home = relative(OUTPUT / "index.html", destination)
+    canonical = SITE_URL + page.destination.relative_to(ROOT).as_posix()
+    title = html.escape(page.metadata["title"])
+    return f'''<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} · OpenCollab Wiki</title>
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url={html.escape(href, quote=True)}">
+<link rel="canonical" href="{canonical}">
+{head_assets(destination)}
+</head>
+<body class="help-article" data-redirect="{html.escape(target, quote=True)}">
+<a class="skip" href="#content">跳到正文</a>
+{render_header(destination, 'zh-CN')}
+<div class="layout">
+<nav id="help-navigation" aria-label="帮助分类">
+<div class="nav-start"><a href="{home}">Wiki 首页</a></div>
+</nav>
+<main id="content" tabindex="-1">
+<p class="category">已合并</p>
+<h1>这篇指南已合并</h1>
+<p>内容现在位于 <a href="{href}">{title}</a>。浏览器没有自动跳转时，请点击这个链接。</p>
+</main>
+</div>
+</body>
+</html>
+'''
+
+
 def main() -> None:
     config = json.loads((ROOT / "help-src" / "catalog.json").read_text())
     pages = []
@@ -261,6 +299,15 @@ def main() -> None:
     english = ROOT / "help" / "en" / "index.html"
     english.parent.mkdir(parents=True, exist_ok=True)
     english.write_text(render_english_placeholder(), encoding="utf-8")
+    redirects = config.get("redirects", {})
+    for old_id, target in redirects.items():
+        if old_id in by_id:
+            raise ValueError(f"Redirect source is still a guide: {old_id}")
+        if target.partition("#")[0] not in by_id:
+            raise ValueError(f"Unknown redirect destination: {old_id} -> {target}")
+        destination = OUTPUT / old_id / "index.html"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(render_redirect(old_id, target, by_id), encoding="utf-8")
     documents = []
     for page in pages:
         meta = page.metadata
@@ -280,7 +327,7 @@ def main() -> None:
         match = re.match(r"\| (.+?) \| \[.*?\]\(([^)]+)\) \|", line)
         if match:
             question, href = match.groups()
-            target = by_source[(questions.parent / href).resolve()]
+            target = by_source[(questions.parent / unquote(urlsplit(href).path)).resolve()]
             routes.append({"queries": [question], "target_id": target.metadata["id"],
                            "mode": "direct", "also_show": []})
     for route in routes:
@@ -291,7 +338,8 @@ def main() -> None:
         json.dumps({"documents": documents, "routes": routes}, ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
-    print(f"Built {len(pages) + 2} help pages from {len(order)} guide topics")
+    print(f"Built {len(pages) + 2} help pages from {len(order)} guide topics "
+          f"and {len(redirects)} redirects")
 
 
 if __name__ == "__main__":

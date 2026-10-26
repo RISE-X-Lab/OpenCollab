@@ -68,6 +68,20 @@ def main() -> None:
                 errors.append(f"Unknown related document: {ident} -> {other}")
         if not (OUTPUT / ident / "index.html").is_file():
             errors.append(f"Missing generated page: {ident}")
+    redirects = config.get("redirects", {})
+    for old_id, target in redirects.items():
+        if old_id in topics:
+            errors.append(f"Redirect source is still a guide: {old_id}")
+        if target.partition("#")[0] not in topics:
+            errors.append(f"Unknown redirect destination: {old_id} -> {target}")
+        stub = OUTPUT / old_id / "index.html"
+        if not stub.is_file() or f'data-redirect="{target}"' not in stub.read_text():
+            errors.append(f"Missing redirect page: {old_id}")
+    navigation_pages = {path.stem for path in SOURCE.glob("*.md")} - {"index"}
+    for generated in OUTPUT.glob("*/index.html"):
+        ident = generated.parent.name
+        if ident not in topics and ident not in redirects and ident not in navigation_pages:
+            errors.append(f"Stale generated page: {generated.relative_to(ROOT)}")
     homepage = (ROOT / "index.html").read_text()
     if homepage.count('href="help/">Wiki</a>') != 3:
         errors.append("Homepage help links are missing")
@@ -81,7 +95,7 @@ def main() -> None:
             errors.append(f"Missing language switch: {page}")
     if errors:
         raise SystemExit("\n".join(errors))
-    print(f"Checked {len(topics)} guides, {len(parsed)} HTML pages, "
+    print(f"Checked {len(topics)} guides, {len(redirects)} redirects, {len(parsed)} HTML pages, "
           f"{links_checked} local links and {blocks} Python code blocks")
 
 
