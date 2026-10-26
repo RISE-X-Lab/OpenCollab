@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>编写第一个自定义 Workflow · OpenCollab Wiki</title>
-<meta name="description" content="在工作区 workflows/ 下写一个带 @workflow 的异步函数，就能被 OC 发现并按名称运行。">
-<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/author-custom-workflow/index.html">
+<title>编写 Workflow：普通 Python 加上 ctx · OpenCollab Wiki</title>
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url=../workflow-programming-model/index.html#%E7%AC%AC%E4%B8%80%E4%B8%AA-workflow%E5%85%88%E5%AE%9E%E7%8E%B0%E5%86%8D%E5%AE%A1%E9%98%85">
+<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/workflow-programming-model/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-redirect="workflow-programming-model#第一个-workflow先实现再审阅">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -33,166 +34,13 @@
 </div></header>
 <div class="layout">
 <nav id="help-navigation" aria-label="帮助分类">
-<div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
-<p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details open><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="index.html" aria-current="page">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<div class="nav-start"><a href="../index.html">Wiki 首页</a></div>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">Workflow 与子 Workflow</p>
-<h1 id="编写第一个自定义-workflow">编写第一个自定义 Workflow</h1>
-<p>在 OC 里，自定义 Workflow 就是一个带 <code>@workflow</code> 装饰器的 <code>async def (ctx, args)</code> 函数。把它放进工作区的 <code>workflows/</code> 目录，OC 就能按名称发现并运行。本篇用一个“先实现、再审阅”的两步流程演示：第一次 <code>ctx.agent</code> 修改代码，第二次 <code>ctx.agent</code> 拿着第一步的说明和 diff 审阅修复。两次调用是两个独立会话，信息只通过 Python 变量和提示词传递。</p>
-<h2 id="第-1-步写入工作区模块">第 1 步：写入工作区模块</h2>
-<p>把下面的完整文件保存为工作区里的 <code>workflows/implement_review.py</code>。</p>
-<pre><code class="language-python">from opencollab import workflow
-from opencollab.tools import builtin_tools
-from opencollab.workflows import WorkflowContext
-
-@workflow(
-    name='implement-review',                    # 按名称运行时用的名字
-    description='实现任务后审阅改动并运行相关检查',  # workflow list 里显示的说明
-    phases=['implement', 'review'],             # 描述性元数据，不控制执行
-)
-async def implement_review(ctx: WorkflowContext, args: dict):
-    goal = args['goal']  # 本文件自定义的必填输入，缺失时字典访问直接报错
-    names = ['file_read', 'file_write', 'apply_patch', 'git_diff', 'grep']
-    # 只有显式允许时才加入可在宿主执行的 bash
-    if args.get('allow_unisolated_shell') is True:
-        names.append('bash')
-    tools = builtin_tools(
-        *names,
-        headless=args.get('allow_unisolated_shell') is not True,
-    )
-    await ctx.phase('implement')
-    draft = await ctx.agent(goal, label='implementer', tools=tools)
-    if draft is None:
-        return {'implemented': False, 'review': None}
-    changes = await ctx.diff()
-    await ctx.phase('review')
-    # 第二次调用是新会话：第一步的说明和改动要显式写进提示词
-    review = await ctx.agent(
-        f'审阅并修复任务中的遗漏，运行环境可用的相关检查。\n'
-        f'任务\n{goal}\n实现说明\n{draft}\n改动\n{changes or &quot;&quot;}',
-        label='reviewer',
-        tools=tools,
-    )
-    await ctx.log(f'Used tokens {ctx.tokens_spent()}')
-    return {'implemented': True, 'review': review}
-</code></pre>
-<p>要点：</p>
-<ul>
-<li>默认只给文件类工具。传入 <code>allow_unisolated_shell=true</code> 时，才加上允许在宿主执行的 <code>bash</code>。</li>
-<li><code>implemented</code> 只表示第一步有返回值。交付是否满足任务，要看第二步的检查结果和实际文件。</li>
-<li>第二次调用不继承第一次的对话历史，但文件环境沿用当前策略，所以能看到第一步改过的文件。</li>
-</ul>
-<h2 id="第-2-步从命令行发现并运行">第 2 步：从命令行发现并运行</h2>
-<pre><code class="language-bash"># 确认 implement-review 出现在列表里
-opencollab workflow list --workspace /path/to/workspace
-# --task 会填入 args['goal']
-opencollab workflow run implement-review \
-  --workspace /path/to/workspace \
-  --task '修复配置读取错误并运行相关测试' \
-  --args '{&quot;allow_unisolated_shell&quot;:true}' \
-  --budget 50000
-</code></pre>
-<p>发现规则：</p>
-<ul>
-<li>OC 加载所选目录顶层的 <code>*.py</code> 模块。</li>
-<li>模块顶层语句会在导入时执行。顶层只放导入、定义和装饰器，具体任务操作放进异步函数。</li>
-<li>目录可以用 <code>OPENCOLLAB_WORKFLOWS_DIR</code> 改。</li>
-<li>名称在内置和工作区合并后的注册表里必须唯一。</li>
-</ul>
-<p>也可以不走发现，直接在 Python 里导入 <code>implement_review</code>，传给 <code>await OpenCollab(workspace).workflow(implement_review, inputs)</code>。没有装饰器的普通异步函数也能这样启动；只有按名称发现才依赖装饰器元数据。</p>
-<h2 id="workflow-参数与默认值"><code>@workflow</code> 参数与默认值</h2>
-<table>
-<thead>
-<tr>
-<th>参数</th>
-<th>作用</th>
-<th>省略时</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td>发现和调用用的名称</td>
-<td>使用函数名</td>
-</tr>
-<tr>
-<td><code>description</code></td>
-<td>列表里显示的说明</td>
-<td>先取 docstring 首行，再取函数名</td>
-</tr>
-<tr>
-<td><code>phases</code></td>
-<td>描述流程有哪些阶段</td>
-<td>只是元数据，阶段事件由 <code>await ctx.phase(...)</code> 发出，顺序由函数体决定</td>
-</tr>
-</tbody>
-</table>
-<p><code>@workflow</code> 只是给函数附上 <code>WorkflowSpec</code> 元数据，被装饰的函数仍可直接调用。</p>
-<h2 id="入口函数的约定">入口函数的约定</h2>
-<ul>
-<li>签名通常是 <code>async def name(ctx, args)</code>，<code>args</code> 是字典。</li>
-<li>返回值可以是文本、字典、列表，或任何适合调用方的值。如果结果要经过 CLI、清单或子进程保存，请返回 JSON 可序列化的数据。</li>
-<li>校验输入、导入业务库、调用普通辅助函数，都可以直接写在入口函数里。</li>
-</ul>
-<h2 id="工具配置">工具配置</h2>
-<p><code>builtin_tools(...)</code> 返回一组工具对象，支持以下名称：</p>
-<p><code>bash</code>、<code>file_read</code>、<code>file_write</code>、<code>apply_patch</code>、<code>git_diff</code>、<code>grep</code>、<code>submit</code></p>
-<ul>
-<li>自定义工具实现公开的 <code>Tool</code> 协议后，可以放进同一个集合。</li>
-<li><code>headless=True</code> 要求 shell 有进程隔离。权限设置应与实际运行环境对应。</li>
-</ul>
-<h2 id="观察与资源查询">观察与资源查询</h2>
-<table>
-<thead>
-<tr>
-<th>方法</th>
-<th>作用</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>ctx.phase(name)</code></td>
-<td>标记当前阶段</td>
-</tr>
-<tr>
-<td><code>ctx.log(text)</code></td>
-<td>写入流程日志</td>
-</tr>
-<tr>
-<td><code>label=</code> 参数</td>
-<td>在会话记录里区分角色</td>
-</tr>
-<tr>
-<td><code>ctx.diff()</code></td>
-<td>返回可观察到的改动，探测不可用时可能返回 <code>None</code></td>
-</tr>
-<tr>
-<td><code>ctx.source_changed()</code></td>
-<td>返回改动探测结果，探测不可用时可能返回 <code>None</code></td>
-</tr>
-<tr>
-<td><code>ctx.tokens_remaining()</code>、<code>ctx.seconds_left()</code>、<code>ctx.time_low()</code></td>
-<td>用来决定还要不要再开一轮</td>
-</tr>
-</tbody>
-</table>
-<p>建议先跑通并验证一项具体任务，再按需加分支和并行步骤。</p>
-<h2 id="常见问题">常见问题</h2>
-<ul>
-<li>如果 <code>workflow list</code> 里没有你的工作流：检查文件是否在 <code>workflows/</code> 顶层，函数上是否有 <code>@workflow</code>。</li>
-<li>如果报注册错误：可能和已有工作流重名，改 <code>name</code>。</li>
-<li>如果运行时报 <code>KeyError: 'goal'</code>：没有传 <code>--task</code>、<code>--task-file</code>，<code>--args</code> 里也没有 <code>goal</code>。</li>
-</ul>
-<h2 id="源码依据">源码依据</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/README.md#L290">opencollab/README.md</a>、<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/workflows.py#L14">opencollab/workflows.py</a>、<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/workflow_registry.py#L18">opencollab/application/workflow_registry.py</a>。</p>
-<h2 id="相关章节">相关章节</h2>
-<p><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a>、<a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a>、<a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a>、<a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a>、<a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a>、<a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a>、<a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a>。</p>
-
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/author-custom-workflow.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<p class="category">已合并</p>
+<h1>这篇指南已合并</h1>
+<p>内容现在位于 <a href="../workflow-programming-model/index.html#%E7%AC%AC%E4%B8%80%E4%B8%AA-workflow%E5%85%88%E5%AE%9E%E7%8E%B0%E5%86%8D%E5%AE%A1%E9%98%85">编写 Workflow：普通 Python 加上 ctx</a>。浏览器没有自动跳转时，请点击这个链接。</p>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E7%AC%AC-1-%E6%AD%A5%E5%86%99%E5%85%A5%E5%B7%A5%E4%BD%9C%E5%8C%BA%E6%A8%A1%E5%9D%97">第 1 步：写入工作区模块</a><a href="#%E7%AC%AC-2-%E6%AD%A5%E4%BB%8E%E5%91%BD%E4%BB%A4%E8%A1%8C%E5%8F%91%E7%8E%B0%E5%B9%B6%E8%BF%90%E8%A1%8C">第 2 步：从命令行发现并运行</a><a href="#workflow-%E5%8F%82%E6%95%B0%E4%B8%8E%E9%BB%98%E8%AE%A4%E5%80%BC">@workflow 参数与默认值</a><a href="#%E5%85%A5%E5%8F%A3%E5%87%BD%E6%95%B0%E7%9A%84%E7%BA%A6%E5%AE%9A">入口函数的约定</a><a href="#%E5%B7%A5%E5%85%B7%E9%85%8D%E7%BD%AE">工具配置</a><a href="#%E8%A7%82%E5%AF%9F%E4%B8%8E%E8%B5%84%E6%BA%90%E6%9F%A5%E8%AF%A2">观察与资源查询</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E6%BA%90%E7%A0%81%E4%BE%9D%E6%8D%AE">源码依据</a><a href="#%E7%9B%B8%E5%85%B3%E7%AB%A0%E8%8A%82">相关章节</a></aside>
 </div>
 </body>
 </html>

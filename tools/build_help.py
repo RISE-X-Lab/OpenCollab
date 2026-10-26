@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "help-src" / "zh-CN"
 OUTPUT = ROOT / "help" / "zh-CN"
 SITE_URL = "https://rise-x-lab.github.io/OpenCollab/"
-HELP_ASSET_VERSION = "4"
+HELP_ASSET_VERSION = "5"
 MD = MarkdownIt("commonmark", {"html": False}).enable("table")
 
 

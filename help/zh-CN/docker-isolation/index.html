@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>在容器中运行任务 · OpenCollab Wiki</title>
-<meta name="description" content="让 Agent 在 Docker 容器里执行命令，并设置共用范围、网络和资源上限。">
+<meta name="description" content="让 Agent 的文件和命令工具在 Docker 容器里执行：选 docker-group 或 docker-session，设置镜像、网络、资源上限和只读挂载。">
 <link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/docker-isolation/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,12 +35,12 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details open><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="index.html" aria-current="page">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="../duo-workflow/index.html">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details><summary>模型与配置 <small>5</small></summary><a href="../provider-endpoint-credentials/index.html">接入模型服务：端点、凭据、协议与流式</a><a href="../thinking-reasoning-sampling/index.html">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details><summary>工具与扩展 <small>4</small></summary><a href="../tool-selection/index.html">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details open><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="index.html" aria-current="page">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">使用自己的执行环境</a><a href="../candidate-delivery/index.html">隔离改动怎样回到项目：采纳、找回与清理</a></details><details><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../session-save-resume/index.html">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
 <p class="category">执行环境与隔离</p>
 <h1 id="在容器中运行任务">在容器中运行任务</h1>
-<p>OC 内置两种 Docker 隔离策略，用 <code>isolation=&quot;docker-group&quot;</code> 或 <code>isolation=&quot;docker-session&quot;</code> 选择。默认镜像 <code>python:3.11</code>，默认网络 <code>none</code>（离线）。</p>
+<p>OC 内置两种 Docker 隔离策略，用 <code>isolation=&quot;docker-group&quot;</code> 或 <code>isolation=&quot;docker-session&quot;</code> 选择：</p>
 <table>
 <thead>
 <tr>
@@ -59,19 +59,14 @@
 </tr>
 </tbody>
 </table>
-<p>和“整个 agent 跑在容器里”的做法不同，OC 只把 Agent 的文件和命令工具送进容器。模型请求和 Python 调度仍在调用方进程里。</p>
+<p>先理解 OC 的做法：它不是“把整个 Agent 跑进容器”，而是<strong>只把 Agent 的文件和命令工具送进容器</strong>；模型请求和 Python 编排仍在调用方进程里。默认镜像是 <code>python:3.11</code>，默认网络是 <code>none</code>（不联网）。</p>
 <h2 id="运行前准备">运行前准备</h2>
 <ol>
 <li>确认 Docker daemon 在运行。</li>
-<li>选镜像。内置默认镜像是 <code>python:3.11</code>。自定义镜像需要：
-<ul>
-<li>带 Bash 和 Git；</li>
-<li>入口程序能接受 <code>sleep infinity</code>。</li>
-</ul>
-</li>
-<li>把项目依赖直接装进镜像。这样执行和测试时可以保持离线。</li>
+<li>选镜像。自定义镜像要带 Bash 和 Git，入口程序要能接受 <code>sleep infinity</code>。</li>
+<li>把项目依赖直接装进镜像，这样执行和测试时可以保持离线。</li>
 </ol>
-<h2 id="最小示例每个会话一个容器">最小示例：每个会话一个容器</h2>
+<h2 id="最小例子每个会话一个容器">最小例子：每个会话一个容器</h2>
 <pre><code class="language-python">import asyncio
 from opencollab import OpenCollab
 from opencollab.environments import (
@@ -102,38 +97,12 @@ async def main():
 
 asyncio.run(main())
 </code></pre>
-<p>改成组容器，要改三处：</p>
-<ol>
-<li>注册名改为 <code>docker-group</code>。</li>
-<li><code>isolation</code> 改为 <code>docker-group</code>。</li>
-<li><code>scope</code> 改为 <code>group</code>。</li>
-</ol>
-<p>默认提供器本来就支持这两种策略。像上面这样显式注册，主要是为了换镜像和资源设置。</p>
+<p>默认的提供器本来就支持这两种策略；像这样显式注册，主要是为了换镜像和资源设置。改成组容器要改三处：注册名改为 <code>docker-group</code>，<code>isolation</code> 改为 <code>docker-group</code>，<code>scope</code> 改为 <code>group</code>。</p>
 <h2 id="网络">网络</h2>
 <ul>
-<li><code>DockerOptions.network</code> 默认是 <code>none</code>，也就是不联网。</li>
-<li>要下载依赖或访问服务，可以写 <code>bridge</code>，或一个已有的 Docker 网络名。</li>
-<li>写 <code>host</code> 会被拒绝。</li>
+<li><code>DockerOptions.network</code> 默认是 <code>none</code>。要下载依赖或访问服务，可以写 <code>bridge</code>，或一个已有的 Docker 网络名；写 <code>host</code> 会被拒绝。</li>
+<li>有两条连接要分别看：<strong>工具执行时的连接</strong>由容器网络设置控制；<strong>模型请求</strong>从调用方进程发出，用客户端的模型配置。</li>
 </ul>
-<p>注意有两条连接要分别检查：</p>
-<table>
-<thead>
-<tr>
-<th>连接</th>
-<th>由谁控制</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>工具执行时的连接</td>
-<td>容器网络设置</td>
-</tr>
-<tr>
-<td>模型请求</td>
-<td>调用方进程，使用客户端的模型配置</td>
-</tr>
-</tbody>
-</table>
 <h2 id="资源上限">资源上限</h2>
 <table>
 <thead>
@@ -157,45 +126,39 @@ asyncio.run(main())
 </tr>
 </tbody>
 </table>
-<ul>
-<li>组模式：多个成员共用这一份额度。</li>
-<li>会话模式：每个容器各用一份。</li>
-</ul>
+<p>组模式下多个成员共用这一份额度；会话模式下每个容器各用一份。</p>
 <h2 id="文件临时目录与挂载">文件、临时目录与挂载</h2>
 <p>两种模式都会把源内容复制到容器的私有存储，并准备好容器里能用的 Git 信息。源工作区可以在本机，也可以来自已有的 Docker 或 VM 环境。</p>
-<p>组模式里，各会话的工作树是分开的，但容器里的进程和公共临时目录是共用的。想连这些也分开，就用会话模式。</p>
+<p>组模式里各会话的工作树是分开的，但容器里的进程和公共临时目录是共用的；想连这些也分开，就用会话模式。</p>
 <p>挂只读素材：</p>
 <pre><code class="language-python">from opencollab.environments import DockerMount
 
 # 放进 DockerOptions：mounts=(DockerMount(&quot;/absolute/assets&quot;, &quot;/assets&quot;),)
 </code></pre>
-<p>挂载规则：</p>
-<ul>
-<li>附加挂载一律只读。</li>
-<li>宿主机 socket 会被拒绝。</li>
-<li>隔离提供器要求挂载目标避开工作区、<code>/tmp</code> 和 <code>/var/tmp</code>。</li>
-<li>挂载前检查素材目录里有没有凭据或私人文件。</li>
-</ul>
+<p>挂载规则：附加挂载一律只读；宿主机 socket 会被拒绝；挂载目标要避开工作区、<code>/tmp</code> 和 <code>/var/tmp</code>。挂载前检查素材目录里有没有凭据或私人文件。</p>
 <h2 id="怎样确认设置生效">怎样确认设置生效</h2>
 <p>在 Agent 执行的 Bash 里：</p>
 <ol>
 <li>看 <code>pwd</code>。</li>
-<li>读 <code>/sys/fs/cgroup/cpu.max</code>、<code>memory.max</code>、<code>pids.max</code>，看资源上限。具体字段会随容器平台的 cgroup 版本变化。</li>
+<li>读 <code>/sys/fs/cgroup/cpu.max</code>、<code>memory.max</code>、<code>pids.max</code> 看资源上限（具体字段随容器平台的 cgroup 版本变化）。</li>
 <li>按镜像里有的工具测试网络访问。</li>
-<li>想区分组模式和会话模式，就看两个会话能不能读到同一个临时标记文件。</li>
+<li>想区分组模式和会话模式，看两个会话能不能读到同一个临时标记文件。</li>
 </ol>
 <h2 id="常见问题">常见问题</h2>
 <ul>
-<li>如果容器里连不上网：默认网络是 <code>none</code>。改成 <code>bridge</code> 或已有网络名，或者把依赖预装进镜像。</li>
-<li>如果补丁导出失败或结果被截断：工作区和容器会被保留，恢复位置带完整容器 ID。按 <a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a> 先收集改动，再清理资源。完整补丁本来会在运行拥有的容器被移除前捕获。</li>
-<li>如果想接一个已经在跑的容器：见 <a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a>。</li>
+<li><strong>容器里连不上网</strong>：默认网络是 <code>none</code>。改成 <code>bridge</code> 或已有网络名，或者把依赖预装进镜像。</li>
+<li><strong>补丁导出失败或结果被截断</strong>：完整补丁本来会在运行所拥有的容器被移除之前捕获。失败时工作区和容器会被保留，恢复位置带完整的容器 ID。先收集改动再清理资源，见 <a href="../candidate-delivery/index.html#%E5%87%BA%E4%BA%86%E9%97%AE%E9%A2%98%E5%85%88%E6%89%BE%E5%9B%9E%E6%94%B9%E5%8A%A8%E5%86%8D%E6%B8%85%E7%90%86">找回改动</a>。</li>
+<li><strong>想接一个已经在跑的容器</strong>：见 <a href="../execution-environments/index.html#%E8%BF%9E%E6%8E%A5%E4%B8%80%E4%B8%AA%E5%B7%B2%E7%BB%8F%E5%9C%A8%E8%BF%90%E8%A1%8C%E7%9A%84%E5%AE%B9%E5%99%A8">使用自己的执行环境</a>。</li>
 </ul>
-<h2 id="参考">参考</h2>
-<p>配置和默认值见<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/domain/docker.py">Docker 值对象</a>。共用范围和生命周期见<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/docker_isolation.py">Docker 隔离池</a>。</p>
+<h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/domain/docker.py">Docker 配置与默认值</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/docker_isolation.py">Docker 隔离池</a></li>
+<li>相关指南：<a href="../isolation-overview/index.html">隔离</a> · <a href="../execution-environments/index.html">使用自己的执行环境</a> · <a href="../candidate-delivery/index.html">隔离改动怎样回到项目</a></li>
+</ul>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/topics/isolation/docker-isolation.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E8%BF%90%E8%A1%8C%E5%89%8D%E5%87%86%E5%A4%87">运行前准备</a><a href="#%E6%9C%80%E5%B0%8F%E7%A4%BA%E4%BE%8B%E6%AF%8F%E4%B8%AA%E4%BC%9A%E8%AF%9D%E4%B8%80%E4%B8%AA%E5%AE%B9%E5%99%A8">最小示例：每个会话一个容器</a><a href="#%E7%BD%91%E7%BB%9C">网络</a><a href="#%E8%B5%84%E6%BA%90%E4%B8%8A%E9%99%90">资源上限</a><a href="#%E6%96%87%E4%BB%B6%E4%B8%B4%E6%97%B6%E7%9B%AE%E5%BD%95%E4%B8%8E%E6%8C%82%E8%BD%BD">文件、临时目录与挂载</a><a href="#%E6%80%8E%E6%A0%B7%E7%A1%AE%E8%AE%A4%E8%AE%BE%E7%BD%AE%E7%94%9F%E6%95%88">怎样确认设置生效</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%8F%82%E8%80%83">参考</a></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E8%BF%90%E8%A1%8C%E5%89%8D%E5%87%86%E5%A4%87">运行前准备</a><a href="#%E6%9C%80%E5%B0%8F%E4%BE%8B%E5%AD%90%E6%AF%8F%E4%B8%AA%E4%BC%9A%E8%AF%9D%E4%B8%80%E4%B8%AA%E5%AE%B9%E5%99%A8">最小例子：每个会话一个容器</a><a href="#%E7%BD%91%E7%BB%9C">网络</a><a href="#%E8%B5%84%E6%BA%90%E4%B8%8A%E9%99%90">资源上限</a><a href="#%E6%96%87%E4%BB%B6%E4%B8%B4%E6%97%B6%E7%9B%AE%E5%BD%95%E4%B8%8E%E6%8C%82%E8%BD%BD">文件、临时目录与挂载</a><a href="#%E6%80%8E%E6%A0%B7%E7%A1%AE%E8%AE%A4%E8%AE%BE%E7%BD%AE%E7%94%9F%E6%95%88">怎样确认设置生效</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>
 </body>
 </html>

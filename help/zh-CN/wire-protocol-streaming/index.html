@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>选择调用协议与流式响应 · OpenCollab Wiki</title>
-<meta name="description" content="选对 OC 发请求用的协议（Chat Completions、Responses 或 Anthropic Messages），并按需打开 Chat 流式接收。">
-<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/wire-protocol-streaming/index.html">
+<title>接入模型服务：端点、凭据、协议与流式 · OpenCollab Wiki</title>
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url=../provider-endpoint-credentials/index.html#%E9%80%89%E6%8B%A9%E8%B0%83%E7%94%A8%E5%8D%8F%E8%AE%AE">
+<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/provider-endpoint-credentials/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-redirect="provider-endpoint-credentials#选择调用协议">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -33,148 +34,13 @@
 </div></header>
 <div class="layout">
 <nav id="help-navigation" aria-label="帮助分类">
-<div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
-<p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details open><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="index.html" aria-current="page">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<div class="nav-start"><a href="../index.html">Wiki 首页</a></div>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">模型接入与配置</p>
-<h1 id="选择调用协议与流式响应">选择调用协议与流式响应</h1>
-<p><code>wire_protocol</code> 决定 OC 用哪种 API 跟模型说话。默认 <code>chat_completions</code>，OpenAI 兼容端点提供 Responses API 时可改成 <code>responses</code>。原生 Anthropic 不靠这个字段，而是由 <code>provider=anthropic</code> 自动走 Messages。OC 的 Chat 默认不用流式，需要流式 reasoning 增量或流事件时，单独打开 <code>llm_stream_chat</code>。</p>
-<h2 id="按服务选择协议">按服务选择协议</h2>
-<table>
-<thead>
-<tr>
-<th>你的服务</th>
-<th><code>provider</code></th>
-<th><code>wire_protocol</code></th>
-<th>实际使用</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>OpenAI 兼容（默认）</td>
-<td><code>openai</code></td>
-<td><code>chat_completions</code></td>
-<td>Chat Completions</td>
-</tr>
-<tr>
-<td>OpenAI 兼容且提供 Responses API</td>
-<td><code>openai</code></td>
-<td><code>responses</code></td>
-<td>Responses</td>
-</tr>
-<tr>
-<td>原生 Anthropic</td>
-<td><code>anthropic</code></td>
-<td>保持 <code>chat_completions</code></td>
-<td>Messages（OC 按 provider 选择）</td>
-</tr>
-</tbody>
-</table>
-<p>原生 Anthropic 配 <code>responses</code> 会在配置校验时报错。</p>
-<h3 id="env-文件写法">env 文件写法</h3>
-<p>Chat Completions 是默认值，也可以显式写出来。模型名和地址换成你的服务提供的值。</p>
-<pre><code class="language-dotenv">OPENCOLLAB_PROVIDER=openai
-OPENCOLLAB_WIRE_PROTOCOL=chat_completions
-OPENCOLLAB_BASE_URL=https://your-endpoint.example/v1
-OPENCOLLAB_MODEL=your-model-id
-</code></pre>
-<p>切到 Responses：把 <code>OPENCOLLAB_WIRE_PROTOCOL</code> 改成 <code>responses</code>，并确认端点支持这个 API。</p>
-<h3 id="sdk-写法">SDK 写法</h3>
-<p>下面的代码创建客户端并打印选中的协议。真正调用运行入口时，会用已配置的凭据。</p>
-<pre><code class="language-python">from opencollab import OpenCollab
-
-client = OpenCollab(
-    &quot;.&quot;,
-    provider=&quot;openai&quot;,
-    config={&quot;wire_protocol&quot;: &quot;responses&quot;},
-)
-print(client.configuration[&quot;wire_protocol&quot;])
-</code></pre>
-<p>逻辑路由也有自己的 <code>wire_protocol</code> 字段，每条路由可以选不同的协议。模型能力在解析出物理模型之后才确定，端点实际支持哪些功能，还要对照服务配置确认。</p>
-<h3 id="协议相关的报错">协议相关的报错</h3>
-<ul>
-<li>如果服务返回接口不存在，先检查 API 基地址和协议选择。</li>
-<li>如果错误说某个请求字段无效，再检查该模型在目标端点上的能力声明和覆盖设置。</li>
-</ul>
-<h2 id="开启-chat-流式接收">开启 Chat 流式接收</h2>
-<p>需要接收流式 reasoning 文本时，加上下面的设置：</p>
-<pre><code class="language-dotenv">OPENCOLLAB_LLM_STREAM_CHAT=true
-OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT=180
-OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT=180
-</code></pre>
-<p>开启后的行为：</p>
-<ul>
-<li>Chat 请求会带上 <code>stream</code> 和 <code>stream_options</code>，服务必须接受这两个字段。</li>
-<li>收到的 reasoning 文本会写进轨迹（trace）。</li>
-<li>只有同时收到终止的 <code>finish_reason</code> 和 token usage，OC 才认为这次流正常结束。终端已经显示出文字时，可能还在等尾部的统计数据，以运行状态为准。</li>
-<li>这个开关只对 Chat Completions 有效。Responses 的流式行为由所选模型的能力设置控制。</li>
-</ul>
-<h2 id="识别流式中断的位置">识别流式中断的位置</h2>
-<p>按卡住的阶段对应超时设置（单位都是秒）：</p>
-<table>
-<thead>
-<tr>
-<th>卡在哪个阶段</th>
-<th>看哪个设置</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>一直连不上</td>
-<td>连接超时 <code>llm_connect_timeout</code></td>
-</tr>
-<tr>
-<td>已连接，但没收到第一个事件</td>
-<td><code>llm_first_event_timeout</code></td>
-</tr>
-<tr>
-<td>收到部分内容后不再推进</td>
-<td><code>llm_stream_idle_timeout</code>，同时保留请求级 <code>llm_timeout</code></td>
-</tr>
-</tbody>
-</table>
-<p>整次 SDK 任务的 <code>timeout</code> 另外设置，与上面这些无关。</p>
-<p>进一步排查：</p>
-<ul>
-<li>离线模型检查可以看安装版本里的能力默认值。</li>
-<li><code>configuration</code> 显示客户端实际生效的协议和传输参数。</li>
-<li>如果打开流式之后才出错，检查服务是否支持 <code>stream_options</code>、尾部 usage 和终止事件，再结合停止原因和轨迹定位。</li>
-</ul>
-<h2 id="保留工具调用之间的续轮信息">保留工具调用之间的续轮信息</h2>
-<p>工具调用返回后，模型要继续生成，OC 需要把上一轮的推理相关数据按协议回传：</p>
-<table>
-<thead>
-<tr>
-<th>协议</th>
-<th>OC 保留什么</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Chat Completions</td>
-<td>启用 thinking 续轮，或模型协议要求回传推理内容时，保留历史 <code>reasoning_content</code>。已声明需要回传的 DeepSeek 模型，即使关掉了新一轮 thinking，也照样保留。其它 Chat 请求只用普通 assistant 内容和工具调用</td>
-</tr>
-<tr>
-<td>Responses</td>
-<td>response items、provider 身份和对应的 response session 信息</td>
-</tr>
-<tr>
-<td>原生 Anthropic</td>
-<td>带签名的 thinking blocks 及原始顺序，工具返回后按协议重放</td>
-</tr>
-</tbody>
-</table>
-<p>如果你自己写了传输包装器或网关，也要完整保留这些数据，否则模型无法在工具返回后接着生成。</p>
-<h2 id="来源">来源</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/configs/README.md#L70">configs/README.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/configs/README.md#L115">configs/README.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/model-inspection.md#L34">docs/model-inspection.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/evaluation-runtime.md#L182">docs/evaluation-runtime.md</a></p>
-<h2 id="相关指南">相关指南</h2>
-<p><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a>　<a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a>　<a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a>　<a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></p>
-
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/models/wire-protocol-streaming.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<p class="category">已合并</p>
+<h1>这篇指南已合并</h1>
+<p>内容现在位于 <a href="../provider-endpoint-credentials/index.html#%E9%80%89%E6%8B%A9%E8%B0%83%E7%94%A8%E5%8D%8F%E8%AE%AE">接入模型服务：端点、凭据、协议与流式</a>。浏览器没有自动跳转时，请点击这个链接。</p>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%8C%89%E6%9C%8D%E5%8A%A1%E9%80%89%E6%8B%A9%E5%8D%8F%E8%AE%AE">按服务选择协议</a><a href="#env-%E6%96%87%E4%BB%B6%E5%86%99%E6%B3%95">env 文件写法</a><a href="#sdk-%E5%86%99%E6%B3%95">SDK 写法</a><a href="#%E5%8D%8F%E8%AE%AE%E7%9B%B8%E5%85%B3%E7%9A%84%E6%8A%A5%E9%94%99">协议相关的报错</a><a href="#%E5%BC%80%E5%90%AF-chat-%E6%B5%81%E5%BC%8F%E6%8E%A5%E6%94%B6">开启 Chat 流式接收</a><a href="#%E8%AF%86%E5%88%AB%E6%B5%81%E5%BC%8F%E4%B8%AD%E6%96%AD%E7%9A%84%E4%BD%8D%E7%BD%AE">识别流式中断的位置</a><a href="#%E4%BF%9D%E7%95%99%E5%B7%A5%E5%85%B7%E8%B0%83%E7%94%A8%E4%B9%8B%E9%97%B4%E7%9A%84%E7%BB%AD%E8%BD%AE%E4%BF%A1%E6%81%AF">保留工具调用之间的续轮信息</a><a href="#%E6%9D%A5%E6%BA%90">来源</a><a href="#%E7%9B%B8%E5%85%B3%E6%8C%87%E5%8D%97">相关指南</a></aside>
 </div>
 </body>
 </html>

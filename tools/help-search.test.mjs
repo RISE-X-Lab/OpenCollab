@@ -17,10 +17,10 @@ test('every curated phrase and reader question reaches its intended guide', () =
   console.log(`Checked ${checked} documented search phrases`);
 });
 
-test('ambiguous delegation preserves all three workflow choices', () => {
+test('ambiguous delegation offers both child workflow choices', () => {
   assert.equal(needsChoice(index, '子工作流'), true);
-  const first = searchDocuments(index, '子工作流').slice(0, 3).map(hit => hit.doc.id);
-  assert.deepEqual(first, ['team-run-workflow', 'member-authored-workflow', 'compose-workflow-candidates']);
+  const first = searchDocuments(index, '子工作流').slice(0, 2).map(hit => hit.doc.id);
+  assert.deepEqual(first, ['team-run-workflow', 'workflow-composition-hierarchy']);
   assert.equal(needsChoice(index, '隔离'), false);
 });
 

@@ -1,9 +1,9 @@
 ---
 {
   "id": "team-hooks",
-  "title": "在工具执行和生命周期中加入 Hook",
+  "title": "Hook：在工具调用和成员生命周期里运行命令",
   "category": "extensions",
-  "summary": "在团队 YAML 的 hooks 下配置命令，在工具调用前后或成员启动、结束时运行；Hook 只观察，失败只留警告，不会拦截工具。",
+  "summary": "在 team.yaml 的 hooks 下配置命令，在工具调用前后或成员启动、结束时运行；Hook 只观察，失败只留警告，不会拦截工具。",
   "aliases": [
     "PreToolUse",
     "PostToolUse",
@@ -25,14 +25,20 @@
     "Hook 命令在宿主还是容器里运行？",
     "Hook 脚本怎样拿到事件数据？"
   ],
-  "related": [],
+  "related": [
+    "configure-team",
+    "tool-selection",
+    "artifacts-and-history"
+  ],
   "verified_ref": "0c47f74a"
 }
 ---
 
-# 在工具执行和生命周期中加入 Hook
+# Hook：在工具调用和成员生命周期里运行命令
 
-OC 的 Hook 事件名与 Claude Code 同名（`PreToolUse`、`PostToolUse`、`SubagentStop` 等），配置写在团队 YAML 顶层的 `hooks` 下，触发时运行一条 shell 命令，事件 JSON 从标准输入传入。和 Claude Code 最大的不同是：OC 的 Hook 只用于观察和辅助动作。即使 `PreToolUse` 命令返回非零，也只留下警告，工具调用照常执行。要拦截危险操作，请用工具授权、权限策略和隔离环境。
+Hook 让你在特定时刻自动运行一条 shell 命令：工具执行前后、成员创建时、成员结束时。OC 的事件名和 Claude Code 同名（`PreToolUse`、`PostToolUse`、`SubagentStop` 等），配置写在团队 YAML 顶层的 `hooks` 下，事件数据以 JSON 从标准输入传给命令。
+
+和 Claude Code 最大的不同是：**OC 的 Hook 只用于观察和辅助动作**。即使 `PreToolUse` 的命令返回非零，也只留下一条警告，工具调用照常执行。要拦截危险操作，请用工具授权、权限策略和隔离环境，见 [内置工具](tool-selection.md#一条命令要过三道关)。
 
 ## 最小用法
 
@@ -64,12 +70,12 @@ OC 的 Hook 事件名与 Claude Code 同名（`PreToolUse`、`PostToolUse`、`Su
 
 | 字段 | 说明 |
 | --- | --- |
-| `matcher` | 工具名 glob，例如 `file_*` 同时匹配 `file_read` 和 `file_write`。省略时匹配该事件的所有调用。生命周期事件应省略，因为它们的 payload 里没有工具名 |
+| `matcher` | 工具名 glob，例如 `file_*` 同时匹配 `file_read` 和 `file_write`。省略时匹配该事件的所有调用。生命周期事件应省略，因为它们的数据里没有工具名 |
 | `command` | 要执行的命令 |
 | `timeout` | 秒数，默认 30，必须是有限正数 |
 | `type` | 默认 `command`，当前只接受这一种 |
 
-匹配到的多条命令按配置顺序依次等待完成，然后事件处理才继续推进。
+匹配到的多条命令按配置顺序依次执行并等待完成，然后事件处理才继续推进。
 
 ## 事件一览
 
@@ -80,25 +86,14 @@ OC 的 Hook 事件名与 Claude Code 同名（`PreToolUse`、`PostToolUse`、`Su
 | `SessionStart` | Team 成员创建 | 新成员信息 | 宿主工作区 |
 | `Stop` | 入口成员完成、失败或取消 | `disposition` 为 `completed`、`failed` 或 `cancelled` | 宿主工作区 |
 | `SubagentStop` | 子成员完成、失败或取消 | 成员信息与终止状态 | 宿主工作区 |
-| `Notification` | Team 发出错误事件 | 对应错误信息 | 宿主工作区 |
+| `Notification` | Team 发出错误事件 | 对应的错误信息 | 宿主工作区 |
 
 运行位置要特别注意：
 
-- 工具 Hook 跟随 Agent。Agent 在工作树或容器里，Hook 也在那里运行，脚本和解释器必须在那个环境里可用。
-- 环境已释放或不可用时，工具 Hook 会被跳过并留下警告。
+- **工具 Hook 跟着 Agent 走。** Agent 在工作树或容器里，Hook 也在那里运行，脚本和解释器必须在那个环境里可用。环境已释放或不可用时，工具 Hook 会被跳过并留下警告。
 - `SubagentStop` 发生在子任务改动提取之后，适合观察已经生成的交付信息。
 
-## 输入数据
-
-除了标准输入，命令还能读这些环境变量：
-
-| 变量 | 内容 |
-| --- | --- |
-| `OPENCOLLAB_HOOK_EVENT` | 事件名 |
-| `OPENCOLLAB_TOOL` | 工具名 |
-| `OPENCOLLAB_AID` | 成员编号 |
-
-各事件提供的字段不同，脚本要按对应事件读取。
+除了标准输入，命令还能读这些环境变量：`OPENCOLLAB_HOOK_EVENT`（事件名）、`OPENCOLLAB_TOOL`（工具名）、`OPENCOLLAB_AID`（成员编号）。各事件提供的字段不同，脚本要按对应事件读取。
 
 ## 失败与超时
 
@@ -106,6 +101,7 @@ OC 的 Hook 事件名与 Claude Code 同名（`PreToolUse`、`PostToolUse`、`Su
 - 命令末尾带后台符号 `&` 时，这个动作会被跳过并留下警告。长驻的后台任务应由你的应用自己的服务生命周期管理。
 - 取消和进程清理出错会影响任务结束和资源释放，具体原因记录在运行日志里。
 
-## 源码与进一步阅读
+## 延伸阅读
 
-[configs/team.example.yaml](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/configs/team.example.yaml) · [configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/configs/README.md) · [opencollab/adapters/hooks.py](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/hooks.py) · [opencollab/domain/hooks.py](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/domain/hooks.py)
+- 源码依据：[configs/team.example.yaml](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/team.example.yaml) · [configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md) · [opencollab/adapters/hooks.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/hooks.py) · [opencollab/domain/hooks.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/domain/hooks.py)
+- 相关指南：[Team 入门](../team/configure-team.md) · [内置工具](tool-selection.md) · [运行记录](../observability/artifacts-and-history.md)

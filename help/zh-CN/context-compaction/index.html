@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>上下文窗口与自动压缩 · OpenCollab Wiki</title>
-<meta name="description" content="OC 在接近窗口上限时自动缩减旧工具结果、移除旧交换组并生成总结；这里说明怎么确认窗口、调整策略和排查溢出。">
+<meta name="description" content="OC 完整保存会话，但发给模型的是按窗口整理过的视图；这里说明怎样确认窗口、何时压缩、怎样调整策略和排查溢出。">
 <link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/context-compaction/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,23 +35,24 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details open><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="index.html" aria-current="page">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="../duo-workflow/index.html">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details><summary>模型与配置 <small>5</small></summary><a href="../provider-endpoint-credentials/index.html">接入模型服务：端点、凭据、协议与流式</a><a href="../thinking-reasoning-sampling/index.html">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details><summary>工具与扩展 <small>4</small></summary><a href="../tool-selection/index.html">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">使用自己的执行环境</a><a href="../candidate-delivery/index.html">隔离改动怎样回到项目：采纳、找回与清理</a></details><details open><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="index.html" aria-current="page">上下文窗口与自动压缩</a><a href="../session-save-resume/index.html">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">预算、上下文与运行恢复</p>
+<p class="category">运行控制：预算、停止与会话</p>
 <h1 id="上下文窗口与自动压缩">上下文窗口与自动压缩</h1>
-<p>OC 把完整会话存在消息记录里，每次请求发给模型的是按窗口整理过的视图。接近窗口上限时，默认策略按顺序做三件事：缩减旧工具结果、移除可清理的旧工具交换组、必要时生成总结。你通常只需要确认窗口值是否正确。需要时再调团队的 <code>context</code> 策略或 <code>RunControl.history_trigger_tokens</code>。排查&quot;模型漏了信息&quot;或溢出停止时，要同时看持久化历史和本次请求的整理记录。</p>
+<p>模型一次能读的内容有上限，这就是上下文窗口。长任务的历史迟早会超过它。OC 的做法是：<strong>完整的会话始终保存在消息记录里，每次请求发给模型的，是按窗口整理过的一份视图</strong>。接近窗口上限时，默认策略按顺序做三件事：缩减旧的工具结果、移除可清理的旧工具交换组、必要时生成总结。</p>
+<p>通常你只需要确认窗口值是对的；需要时，再调团队的 <code>context</code> 策略或 <code>RunControl.history_trigger_tokens</code>。排查“模型漏了信息”或溢出停止时，要同时看保存下来的完整历史和本次请求的整理记录。</p>
 <h2 id="最小用法确认实际窗口">最小用法：确认实际窗口</h2>
-<p>窗口默认从模型能力表推断，显式 <code>context_window</code> 可以覆盖。</p>
+<p>窗口默认从模型能力表推断，显式的 <code>context_window</code> 可以覆盖：</p>
 <pre><code class="language-python">from opencollab import OpenCollab
 
 client = OpenCollab(&quot;.&quot;, config={&quot;context_window&quot;: 131072})
 print(client.configuration[&quot;context_window&quot;])
 </code></pre>
 <ul>
-<li>这个值要匹配真实的物理模型服务。声明得比实际大，只会让 OC 更晚整理历史，后端的真实窗口不会变。</li>
-<li>env 里对应 <code>OPENCOLLAB_CONTEXT_WINDOW</code>。逻辑路由也能给每个物理模型单独设置窗口。</li>
-<li><code>inspect_model_runtime</code> 显示安装版本内置的默认能力。客户端的显式覆盖要读 <code>configuration</code>。</li>
+<li>这个值要和真实的物理模型服务匹配。声明得比实际大，只会让 OC 更晚整理历史，后端的真实窗口不会变。</li>
+<li>env 文件里对应 <code>OPENCOLLAB_CONTEXT_WINDOW</code>；逻辑路由也能给每个物理模型单独设置窗口。</li>
+<li><code>inspect_model_runtime</code> 显示安装版本内置的默认能力，客户端的显式覆盖要读 <code>configuration</code>，见 <a href="../configuration-precedence/index.html#%E7%A6%BB%E7%BA%BF%E6%9F%A5%E7%9C%8B%E6%A8%A1%E5%9E%8B%E8%83%BD%E5%8A%9B">离线查看模型能力</a>。</li>
 </ul>
 <h2 id="关键参数">关键参数</h2>
 <table>
@@ -81,21 +82,21 @@ print(client.configuration[&quot;context_window&quot;])
 <tr>
 <td><code>RunControl.history_trigger_tokens</code></td>
 <td>单次运行</td>
-<td>在已知窗口下降低压缩触发值，至少为 2</td>
+<td>在已知窗口下调低压缩的触发值，至少为 2</td>
 </tr>
 </tbody>
 </table>
-<h2 id="调整团队和单-agent-策略">调整团队和单 Agent 策略</h2>
-<p>在已有团队 YAML 顶层加入下面的片段，原有角色和关系保持不变：</p>
+<h2 id="调整团队和单-agent-的策略">调整团队和单 Agent 的策略</h2>
+<p>在已有团队 YAML 的顶层加入下面的片段，原有角色和关系保持不变：</p>
 <pre><code class="language-yaml">context:
   policy: default
   tool_result_budget: 20000  # 单位是字符
 </code></pre>
 <ul>
-<li><code>no_history_compaction</code>：保留单工具结果大小限制，关闭历史压缩层。用它研究完整请求历史时，输入总量必须落在后端窗口内。</li>
 <li><code>default</code>：低压力时保留历史，一般更适合持续编辑和验证。</li>
+<li><code>no_history_compaction</code>：保留单个工具结果的大小限制，但关闭历史压缩。用它研究完整的请求历史时，输入总量必须落在后端窗口内。</li>
 </ul>
-<p><code>RunControl.history_trigger_tokens</code> 可以把触发值调得更低。下面的片段放在已有 <code>async</code> 函数里，<code>client</code> 是前面构造的客户端：</p>
+<p><code>RunControl.history_trigger_tokens</code> 可以把触发值调得更低。下面的片段放在已有 <code>async</code> 函数里，<code>client</code> 是前面创建的客户端：</p>
 <pre><code class="language-python">from opencollab import RunControl
 
 result = await client.agent2(
@@ -105,47 +106,41 @@ result = await client.agent2(
     run_control=RunControl(history_trigger_tokens=60_000),
 )
 </code></pre>
-<p>目标值仍是有效触发值的 75%。窗口未知时，这个设置不生效，沿用固定默认阈值。</p>
+<p>整理的目标值仍是有效触发值的 75%。窗口未知时这个设置不生效，沿用固定的默认阈值。</p>
 <h2 id="遇到溢出时看什么">遇到溢出时看什么</h2>
 <ul>
-<li>被分类为上下文溢出的 provider 错误，会触发一次强制压缩和一次重试。再次溢出就保留原因并停止。</li>
-<li>受保护的输入本身过大时仍可能占满窗口。这时要缩小任务输入，或修正窗口声明。</li>
-<li>查看 <code>context_shaping</code> 事件和压缩轨迹，再结合 <code>reason</code> 判断。</li>
-<li>总结本身也消耗 token，单独计入用量。</li>
-<li><code>context_tokens</code> 是单次调用的输入大小，用来看窗口压力。<code>used_tokens</code> 是累计输入加输出，用来统计消耗。</li>
+<li>被分类为上下文溢出的 provider 错误，会触发一次强制压缩和一次重试；再次溢出就保留原因并停止。</li>
+<li>受保护的输入本身过大时，仍可能占满窗口。这时要缩小任务输入，或修正窗口声明。</li>
+<li>查看 <code>context_shaping</code> 事件和压缩轨迹，再结合 <code>reason</code> 判断，见 <a href="../artifacts-and-history/index.html">运行记录</a>。</li>
+<li>总结本身也要调用模型、消耗 token，单独计入用量。</li>
+<li><code>context_tokens</code> 是单次调用的输入大小，用来看窗口压力；<code>used_tokens</code> 是累计的输入加输出，用来统计消耗。</li>
 <li>要追溯完整的工具内容，回看保存的会话和工具记录。</li>
 </ul>
-<h2 id="进阶整理的具体规则">进阶：整理的具体规则</h2>
-<p>处理顺序：</p>
-<ol>
-<li>先限制单个工具结果的大小。</li>
-<li>接近窗口时，清理旧的可压缩工具输出。</li>
-<li>再移除可清理的旧工具交换组。</li>
-<li>最后总结可压缩区段。</li>
-</ol>
-<p>每一步都在上一步的结果上继续，腾出足够空间就停。</p>
+<h2 id="整理的具体规则">整理的具体规则</h2>
+<p>处理顺序：先限制单个工具结果的大小 → 接近窗口时清理旧的可压缩工具输出 → 再移除可清理的旧工具交换组 → 最后总结可压缩的区段。每一步都在上一步的结果上继续，腾出足够空间就停。</p>
 <p>不会被动的内容：</p>
 <ul>
-<li>模型调用和对应的工具结果成对保留。</li>
-<li>近期证据限制了可移除范围。</li>
+<li>模型的工具调用和对应的工具结果成对保留。</li>
+<li>近期证据限制了可移除的范围。</li>
 <li>高优先级的启动上下文受保护。</li>
-<li>原生签名 thinking blocks 和加密 reasoning 按原样重放。</li>
+<li>原生签名的 thinking blocks 和加密 reasoning 按原样重放。</li>
 </ul>
 <p>阈值怎么算：</p>
 <ul>
 <li>已知窗口：扣除输出余量和安全空间后得到触发阈值，目标通常是触发值的 75%。小窗口的余量和近期证据保留数按窗口缩放。</li>
 <li>未知窗口：固定触发值 120,000 token，目标 90,000 token。</li>
-<li>token 估算用 provider 报告的输入输出来校准。新加入的内容和恢复后的会话，先用相应的估算方式。</li>
-<li>轨迹里的 <code>session.history_compaction</code> 记录实际数值和来源。比较长任务时以它为准。</li>
+<li>token 估算用 provider 报告的输入输出来校准；新加入的内容和恢复后的会话，先用相应的估算方式。</li>
+<li>轨迹里的 <code>session.history_compaction</code> 记录实际数值和来源，比较长任务时以它为准。</li>
 </ul>
-<h2 id="来源">来源</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/runtime-design.md#L25">docs/runtime-design.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/runtime-design.md#L67">docs/runtime-design.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/configs/README.md#L286">configs/README.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/evaluation-runtime.md#L101">docs/evaluation-runtime.md</a></p>
-<h2 id="相关指南">相关指南</h2>
-<p><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a>　<a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a>　<a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a>　<a href="../session-save-resume/index.html">保存会话与恢复历史</a>　<a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a>　<a href="../trace-and-events/index.html">查看 Agent 做了什么</a></p>
+<h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/runtime-design.md">docs/runtime-design.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md">configs/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md">docs/evaluation-runtime.md</a></li>
+<li>相关指南：<a href="../thinking-reasoning-sampling/index.html">深度思考与采样</a> · <a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a> · <a href="../session-save-resume/index.html">保存与恢复会话</a> · <a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a></li>
+</ul>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/topics/operations/context-compaction.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E7%94%A8%E6%B3%95%E7%A1%AE%E8%AE%A4%E5%AE%9E%E9%99%85%E7%AA%97%E5%8F%A3">最小用法：确认实际窗口</a><a href="#%E5%85%B3%E9%94%AE%E5%8F%82%E6%95%B0">关键参数</a><a href="#%E8%B0%83%E6%95%B4%E5%9B%A2%E9%98%9F%E5%92%8C%E5%8D%95-agent-%E7%AD%96%E7%95%A5">调整团队和单 Agent 策略</a><a href="#%E9%81%87%E5%88%B0%E6%BA%A2%E5%87%BA%E6%97%B6%E7%9C%8B%E4%BB%80%E4%B9%88">遇到溢出时看什么</a><a href="#%E8%BF%9B%E9%98%B6%E6%95%B4%E7%90%86%E7%9A%84%E5%85%B7%E4%BD%93%E8%A7%84%E5%88%99">进阶：整理的具体规则</a><a href="#%E6%9D%A5%E6%BA%90">来源</a><a href="#%E7%9B%B8%E5%85%B3%E6%8C%87%E5%8D%97">相关指南</a></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E7%94%A8%E6%B3%95%E7%A1%AE%E8%AE%A4%E5%AE%9E%E9%99%85%E7%AA%97%E5%8F%A3">最小用法：确认实际窗口</a><a href="#%E5%85%B3%E9%94%AE%E5%8F%82%E6%95%B0">关键参数</a><a href="#%E8%B0%83%E6%95%B4%E5%9B%A2%E9%98%9F%E5%92%8C%E5%8D%95-agent-%E7%9A%84%E7%AD%96%E7%95%A5">调整团队和单 Agent 的策略</a><a href="#%E9%81%87%E5%88%B0%E6%BA%A2%E5%87%BA%E6%97%B6%E7%9C%8B%E4%BB%80%E4%B9%88">遇到溢出时看什么</a><a href="#%E6%95%B4%E7%90%86%E7%9A%84%E5%85%B7%E4%BD%93%E8%A7%84%E5%88%99">整理的具体规则</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>
 </body>
 </html>

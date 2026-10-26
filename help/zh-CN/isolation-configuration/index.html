@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>默认隔离与单次覆盖怎么配 · OpenCollab Wiki</title>
-<meta name="description" content="设置整次运行的默认隔离方式，并在某个角色或某次调用上单独改掉它。">
-<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/isolation-configuration/index.html">
+<title>隔离：Agent 的文件和命令落在哪里 · OpenCollab Wiki</title>
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url=../isolation-overview/index.html#%E5%9C%A8%E5%93%AA%E9%87%8C%E8%AE%BE%E7%BD%AE%E8%B0%81%E4%BC%98%E5%85%88">
+<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/isolation-overview/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-redirect="isolation-overview#在哪里设置谁优先">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -33,171 +34,13 @@
 </div></header>
 <div class="layout">
 <nav id="help-navigation" aria-label="帮助分类">
-<div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
-<p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details open><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="index.html" aria-current="page">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<div class="nav-start"><a href="../index.html">Wiki 首页</a></div>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">执行环境与隔离</p>
-<h1 id="默认隔离与单次覆盖怎么配">默认隔离与单次覆盖怎么配</h1>
-<p>OC 的 <code>isolation</code> 可以写在四个地方：Workflow 运行参数、单次 <code>ctx.agent</code> 调用、Team 文件顶层、Team 角色。Workflow 是用 Python 显式编排 agent 调用；Team 是由入口 Agent 用 <code>spawn_agent</code> 自主派发成员。本文讲每处怎么写、冲突时谁优先、怎么确认生效值。</p>
-<h2 id="一句话记住优先级">一句话记住优先级</h2>
-<ul>
-<li>Workflow：单次调用的值 &gt; 运行的默认值。</li>
-<li>Team：角色的值 &gt; SDK 运行参数 &gt; 团队文件的默认值。</li>
-</ul>
-<h2 id="workflow运行默认值和单次调用">Workflow：运行默认值和单次调用</h2>
-<pre><code class="language-python">import asyncio
-from opencollab import OpenCollab
-from opencollab.tools import builtin_tools
-
-async def inspect(ctx, inputs):
-    # 没写 isolation，继承运行的 worktree
-    code = await ctx.agent(&quot;阅读项目入口&quot;, tools=builtin_tools(&quot;file_read&quot;, &quot;grep&quot;))
-    # 显式写 shared，复用父环境
-    note = await ctx.agent(
-        f&quot;根据分析写一段执行摘要\n{code}&quot;, tools=[], isolation=&quot;shared&quot;
-    )
-    return {&quot;code&quot;: code, &quot;note&quot;: note}
-
-async def main():
-    result = await OpenCollab(&quot;.&quot;).workflow(
-        inspect, {}, isolation=&quot;worktree&quot;   # 整次运行的默认值
-    )
-    print(result.status, result.output)
-
-asyncio.run(main())
-</code></pre>
-<p>要点：</p>
-<ul>
-<li>第一次 <code>ctx.agent</code> 继承运行的 <code>worktree</code>。</li>
-<li>第二次显式选 <code>shared</code>，复用父环境。它能看到第一次的输出，是因为提示词里传了进去。</li>
-<li><code>ctx.agent_run</code> 用同样的选择规则，另外还会返回执行和清理状态。</li>
-<li>布尔值也可以用：<code>True</code> 等于 <code>worktree</code>，<code>False</code> 等于 <code>shared</code>。</li>
-<li>什么都不写时，Workflow 使用共享环境。</li>
-</ul>
-<h2 id="team三层优先关系">Team：三层优先关系</h2>
-<pre><code class="language-yaml">entry: manager
-isolation: worktree          # 团队文件的默认值
-roles:
-  manager:
-    prompt: Coordinate the task and summarize the results.
-    isolation: shared        # 角色自己的值，优先级最高
-    tools: [spawn_agent, file_read]
-  coder:
-    prompt: Implement the requested change.
-    tools: [file_read, apply_patch]
-topology:
-  manager: [coder]
-</code></pre>
-<p>用 SDK 运行：</p>
-<pre><code class="language-python">await client.team(task, config=&quot;team.yaml&quot;, isolation=&quot;docker-session&quot;)
-</code></pre>
-<p>结果：</p>
-<table>
-<thead>
-<tr>
-<th>角色</th>
-<th>最终策略</th>
-<th>原因</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>coder</code></td>
-<td><code>docker-session</code></td>
-<td>角色没写，SDK 参数覆盖团队文件</td>
-</tr>
-<tr>
-<td><code>manager</code></td>
-<td><code>shared</code></td>
-<td>角色自己写了，角色优先</td>
-</tr>
-</tbody>
-</table>
-<p>入口角色也可以单独选环境。入口被显式隔离后，它的文件改动会以完整的入口补丁返回，见 <a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a>。</p>
-<h2 id="不写新选项时的老规则">不写新选项时的老规则</h2>
-<ul>
-<li>不写新的隔离选项时，Team 按 <code>use_worktrees</code> 处理子成员，默认是 <code>True</code>。入口 Agent 使用原工作目录。</li>
-<li>只在子角色里写隔离时，入口仍用原工作目录。</li>
-<li><code>--no-worktrees</code> 对应原来那种子成员目录选择方式。团队文件里显式写的策略，仍按上面的优先级生效。</li>
-</ul>
-<h2 id="vm-配置与子运行继承">VM 配置与子运行继承</h2>
-<p>在 SDK 里写 <code>OpenCollab(&quot;.&quot;, config={&quot;vm&quot;: profile})</code>，OC 就会注册 <code>vm-group</code> 和 <code>vm-session</code> 两个策略名。<code>profile</code> 是一个字典，写明：</p>
-<ul>
-<li>有哪些来宾 VM 可用；</li>
-<li>控制端用哪个 SQLite 文件记录机器占用；</li>
-<li>没有空闲机器时等多久（<code>wait_timeout</code>）；</li>
-<li>运行结束后等清理多久（<code>cleanup_timeout</code>）。</li>
-</ul>
-<p>可以直接改的 JSON 和完整调用见 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a>。如果 <code>environment_providers</code> 里也注册了同名工厂，以 <code>environment_providers</code> 为准。</p>
-<p>子 Workflow 怎么继承策略：</p>
-<ol>
-<li><code>group</code> 的范围是一次运行里的一个环境池。成员用 <code>manage_workflow</code> 启动自己写的子 Workflow 时，子运行有自己的环境池。</li>
-<li>想让子 Agent 留在成员当前的 VM 里，在 <code>manage_workflow</code> 的 <code>launch</code> 里写 <code>isolation=&quot;worktree&quot;</code>。</li>
-<li>不写 <code>launch.isolation</code> 时，子运行继承成员的策略。子 Workflow 里单次调用仍可以再覆盖。</li>
-<li>单次调用用 <code>vm-session</code> 申请另一台来宾时，池里要有父 VM 之外的空闲机器。</li>
-</ol>
-<p>示例见 <a href="../member-authored-workflow/index.html">让成员编写并管理自己的子 Workflow</a>。</p>
-<p>两个超时别混：</p>
-<table>
-<thead>
-<tr>
-<th>参数</th>
-<th>管什么</th>
-<th>默认值</th>
-<th>谁能覆盖</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>cleanup_timeout</code></td>
-<td>运行结束后等清理多久</td>
-<td><code>60</code> 秒</td>
-<td>SDK 运行参数、子运行 <code>launch.cleanup_timeout</code></td>
-</tr>
-<tr>
-<td><code>wait_timeout</code></td>
-<td>没有空闲机器时等多久</td>
-<td><code>0</code>，立刻报错</td>
-<td>在 VM profile 或 <code>vm_isolation_provider</code> 参数里设置</td>
-</tr>
-</tbody>
-</table>
-<h2 id="命令行">命令行</h2>
-<ul>
-<li>Workflow：<code>workflow run NAME</code> 后面用 <code>--isolation</code> 指定策略名，例如 <code>shared</code>、<code>worktree</code>、<code>vm-group</code> 或 <code>vm-session</code>。</li>
-<li>Team：根命令从 <code>--team-config team.yaml</code> 读取隔离配置。</li>
-<li>需要 DockerOptions 或自定义环境提供器时，用 SDK 组合。见 <a href="../docker-isolation/index.html">在容器中运行任务</a>。</li>
-</ul>
-<p>用 VM 策略时：</p>
-<ul>
-<li>CLI 从环境变量 <code>OPENCOLLAB_VM</code> 读完整的 VM 配置 JSON。</li>
-<li>Workflow 命令可以用 <code>--cleanup-timeout</code> 覆盖清理等待时间。</li>
-<li>Team 文件里写的 VM 策略，用的也是这份配置。</li>
-</ul>
-<p>来宾怎么准备、JSON 怎么写，见 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a>。</p>
-<h2 id="设置后怎样确认生效">设置后怎样确认生效</h2>
-<ol>
-<li>派一个很小的读取任务，让它报告实际工作目录和目标文件路径。</li>
-<li>如果是容器策略，再让它执行一条镜像里有的命令。</li>
-<li>如果是工作树策略，检查新目录里的文件内容。</li>
-<li>跑一次项目需要的测试，确认依赖和相对路径在这个环境里能用。</li>
-</ol>
-<p>排查时，把调用代码、团队文件和任务报告的路径放在一起对照。记住角色写了隔离，就以角色为准。</p>
-<h2 id="常见问题">常见问题</h2>
-<ul>
-<li>如果策略名报错：名字只能用字母、数字、连字符和下划线，首尾带空格也会报错。</li>
-<li>如果提示该策略需要 environment provider：名字格式没问题，但还没注册对应的提供器。见 <a href="../custom-environment-providers/index.html">接入自己的执行环境</a>。</li>
-<li>如果环境申请成功了，却在准备工作区时失败：比如普通工作树的源目录有未提交改动。检查工作区内容和走的是哪种创建方式，处理方法见 <a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a>。</li>
-<li>如果选了 <code>vm-group</code> 或 <code>vm-session</code>，却报错要求提供 <code>config.vm</code> 或 environment provider：说明还没配 VM 资源。在 SDK 里传 <code>config={&quot;vm&quot;: ...}</code>，或在命令行设置 <code>OPENCOLLAB_VM</code>。</li>
-</ul>
-<h2 id="参考">参考</h2>
-<p>这些规则分别来自<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/isolation.py">入口策略解析</a>、<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/isolation.py">策略名解析</a>和<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/session-isolation.zh-CN.md">隔离指南</a>。</p>
-
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/isolation/isolation-configuration.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<p class="category">已合并</p>
+<h1>这篇指南已合并</h1>
+<p>内容现在位于 <a href="../isolation-overview/index.html#%E5%9C%A8%E5%93%AA%E9%87%8C%E8%AE%BE%E7%BD%AE%E8%B0%81%E4%BC%98%E5%85%88">隔离：Agent 的文件和命令落在哪里</a>。浏览器没有自动跳转时，请点击这个链接。</p>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E4%B8%80%E5%8F%A5%E8%AF%9D%E8%AE%B0%E4%BD%8F%E4%BC%98%E5%85%88%E7%BA%A7">一句话记住优先级</a><a href="#workflow%E8%BF%90%E8%A1%8C%E9%BB%98%E8%AE%A4%E5%80%BC%E5%92%8C%E5%8D%95%E6%AC%A1%E8%B0%83%E7%94%A8">Workflow：运行默认值和单次调用</a><a href="#team%E4%B8%89%E5%B1%82%E4%BC%98%E5%85%88%E5%85%B3%E7%B3%BB">Team：三层优先关系</a><a href="#%E4%B8%8D%E5%86%99%E6%96%B0%E9%80%89%E9%A1%B9%E6%97%B6%E7%9A%84%E8%80%81%E8%A7%84%E5%88%99">不写新选项时的老规则</a><a href="#vm-%E9%85%8D%E7%BD%AE%E4%B8%8E%E5%AD%90%E8%BF%90%E8%A1%8C%E7%BB%A7%E6%89%BF">VM 配置与子运行继承</a><a href="#%E5%91%BD%E4%BB%A4%E8%A1%8C">命令行</a><a href="#%E8%AE%BE%E7%BD%AE%E5%90%8E%E6%80%8E%E6%A0%B7%E7%A1%AE%E8%AE%A4%E7%94%9F%E6%95%88">设置后怎样确认生效</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%8F%82%E8%80%83">参考</a></aside>
 </div>
 </body>
 </html>

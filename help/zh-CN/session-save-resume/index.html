@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>保存会话与恢复历史 · OpenCollab Wiki</title>
-<meta name="description" content="OC 终端团队自动保存成员会话；用 --session 恢复主会话历史，累计 token 和步数随之恢复，未完成的协程不会续跑。">
+<title>保存与恢复会话 · OpenCollab Wiki</title>
+<meta name="description" content="终端团队自动保存每个成员的会话；用 --session 恢复主会话继续对话，累计用量随之恢复，正在进行的请求和工具不会续上。">
 <link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/session-save-resume/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,22 +35,23 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details open><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="index.html" aria-current="page">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="../duo-workflow/index.html">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details><summary>模型与配置 <small>5</small></summary><a href="../provider-endpoint-credentials/index.html">接入模型服务：端点、凭据、协议与流式</a><a href="../thinking-reasoning-sampling/index.html">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details><summary>工具与扩展 <small>4</small></summary><a href="../tool-selection/index.html">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">使用自己的执行环境</a><a href="../candidate-delivery/index.html">隔离改动怎样回到项目：采纳、找回与清理</a></details><details open><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="index.html" aria-current="page">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">预算、上下文与运行恢复</p>
-<h1 id="保存会话与恢复历史">保存会话与恢复历史</h1>
-<p>OC 的终端团队会自动把每个成员的会话存成 JSON。下次启动时用 <code>--session PATH</code>（简写 <code>-s</code>）恢复主会话历史，接着输入。恢复时 token 和步数的累计用量会一起带回来，但原进程里正在跑的 provider 或工具协程不会续上，会话从 <code>IDLE</code> 重新开始。要沿用正确的项目工作区和模型设置。</p>
+<p class="category">运行控制：预算、停止与会话</p>
+<h1 id="保存与恢复会话">保存与恢复会话</h1>
+<p>OC 的终端团队会自动把每个成员的会话存成 JSON 文件。下次启动时用 <code>--session PATH</code>（简写 <code>-s</code>）恢复主会话的历史，就能接着对话。</p>
+<p>恢复时要分清“回来的”和“回不来的”：token 和步数的累计用量、结束状态、可恢复的等待关系会一起带回来；但原进程里<strong>正在进行</strong>的模型请求或工具执行不会续上，会话从空闲状态（<code>IDLE</code>）重新开始。为什么是这样，见 <a href="../runtime-execution-model/index.html#session-%E9%87%8C%E5%AD%98%E4%BA%86%E4%BB%80%E4%B9%88">原理：Session 的状态</a>。</p>
 <h2 id="最小用法">最小用法</h2>
 <pre><code class="language-bash"># 恢复入口成员（lead）的会话，然后继续对话
 opencollab --workspace /path/to/application \
   --session /absolute/path/agent_0_analyst.json
 </code></pre>
 <ul>
-<li>也可以传手动 <code>/save</code> 导出的 JSONL。该选项接受旧的 JSONL 和 Agent JSON。</li>
-<li>找不到快照及其可恢复记录时，报告文件不存在。文件结构或记录损坏时，报告读取错误。</li>
-<li>恢复入口只读主会话历史。团队成员和工作流各会话的记录适合分别检查。团队结构仍由当前选中的团队配置创建。</li>
-<li>恢复后先看历史里最后的工具结果和待办，再提交一个范围明确的后续任务。</li>
+<li>也可以传手动 <code>/save</code> 导出的 JSONL，这个选项接受旧的 JSONL 和 Agent JSON。</li>
+<li>找不到快照及其可恢复记录时，报告文件不存在；文件结构或记录损坏时，报告读取错误。</li>
+<li>恢复入口只读<strong>主会话</strong>历史。团队成员和 Workflow 各会话的记录适合分别检查；团队结构仍由当前选中的团队配置创建。</li>
+<li>要沿用正确的项目工作区和模型设置。恢复后先看历史里最后的工具结果和待办，再提交一个范围明确的后续任务。</li>
 </ul>
 <h2 id="文件存在哪里">文件存在哪里</h2>
 <table>
@@ -65,10 +66,10 @@ opencollab --workspace /path/to/application \
 <tr>
 <td>终端团队</td>
 <td><code>&lt;workspace&gt;/.opencollab/sessions/</code>，名称含时间和随机后缀</td>
-<td>成员 <code>agent_&lt;aid&gt;_&lt;role&gt;.json</code>（入口可能是 <code>agent_0_analyst.json</code>），manifest <code>team.json</code></td>
+<td>成员 <code>agent_&lt;aid&gt;_&lt;role&gt;.json</code>（入口可能是 <code>agent_0_analyst.json</code>），清单 <code>team.json</code></td>
 </tr>
 <tr>
-<td>工作流</td>
+<td>Workflow</td>
 <td>带 <code>wf-</code> 前缀的目录</td>
 <td>顺序命名的 <code>000_&lt;role&gt;.json</code> 等，<code>workflow.json</code>；启用轨迹时还有 <code>orchestration.jsonl</code></td>
 </tr>
@@ -80,19 +81,19 @@ opencollab --workspace /path/to/application \
 </tbody>
 </table>
 <ul>
-<li>实际目录以终端显示的路径为准。</li>
-<li>一次运行的多个会话靠 manifest 关联。查看时先用 manifest 确认运行标识。</li>
-<li><code>/save</code> 总是导出 lead 主会话。切换到其他成员后执行，保存的仍是 lead。需要完整团队历史，就保留自动保存目录。</li>
+<li>实际目录以终端显示的路径为准。一次运行的多个会话靠清单关联，查看时先用清单确认运行标识。</li>
+<li><code>/save</code> 总是导出 lead 主会话：切换到其他成员后执行，保存的仍是 lead。需要完整的团队历史，就保留自动保存的目录。</li>
+<li>SDK 运行的产物目录结构见 <a href="../artifacts-and-history/index.html">运行记录</a>。</li>
 </ul>
-<h2 id="恢复后预算和执行状态">恢复后预算和执行状态</h2>
+<h2 id="恢复之后预算和执行状态怎样">恢复之后，预算和执行状态怎样</h2>
 <ul>
-<li>token 和步数按会话整个生命周期计。快照恢复累计用量、结束状态和可恢复的等待事件。</li>
-<li>新一轮用户输入会重置当前轮的局部执行状态，但继续使用会话累计额度。上次已经耗尽额度时，要结合原有总消耗设定新的限制。</li>
+<li>token 和步数按会话的整个生命周期计。快照恢复累计用量、结束状态和可恢复的等待事件。</li>
+<li>新一轮用户输入会重置当前轮的局部执行状态，但继续使用会话的累计额度。上次已经用完额度时，要结合原有的总消耗设定新的限制。</li>
 <li>正在进行的 provider 或工具协程属于原进程，恢复时从 <code>IDLE</code> 重新进入执行。重启前先检查原任务对应的进程和文件状态。</li>
-<li>快照里已有的工具结果、待配对结果和后续消息按存储规则恢复。</li>
+<li>快照里已有的工具结果、待配对的结果和后续消息，按存储规则恢复。</li>
 </ul>
 <h2 id="用-sdk-离线读取">用 SDK 离线读取</h2>
-<p>下面的脚本只读保存内容，会合并存储适配器认可的已完成 journal 记录。适合先确认消息数量和会话状态，再安排恢复运行。</p>
+<p>下面的脚本只读保存的内容，会合并存储适配器认可的已完成日志记录，适合先确认消息数量和会话状态，再安排恢复运行：</p>
 <pre><code class="language-python">from pathlib import Path
 from opencollab import OpenCollab
 
@@ -103,11 +104,11 @@ print(snapshot.get(&quot;session_state&quot;, {}))
 print(snapshot.get(&quot;run_id&quot;))
 </code></pre>
 <ul>
-<li>迁移或备份运行目录时，连同已有的 sidecar 文件一起保留。读取时走公开存储入口。</li>
-<li><code>run_id</code> 用来关联会话、manifest 和轨迹。调用方也可以为新的 SDK 运行指定这个值。</li>
+<li>迁移或备份运行目录时，连同已有的附属文件一起保留，读取时走公开的存储入口。</li>
+<li><code>run_id</code> 用来关联会话、清单和轨迹；调用方也可以为新的 SDK 运行指定这个值。</li>
 </ul>
-<h2 id="工作流的保存设置">工作流的保存设置</h2>
-<p>工作流 CLI 默认开启 <code>--save</code> 和 <code>--trace</code>：</p>
+<h2 id="workflow-的保存设置">Workflow 的保存设置</h2>
+<p>Workflow CLI 默认开启 <code>--save</code> 和 <code>--trace</code>：</p>
 <table>
 <thead>
 <tr>
@@ -118,28 +119,29 @@ print(snapshot.get(&quot;run_id&quot;))
 <tbody>
 <tr>
 <td><code>--no-trace</code></td>
-<td>保留会话和 manifest，不记录编排轨迹</td>
+<td>保留会话和清单，不记录编排轨迹</td>
 </tr>
 <tr>
 <td><code>--no-save</code></td>
-<td>关闭运行产物。轨迹依赖保存目录，所以也不会有轨迹</td>
+<td>关闭运行产物；轨迹依赖保存目录，所以也不会有轨迹</td>
 </tr>
 </tbody>
 </table>
-<p>这些参数放在 <code>workflow run NAME</code> 后面。下面的 Duo 示例显式允许在宿主工作区执行 shell：</p>
+<p>这些参数放在 <code>workflow run NAME</code> 后面。下面的 Duo 示例显式允许在本机工作区执行 shell：</p>
 <pre><code class="language-bash">opencollab workflow run duo --workspace /path/to/application \
   --task '完成指定任务。' --args '{&quot;allow_unisolated_shell&quot;:true}' \
   --save --no-trace
 </code></pre>
-<p>需要事后复查长任务时，保留保存目录。每次继续前，确认工作区文件和最后的记录一致。</p>
-<h2 id="来源">来源</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/cli/main.py#L69">opencollab/adapters/cli/main.py</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/cli/main.py#L176">opencollab/adapters/cli/main.py</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/bootstrap/scheduler_factory.py#L83">opencollab/bootstrap/scheduler_factory.py</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/runtime-design.md#L8">docs/runtime-design.md</a></p>
-<h2 id="相关指南">相关指南</h2>
-<p><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a>　<a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a>　<a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a>　<a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a>　<a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a>　<a href="../trace-and-events/index.html">查看 Agent 做了什么</a></p>
+<p>注意：保存下来的是<strong>执行证据</strong>，不是 Workflow 的程序状态，Workflow 不能从任意一行代码自动续跑，见 <a href="../workflow-failure-recovery-lifecycle/index.html#%E8%BF%9B%E7%A8%8B%E9%80%80%E5%87%BA%E5%90%8E%E8%83%BD%E6%8E%A5%E7%9D%80%E8%B7%91%E5%90%97">进程退出后能接着跑吗</a>。需要事后复查长任务时保留保存目录；每次继续前，确认工作区文件和最后的记录一致。</p>
+<h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/main.py">opencollab/adapters/cli/main.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/scheduler_factory.py">opencollab/bootstrap/scheduler_factory.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/runtime-design.md">docs/runtime-design.md</a></li>
+<li>相关指南：<a href="../interactive-cli-controls/index.html">在终端里使用 OC</a> · <a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a> · <a href="../artifacts-and-history/index.html">运行记录</a> · <a href="../timeouts-retries/index.html">运行怎样停下</a></li>
+</ul>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/topics/operations/session-save-resume.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E7%94%A8%E6%B3%95">最小用法</a><a href="#%E6%96%87%E4%BB%B6%E5%AD%98%E5%9C%A8%E5%93%AA%E9%87%8C">文件存在哪里</a><a href="#%E6%81%A2%E5%A4%8D%E5%90%8E%E9%A2%84%E7%AE%97%E5%92%8C%E6%89%A7%E8%A1%8C%E7%8A%B6%E6%80%81">恢复后预算和执行状态</a><a href="#%E7%94%A8-sdk-%E7%A6%BB%E7%BA%BF%E8%AF%BB%E5%8F%96">用 SDK 离线读取</a><a href="#%E5%B7%A5%E4%BD%9C%E6%B5%81%E7%9A%84%E4%BF%9D%E5%AD%98%E8%AE%BE%E7%BD%AE">工作流的保存设置</a><a href="#%E6%9D%A5%E6%BA%90">来源</a><a href="#%E7%9B%B8%E5%85%B3%E6%8C%87%E5%8D%97">相关指南</a></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E7%94%A8%E6%B3%95">最小用法</a><a href="#%E6%96%87%E4%BB%B6%E5%AD%98%E5%9C%A8%E5%93%AA%E9%87%8C">文件存在哪里</a><a href="#%E6%81%A2%E5%A4%8D%E4%B9%8B%E5%90%8E%E9%A2%84%E7%AE%97%E5%92%8C%E6%89%A7%E8%A1%8C%E7%8A%B6%E6%80%81%E6%80%8E%E6%A0%B7">恢复之后，预算和执行状态怎样</a><a href="#%E7%94%A8-sdk-%E7%A6%BB%E7%BA%BF%E8%AF%BB%E5%8F%96">用 SDK 离线读取</a><a href="#workflow-%E7%9A%84%E4%BF%9D%E5%AD%98%E8%AE%BE%E7%BD%AE">Workflow 的保存设置</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>
 </body>
 </html>

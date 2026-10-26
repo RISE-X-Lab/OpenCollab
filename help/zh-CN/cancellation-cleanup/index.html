@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>停止任务并确认清理完成 · OpenCollab Wiki</title>
-<meta name="description" content="用 Ctrl+C、task.cancel() 或 timeout 停止运行，再通过 metrics 中的清理字段确认会话、环境和用量已经收尾。">
-<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/cancellation-cleanup/index.html">
+<title>运行怎样停下：超时、重试、取消与清理 · OpenCollab Wiki</title>
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url=../timeouts-retries/index.html#%E4%B8%BB%E5%8A%A8%E5%81%9C%E6%AD%A2ctrlc-%E4%B8%8E-taskcancel">
+<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/timeouts-retries/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-redirect="timeouts-retries#主动停止ctrlc-与-taskcancel">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -33,174 +34,13 @@
 </div></header>
 <div class="layout">
 <nav id="help-navigation" aria-label="帮助分类">
-<div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
-<p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details open><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="index.html" aria-current="page">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<div class="nav-start"><a href="../index.html">Wiki 首页</a></div>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">预算、上下文与运行恢复</p>
-<h1 id="停止任务并确认清理完成">停止任务并确认清理完成</h1>
-<p>OC 的停止有两条路：终端里按 Ctrl+C，或在 Python 里 <code>task.cancel()</code> / 设置 SDK 的 <code>timeout=</code>。和多数框架不同，OC 在停止后会先跑一段由框架负责的清理（取消工具协程、中止它创建的执行环境、结算迟到的用量），清理结果分别写进 <code>result.metrics</code>。所以停止后别急着复用工作区，先看清理字段。</p>
-<h2 id="最小用法">最小用法</h2>
-<table>
-<thead>
-<tr>
-<th>入口</th>
-<th>做法</th>
-<th>结果</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>终端</td>
-<td>运行中按 Ctrl+C</td>
-<td>中断当前轮次，清空排队输入，拒绝待回答的问题；保留已生成的部分回答并显示原因</td>
-</tr>
-<tr>
-<td>终端</td>
-<td>空闲时按 Ctrl+C，或 <code>/exit</code>、<code>/quit</code></td>
-<td>退出</td>
-</tr>
-<tr>
-<td>SDK</td>
-<td>传 <code>timeout=</code></td>
-<td>到期返回 <code>status=&quot;stopped&quot;</code>、<code>reason=&quot;timeout&quot;</code></td>
-</tr>
-<tr>
-<td>SDK</td>
-<td><code>task.cancel()</code></td>
-<td>框架清理阶段结束后再向外抛 <code>asyncio.CancelledError</code></td>
-</tr>
-</tbody>
-</table>
-<p>下面是应用主动取消的完整例子。实际界面里可以把 <code>task.cancel()</code> 接到停止按钮。示例只用读取工具，模型配置沿用已准备好的设置。</p>
-<pre><code class="language-python">import asyncio
-from opencollab import OpenCollab, RunControl
-
-async def main() -&gt; None:
-    events = []
-    client = OpenCollab(&quot;.&quot;)
-    task = asyncio.create_task(client.agent(
-        &quot;阅读项目入口并整理主要模块。&quot;,
-        tools=&quot;read&quot;,
-        budget=100_000,
-        cleanup_timeout=10,  # 限制运行结束后框架清理资源的等待时间（秒）
-        artifacts=&quot;artifacts/cancel-example&quot;,
-        run_control=RunControl(on_event=events.append),  # 接收器要快速同步返回
-    ))
-    await asyncio.sleep(1)
-    if not task.done():
-        task.cancel()
-    try:
-        result = await task
-        print(result.status, result.reason)
-    except asyncio.CancelledError:
-        print(&quot;应用已收到取消结果&quot;)
-    print([event.type for event in events])
-
-asyncio.run(main())
-</code></pre>
-<ul>
-<li><code>cleanup_timeout</code>：有限正数，限制执行结束后框架清理自身资源的等待时间。</li>
-<li><code>RunControl.tool_cancellation_cleanup_timeout</code>：单独调整工具取消的清理等待。</li>
-<li><code>on_event</code> 接收器应尽快同步返回。可以先把事件存下来，再交给应用其他部分处理。</li>
-</ul>
-<h2 id="停止后核对状态">停止后核对状态</h2>
-<p>用 <code>result.metrics.get(...)</code> 读这些字段：</p>
-<table>
-<thead>
-<tr>
-<th>字段</th>
-<th>含义</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>session_quiesced</code></td>
-<td>会话和持久化阶段已确认结束</td>
-</tr>
-<tr>
-<td><code>environment_quiesced</code></td>
-<td>框架自己创建的执行环境已停止</td>
-</tr>
-<tr>
-<td><code>cleanup_quiesced</code>、<code>execution_quiesced</code></td>
-<td>汇总上面两项</td>
-</tr>
-</tbody>
-</table>
-<p>如果执行环境是调用方传进来的，OC 不替你管理它。这时 <code>environment_quiesced</code>、<code>cleanup_quiesced</code>、<code>execution_quiesced</code> 都是 <code>None</code>。你要在自己清理完环境后，自己检查并记录它是否已停止。再次写入同一工作区前，要同时确认会话已停止、工作区可用。</p>
-<p>在 Workflow 里，<code>ctx.agent_run</code> 返回受控调用结果，直接看其中的 <code>workspace_ready</code>，决定共享上下文能否继续。超时后如果还有 provider 或工具工作在清理，这次调用会等待自己的资源。清理没完成就返回失败，并阻止共享上下文继续执行。尚未结束的任务和它保留的预算仍由工作流管理。</p>
-<h2 id="用量和部分改动">用量和部分改动</h2>
-<ul>
-<li>取消时界面上已显示的 token 统计可能还会变。迟到的 provider 成功或错误用量会在框架清理阶段结算一次。</li>
-<li><code>usage</code> 事件的 <code>late</code> 和 <code>purpose</code> 字段可以帮你识别这笔用量的来源。<code>cleanup_completed</code> 事件表示该接收器对应运行的清理已结束。</li>
-<li>最终花费以保存的用量记录为准。</li>
-<li>失败或停止的 Team 子成员仍可交回已有改动。如果补丁捕获失败，或返回消息装不下完整补丁，原生工作树会保留完整文件，并报告恢复位置。先导出需要的改动，再按工作区恢复指南释放工作树。</li>
-</ul>
-<p>开始下一次任务前的检查顺序：</p>
-<ol>
-<li>确认会话清理结果（<code>session_quiesced</code> 等）。</li>
-<li>确认自己负责的环境已停止。</li>
-<li>检查工作区差异。</li>
-</ol>
-<h2 id="进阶工具取消的等待顺序">进阶：工具取消的等待顺序</h2>
-<p>工具超时或调用方取消后，运行时按下面顺序处理：</p>
-<ol>
-<li>请求工具协程取消，等待 <code>OPENCOLLAB_TOOL_CANCELLATION_CLEANUP_TIMEOUT</code>（默认 1 秒）。</li>
-<li>工具仍未停止或清理报错时，撤销环境并执行环境中止，等待 <code>OPENCOLLAB_TOOL_ENVIRONMENT_ABORT_TIMEOUT</code>（默认 1 秒）。</li>
-<li>中止仍未完成就取消中止协程，再等待 <code>OPENCOLLAB_TOOL_CANCELLATION_FORCE_TIMEOUT</code>（默认 0.5 秒）。</li>
-<li>仍在收尾的任务继续由该运行追踪，工具结果会带出清理失败信息。</li>
-</ol>
-<p>这三个进程变量在模块导入时读取。要调整，就在启动 Python 或 CLI 之前导出有限正数。单 Agent 或 <code>ctx.agent_run</code> 里的 <code>RunControl.tool_cancellation_cleanup_timeout</code> 可以只覆盖本次会话的第 1 段等待。SDK 的 <code>cleanup_timeout</code> 管的是运行结束后的资源清理，调用方应根据返回的清理状态安排下一步。具体实现见<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/tool_execution_runtime.py">工具取消与环境中止实现</a>。</p>
-<h2 id="vm-清理等待">VM 清理等待</h2>
-<p>VM 清理比本地清理慢，所以配置了 VM（<code>config[&quot;vm&quot;]</code> 或 <code>OPENCOLLAB_VM</code>）后，清理等待时间改用 <code>vm.cleanup_timeout</code>，默认 60 秒。</p>
-<table>
-<thead>
-<tr>
-<th>情况</th>
-<th>清理等待时间</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>配置了 VM，Team、Workflow、CLI 或成员自编子运行</td>
-<td><code>vm.cleanup_timeout</code>，默认 60 秒</td>
-</tr>
-<tr>
-<td>SDK 调用或子运行 <code>launch</code> 显式传了值</td>
-<td>用显式值</td>
-</tr>
-<tr>
-<td>没配置 VM 的 Team</td>
-<td>10 秒</td>
-</tr>
-<tr>
-<td>没配置 VM 的 Workflow</td>
-<td>2 秒</td>
-</tr>
-<tr>
-<td><code>agent()</code></td>
-<td>2 秒</td>
-</tr>
-</tbody>
-</table>
-<p>OC 清理一台 VM 时按顺序做这几件事：</p>
-<ol>
-<li>停止还在运行的命令。</li>
-<li>把改动和产物导出到控制端。</li>
-<li>运行你配置的重置命令，把 VM 恢复到干净状态。</li>
-<li>释放这台 VM 的租约，让别的会话可以领用。</li>
-</ol>
-<p>如果某一步失败，OC 会保留租约和现场，方便你排查。对同一个对象再调用一次清理即可重试。控制进程重启后怎样回收资源，见 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a>。</p>
-<h2 id="来源">来源</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/cli/main.py#L182">opencollab/adapters/cli/main.py</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/evaluation-runtime.md#L121">docs/evaluation-runtime.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/evaluation-runtime.md#L149">docs/evaluation-runtime.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/evaluation-runtime.md#L165">docs/evaluation-runtime.md</a></p>
-<h2 id="相关指南">相关指南</h2>
-<p><a href="../session-save-resume/index.html">保存会话与恢复历史</a>　<a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a>　<a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a>　<a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a>　<a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a>　<a href="../run-results/index.html">读取运行结果与判断任务是否完成</a></p>
-
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/operations/cancellation-cleanup.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<p class="category">已合并</p>
+<h1>这篇指南已合并</h1>
+<p>内容现在位于 <a href="../timeouts-retries/index.html#%E4%B8%BB%E5%8A%A8%E5%81%9C%E6%AD%A2ctrlc-%E4%B8%8E-taskcancel">运行怎样停下：超时、重试、取消与清理</a>。浏览器没有自动跳转时，请点击这个链接。</p>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E7%94%A8%E6%B3%95">最小用法</a><a href="#%E5%81%9C%E6%AD%A2%E5%90%8E%E6%A0%B8%E5%AF%B9%E7%8A%B6%E6%80%81">停止后核对状态</a><a href="#%E7%94%A8%E9%87%8F%E5%92%8C%E9%83%A8%E5%88%86%E6%94%B9%E5%8A%A8">用量和部分改动</a><a href="#%E8%BF%9B%E9%98%B6%E5%B7%A5%E5%85%B7%E5%8F%96%E6%B6%88%E7%9A%84%E7%AD%89%E5%BE%85%E9%A1%BA%E5%BA%8F">进阶：工具取消的等待顺序</a><a href="#vm-%E6%B8%85%E7%90%86%E7%AD%89%E5%BE%85">VM 清理等待</a><a href="#%E6%9D%A5%E6%BA%90">来源</a><a href="#%E7%9B%B8%E5%85%B3%E6%8C%87%E5%8D%97">相关指南</a></aside>
 </div>
 </body>
 </html>

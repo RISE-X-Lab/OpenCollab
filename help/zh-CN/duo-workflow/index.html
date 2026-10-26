@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>用 Duo 跑两个候选方案并选出一个 · OpenCollab Wiki</title>
-<meta name="description" content="Duo 是内置 Workflow：让两个 coder 在各自的候选环境里依次完成同一任务，按改动和测试证据选出一个，再把它采用到源工作区。">
+<title>Duo：让两个 coder 各写一版，再挑一个 · OpenCollab Wiki</title>
+<meta name="description" content="Duo 是内置 Workflow：让两个 coder 在各自的候选环境里依次完成同一任务，按改动和测试证据选出一个，再采纳到源工作区。">
 <link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/duo-workflow/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,22 +35,22 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details open><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="index.html" aria-current="page">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details open><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="index.html" aria-current="page">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details><summary>模型与配置 <small>5</small></summary><a href="../provider-endpoint-credentials/index.html">接入模型服务：端点、凭据、协议与流式</a><a href="../thinking-reasoning-sampling/index.html">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details><summary>工具与扩展 <small>4</small></summary><a href="../tool-selection/index.html">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">使用自己的执行环境</a><a href="../candidate-delivery/index.html">隔离改动怎样回到项目：采纳、找回与清理</a></details><details><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../session-save-resume/index.html">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">Workflow 与子 Workflow</p>
-<h1 id="用-duo-跑两个候选方案并选出一个">用 Duo 跑两个候选方案并选出一个</h1>
-<p>Duo 是 OC 内置的 Workflow，名称 <code>duo</code>。它对同一个任务依次跑两个独立的 coder 候选（best-of-2）：候选 A 追求简单完整的实现，候选 B 关注端到端行为、依赖和边界情况。两份结果各自在候选环境里生成，然后按改动和验证证据选出一个，必要时交给仲裁角色判断，最后把选中的改动采用到源工作区。</p>
-<p>适合目标明确、想比较两份完整交付的任务。源代码、配置和数据文件都可以是产物。</p>
+<p class="category">Workflow：用代码编排</p>
+<h1 id="duo让两个-coder-各写一版再挑一个">Duo：让两个 coder 各写一版，再挑一个</h1>
+<p>Duo 是 OC 内置的 Workflow，名称 <code>duo</code>。它的思路很简单：同一个任务让两个独立的 coder 各做一遍（best-of-2），两份结果各自在候选环境里生成，然后按改动和验证证据选出一个，必要时交给仲裁角色判断，最后把选中的改动采纳到源工作区。</p>
+<p>两个 coder 的侧重点不同：候选 A 追求简单完整的实现，候选 B 更关注端到端行为、依赖和边界情况。适合目标明确、想比较两份完整交付的任务；源代码、配置和数据文件都可以是产物。</p>
 <h2 id="最小用法">最小用法</h2>
-<p>CLI：</p>
+<p>命令行：</p>
 <pre><code class="language-bash">opencollab workflow run duo \
   --workspace /path/to/workspace \
   --task '修复配置读取问题，保留旧格式并运行受影响测试' \
   --args '{&quot;allow_unisolated_shell&quot;:true,&quot;submission_mode&quot;:&quot;working_tree&quot;}' \
   --budget 100000
 </code></pre>
-<p>SDK：</p>
+<p>Python：</p>
 <pre><code class="language-python">import asyncio
 from opencollab import OpenCollab
 
@@ -85,15 +85,11 @@ asyncio.run(main())
 <tbody>
 <tr>
 <td><code>goal</code></td>
-<td>任务描述。也可以用 <code>description</code> 代替</td>
-</tr>
-<tr>
-<td><code>--task-file</code></td>
-<td>CLI 从文件读取长任务</td>
+<td>任务描述，也可以用 <code>description</code> 代替；CLI 可用 <code>--task-file</code> 从文件读取长任务</td>
 </tr>
 <tr>
 <td><code>allow_unisolated_shell</code></td>
-<td>允许 shell 不在隔离进程里运行。示例是可信本地工作区才这么设；用容器时按实际隔离要求设置</td>
+<td>允许 shell 不在隔离进程里运行。只在可信的本地工作区这样设；用容器时按实际隔离要求设置</td>
 </tr>
 <tr>
 <td><code>submission_mode</code></td>
@@ -101,11 +97,11 @@ asyncio.run(main())
 </tr>
 <tr>
 <td><code>candidate_evidence_dir</code></td>
-<td>仲裁证据的宿主父目录，每次仲裁建一个子目录，保存期限由调用方管理</td>
+<td>仲裁证据的宿主父目录，每次仲裁建一个子目录，保存多久由调用方管理</td>
 </tr>
 <tr>
 <td><code>agent_profile</code></td>
-<td>SDK 或 CLI 选择角色使用的 Agent 实现。省略时沿用工作流的角色配置</td>
+<td>SDK 或 CLI 选择角色使用的 Agent 配置；省略时沿用 Workflow 的角色配置</td>
 </tr>
 </tbody>
 </table>
@@ -114,37 +110,20 @@ asyncio.run(main())
 <li>运行候选 A。</li>
 <li>运行候选 B。B 会拿到 A 观察到的公开验证命令，相关且可用时重跑。</li>
 <li>按预设规则比较证据，需要时交给仲裁角色。</li>
-<li>采用选中的候选。</li>
+<li>采纳选中的候选。</li>
 </ol>
 <p>几个默认行为：</p>
 <ul>
-<li>两个候选共享这一次工作流的有限 token 额度。</li>
-<li>A 总是先于 B。提高 <code>concurrency</code> 或 <code>task_concurrency</code> 也不会让它们并行。</li>
+<li>两个候选共享这一次 Workflow 的有限 token 额度。</li>
+<li><strong>A 总是先于 B</strong>。提高 <code>concurrency</code> 或 <code>task_concurrency</code> 也不会让它们并行。</li>
 <li>Git 候选从源工作区当时的状态开始：已跟踪的文件，加上未被忽略的未跟踪文件。之后产生的改动被捕获为候选增量。</li>
-<li>最终改动通过采用过程交付到源工作区。任务对提交、产物和服务状态的要求会写进角色指令，实际怎么交付由环境后端决定。</li>
+<li>最终改动通过采纳交付到源工作区。任务对提交、产物和服务状态的要求会写进角色指令，实际怎么交付由环境后端决定。</li>
 </ul>
 <h2 id="怎么选候选">怎么选候选</h2>
-<p>先走预设规则，处理这些情况：</p>
-<ul>
-<li>某个候选是空改动</li>
-<li>公开测试结果可以直接比较</li>
-<li>两份 diff 相同</li>
-</ul>
-<p>规则决定不了时，仲裁角色逐项看两份候选怎么实现任务要求。它会结合修改路径、测试和报告判断完成情况，并用实际检查结果和源码核实报告里的说法。</p>
-<p>证据等价时默认偏向 B。但具体失败和已有规则可能先做出决定。结果里的选择原因可以追溯采用依据。</p>
-<h3 id="测试记录什么时候算数">测试记录什么时候算数</h3>
-<ul>
-<li>测试执行时，记录标记为“当前适用”。</li>
-<li>之后如果有文件编辑改变了内容，旧记录的适用性变为“未知”，并记下编辑路径。</li>
-<li>执行其他 Bash 命令也可能让旧记录变为“未知”。</li>
-<li>重新跑测试会产生新的当前记录。</li>
-</ul>
-<p>所以最后一次相关修改之后再跑的检查最有价值。</p>
-<h3 id="仲裁看到多少材料">仲裁看到多少材料</h3>
-<ul>
-<li>材料较小时，仲裁直接拿到完整 diff、公开测试记录和候选报告。</li>
-<li>材料较大时，通过只读证据工具分页读取，原始证据文件会保留。</li>
-</ul>
+<p>先走预设规则，处理这些容易判断的情况：某个候选是空改动、公开测试结果可以直接比较、两份 diff 完全相同。</p>
+<p>规则决定不了时，仲裁角色逐项看两份候选怎样实现任务要求，结合修改路径、测试和报告判断完成情况，并用实际检查结果和源码核实报告里的说法。证据等价时默认偏向 B，但具体失败和已有规则可能先做出决定。结果里的选择原因可以追溯采纳依据。</p>
+<p>仲裁看到多少材料：材料较小时直接拿到完整 diff、公开测试记录和候选报告；材料较大时通过只读证据工具分页读取，原始证据文件会保留。</p>
+<p>测试记录什么时候算数：测试执行时记录标为“当前适用”；之后有文件编辑改变了内容，或执行了其他 Bash 命令，旧记录的适用性就变为“未知”；重新跑测试会产生新的当前记录。所以<strong>最后一次相关修改之后再跑的检查最有价值</strong>。规则细节见 <a href="../run-results/index.html#%E7%94%A8%E6%B5%8B%E8%AF%95%E8%AF%81%E6%8D%AE%E7%A1%AE%E8%AE%A4%E5%81%9A%E5%AF%B9%E4%BA%86">测试证据</a>。</p>
 <h2 id="返回字段">返回字段</h2>
 <table>
 <thead>
@@ -160,19 +139,19 @@ asyncio.run(main())
 </tr>
 <tr>
 <td><code>adopted</code></td>
-<td>实际采用的候选。第一次采用失败时可能和 <code>winner</code> 不同</td>
+<td>实际采纳的候选。第一次采纳失败时可能和 <code>winner</code> 不同</td>
 </tr>
 <tr>
 <td><code>status</code></td>
-<td><code>done</code>：采用完成。<code>incomplete</code>：还没有候选交付。<code>error</code>：可能是任务缺失</td>
+<td><code>done</code>：采纳完成；<code>incomplete</code>：还没有候选交付；<code>error</code>：可能是任务缺失</td>
 </tr>
 <tr>
 <td><code>selection_reason</code>、<code>judge_used</code>、<code>judge_result</code></td>
-<td>选择依据、是否用了仲裁、仲裁对象</td>
+<td>选择依据、是否用了仲裁、仲裁结果</td>
 </tr>
 <tr>
 <td><code>adoption_attempts</code></td>
-<td>每次采用的结果</td>
+<td>每次采纳的结果</td>
 </tr>
 <tr>
 <td><code>candidates</code>、<code>shared_public_command</code></td>
@@ -184,23 +163,15 @@ asyncio.run(main())
 </tr>
 </tbody>
 </table>
-<p>两个状态不要混淆：</p>
-<ul>
-<li>SDK 的 <code>RunResult.status</code>：整个流程有没有执行完。</li>
-<li>Duo 的 <code>output.status</code>：候选交付进行到哪一步。</li>
-</ul>
-<p>两者都要和应用检查一起看。任务最终是否正确，要由真实入口、原生测试或评测器确认。</p>
+<p>两个状态别混淆：SDK 的 <code>RunResult.status</code> 说明整个流程有没有执行完；Duo 的 <code>output.status</code> 说明候选交付进行到哪一步。两者都要和应用检查一起看，任务最终是否正确，要由真实入口、原生测试或评测器确认。</p>
 <h2 id="常见问题">常见问题</h2>
-<p>如果采用失败，可能的原因有：</p>
 <ul>
-<li>候选执行期间源工作区变了</li>
-<li>采用前源版本变了</li>
-<li>补丁冲突</li>
+<li><strong>采纳失败</strong>：可能是候选执行期间源工作区变了、采纳前源版本变了，或者补丁冲突。</li>
+<li><strong>捕获失败</strong>：候选工作区和恢复位置会被保留。先保住已有材料，再对照源版本和候选 diff 处理，见 <a href="../workflow-composition-hierarchy/index.html#%E9%87%87%E7%BA%B3%E5%A4%B1%E8%B4%A5%E6%97%B6">采纳失败时</a>。</li>
+<li><strong>评测集成</strong>：可以用 <code>injected_test_paths</code> 指定采纳时要保留的保护测试路径；全环境产物由调用方注入的候选后端交付。</li>
 </ul>
-<p>如果捕获失败，候选工作区和恢复位置会被保留。先保住已有材料，再对照源版本和候选 diff 处理。见<a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a>。</p>
-<p>如果是评测集成，可以用 <code>injected_test_paths</code> 指定采用时要保留的保护测试路径。全环境产物则由调用方注入的候选后端交付。</p>
-<h2 id="进阶定制两个-coder-角色">进阶：定制两个 coder 角色</h2>
-<p>想换掉两个 coder 的分工，可以在自己的包装 Workflow 里调用公开的 <code>run_dual_coder</code>。下面的函数保留共享规则和默认选择提示，只改两个角色的任务说明：</p>
+<h2 id="定制两个-coder-的分工">定制两个 coder 的分工</h2>
+<p>想换掉两个 coder 的分工，在自己的包装 Workflow 里调用公开的 <code>run_dual_coder</code>。下面的函数保留共享规则和默认选择提示，只改两个角色的任务说明：</p>
 <pre><code class="language-python">from opencollab.builtin_workflows import run_dual_coder
 
 async def compatibility_duo(ctx, args):
@@ -217,7 +188,6 @@ async def compatibility_duo(ctx, args):
         ),
     )
 </code></pre>
-<p>可定制的参数：</p>
 <table>
 <thead>
 <tr>
@@ -248,22 +218,17 @@ async def compatibility_duo(ctx, args):
 </tr>
 </tbody>
 </table>
-<p>自定义仲裁器 <code>adjudicator</code>：</p>
+<p>自定义仲裁器 <code>adjudicator</code> 接收 <code>ctx</code> 以及关键字参数 <code>goal</code>、<code>candidate_a</code>、<code>candidate_b</code>、<code>selector_prompt</code>、<code>rules</code>，异步返回 <code>(winner, judge_result, reason)</code>，候选标签用 <code>A</code> 或 <code>B</code>。运行时先按预设规则选，出现需要进一步判断的分歧时才调用它。</p>
+<p>内置的 <code>duo</code> 已经接好了完整证据文件、分页读取和源追踪。直接用 <code>run_dual_coder</code> 的应用，需要自己为仲裁材料和后端接上相应的连接。</p>
+<h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>接收 <code>ctx</code>，以及关键字参数 <code>goal</code>、<code>candidate_a</code>、<code>candidate_b</code>、<code>selector_prompt</code>、<code>rules</code>。</li>
-<li>异步返回 <code>(winner, judge_result, reason)</code>，候选标签用 <code>A</code> 或 <code>B</code>。</li>
-<li>运行时先按预设规则选，出现需要进一步判断的分歧时才调用它。</li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/duo.md">docs/duo.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/builtin_workflows/_dual_coder.py">opencollab/builtin_workflows/_dual_coder.py</a></li>
+<li>相关指南：<a href="../run-registered-workflow/index.html">运行一个 Workflow</a> · <a href="../workflow-composition-hierarchy/index.html">组合与嵌套</a> · <a href="../run-results/index.html">判断任务是否真的完成</a> · <a href="../weave-workflow/index.html">Weave</a></li>
 </ul>
-<p>内置 <code>duo</code> 已经接好了完整证据文件、分页读取和源追踪。直接用 <code>run_dual_coder</code> 的应用，需要自己为仲裁材料和后端接上相应的连接。</p>
-<h2 id="源码依据">源码依据</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/duo.md#L5">docs/duo.md</a>。</p>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/builtin_workflows/_dual_coder.py#L128">opencollab/builtin_workflows/_dual_coder.py</a> 提供公开 helper 的实际签名和选择顺序。</p>
-<h2 id="相关章节">相关章节</h2>
-<p><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a>、<a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a>、<a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a>、<a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a>、<a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a>、<a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a>。</p>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/duo-workflow.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E7%94%A8%E6%B3%95">最小用法</a><a href="#%E5%B8%B8%E7%94%A8%E8%BE%93%E5%85%A5">常用输入</a><a href="#%E6%89%A7%E8%A1%8C%E8%BF%87%E7%A8%8B">执行过程</a><a href="#%E6%80%8E%E4%B9%88%E9%80%89%E5%80%99%E9%80%89">怎么选候选</a><a href="#%E6%B5%8B%E8%AF%95%E8%AE%B0%E5%BD%95%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E7%AE%97%E6%95%B0">测试记录什么时候算数</a><a href="#%E4%BB%B2%E8%A3%81%E7%9C%8B%E5%88%B0%E5%A4%9A%E5%B0%91%E6%9D%90%E6%96%99">仲裁看到多少材料</a><a href="#%E8%BF%94%E5%9B%9E%E5%AD%97%E6%AE%B5">返回字段</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E8%BF%9B%E9%98%B6%E5%AE%9A%E5%88%B6%E4%B8%A4%E4%B8%AA-coder-%E8%A7%92%E8%89%B2">进阶：定制两个 coder 角色</a><a href="#%E6%BA%90%E7%A0%81%E4%BE%9D%E6%8D%AE">源码依据</a><a href="#%E7%9B%B8%E5%85%B3%E7%AB%A0%E8%8A%82">相关章节</a></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E7%94%A8%E6%B3%95">最小用法</a><a href="#%E5%B8%B8%E7%94%A8%E8%BE%93%E5%85%A5">常用输入</a><a href="#%E6%89%A7%E8%A1%8C%E8%BF%87%E7%A8%8B">执行过程</a><a href="#%E6%80%8E%E4%B9%88%E9%80%89%E5%80%99%E9%80%89">怎么选候选</a><a href="#%E8%BF%94%E5%9B%9E%E5%AD%97%E6%AE%B5">返回字段</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%AE%9A%E5%88%B6%E4%B8%A4%E4%B8%AA-coder-%E7%9A%84%E5%88%86%E5%B7%A5">定制两个 coder 的分工</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>
 </body>
 </html>

@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>接入模型端点与认证凭据 · OpenCollab Wiki</title>
-<meta name="description" content="把 OpenAI 兼容服务或原生 Anthropic 服务接到 OC 上，并弄清 OC 会用哪个 API key。">
+<title>接入模型服务：端点、凭据、协议与流式 · OpenCollab Wiki</title>
+<meta name="description" content="把 OpenAI 兼容服务或原生 Anthropic 接到 OC 上：填好端点和模型名，弄清 OC 会选哪个 API key，选对调用协议，并按需打开流式接收。">
 <link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/provider-endpoint-credentials/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,16 +35,16 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details open><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="index.html" aria-current="page">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="../duo-workflow/index.html">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details open><summary>模型与配置 <small>5</small></summary><a href="index.html" aria-current="page">接入模型服务：端点、凭据、协议与流式</a><a href="../thinking-reasoning-sampling/index.html">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details><summary>工具与扩展 <small>4</small></summary><a href="../tool-selection/index.html">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">使用自己的执行环境</a><a href="../candidate-delivery/index.html">隔离改动怎样回到项目：采纳、找回与清理</a></details><details><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../session-save-resume/index.html">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">模型接入与配置</p>
-<h1 id="接入模型端点与认证凭据">接入模型端点与认证凭据</h1>
-<p>OC 只有两种 provider：<code>openai</code> 覆盖所有 OpenAI 协议的服务（官方、第三方中转、本地兼容服务），<code>anthropic</code> 走原生 Anthropic Messages。接入一个端点只需四项：provider、base URL、模型名、API key。要注意的是 OC 自动挑选 API key 时按 provider 有固定的变量顺序，而且专用变量（如 <code>DASHSCOPE_API_KEY</code>）可以压过 shell 里的通用 key。</p>
+<p class="category">模型与配置</p>
+<h1 id="接入模型服务端点凭据协议与流式">接入模型服务：端点、凭据、协议与流式</h1>
+<p>OC 只认两种服务类型（provider）：<code>openai</code> 覆盖所有说 OpenAI 协议的服务（官方、第三方中转、本地兼容服务），<code>anthropic</code> 走原生 Anthropic Messages。接入一个服务只需要四项：provider、地址（base URL）、模型名、API key。这篇依次讲这四项怎么填、OC 怎样挑选 API key、用哪种调用协议，以及什么时候打开流式接收。</p>
 <h2 id="配置一个端点">配置一个端点</h2>
 <ol>
 <li>确认服务提供的是哪种接口，选 <code>openai</code> 或 <code>anthropic</code>。</li>
-<li>把下面四行写进当前选中的 <code>configs/.env</code>，替换占位值。</li>
+<li>把下面四行写进当前使用的 <code>configs/.env</code>，替换占位值。</li>
 <li><code>base_url</code> 填服务文档给的 API 基地址。模型名必须是该端点实际开放的名称，OC 不会替你映射。</li>
 </ol>
 <pre><code class="language-dotenv">OPENCOLLAB_PROVIDER=openai
@@ -52,13 +52,12 @@ OPENCOLLAB_BASE_URL=https://your-endpoint.example/v1
 OPENCOLLAB_MODEL=your-model-id
 OPENCOLLAB_API_KEY=your-api-key
 </code></pre>
-<p>OC 会按 provider、协议和模型能力来构造请求。</p>
-<h3 id="默认地址和备用变量">默认地址和备用变量</h3>
+<p>不写地址时用 provider 的默认值，也可以用备用变量；通用的 <code>OPENCOLLAB_BASE_URL</code> 优先于备用变量：</p>
 <table>
 <thead>
 <tr>
 <th>provider</th>
-<th>不写 base URL 时的默认值</th>
+<th>不写地址时的默认值</th>
 <th>备用变量</th>
 </tr>
 </thead>
@@ -75,14 +74,25 @@ OPENCOLLAB_API_KEY=your-api-key
 </tr>
 </tbody>
 </table>
-<p>通用的 <code>OPENCOLLAB_BASE_URL</code> 优先于备用变量。</p>
-<h3 id="换成原生-anthropic-或-responses">换成原生 Anthropic 或 Responses</h3>
-<ul>
-<li>原生 Anthropic：把 provider 改成 <code>anthropic</code>，填服务支持的 Anthropic 模型名，按下一节的表配置凭据。</li>
-<li>Responses：需要 OpenAI 兼容端点明确提供 Responses API。协议设置见 <a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a>。</li>
-</ul>
-<h2 id="选定认证来源">选定认证来源</h2>
-<p>没有显式传 key 时，OC 按下表顺序自动挑选。空字符串和空白值当作没设置。</p>
+<p>换成原生 Anthropic：把 provider 改成 <code>anthropic</code>，填服务支持的 Anthropic 模型名，按下一节配置凭据。</p>
+<h3 id="在程序里连接本地兼容服务">在程序里连接本地兼容服务</h3>
+<p>本地服务和远程服务的配置方式一样，都是 OpenAI 兼容。先启动服务、设好环境变量，再创建客户端：</p>
+<pre><code class="language-python">import os
+from opencollab import OpenCollab
+
+client = OpenCollab(
+    &quot;.&quot;,
+    provider=&quot;openai&quot;,
+    base_url=os.environ[&quot;MODEL_BASE_URL&quot;],
+    model=os.environ[&quot;MODEL_NAME&quot;],
+    api_key=os.environ.get(&quot;MODEL_API_KEY&quot;),
+)
+print(client.configuration[&quot;provider&quot;])
+print(client.configuration[&quot;model&quot;])
+</code></pre>
+<p>要同时接多个服务，用逻辑路由给每个服务起个名字，各自带端点和凭据，见 <a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a>。</p>
+<h2 id="oc-用哪个-api-key">OC 用哪个 API key</h2>
+<p>没有显式传 key 时，OC 按下表的顺序自动挑选，空字符串和空白值当作没设置：</p>
 <table>
 <thead>
 <tr>
@@ -105,35 +115,97 @@ OPENCOLLAB_API_KEY=your-api-key
 </tr>
 </tbody>
 </table>
-<p>比较规则：</p>
-<ul>
-<li>同一个变量同时在 shell 和文件里，用 shell 的值。</li>
-<li>不同变量之间，先按上表的顺序比。这个顺序跨来源生效，所以文件里的专用 key 可以压过 shell 里的通用 key。</li>
-<li>切换服务后出现认证错误，先查旧服务的专用变量是否还在。</li>
-</ul>
+<p>这里有一个容易踩的坑：<strong>表里的变量顺序跨来源生效</strong>。同一个变量同时在 shell 和文件里时，用 shell 的值；但不同变量之间先按表里的顺序比，所以文件里的专用 key（如 <code>DASHSCOPE_API_KEY</code>）可以压过 shell 里导出的通用 key。切换服务后出现认证错误，先查旧服务的专用变量是否还在。</p>
 <p>显式设置的优先级更高：</p>
 <ol>
-<li>CLI <code>--api-key</code> 或 SDK <code>api_key=</code>，最高。</li>
-<li>其次是 SDK <code>config</code> 中显式的 <code>auth_token</code>，它优先于环境里的凭据。<code>auth_token</code> 用于原生 Anthropic 的 bearer 认证，会放进 <code>Authorization</code> 请求头。</li>
+<li>CLI 的 <code>--api-key</code> 或 SDK 的 <code>api_key=</code>，最高。</li>
+<li>其次是 SDK <code>config</code> 里显式的 <code>auth_token</code>，它优先于环境里的凭据。<code>auth_token</code> 用于原生 Anthropic 的 bearer 认证，会放进 <code>Authorization</code> 请求头。</li>
 <li>最后才是上表的自动选择。</li>
 </ol>
-<p>凭据文件留在本地。排查时用 OC 输出的有效配置，它已去掉秘密字段。</p>
-<h2 id="在程序里连接本地兼容服务">在程序里连接本地兼容服务</h2>
-<p>本地服务和远程服务的配置方式相同，都是 OpenAI 兼容。先启动服务、设好环境变量，再创建客户端。地址、模型名和认证要与你的部署一致。</p>
-<pre><code class="language-python">import os
-from opencollab import OpenCollab
+<p>凭据文件留在本地。排查时用 OC 输出的生效配置，它已经去掉了秘密字段。成员在容器或 VM 里运行自己写的子 Workflow 时，凭据要留在控制端，见 <a href="../team-run-workflow/index.html#%E5%87%AD%E6%8D%AE%E5%92%8C%E9%85%8D%E7%BD%AE%E6%94%BE%E5%9C%A8%E5%93%AA">凭据和配置放在哪</a>。</p>
+<h2 id="选择调用协议">选择调用协议</h2>
+<p><code>wire_protocol</code> 决定 OC 用哪种 API 跟模型说话：</p>
+<table>
+<thead>
+<tr>
+<th>你的服务</th>
+<th><code>provider</code></th>
+<th><code>wire_protocol</code></th>
+<th>实际使用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OpenAI 兼容（默认）</td>
+<td><code>openai</code></td>
+<td><code>chat_completions</code></td>
+<td>Chat Completions</td>
+</tr>
+<tr>
+<td>OpenAI 兼容，且提供 Responses API</td>
+<td><code>openai</code></td>
+<td><code>responses</code></td>
+<td>Responses</td>
+</tr>
+<tr>
+<td>原生 Anthropic</td>
+<td><code>anthropic</code></td>
+<td>保持 <code>chat_completions</code></td>
+<td>Messages（OC 按 provider 自动选择）</td>
+</tr>
+</tbody>
+</table>
+<p>原生 Anthropic 不靠这个字段，配 <code>responses</code> 会在配置校验时报错。切到 Responses：把 <code>OPENCOLLAB_WIRE_PROTOCOL</code> 改成 <code>responses</code>，并确认端点确实支持这个 API。SDK 里写作 <code>config={&quot;wire_protocol&quot;: &quot;responses&quot;}</code>：</p>
+<pre><code class="language-python">from opencollab import OpenCollab
 
 client = OpenCollab(
     &quot;.&quot;,
     provider=&quot;openai&quot;,
-    base_url=os.environ[&quot;MODEL_BASE_URL&quot;],
-    model=os.environ[&quot;MODEL_NAME&quot;],
-    api_key=os.environ.get(&quot;MODEL_API_KEY&quot;),
+    config={&quot;wire_protocol&quot;: &quot;responses&quot;},
 )
-print(client.configuration[&quot;provider&quot;])
-print(client.configuration[&quot;model&quot;])
+print(client.configuration[&quot;wire_protocol&quot;])
 </code></pre>
-<p>要同时接多个服务，用 <code>model_routes</code> 给每个服务定义一条逻辑路由，各自带端点和凭据。角色填逻辑名称，实际请求发送的仍是路由里声明的物理模型名。还可以按后端限制请求并发。详见 <a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a>。</p>
+<p>逻辑路由也有自己的 <code>wire_protocol</code> 字段，每条路由可以选不同的协议。</p>
+<p>协议相关的报错：服务返回“接口不存在”，先检查基地址和协议选择；错误说某个请求字段无效，再检查该模型在目标端点上的能力和覆盖设置。</p>
+<h2 id="开启-chat-流式接收">开启 Chat 流式接收</h2>
+<p>OC 的 Chat 请求默认<strong>不用</strong>流式。需要接收流式的 reasoning 文本时，加上：</p>
+<pre><code class="language-dotenv">OPENCOLLAB_LLM_STREAM_CHAT=true
+OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT=180
+OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT=180
+</code></pre>
+<p>开启后：</p>
+<ul>
+<li>Chat 请求会带上 <code>stream</code> 和 <code>stream_options</code>，服务必须接受这两个字段。</li>
+<li>收到的 reasoning 文本会写进轨迹。</li>
+<li>只有同时收到终止的 <code>finish_reason</code> 和 token 用量，OC 才认为这次流正常结束。终端已经显示出文字时，可能还在等尾部的统计数据，以运行状态为准。</li>
+<li>这个开关只对 Chat Completions 有效；Responses 的流式行为由所选模型的能力设置控制。</li>
+</ul>
+<p>打开流式之后才出错，先检查服务是否支持 <code>stream_options</code>、尾部用量和终止事件，再结合停止原因和轨迹定位。流在哪个阶段卡住、该调哪个超时，见 <a href="../timeouts-retries/index.html#%E6%A8%A1%E5%9E%8B%E8%AF%B7%E6%B1%82%E6%8C%89%E5%8D%A1%E4%BD%8F%E7%9A%84%E4%BD%8D%E7%BD%AE%E9%80%89%E8%B6%85%E6%97%B6">按卡住的位置选超时</a>。</p>
+<h2 id="工具调用之后的续轮数据">工具调用之后的续轮数据</h2>
+<p>工具返回后模型要接着生成，OC 需要按协议把上一轮的推理数据回传：</p>
+<table>
+<thead>
+<tr>
+<th>协议</th>
+<th>OC 保留什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Chat Completions</td>
+<td>启用 thinking 续轮、或模型协议要求回传推理内容时，保留历史 <code>reasoning_content</code>。已声明需要回传的 DeepSeek 模型，即使关掉了新一轮 thinking 也照样保留。其他 Chat 请求只用普通 assistant 内容和工具调用</td>
+</tr>
+<tr>
+<td>Responses</td>
+<td>response items、provider 身份和对应的 response session 信息</td>
+</tr>
+<tr>
+<td>原生 Anthropic</td>
+<td>带签名的 thinking blocks 及原始顺序，工具返回后按协议重放</td>
+</tr>
+</tbody>
+</table>
+<p>如果你自己写了传输包装器或网关，也要完整保留这些数据，否则模型没法在工具返回后接着生成。</p>
 <h2 id="遇到启动和请求错误">遇到启动和请求错误</h2>
 <table>
 <thead>
@@ -145,7 +217,7 @@ print(client.configuration[&quot;model&quot;])
 <tbody>
 <tr>
 <td>CLI 启动时提示缺少凭据</td>
-<td>提示里会说明所选 provider 缺哪个凭据</td>
+<td>提示会说明所选 provider 缺哪个凭据</td>
 </tr>
 <tr>
 <td>返回 401</td>
@@ -157,29 +229,16 @@ print(client.configuration[&quot;model&quot;])
 </tr>
 </tbody>
 </table>
-<p>各阶段能查出什么：</p>
+<p>各阶段能查出什么：创建客户端时只检查配置类型；离线模型检查读取内置能力表；能不能连上，只能通过一次真实请求观察。排查步骤见 <a href="../configuration-precedence/index.html#%E5%90%AF%E5%8A%A8%E5%87%BA%E9%94%99%E6%8C%89%E9%98%B6%E6%AE%B5%E6%8E%92%E6%9F%A5">启动出错怎么查</a>。报告问题时，记下状态码、出错阶段，以及去掉凭据后的生效配置。</p>
+<h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>创建客户端：检查配置类型。</li>
-<li>离线模型检查：读取内置能力表。</li>
-<li>能不能连上：只能通过实际请求观察。</li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md">configs/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/config.py">opencollab/bootstrap/config.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/main.py">opencollab/adapters/cli/main.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/model-routing.md">docs/model-routing.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/model-inspection.md">docs/model-inspection.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md">docs/evaluation-runtime.md</a></li>
+<li>相关指南：<a href="../configuration-precedence/index.html">配置从哪来、哪个生效</a> · <a href="../thinking-reasoning-sampling/index.html">深度思考与采样</a> · <a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a> · <a href="../timeouts-retries/index.html">运行怎样停下</a></li>
 </ul>
-<p>报告问题时，记下状态码、出错阶段，以及去掉凭据后的有效配置。</p>
-<h2 id="成员自编-workflow-与远端环境">成员自编 Workflow 与远端环境</h2>
-<p>成员用 <code>manage_workflow</code> 启动自己写的子 Workflow 时，子 Workflow 跑在一个单独的 Python 子进程里。模型请求由控制端（运行 OC 主进程的机器）转发，所以端点地址、API 密钥和请求槽位都只留在控制端。子进程只拿到模型名称和温度、思考设置这类不敏感的生成参数。</p>
-<p>注意下面两点：</p>
-<ol>
-<li>OC 会按快照规则把工作区文件复制给子运行。所以不要把含密钥的 env 文件放进项目目录。把它放在项目外面，再用 <code>OPENCOLLAB_CONFIG_FILE</code> 指向它在控制端的绝对路径。</li>
-<li>连接 VM 的 SSH 私钥只由控制端的 OpenSSH 使用。<code>identity_file</code> 填控制端本地的私钥路径，私钥不会复制到来宾机。</li>
-</ol>
-<p>操作步骤见 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a>。</p>
-<h2 id="来源">来源</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/configs/README.md#L31">configs/README.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/cli/main.py#L61">opencollab/adapters/cli/main.py</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/bootstrap/config.py#L124">opencollab/bootstrap/config.py</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/model-routing.md#L47">docs/model-routing.md</a></p>
-<h2 id="相关指南">相关指南</h2>
-<p><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a>　<a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a>　<a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a>　<a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></p>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/topics/models/provider-endpoint-credentials.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E9%85%8D%E7%BD%AE%E4%B8%80%E4%B8%AA%E7%AB%AF%E7%82%B9">配置一个端点</a><a href="#%E9%BB%98%E8%AE%A4%E5%9C%B0%E5%9D%80%E5%92%8C%E5%A4%87%E7%94%A8%E5%8F%98%E9%87%8F">默认地址和备用变量</a><a href="#%E6%8D%A2%E6%88%90%E5%8E%9F%E7%94%9F-anthropic-%E6%88%96-responses">换成原生 Anthropic 或 Responses</a><a href="#%E9%80%89%E5%AE%9A%E8%AE%A4%E8%AF%81%E6%9D%A5%E6%BA%90">选定认证来源</a><a href="#%E5%9C%A8%E7%A8%8B%E5%BA%8F%E9%87%8C%E8%BF%9E%E6%8E%A5%E6%9C%AC%E5%9C%B0%E5%85%BC%E5%AE%B9%E6%9C%8D%E5%8A%A1">在程序里连接本地兼容服务</a><a href="#%E9%81%87%E5%88%B0%E5%90%AF%E5%8A%A8%E5%92%8C%E8%AF%B7%E6%B1%82%E9%94%99%E8%AF%AF">遇到启动和请求错误</a><a href="#%E6%88%90%E5%91%98%E8%87%AA%E7%BC%96-workflow-%E4%B8%8E%E8%BF%9C%E7%AB%AF%E7%8E%AF%E5%A2%83">成员自编 Workflow 与远端环境</a><a href="#%E6%9D%A5%E6%BA%90">来源</a><a href="#%E7%9B%B8%E5%85%B3%E6%8C%87%E5%8D%97">相关指南</a></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E9%85%8D%E7%BD%AE%E4%B8%80%E4%B8%AA%E7%AB%AF%E7%82%B9">配置一个端点</a><a href="#%E5%9C%A8%E7%A8%8B%E5%BA%8F%E9%87%8C%E8%BF%9E%E6%8E%A5%E6%9C%AC%E5%9C%B0%E5%85%BC%E5%AE%B9%E6%9C%8D%E5%8A%A1">在程序里连接本地兼容服务</a><a href="#oc-%E7%94%A8%E5%93%AA%E4%B8%AA-api-key">OC 用哪个 API key</a><a href="#%E9%80%89%E6%8B%A9%E8%B0%83%E7%94%A8%E5%8D%8F%E8%AE%AE">选择调用协议</a><a href="#%E5%BC%80%E5%90%AF-chat-%E6%B5%81%E5%BC%8F%E6%8E%A5%E6%94%B6">开启 Chat 流式接收</a><a href="#%E5%B7%A5%E5%85%B7%E8%B0%83%E7%94%A8%E4%B9%8B%E5%90%8E%E7%9A%84%E7%BB%AD%E8%BD%AE%E6%95%B0%E6%8D%AE">工具调用之后的续轮数据</a><a href="#%E9%81%87%E5%88%B0%E5%90%AF%E5%8A%A8%E5%92%8C%E8%AF%B7%E6%B1%82%E9%94%99%E8%AF%AF">遇到启动和请求错误</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>
 </body>
 </html>

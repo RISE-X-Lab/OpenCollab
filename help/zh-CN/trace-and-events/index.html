@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>查看 Agent 做了什么 · OpenCollab Wiki</title>
-<meta name="description" content="用轨迹文件事后复盘，或用事件回调实时观察，找出 Agent 调了什么模型、跑了什么工具、为什么停下。">
-<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/trace-and-events/index.html">
+<title>运行记录：产物目录、轨迹与实时事件 · OpenCollab Wiki</title>
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url=../artifacts-and-history/index.html#%E8%AF%BB%E8%BD%A8%E8%BF%B9%E6%96%87%E4%BB%B6">
+<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/artifacts-and-history/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-redirect="artifacts-and-history#读轨迹文件">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -33,158 +34,13 @@
 </div></header>
 <div class="layout">
 <nav id="help-navigation" aria-label="帮助分类">
-<div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
-<p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details open><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="index.html" aria-current="page">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<div class="nav-start"><a href="../index.html">Wiki 首页</a></div>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">结果、轨迹与评测</p>
-<h1 id="查看-agent-做了什么">查看 Agent 做了什么</h1>
-<p>OC 有两条互相独立的观察通道：持久化轨迹（<code>trajectory.jsonl</code> 或 <code>orchestration.jsonl</code>，事后分析用），以及 <code>RunControl(on_event=...)</code> 的同步回调，实时推送 <code>RunEvent</code>（界面、进度、实时决策用）。设置 <code>trace=False</code> 仍能收到回调。本文给出开启方式、记录字段、常用事件类型和从停止原因倒查的步骤。</p>
-<h2 id="第一步打开轨迹">第一步：打开轨迹</h2>
-<ul>
-<li>交互 CLI：加 <code>--trace</code>。</li>
-<li>Workflow：默认记录编排轨迹，保存目录由运行配置决定。</li>
-<li>SDK：设置 <code>artifacts</code> 并保留 trace，跑完后从结果目录找到 JSONL 文件。</li>
-</ul>
-<h2 id="第二步读轨迹文件">第二步：读轨迹文件</h2>
-<p>每行是一条记录，顶层字段如下：</p>
-<table>
-<thead>
-<tr>
-<th>字段</th>
-<th>含义</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>timestamp</code></td>
-<td>时间</td>
-</tr>
-<tr>
-<td><code>run_id</code></td>
-<td>运行标识</td>
-</tr>
-<tr>
-<td><code>step</code></td>
-<td>这份轨迹里的记录序号</td>
-</tr>
-<tr>
-<td><code>aid</code>、<code>role</code></td>
-<td>成员标识和角色。调度器自身的记录可以留空</td>
-</tr>
-<tr>
-<td><code>type</code></td>
-<td>事件类型</td>
-</tr>
-<tr>
-<td><code>payload</code></td>
-<td>事件详情</td>
-</tr>
-<tr>
-<td><code>metrics</code></td>
-<td><code>metrics.tokens</code> 和 <code>metrics.latency_s</code>，对应这一条记录</td>
-</tr>
-</tbody>
-</table>
-<p>下面脚本统计一份已完成轨迹里每个成员各类事件的数量。把路径换成该运行的 <code>trajectory.jsonl</code> 或 <code>orchestration.jsonl</code>。</p>
-<pre><code class="language-python">import json
-from collections import Counter
-from pathlib import Path
-
-trace_path = Path(&quot;artifacts/example/trajectory.jsonl&quot;)
-counts = Counter()
-with trace_path.open(encoding=&quot;utf-8&quot;) as stream:
-    for line in stream:
-        if line.strip():
-            row = json.loads(line)
-            counts[(row[&quot;run_id&quot;], row.get(&quot;aid&quot;), row.get(&quot;role&quot;), row[&quot;type&quot;])] += 1
-for identity, count in counts.items():
-    print(identity, count)
-</code></pre>
-<p>按时间和会话把事件串起来，就能还原请求、工具调用、通信和停止的先后顺序。</p>
-<p>常用事件类型：</p>
-<table>
-<thead>
-<tr>
-<th>事件</th>
-<th>看什么</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>llm_call_started</code>、<code>llm_call</code>、<code>llm_call_cancelled</code></td>
-<td>一次模型请求的开始、完成、取消。用 payload 里的 <code>response_session_id</code> 和 <code>session_step</code> 对应起来</td>
-</tr>
-<tr>
-<td><code>tool_exec</code></td>
-<td>实际执行的工具操作</td>
-</tr>
-<tr>
-<td><code>context_shaping</code></td>
-<td>上下文处理，比如压缩有没有真的发生</td>
-</tr>
-<tr>
-<td><code>message_sent</code>、<code>message_refused</code></td>
-<td>成员之间的通信决策</td>
-</tr>
-</tbody>
-</table>
-<p><code>llm_call</code> 完成记录里的 <code>request_tool_names</code> 与 <code>request_tool_choice</code>，表示应用准备交给模型的工具列表，不等于实际执行了哪些工具。实际执行看 <code>tool_exec</code>。要看具体调用内容，继续读 payload 里的输入和结果。</p>
-<h2 id="第三步实时订阅事件">第三步：实时订阅事件</h2>
-<p><code>RunControl</code> 可用于单 Agent 和 <code>ctx.agent_run</code>。下面代码在已有的异步函数中执行，<code>on_event</code> 是同步回调。</p>
-<pre><code class="language-python">from opencollab import RunControl
-
-events = []
-result = await oc.agent(
-    &quot;说明当前项目的入口&quot;,
-    run_control=RunControl(on_event=events.append),  # 每个事件追加到列表
-)
-for event in events:
-    print(event.type, event.aid, event.used_tokens)
-</code></pre>
-<p>事件和轨迹文件互不依赖。设置 <code>trace=False</code> 也能收到回调。</p>
-<p><code>RunEvent</code> 的字段：<code>type</code>、<code>run_id</code>、<code>session_id</code>、<code>aid</code>、<code>used_tokens</code>、<code>steps</code>，以及独立复制的 <code>data</code>。</p>
-<ul>
-<li><code>used_tokens</code> 是会话累计值。</li>
-<li><code>usage</code> 事件的 <code>data[&quot;total_tokens&quot;]</code> 是这一次已记账的用量。</li>
-</ul>
-<p>事件适合观察用量、预算决策、上下文处理、错误、停止和清理。工具执行的细节要从轨迹或完整会话读。</p>
-<p>回调的注意事项：</p>
-<ol>
-<li>回调要尽快同步返回。要写数据库或调网络服务，先把事件转交给队列。</li>
-<li>回调出错时，错误保存在 <code>result.metrics[&quot;observation_errors&quot;]</code>。<code>ctx.agent_run</code> 则通过返回值的 <code>observation_errors</code> 提供。</li>
-<li>运行结束后回调不会立刻停。它会继续接收原运行的事件，直到迟到用量结算完、清理结束，并收到 <code>cleanup_completed</code>。</li>
-</ol>
-<h2 id="从停止原因倒查">从停止原因倒查</h2>
-<ol>
-<li>先看结果状态。</li>
-<li>找到同一运行的 <code>session_stopped</code>、错误或清理事件。</li>
-<li>检查最后一次模型请求有没有完成。</li>
-<li>检查每个工具调用有没有对应回执。</li>
-<li>确认环境是否已经停下。</li>
-</ol>
-<p>辅助判断：</p>
-<ul>
-<li><code>context_shaping</code> 能看出压缩是否真的发生。</li>
-<li><code>usage</code> 能区分普通生成、摘要和迟到响应。</li>
-</ul>
-<p>模型请求刚开始或被取消时，可能还没返回用量。结束后迟到的成功或错误用量仍会补记。所以分析费用时，要把后续清理记录读完。</p>
-<h2 id="用轨迹支撑结论">用轨迹支撑结论</h2>
-<p>根据问题找对应的记录：</p>
-<ul>
-<li>想看测试计划：读模型输出的文字。</li>
-<li>想确认测试真的跑了：读工具命令和实际结果。</li>
-<li>想分析通信：先从团队声明读允许的通信方向，再从发送记录确认实际发了哪些消息。</li>
-</ul>
-<h2 id="分享日志前注意">分享日志前注意</h2>
-<p>日志可能包含任务源码、用户输入和工具输出。发给别人前先检查内容范围，按项目要求处理凭据和私密数据。</p>
-<h2 id="源码与进一步阅读">源码与进一步阅读</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/trace.py">opencollab/adapters/trace.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/run_control.py">opencollab/application/run_control.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/evaluation-runtime.md">docs/evaluation-runtime.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/runtime-design.md">docs/runtime-design.md</a></p>
-
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/observability/trace-and-events.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<p class="category">已合并</p>
+<h1>这篇指南已合并</h1>
+<p>内容现在位于 <a href="../artifacts-and-history/index.html#%E8%AF%BB%E8%BD%A8%E8%BF%B9%E6%96%87%E4%BB%B6">运行记录：产物目录、轨迹与实时事件</a>。浏览器没有自动跳转时，请点击这个链接。</p>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E7%AC%AC%E4%B8%80%E6%AD%A5%E6%89%93%E5%BC%80%E8%BD%A8%E8%BF%B9">第一步：打开轨迹</a><a href="#%E7%AC%AC%E4%BA%8C%E6%AD%A5%E8%AF%BB%E8%BD%A8%E8%BF%B9%E6%96%87%E4%BB%B6">第二步：读轨迹文件</a><a href="#%E7%AC%AC%E4%B8%89%E6%AD%A5%E5%AE%9E%E6%97%B6%E8%AE%A2%E9%98%85%E4%BA%8B%E4%BB%B6">第三步：实时订阅事件</a><a href="#%E4%BB%8E%E5%81%9C%E6%AD%A2%E5%8E%9F%E5%9B%A0%E5%80%92%E6%9F%A5">从停止原因倒查</a><a href="#%E7%94%A8%E8%BD%A8%E8%BF%B9%E6%94%AF%E6%92%91%E7%BB%93%E8%AE%BA">用轨迹支撑结论</a><a href="#%E5%88%86%E4%BA%AB%E6%97%A5%E5%BF%97%E5%89%8D%E6%B3%A8%E6%84%8F">分享日志前注意</a><a href="#%E6%BA%90%E7%A0%81%E4%B8%8E%E8%BF%9B%E4%B8%80%E6%AD%A5%E9%98%85%E8%AF%BB">源码与进一步阅读</a></aside>
 </div>
 </body>
 </html>

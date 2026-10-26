@@ -7,113 +7,115 @@
     },
     {
       "id": "setup",
-      "title": "安装与开始使用"
+      "title": "上手使用"
+    },
+    {
+      "id": "team",
+      "title": "Team：让模型分工"
+    },
+    {
+      "id": "workflow",
+      "title": "Workflow：用代码编排"
     },
     {
       "id": "models",
-      "title": "模型接入与配置"
+      "title": "模型与配置"
+    },
+    {
+      "id": "extensions",
+      "title": "工具与扩展"
     },
     {
       "id": "isolation",
       "title": "执行环境与隔离"
     },
     {
-      "id": "team",
-      "title": "Team 与子 Agent"
-    },
-    {
-      "id": "workflow",
-      "title": "Workflow 与子 Workflow"
-    },
-    {
       "id": "operations",
-      "title": "预算、上下文与运行恢复"
-    },
-    {
-      "id": "extensions",
-      "title": "工具、Skill 与扩展"
+      "title": "运行控制：预算、停止与会话"
     },
     {
       "id": "observability",
-      "title": "结果、轨迹与评测"
+      "title": "结果与记录"
     },
     {
       "id": "architecture",
-      "title": "架构、集成与维护"
+      "title": "原理、集成与维护"
     }
   ],
   "topic_order": [
     "concepts-and-modes",
-    "choose-working-mode",
-    "install-source-checkout",
     "first-run-workspace",
     "interactive-cli-controls",
     "python-sdk-entrypoints",
-    "base-single2",
-    "configuration-precedence",
-    "configuration-reference",
-    "provider-endpoint-credentials",
-    "model-routing-request-capacity",
-    "wire-protocol-streaming",
-    "thinking-reasoning-sampling",
-    "isolation-overview",
-    "isolation-configuration",
-    "worktree-workspaces",
-    "docker-isolation",
-    "vm-environment-extension",
-    "execution-environments",
-    "custom-environment-providers",
-    "candidate-delivery",
-    "workspace-recovery",
     "configure-team",
     "dispatch-team-agents",
-    "message-team-agents",
-    "wait-for-team-results",
-    "adopt-team-changes",
     "run-registered-workflow",
     "workflow-programming-model",
-    "workflow-capabilities-boundaries",
-    "author-custom-workflow",
-    "workflow-public-api-map",
-    "workflow-control-granularity",
-    "workflow-dataflow-structured-io",
     "workflow-agent-calls",
-    "workflow-parallel-pipeline",
     "workflow-composition-hierarchy",
-    "compose-workflow-candidates",
     "workflow-failure-recovery-lifecycle",
-    "workflow-testing-debugging",
+    "workflow-public-api-map",
     "team-run-workflow",
-    "member-authored-workflow",
     "duo-workflow",
     "weave-workflow",
     "reconstruct-workflow",
-    "context-compaction",
-    "token-step-concurrency-limits",
-    "timeouts-retries",
-    "session-save-resume",
-    "cancellation-cleanup",
-    "configuration-diagnostics",
+    "provider-endpoint-credentials",
+    "thinking-reasoning-sampling",
+    "model-routing-request-capacity",
+    "configuration-precedence",
+    "configuration-reference",
     "tool-selection",
     "custom-tools",
     "skills-on-demand",
     "team-hooks",
-    "file-editing-safe-workspace",
-    "shell-permissions-execution",
+    "isolation-overview",
+    "docker-isolation",
+    "vm-environment-extension",
+    "execution-environments",
+    "candidate-delivery",
+    "token-step-concurrency-limits",
+    "timeouts-retries",
+    "context-compaction",
+    "session-save-resume",
     "run-results",
     "artifacts-and-history",
-    "trace-and-events",
     "token-cache-cost",
-    "native-test-evidence",
     "collaboration-adherence",
-    "evaluation-boundary",
     "runtime-execution-model",
-    "session-state-lifecycle",
     "extension-and-evaluation-boundaries",
     "service-integration-lifecycle",
     "upgrade-existing-integration",
     "report-problem-and-request-help"
   ],
+  "redirects": {
+    "choose-working-mode": "concepts-and-modes#怎么选起点",
+    "install-source-checkout": "first-run-workspace#第一步安装",
+    "base-single2": "python-sdk-entrypoints#basesingle2-和-agent2-的关系",
+    "message-team-agents": "dispatch-team-agents#第二步和已有成员沟通",
+    "wait-for-team-results": "dispatch-team-agents#第三步等待结果",
+    "adopt-team-changes": "dispatch-team-agents#第四步采纳改动再验证",
+    "author-custom-workflow": "workflow-programming-model#第一个-workflow先实现再审阅",
+    "workflow-capabilities-boundaries": "workflow-programming-model#oc-管什么你自己管什么",
+    "workflow-dataflow-structured-io": "workflow-agent-calls#先记住每次调用都是一个新会话",
+    "workflow-parallel-pipeline": "workflow-agent-calls#批量并行parallel-与-pipeline",
+    "compose-workflow-candidates": "workflow-composition-hierarchy#候选在隔离环境里试改动",
+    "workflow-testing-debugging": "workflow-failure-recovery-lifecycle#测试分三层",
+    "workflow-control-granularity": "workflow-public-api-map#先找对层一个设置该放在哪",
+    "member-authored-workflow": "team-run-workflow#方式二manage_workflow-让成员自己写子-workflow",
+    "wire-protocol-streaming": "provider-endpoint-credentials#选择调用协议",
+    "configuration-diagnostics": "configuration-precedence#启动出错按阶段排查",
+    "file-editing-safe-workspace": "tool-selection#文件工具读搜改",
+    "shell-permissions-execution": "tool-selection#bash命令在哪里执行谁允许它执行",
+    "isolation-configuration": "isolation-overview#在哪里设置谁优先",
+    "worktree-workspaces": "isolation-overview#工作树从哪个版本开始改动去了哪里",
+    "custom-environment-providers": "execution-environments#方式二注册一个新的隔离策略",
+    "workspace-recovery": "candidate-delivery#出了问题先找回改动再清理",
+    "cancellation-cleanup": "timeouts-retries#主动停止ctrlc-与-taskcancel",
+    "native-test-evidence": "run-results#用测试证据确认做对了",
+    "trace-and-events": "artifacts-and-history#读轨迹文件",
+    "session-state-lifecycle": "runtime-execution-model#session-里存了什么",
+    "evaluation-boundary": "extension-and-evaluation-boundaries#oc-和-oce-怎样分工"
+  },
   "source_commit_url": "https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f",
   "documented_version": "0.9.5"
 }
