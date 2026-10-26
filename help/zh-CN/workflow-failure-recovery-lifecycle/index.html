@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Workflow 出错了：失败、重试与恢复 · OpenCollab Wiki</title>
-<meta name="description" content="某一步失败时先弄清是哪一层出的错，检查会话、工作区和产物，再决定返回部分结果、重试还是停下保留现场。">
+<title>Workflow 的失败处理、测试与调试 · OpenCollab Wiki</title>
+<meta name="description" content="Workflow 出错时先判断是哪一层出的错，再决定重试、返回部分结果还是保留现场；以及怎样不花模型额度先测控制流，再分层确认任务真的完成。">
 <link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/workflow-failure-recovery-lifecycle/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,26 +35,25 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details open><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="index.html" aria-current="page">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details open><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="index.html" aria-current="page">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="../duo-workflow/index.html">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details><summary>模型与配置 <small>5</small></summary><a href="../provider-endpoint-credentials/index.html">接入模型服务：端点、凭据、协议与流式</a><a href="../thinking-reasoning-sampling/index.html">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details><summary>工具与扩展 <small>4</small></summary><a href="../tool-selection/index.html">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">使用自己的执行环境</a><a href="../candidate-delivery/index.html">隔离改动怎样回到项目：采纳、找回与清理</a></details><details><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../session-save-resume/index.html">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">Workflow 与子 Workflow</p>
-<h1 id="workflow-出错了失败重试与恢复">Workflow 出错了：失败、重试与恢复</h1>
-<p>OC 的 Workflow 失败不是一个统一的异常：<code>ctx.agent</code> 返回 None，<code>ctx.agent_run</code> 返回带状态和清理快照的对象，集合里单项失败变成 None，顶层可能是 failed 的 <code>RunResult</code> 或抛出 <code>RunError</code>。重试由你的 Python 代码负责，OC 不会自动重跑业务步骤，也不会跨进程自动续跑。</p>
-<p>本文先给出各层失败的形态，再给一个有限重试的最小例子，最后讲超时清理、环境撤销和候选交付失败时 OC 的默认行为。</p>
-<h2 id="第一步看是哪一层出错">第一步：看是哪一层出错</h2>
+<p class="category">Workflow：用代码编排</p>
+<h1 id="workflow-的失败处理测试与调试">Workflow 的失败处理、测试与调试</h1>
+<p>Workflow 出错时，OC 不会抛出一个统一的异常：不同层级的失败长得不一样。重试也由你的 Python 代码负责，OC 不会自动重跑业务步骤，也不会在进程退出后自动续跑。这篇先讲怎样认出失败、怎样安全地重试，再讲怎样在不花模型额度的情况下测试你的流程，以及怎样确认任务真的完成了。</p>
+<h2 id="出错时先看是哪一层">出错时先看是哪一层</h2>
 <table>
 <thead>
 <tr>
 <th>出错位置</th>
 <th>你会拿到什么</th>
-<th>接下来要看什么</th>
+<th>接下来看什么</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>ctx.agent</code></td>
-<td>文本、字典或 None</td>
+<td>文本、字典或 <code>None</code></td>
 <td>这一步有没有拿到可用的输出</td>
 </tr>
 <tr>
@@ -64,29 +63,29 @@
 </tr>
 <tr>
 <td><code>parallel</code> 或 <code>pipeline</code></td>
-<td>普通错误时，对应那一项是 None</td>
+<td>普通错误时，对应那一项是 <code>None</code></td>
 <td>哪个输入需要补做</td>
 </tr>
 <tr>
-<td>候选捕获与采用</td>
+<td>候选捕获与采纳</td>
 <td>候选证据，或者抛出异常</td>
 <td>源工作区有没有变、保留的工作区在哪</td>
 </tr>
 <tr>
 <td>SDK 顶层</td>
 <td><code>RunResult</code>，或与证据保存相关的 <code>RunError</code></td>
-<td>执行状态、原因、产物和异常</td>
+<td>状态、原因、产物和异常</td>
 </tr>
 </tbody>
 </table>
 <p>顶层结果要注意三件事：</p>
 <ol>
-<li>状态是 completed 不代表没有失败。如果某个内部角色失败了，但入口函数仍返回了其他数据，外层照样可能是 completed。所以要同时读 <code>RunResult.agent_failures</code>，它保存了内部角色的失败信息（已脱敏）。</li>
-<li>普通业务异常发生时，只要执行证据保存好了，会得到一个 failed 结果。如果基础设施出问题或者证据保存不了，可能直接抛出 <code>RunError</code>。</li>
-<li>参数校验错误可能在运行开始前就直接抛出。</li>
+<li><strong><code>completed</code> 不代表没有失败。</strong> 某个内部角色失败了，但入口函数仍返回了其他数据，外层照样是 <code>completed</code>。所以要同时读 <code>RunResult.agent_failures</code>，它保存内部角色的失败信息（已脱敏）。</li>
+<li>普通业务异常发生时，只要执行证据保存好了，会得到一个 <code>failed</code> 结果；基础设施出问题或证据保存不了，可能直接抛出 <code>RunError</code>。</li>
+<li>参数校验错误可能在运行开始前就抛出。</li>
 </ol>
-<h2 id="第二步给可以重复的步骤加有限重试">第二步：给可以重复的步骤加有限重试</h2>
-<p>下面是一个完整的工作流，只读文件，最多试两次：</p>
+<h2 id="给能重复的步骤加有限重试">给能重复的步骤加有限重试</h2>
+<p>下面是一个完整的 Workflow，只读文件，最多试两次：</p>
 <pre><code class="language-python">from opencollab.tools import builtin_tools
 
 async def read_with_retry(ctx, args):
@@ -107,9 +106,9 @@ async def read_with_retry(ctx, args):
             break
     return {'answer': None, 'attempts': attempts}
 </code></pre>
-<p>外层运行要给够预算，保证第一次失败后还有余额可以重试。</p>
-<p>如果步骤会写文件或调用外部服务，就要根据它实际做了什么来设计重试。比如文件已经改好了，只是后面的模型回复失败了。这时应先读文件、检查结果，再决定从哪里继续，而不是直接重跑。</p>
-<p>两种重试不要混淆：</p>
+<p>外层运行要给够预算，保证第一次失败后还有余额重试。</p>
+<p>会写文件或调用外部服务的步骤，要根据它实际做了什么来设计重试。比如文件已经改好了，只是后面的模型回复失败了：这时应该先读文件、检查结果，再决定从哪里继续，而不是直接重跑。</p>
+<p>两种重试别混淆，它们分别计数：</p>
 <table>
 <thead>
 <tr>
@@ -127,66 +126,149 @@ async def read_with_retry(ctx, args):
 <tr>
 <td>传输重试</td>
 <td>模型客户端</td>
-<td>遇到已分类的临时网络错误，重新发送模型请求</td>
+<td>遇到已分类的临时网络错误，重新发送模型请求，见 <a href="../timeouts-retries/index.html#%E9%87%8D%E8%AF%95%E6%80%8E%E6%A0%B7%E5%81%9C%E6%AD%A2">重试怎样停止</a></td>
 </tr>
 </tbody>
 </table>
-<p>两者分别计数。</p>
-<h2 id="并行任务中有一项失败">并行任务中有一项失败</h2>
-<p>在 <code>parallel</code> 或 <code>pipeline</code> 里：</p>
-<ul>
-<li>普通异常会让那一项变成 None，其他输入继续执行。</li>
-<li>想知道具体错在哪，就在单元函数里自己捕获异常，返回一个字典，写上索引、错误类型和部分结果。</li>
-<li>预算耗尽、执行环境被撤销、外部取消，这三种情况不会被吞掉，会向集合外传播。</li>
-</ul>
-<h2 id="执行环境被撤销">执行环境被撤销</h2>
-<p>环境被撤销后：</p>
-<ul>
-<li>Workflow 在启动新工作前、以及等到会话容量后，都会检查环境状态。</li>
-<li>还在排队的角色会停止，不再开始新的工作。</li>
-<li>已保存的会话、用量和候选恢复材料仍然可以用来排查。</li>
-</ul>
-<p>候选环境和父环境是分开管理的。排查时要对照失败具体发生在哪个环境。</p>
-<h2 id="超时后要等清理完成">超时后要等清理完成</h2>
-<p><code>timeout</code> 到了，不代表后台立刻停下，模型或工具的工作可能还在收尾。</p>
-<ul>
-<li><code>agent_run</code> 会在 <code>cleanup_timeout</code> 时间内等它启动的任务结束。</li>
-<li>如果清理没完成，就返回 failed，并把共享上下文标记为不能再继续用。</li>
-<li><code>cleanup_complete</code> 为真：这次的快照已经稳定。</li>
-<li><code>workspace_ready</code>：后续还适不适合继续用这个环境。</li>
-</ul>
-<p>外部取消的情况：</p>
-<ul>
-<li>取消以 <code>asyncio.CancelledError</code> 向上传播，运行时会继续管理并清理已经启动的任务。</li>
-<li>清理期间晚到的模型用量也会被计入。</li>
-<li>最终成本和退出状态，要结合持久化的用量、轨迹和清理指标一起看。</li>
-<li>如果环境是调用方传进来的，就由调用方负责清理。在调用方确认清理结束之前，相关 environment 指标可能一直显示未知。</li>
-</ul>
-<h2 id="候选改动没能交付">候选改动没能交付</h2>
-<p>候选改动捕获失败、源工作区变了、或者导出不完整时，运行时会保留候选环境，并报告恢复位置。</p>
-<p>处理顺序：</p>
-<ol>
-<li>先去恢复位置拿到完整的文件和差异。</li>
-<li>再决定怎么处理源工作区。</li>
-</ol>
-<p>Git 候选里的原始源树和当前候选文件，可以帮你找出冲突和增量。详见<a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a>。</p>
+<h2 id="几种特殊的失败">几种特殊的失败</h2>
+<p><strong>并行任务里有一项失败。</strong> 在 <code>parallel</code> 或 <code>pipeline</code> 里，普通异常会让那一项变成 <code>None</code>，其他输入继续执行；想知道具体错在哪，就在单元函数里自己捕获异常，返回带索引、错误类型和部分结果的字典。预算耗尽、执行环境被撤销、外部取消这三种情况不会被吞掉，会向集合外传播。</p>
+<p><strong>执行环境被撤销。</strong> Workflow 在启动新工作之前、以及等到会话容量之后，都会检查环境状态；还在排队的角色会停止，不再开始新的工作。已保存的会话、用量和候选恢复材料仍然可以用来排查。候选环境和父环境是分开管理的，排查时要对照失败发生在哪个环境。</p>
+<p><strong>超时之后还在收尾。</strong> <code>timeout</code> 到了，不代表后台立刻停下，模型或工具的工作可能还在收尾。<code>agent_run</code> 会在 <code>cleanup_timeout</code> 时间内等它启动的任务结束；清理没完成就返回 <code>failed</code>，并把共享上下文标记为不能再继续用。<code>cleanup_complete</code> 为真表示快照已经稳定，<code>workspace_ready</code> 表示后续还适不适合继续用这个环境。外部取消以 <code>asyncio.CancelledError</code> 向上传播，运行时会继续清理已经启动的任务，清理期间晚到的模型用量也会被计入。见 <a href="../timeouts-retries/index.html">运行怎样停下</a>。</p>
+<p><strong>候选改动没能交付。</strong> 捕获失败、源工作区变了、或导出不完整时，运行时会保留候选环境并报告恢复位置。先去恢复位置拿到完整的文件和差异，再决定怎么处理源工作区，见 <a href="../workflow-composition-hierarchy/index.html#%E9%87%87%E7%BA%B3%E5%A4%B1%E8%B4%A5%E6%97%B6">采纳失败时</a>。</p>
 <h2 id="进程退出后能接着跑吗">进程退出后能接着跑吗</h2>
-<p>不能自动接着跑。会话、清单和轨迹保存的是执行证据，不是可恢复的程序状态。Python 调用栈、任意库对象和外部副作用都无法跨进程恢复。</p>
-<p>想支持中途恢复，应用需要自己做：</p>
-<ol>
-<li>保存已经完成的业务步骤、它们的输入和结果。</li>
-<li>下次从一个明确的入口继续。</li>
-</ol>
-<p>Weave 已经内置了这种做法：它用显式的状态快照，配合原工作区、相同的分组定义和 <code>run_id</code>，恢复生成和检查的进度。其他 Workflow 可以按自己的任务设计类似的状态记录。见<a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a>。</p>
-<h2 id="源码依据">源码依据</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/workflow_collections.py#L245">opencollab/application/workflow_collections.py</a>、<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/evaluation-runtime.md#L121">docs/evaluation-runtime.md</a>、<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/weave.md#L184">docs/weave.md</a>。</p>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/bootstrap/programmatic.py">opencollab/bootstrap/programmatic.py</a>。</p>
-<h2 id="相关章节">相关章节</h2>
-<p><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a>、<a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a>、<a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a>、<a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a>、<a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a>。</p>
+<p>不能自动接着跑。会话、清单和轨迹保存的是<strong>执行证据</strong>，不是可恢复的程序状态：Python 调用栈、任意库对象和外部副作用都没法跨进程恢复。</p>
+<p>想支持中途恢复，应用需要自己做两件事：保存已经完成的业务步骤及其输入和结果；下次从一个明确的入口继续。</p>
+<p>Weave 内置了这种做法：它用显式的状态快照，配合原工作区、相同的分组定义和 <code>run_id</code>，恢复生成和检查的进度。其他 Workflow 可以按自己的任务设计类似的状态记录，见 <a href="../weave-workflow/index.html#%E4%B8%AD%E6%96%AD%E5%90%8E%E7%BB%A7%E7%BB%AD">Weave：中断后继续</a>。</p>
+<h2 id="测试分三层">测试：分三层</h2>
+<p>Workflow 是普通的异步 Python 函数，所以可以分三层测：先用假的 <code>ctx</code> 测控制流（不需要 OC，也不调模型）；再用 SDK 真实跑一遍，检查集合和运行状态；最后看工具回执和实际文件，确认任务本身完成了。</p>
+<h3 id="第一层用替身测控制流">第一层：用替身测控制流</h3>
+<p>下面的脚本只用 Python 标准库。它用一个假的上下文记录调用，检查分支和结果传递对不对：</p>
+<pre><code class="language-python">import asyncio
+
+# 要测试的流程：总和为 0 就不调用 Agent
+async def flow(ctx, args):
+    total = sum(args['values'])
+    if total == 0:
+        return {'total': total, 'answer': None}
+    answer = await ctx.agent(str(total), tools=[], label='explain')
+    return {'total': total, 'answer': answer}
+
+# 替身：不调模型，只记下收到的提示词和 label
+class FakeContext:
+    def __init__(self):
+        self.prompts = []
+
+    async def agent(self, prompt, **kwargs):
+        self.prompts.append((prompt, kwargs['label']))
+        return f'Observed {prompt}'
+
+async def main():
+    ctx = FakeContext()
+    # 总和为 0：不应调用 Agent
+    assert await flow(ctx, {'values': [0]}) == {'total': 0, 'answer': None}
+    assert ctx.prompts == []
+    # 总和为 5：应调用一次 Agent
+    result = await flow(ctx, {'values': [2, 3]})
+    assert result == {'total': 5, 'answer': 'Observed 5'}
+    assert ctx.prompts == [('5', 'explain')]
+    print('CONTROL_FLOW_PASSED')
+
+asyncio.run(main())
+</code></pre>
+<p>替身的输出由你控制，适合检查条件分支、循环次数上限、参数拼接和 <code>None</code> 的处理。先确认这些关键行为，再逐步加复杂度，出了问题更容易定位。</p>
+<h3 id="第二层用-sdk-真实跑一遍">第二层：用 SDK 真实跑一遍</h3>
+<p>下面的脚本会真正建立 Workflow 上下文并执行集合操作，用来检查阶段函数收到的参数、集合输出和最终运行状态：</p>
+<pre><code class="language-python">import asyncio
+from tempfile import TemporaryDirectory
+from opencollab import OpenCollab
+
+async def collection_flow(ctx, args):
+    # pipeline 的阶段函数会收到上一步结果、原始输入和索引
+    async def double(previous, original, index):
+        return {'index': index, 'value': previous * 2}
+    await ctx.phase('calculate')
+    values = await ctx.pipeline(args['values'], double)
+    await ctx.log(f'Produced {len(values)} rows')
+    return values
+
+async def main():
+    with TemporaryDirectory() as workspace:  # 用临时目录当工作区
+        result = await OpenCollab(workspace, model='offline').workflow(
+            collection_flow, {'values': [2, 3]},
+            concurrency=1, task_concurrency=1, trace=False,
+        )
+        assert result.status == 'completed', result.reason
+        assert result.output == [{'index': 0, 'value': 4}, {'index': 1, 'value': 6}]
+        print('SDK_COLLECTION_PASSED')
+
+asyncio.run(main())
+</code></pre>
+<p>这里的 <code>model='offline'</code> 只是一个测试用的标识：这个流程完全由普通 Python 和集合方法完成，没有调用 Agent。要测试 Agent 路径，可以通过 <code>workflow(..., llm=...)</code> 注入一个可控的、协议兼容的模型替身，或者用真实模型，然后检查实际的工具调用。仓库里的 SDK 测试可以当现成例子参考。</p>
+<h3 id="第三层确认任务本身完成了">第三层：确认任务本身完成了</h3>
+<p>“流程跑完了”不等于“任务做完了”。要分三层看：运行状态（流程有没有跑完）、工具回执（操作有没有真的执行）、实际检查结果（任务有没有通过验证）。最终检查要从任务要求的入口进去：</p>
+<table>
+<thead>
+<tr>
+<th>任务类型</th>
+<th>怎么检查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>库修改</td>
+<td>调用公开函数</td>
+</tr>
+<tr>
+<td>命令任务</td>
+<td>运行真实命令，比较输出</td>
+</tr>
+<tr>
+<td>数据任务</td>
+<td>读取实际产物</td>
+</tr>
+<tr>
+<td>服务任务</td>
+<td>检查接口行为</td>
+</tr>
+</tbody>
+</table>
+<p>内置流程也遵守这条规则：Duo 的 <code>adopted</code> 表示选中的改动已经交付，Weave 的 <code>delivery_ok</code> 依赖实际执行的检查。见 <a href="../run-results/index.html">判断任务是否真的完成</a>。</p>
+<h2 id="调试给流程留下记号">调试：给流程留下记号</h2>
+<p>在流程里加标记，事后才看得懂发生了什么：</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ctx.phase</code></td>
+<td>标记业务阶段，之后开始的会话会关联到这个阶段名</td>
+</tr>
+<tr>
+<td><code>label=</code></td>
+<td>标识角色；并行任务共享阶段名时，靠 label 区分</td>
+</tr>
+<tr>
+<td><code>ctx.log</code></td>
+<td>写下输入索引、输出规模、下一步的决定，让读者看出发生了哪件事</td>
+</tr>
+</tbody>
+</table>
+<p>运行记录保存在哪：CLI 默认保存会话和 <code>orchestration.jsonl</code>；SDK 用 <code>artifacts</code> 指定一个新目录或空目录，用 <code>trace</code> 决定要不要记录轨迹。<code>trace=False</code> 时，清单和会话证据仍然会保留。Workflow 清单里的运行 id 就是 <code>RunResult.metrics['run_id']</code>，用它把会话和编排记录对上。见 <a href="../artifacts-and-history/index.html">运行记录</a>。</p>
+<p>检查工具真的执行了，要看真实的文件或工具输出：让角色写一个内容已知的文件，再从绑定的环境里读出来核对；或者让角色运行任务自带的检查，再读退出状态和测试记录。注意执行位置：Docker 工具在容器里运行，Workflow 的 Python 代码留在调用方进程里。</p>
+<p>如果流程有额度、期限或写文件的操作，建议<strong>主动触发一次失败</strong>，观察写了一半的文件是否保留、结果里有没有对应的停止原因、清理是否完成。<code>agent_run</code> 的 <code>cleanup_complete</code> 和 <code>workspace_ready</code>、顶层的 <code>agent_failures</code>，以及候选错误里的恢复位置，就是你判断“还能不能继续、要不要保住现场”的依据。</p>
+<h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_collections.py">opencollab/application/workflow_collections.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow.py">opencollab/application/workflow.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/programmatic.py">opencollab/bootstrap/programmatic.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/result.py">opencollab/sdk/result.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md">docs/evaluation-runtime.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/tests/interfaces/test_sdk_workflow_nested_collections.py">tests/interfaces/test_sdk_workflow_nested_collections.py</a></li>
+<li>相关指南：<a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent</a> · <a href="../workflow-composition-hierarchy/index.html">组合与嵌套</a> · <a href="../timeouts-retries/index.html">运行怎样停下</a> · <a href="../weave-workflow/index.html">Weave</a></li>
+</ul>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/workflow-failure-recovery-lifecycle.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E7%AC%AC%E4%B8%80%E6%AD%A5%E7%9C%8B%E6%98%AF%E5%93%AA%E4%B8%80%E5%B1%82%E5%87%BA%E9%94%99">第一步：看是哪一层出错</a><a href="#%E7%AC%AC%E4%BA%8C%E6%AD%A5%E7%BB%99%E5%8F%AF%E4%BB%A5%E9%87%8D%E5%A4%8D%E7%9A%84%E6%AD%A5%E9%AA%A4%E5%8A%A0%E6%9C%89%E9%99%90%E9%87%8D%E8%AF%95">第二步：给可以重复的步骤加有限重试</a><a href="#%E5%B9%B6%E8%A1%8C%E4%BB%BB%E5%8A%A1%E4%B8%AD%E6%9C%89%E4%B8%80%E9%A1%B9%E5%A4%B1%E8%B4%A5">并行任务中有一项失败</a><a href="#%E6%89%A7%E8%A1%8C%E7%8E%AF%E5%A2%83%E8%A2%AB%E6%92%A4%E9%94%80">执行环境被撤销</a><a href="#%E8%B6%85%E6%97%B6%E5%90%8E%E8%A6%81%E7%AD%89%E6%B8%85%E7%90%86%E5%AE%8C%E6%88%90">超时后要等清理完成</a><a href="#%E5%80%99%E9%80%89%E6%94%B9%E5%8A%A8%E6%B2%A1%E8%83%BD%E4%BA%A4%E4%BB%98">候选改动没能交付</a><a href="#%E8%BF%9B%E7%A8%8B%E9%80%80%E5%87%BA%E5%90%8E%E8%83%BD%E6%8E%A5%E7%9D%80%E8%B7%91%E5%90%97">进程退出后能接着跑吗</a><a href="#%E6%BA%90%E7%A0%81%E4%BE%9D%E6%8D%AE">源码依据</a><a href="#%E7%9B%B8%E5%85%B3%E7%AB%A0%E8%8A%82">相关章节</a></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%87%BA%E9%94%99%E6%97%B6%E5%85%88%E7%9C%8B%E6%98%AF%E5%93%AA%E4%B8%80%E5%B1%82">出错时先看是哪一层</a><a href="#%E7%BB%99%E8%83%BD%E9%87%8D%E5%A4%8D%E7%9A%84%E6%AD%A5%E9%AA%A4%E5%8A%A0%E6%9C%89%E9%99%90%E9%87%8D%E8%AF%95">给能重复的步骤加有限重试</a><a href="#%E5%87%A0%E7%A7%8D%E7%89%B9%E6%AE%8A%E7%9A%84%E5%A4%B1%E8%B4%A5">几种特殊的失败</a><a href="#%E8%BF%9B%E7%A8%8B%E9%80%80%E5%87%BA%E5%90%8E%E8%83%BD%E6%8E%A5%E7%9D%80%E8%B7%91%E5%90%97">进程退出后能接着跑吗</a><a href="#%E6%B5%8B%E8%AF%95%E5%88%86%E4%B8%89%E5%B1%82">测试：分三层</a><a href="#%E7%AC%AC%E4%B8%80%E5%B1%82%E7%94%A8%E6%9B%BF%E8%BA%AB%E6%B5%8B%E6%8E%A7%E5%88%B6%E6%B5%81">第一层：用替身测控制流</a><a href="#%E7%AC%AC%E4%BA%8C%E5%B1%82%E7%94%A8-sdk-%E7%9C%9F%E5%AE%9E%E8%B7%91%E4%B8%80%E9%81%8D">第二层：用 SDK 真实跑一遍</a><a href="#%E7%AC%AC%E4%B8%89%E5%B1%82%E7%A1%AE%E8%AE%A4%E4%BB%BB%E5%8A%A1%E6%9C%AC%E8%BA%AB%E5%AE%8C%E6%88%90%E4%BA%86">第三层：确认任务本身完成了</a><a href="#%E8%B0%83%E8%AF%95%E7%BB%99%E6%B5%81%E7%A8%8B%E7%95%99%E4%B8%8B%E8%AE%B0%E5%8F%B7">调试：给流程留下记号</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>
 </body>
 </html>

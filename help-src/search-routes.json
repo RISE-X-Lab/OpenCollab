@@ -20,11 +20,9 @@
         "代码互相覆盖",
         "worktree"
       ],
-      "target_id": "worktree-workspaces",
+      "target_id": "isolation-overview",
       "mode": "direct",
-      "also_show": [
-        "isolation-overview"
-      ]
+      "also_show": []
     },
     {
       "queries": [
@@ -53,7 +51,7 @@
       "mode": "direct",
       "also_show": [
         "isolation-overview",
-        "member-authored-workflow"
+        "team-run-workflow"
       ]
     },
     {
@@ -65,7 +63,7 @@
       "target_id": "isolation-overview",
       "mode": "direct",
       "also_show": [
-        "message-team-agents"
+        "dispatch-team-agents"
       ]
     },
     {
@@ -90,7 +88,7 @@
       "target_id": "run-registered-workflow",
       "mode": "direct",
       "also_show": [
-        "choose-working-mode"
+        "concepts-and-modes"
       ]
     },
     {
@@ -115,9 +113,7 @@
       ],
       "target_id": "team-run-workflow",
       "mode": "direct",
-      "also_show": [
-        "member-authored-workflow"
-      ]
+      "also_show": []
     },
     {
       "queries": [
@@ -131,10 +127,9 @@
         "launch isolation",
         "子DW并发"
       ],
-      "target_id": "member-authored-workflow",
+      "target_id": "team-run-workflow",
       "mode": "direct",
       "also_show": [
-        "team-run-workflow",
         "vm-environment-extension"
       ]
     },
@@ -147,8 +142,7 @@
       "target_id": "team-run-workflow",
       "mode": "choose",
       "also_show": [
-        "member-authored-workflow",
-        "compose-workflow-candidates"
+        "workflow-composition-hierarchy"
       ]
     },
     {
@@ -157,7 +151,7 @@
         "workflow装饰器",
         "@workflow"
       ],
-      "target_id": "author-custom-workflow",
+      "target_id": "workflow-programming-model",
       "mode": "direct",
       "also_show": []
     },
@@ -167,7 +161,7 @@
         "candidate_workflow",
         "嵌套Workflow"
       ],
-      "target_id": "compose-workflow-candidates",
+      "target_id": "workflow-composition-hierarchy",
       "mode": "direct",
       "also_show": [
         "team-run-workflow"
@@ -210,7 +204,7 @@
         "单Agent",
         "agent2"
       ],
-      "target_id": "base-single2",
+      "target_id": "python-sdk-entrypoints",
       "mode": "direct",
       "also_show": []
     },
@@ -219,7 +213,7 @@
         "安装",
         "怎么装OC"
       ],
-      "target_id": "install-source-checkout",
+      "target_id": "first-run-workspace",
       "mode": "direct",
       "also_show": []
     },
@@ -260,9 +254,7 @@
       ],
       "target_id": "configuration-precedence",
       "mode": "direct",
-      "also_show": [
-        "configuration-diagnostics"
-      ]
+      "also_show": []
     },
     {
       "queries": [
@@ -295,7 +287,7 @@
       "mode": "choose",
       "also_show": [
         "model-routing-request-capacity",
-        "workflow-parallel-pipeline"
+        "workflow-agent-calls"
       ]
     },
     {
@@ -344,8 +336,8 @@
       "target_id": "timeouts-retries",
       "mode": "choose",
       "also_show": [
-        "wait-for-team-results",
-        "configuration-diagnostics"
+        "dispatch-team-agents",
+        "configuration-precedence"
       ]
     },
     {
@@ -359,7 +351,7 @@
       "mode": "choose",
       "also_show": [
         "weave-workflow",
-        "workspace-recovery"
+        "candidate-delivery"
       ]
     },
     {
@@ -369,10 +361,10 @@
         "Ctrl+C",
         "清理没结束"
       ],
-      "target_id": "cancellation-cleanup",
+      "target_id": "timeouts-retries",
       "mode": "direct",
       "also_show": [
-        "member-authored-workflow"
+        "team-run-workflow"
       ]
     },
     {
@@ -381,7 +373,7 @@
         "message",
         "通知队友"
       ],
-      "target_id": "message-team-agents",
+      "target_id": "dispatch-team-agents",
       "mode": "direct",
       "also_show": []
     },
@@ -391,7 +383,7 @@
         "等队友",
         "队友没结束"
       ],
-      "target_id": "wait-for-team-results",
+      "target_id": "dispatch-team-agents",
       "mode": "direct",
       "also_show": []
     },
@@ -401,7 +393,7 @@
         "adopt_agent",
         "队友改了但主目录没变"
       ],
-      "target_id": "adopt-team-changes",
+      "target_id": "dispatch-team-agents",
       "mode": "direct",
       "also_show": [
         "candidate-delivery"
@@ -423,11 +415,9 @@
         "恢复补丁",
         "entry_patch"
       ],
-      "target_id": "workspace-recovery",
+      "target_id": "candidate-delivery",
       "mode": "direct",
-      "also_show": [
-        "candidate-delivery"
-      ]
+      "also_show": []
     },
     {
       "queries": [
@@ -475,10 +465,9 @@
         "yolo",
         "允许执行shell"
       ],
-      "target_id": "shell-permissions-execution",
+      "target_id": "tool-selection",
       "mode": "choose",
       "also_show": [
-        "tool-selection",
         "isolation-overview"
       ]
     },
@@ -488,7 +477,7 @@
         "读取文件",
         "apply_patch"
       ],
-      "target_id": "file-editing-safe-workspace",
+      "target_id": "tool-selection",
       "mode": "direct",
       "also_show": []
     },
@@ -513,9 +502,7 @@
       ],
       "target_id": "artifacts-and-history",
       "mode": "direct",
-      "also_show": [
-        "trace-and-events"
-      ]
+      "also_show": []
     },
     {
       "queries": [
@@ -524,7 +511,7 @@
         "on_event",
         "谁做了什么"
       ],
-      "target_id": "trace-and-events",
+      "target_id": "artifacts-and-history",
       "mode": "direct",
       "also_show": []
     },
@@ -545,7 +532,7 @@
         "verified_targets",
         "测试后又改代码"
       ],
-      "target_id": "native-test-evidence",
+      "target_id": "run-results",
       "mode": "direct",
       "also_show": []
     },
@@ -567,7 +554,7 @@
         "DeepSWE",
         "SWE-bench"
       ],
-      "target_id": "evaluation-boundary",
+      "target_id": "extension-and-evaluation-boundaries",
       "mode": "direct",
       "also_show": []
     },
@@ -599,7 +586,7 @@
         "schema",
         "步骤间共享数据"
       ],
-      "target_id": "workflow-dataflow-structured-io",
+      "target_id": "workflow-agent-calls",
       "mode": "direct",
       "also_show": []
     },
@@ -620,7 +607,7 @@
         "怎么控制每一步",
         "控制粒度"
       ],
-      "target_id": "workflow-control-granularity",
+      "target_id": "workflow-public-api-map",
       "mode": "direct",
       "also_show": []
     },
@@ -641,7 +628,7 @@
         "工作流有什么限制",
         "分布式Workflow"
       ],
-      "target_id": "workflow-capabilities-boundaries",
+      "target_id": "workflow-programming-model",
       "mode": "direct",
       "also_show": []
     },
@@ -651,7 +638,7 @@
         "测试自己的工作流",
         "mock模型"
       ],
-      "target_id": "workflow-testing-debugging",
+      "target_id": "workflow-failure-recovery-lifecycle",
       "mode": "direct",
       "also_show": []
     },
@@ -671,7 +658,7 @@
         "会话状态机",
         "断点是怎么保存的"
       ],
-      "target_id": "session-state-lifecycle",
+      "target_id": "runtime-execution-model",
       "mode": "direct",
       "also_show": []
     },
@@ -728,8 +715,7 @@
       "target_id": "configuration-reference",
       "mode": "direct",
       "also_show": [
-        "configuration-precedence",
-        "configuration-diagnostics"
+        "configuration-precedence"
       ]
     }
   ]

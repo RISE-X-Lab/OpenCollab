@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>用实际测试验证 Agent 的交付 · OpenCollab Wiki</title>
-<meta name="description" content="让 Agent 真的跑项目测试并留下记录，读懂哪些算通过、哪些不算、哪些已过期。">
-<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/native-test-evidence/index.html">
+<title>判断任务是否真的完成：运行结果与测试证据 · OpenCollab Wiki</title>
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url=../run-results/index.html#%E7%94%A8%E6%B5%8B%E8%AF%95%E8%AF%81%E6%8D%AE%E7%A1%AE%E8%AE%A4%E5%81%9A%E5%AF%B9%E4%BA%86">
+<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/run-results/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-redirect="run-results#用测试证据确认做对了">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -33,152 +34,13 @@
 </div></header>
 <div class="layout">
 <nav id="help-navigation" aria-label="帮助分类">
-<div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
-<p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details open><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="index.html" aria-current="page">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<div class="nav-start"><a href="../index.html">Wiki 首页</a></div>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">结果、轨迹与评测</p>
-<h1 id="用实际测试验证-agent-的交付">用实际测试验证 Agent 的交付</h1>
-<p><code>evidence_tools</code> 是 OC 的一组带观察器的工具：Agent 通过它执行 pytest、<code>go test -json</code> 或 Django 测试时，OC 自动记录命令、执行目录、退出码和结果，并在之后观察到文件修改时让旧记录失效。这样选候选时看的是实际执行过的测试目标（<code>verified_targets</code>），而不是模型自述。应用自己执行的测试可以用 <code>has_pass_evidence</code> 按同样规则解释。</p>
-<h2 id="第一步给-agent-配上带记录的工具">第一步：给 Agent 配上带记录的工具</h2>
-<pre><code class="language-python">from opencollab.tools import evidence_tools
-
-# 这些工具在执行时会顺便记录测试证据
-tools = evidence_tools(&quot;bash&quot;, &quot;file_read&quot;, &quot;file_write&quot;, &quot;apply_patch&quot;, &quot;git_diff&quot;, &quot;grep&quot;)
-</code></pre>
-<p>把这些工具交给工作流的候选 Agent。默认 shell 需要进程隔离环境。如果要在宿主机上执行，按终端权限指南配置授权。</p>
-<h2 id="第二步读取测试记录">第二步：读取测试记录</h2>
-<p>在工作流的异步函数里：</p>
-<pre><code class="language-python">candidate = await ctx.candidate_agent(
-    &quot;修复公开问题并执行相关测试&quot;, tools=tools, label=&quot;implementation&quot;
-)
-print(candidate.test_records)      # 所有测试记录
-print(candidate.verified_targets)  # 当前确认通过的测试目标
-</code></pre>
-<h2 id="什么算通过什么不算">什么算通过，什么不算</h2>
-<p>支持的测试形式：</p>
-<ul>
-<li>规定形式的 pytest。加 <code>-rA</code> 能保留每一项的通过记录。</li>
-<li><code>go test -json</code></li>
-<li>Django 测试入口</li>
-</ul>
-<p>解释结果时会看退出码、测试目标、执行目录，以及输出有没有被截断。</p>
-<p>以下情况记为&quot;尚未验证&quot;：</p>
-<ul>
-<li>只输出了帮助信息</li>
-<li>收集到零个测试</li>
-<li>只做了 collection</li>
-<li>输出被截断，剩下的内容不足以判断结果</li>
-</ul>
-<p>简单说：测试目标必须真的执行了，并且有对应结果，才算通过。</p>
-<h2 id="测试后又改了文件怎么办">测试后又改了文件怎么办</h2>
-<p>记录会跟着后续动作变化：</p>
-<table>
-<thead>
-<tr>
-<th>发生了什么</th>
-<th>对记录的影响</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>同一目标重跑</td>
-<td>更新当前证据</td>
-</tr>
-<tr>
-<td>重跑失败或中断</td>
-<td>影响之前的通过状态</td>
-</tr>
-<tr>
-<td>观察到文件被修改</td>
-<td>清除当前通过目标，旧记录标为&quot;适用性未知&quot;</td>
-</tr>
-<tr>
-<td>执行了无法识别为测试的 Bash 命令</td>
-<td>也可能有副作用，需要重新建立证据</td>
-</tr>
-</tbody>
-</table>
-<p>历史记录会保留原始退出状态和 verified 信息。判断一条记录是否适用于当前候选，看 applicability 字段和之后有没有修改。交付前确认：你采用的代码版本，就是被测试的那个版本。</p>
-<h2 id="进阶接入应用自己跑的测试">进阶：接入应用自己跑的测试</h2>
-<p>如果应用通过自己的执行服务跑了命令，可以用公开的 <code>has_pass_evidence</code> 解释输出。它只读已有输出，不负责执行命令。下面的 <code>result</code> 是刚完成的命令结果，保留原始退出码、标准输出、标准错误和截断标志。</p>
-<pre><code class="language-python">from opencollab.tools import has_pass_evidence
-
-passed = has_pass_evidence(
-    result.returncode,
-    result.stdout + &quot;\n&quot; + result.stderr,
-    runner=&quot;python -m pytest&quot;,                 # 填实际使用的 runner
-    target=&quot;tests/test_example.py::test_case&quot;, # 填实际测试目标
-    output_truncated=result.stdout_truncated or result.stderr_truncated,
-)
-print(passed)
-</code></pre>
-<p>要传入实际的 runner 和目标，才能按对应测试规则解释结果。</p>
-<p>如果还想自动记录命令、执行目录和后续修改的影响：</p>
-<ul>
-<li>用前面的 <code>evidence_tools</code>。</li>
-<li>或用 <code>BashEvidence</code> 包装你自己的 Bash 工具。</li>
-<li><code>VerificationTool</code> 协议允许扩展工具暴露当前的 <code>verified_targets</code>。自定义测试的结果仍由该工具自己的解析器提供。</li>
-</ul>
-<h2 id="进阶执行目录和同名文件">进阶：执行目录和同名文件</h2>
-<p>测试路径按实际执行的工作区来解释。<code>cd tests &amp;&amp; pytest -rA test_example.py</code> 和根目录下的对应路径是什么关系，要按环境解析。两个目录里的同名文件也可能是不同的测试目标。读记录时保留原命令和执行目录，方便复核。</p>
-<p>正式 benchmark 由 OCE 和对应验证器评分。这里的测试记录适合开发时选候选、发现问题。</p>
-<h2 id="进阶查看补丁改了哪些文件">进阶：查看补丁改了哪些文件</h2>
-<p>想把测试目标和候选改动对上，可以用公开的 <code>opencollab.patches</code> 解析 Git 补丁。</p>
-<pre><code class="language-python">from pathlib import Path
-
-from opencollab.patches import patch_entries, patch_paths
-
-patch = Path(&quot;candidate.patch&quot;).read_text(encoding=&quot;utf-8&quot;)
-print(patch_entries(patch))  # 每个文件的旧路径、新路径
-print(patch_paths(patch))    # 涉及的全部路径
-</code></pre>
-<ul>
-<li><code>patch_entries</code> 返回每个文件的旧、新路径。新增或删除那一侧的 <code>/dev/null</code> 会表示为空字符串。</li>
-<li><code>patch_paths</code> 按首次出现顺序保留两端路径，便于处理重命名。</li>
-<li>解析器支持 Git 的引号与转义文件名、UTF-8 和带空格的文件名。</li>
-<li>需要逐块处理时，用同模块的 <code>split_patch_blocks</code> 与 <code>patch_block_target_path</code>。</li>
-</ul>
-<p>这些结果适合生成变更视图或挑选要跑的测试。真正采纳补丁、交付候选，仍用 <a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a>里的操作。</p>
-<p>对接已有的补丁读取器时，还有这些工具函数：</p>
-<table>
-<thead>
-<tr>
-<th>函数</th>
-<th>作用</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>git_header_tokens</code></td>
-<td>拆分 <code>diff --git</code> 文件头</td>
-</tr>
-<tr>
-<td><code>git_diff_endpoint</code></td>
-<td>处理某一侧端点和 <code>a/</code>、<code>b/</code> 前缀</td>
-</tr>
-<tr>
-<td><code>diff_target_path</code></td>
-<td>从文件头选出目标路径</td>
-</tr>
-<tr>
-<td><code>decode_git_c_path</code></td>
-<td>解码 Git 的引号与转义路径</td>
-</tr>
-<tr>
-<td><code>normalize_patch_path</code></td>
-<td>统一路径分隔符</td>
-</tr>
-</tbody>
-</table>
-<p>完整签名和实现说明见下方的 <code>opencollab.patches</code> 模块。</p>
-<h2 id="源码与进一步阅读">源码与进一步阅读</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/test-evidence.md">docs/test-evidence.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/tools/evidence/bash_evidence.py">opencollab/adapters/tools/evidence/bash_evidence.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/tools.py">opencollab/tools.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/patches.py">opencollab/patches.py</a></p>
-
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/observability/native-test-evidence.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<p class="category">已合并</p>
+<h1>这篇指南已合并</h1>
+<p>内容现在位于 <a href="../run-results/index.html#%E7%94%A8%E6%B5%8B%E8%AF%95%E8%AF%81%E6%8D%AE%E7%A1%AE%E8%AE%A4%E5%81%9A%E5%AF%B9%E4%BA%86">判断任务是否真的完成：运行结果与测试证据</a>。浏览器没有自动跳转时，请点击这个链接。</p>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E7%AC%AC%E4%B8%80%E6%AD%A5%E7%BB%99-agent-%E9%85%8D%E4%B8%8A%E5%B8%A6%E8%AE%B0%E5%BD%95%E7%9A%84%E5%B7%A5%E5%85%B7">第一步：给 Agent 配上带记录的工具</a><a href="#%E7%AC%AC%E4%BA%8C%E6%AD%A5%E8%AF%BB%E5%8F%96%E6%B5%8B%E8%AF%95%E8%AE%B0%E5%BD%95">第二步：读取测试记录</a><a href="#%E4%BB%80%E4%B9%88%E7%AE%97%E9%80%9A%E8%BF%87%E4%BB%80%E4%B9%88%E4%B8%8D%E7%AE%97">什么算通过，什么不算</a><a href="#%E6%B5%8B%E8%AF%95%E5%90%8E%E5%8F%88%E6%94%B9%E4%BA%86%E6%96%87%E4%BB%B6%E6%80%8E%E4%B9%88%E5%8A%9E">测试后又改了文件怎么办</a><a href="#%E8%BF%9B%E9%98%B6%E6%8E%A5%E5%85%A5%E5%BA%94%E7%94%A8%E8%87%AA%E5%B7%B1%E8%B7%91%E7%9A%84%E6%B5%8B%E8%AF%95">进阶：接入应用自己跑的测试</a><a href="#%E8%BF%9B%E9%98%B6%E6%89%A7%E8%A1%8C%E7%9B%AE%E5%BD%95%E5%92%8C%E5%90%8C%E5%90%8D%E6%96%87%E4%BB%B6">进阶：执行目录和同名文件</a><a href="#%E8%BF%9B%E9%98%B6%E6%9F%A5%E7%9C%8B%E8%A1%A5%E4%B8%81%E6%94%B9%E4%BA%86%E5%93%AA%E4%BA%9B%E6%96%87%E4%BB%B6">进阶：查看补丁改了哪些文件</a><a href="#%E6%BA%90%E7%A0%81%E4%B8%8E%E8%BF%9B%E4%B8%80%E6%AD%A5%E9%98%85%E8%AF%BB">源码与进一步阅读</a></aside>
 </div>
 </body>
 </html>

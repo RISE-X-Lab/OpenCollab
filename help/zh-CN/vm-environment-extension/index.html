@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>在现有 Linux VM 中运行任务 · OpenCollab Wiki</title>
-<meta name="description" content="让 Agent 的文件工具和命令通过 SSH 在你已有的 Linux VM 里执行：准备 VM、写配置、选 vm-group 或 vm-session，结束后导出改动并归还机器。">
+<meta name="description" content="把已有的 Linux VM 交给 Agent 用：准备控制端和来宾、写 VM 配置、选 vm-group 或 vm-session；运行结束后导出改动、重置并归还机器。">
 <link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/vm-environment-extension/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,18 +35,18 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details open><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="index.html" aria-current="page">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="../duo-workflow/index.html">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details><summary>模型与配置 <small>5</small></summary><a href="../provider-endpoint-credentials/index.html">接入模型服务：端点、凭据、协议与流式</a><a href="../thinking-reasoning-sampling/index.html">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details><summary>工具与扩展 <small>4</small></summary><a href="../tool-selection/index.html">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details open><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="index.html" aria-current="page">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">使用自己的执行环境</a><a href="../candidate-delivery/index.html">隔离改动怎样回到项目：采纳、找回与清理</a></details><details><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../session-save-resume/index.html">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
 <p class="category">执行环境与隔离</p>
 <h1 id="在现有-linux-vm-中运行任务">在现有 Linux VM 中运行任务</h1>
-<p>OC 可以把 Agent 的文件工具和命令放到你已经准备好的 Linux VM 里执行。模型请求和编排逻辑仍在本机运行。适合这种情况：任务会装依赖、起后台服务、改系统配置，你不想让它们碰到本机或彼此。</p>
-<p>几个名词：</p>
+<p>OC 可以把 Agent 的文件工具和命令放进你已经准备好的 Linux VM 里执行，模型请求和编排逻辑仍在本机。适合这种情况：任务会装依赖、起后台服务、改系统配置，你不想让它们碰到本机，也不想让它们互相干扰。</p>
+<h2 id="先理解四个名词和一次运行的过程">先理解四个名词和一次运行的过程</h2>
 <ul>
-<li>控制端：运行 OC 的那台机器。agent loop、模型请求都在这里。</li>
-<li>来宾：被借用的 Linux VM。OC 通过系统 OpenSSH 连上它，在里面读写文件、执行命令。</li>
-<li>租约：OC 在控制端的 SQLite 文件里写一条记录，表示“这台 VM 现在归某次运行用”。相当于一把机器锁。</li>
-<li>重置命令：管理员在来宾上准备的脚本。OC 归还 VM 前运行它，把来宾恢复干净。</li>
+<li><strong>控制端</strong>：运行 OC 的那台机器，agent loop 和模型请求都在这里。</li>
+<li><strong>来宾</strong>：被借用的 Linux VM。OC 通过系统 OpenSSH 连上它，在里面读写文件、执行命令。</li>
+<li><strong>租约</strong>：OC 在控制端的 SQLite 文件里写一条记录，表示“这台 VM 现在归某次运行用”，相当于一把机器锁。</li>
+<li><strong>重置命令</strong>：管理员在来宾上准备的脚本，OC 归还 VM 之前运行它，把来宾恢复干净。</li>
 </ul>
 <p>一次运行的过程：</p>
 <ol>
@@ -62,54 +62,13 @@ await client.workflow(flow, inputs, isolation=&quot;vm-group&quot;)
 </code></pre>
 <p>下面按顺序讲怎么准备。</p>
 <h2 id="先选-vm-group-还是-vm-session">先选 vm-group 还是 vm-session</h2>
-<p>OC 一共有六种内置隔离策略。两种 VM 策略的区别在于几个会话共用一台机器，还是每个会话一台。</p>
-<table>
-<thead>
-<tr>
-<th>策略</th>
-<th>文件与机器的关系</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>shared</code></td>
-<td>直接用父环境和父目录</td>
-</tr>
-<tr>
-<td><code>worktree</code></td>
-<td>在父环境里建独立工作树，机器还是父机器</td>
-</tr>
-<tr>
-<td><code>docker-group</code></td>
-<td>当前运行的策略池共用一个容器，每个会话一个工作树</td>
-</tr>
-<tr>
-<td><code>docker-session</code></td>
-<td>每个会话一个容器和工作目录</td>
-</tr>
-<tr>
-<td><code>vm-group</code></td>
-<td>当前运行的策略池共用一台 VM，每个会话一个工作树</td>
-</tr>
-<tr>
-<td><code>vm-session</code></td>
-<td>每个会话领取一台 VM，在里面准备工作区</td>
-</tr>
-</tbody>
-</table>
-<p>怎么选：</p>
+<p>两种 VM 策略的区别在于几个会话共用一台机器，还是每个会话一台：</p>
 <ul>
-<li>几个会话只要文件分开、可以共用依赖和服务：用 <code>vm-group</code>。同一台 VM 里的工作树共用内核、网络、系统依赖和公共临时目录。</li>
+<li>几个会话只要文件分开、可以共用依赖和服务：用 <code>vm-group</code>。同一台 VM 里的各个工作树共用内核、网络、系统依赖和公共临时目录。</li>
 <li>会话之间的系统状态必须分开：用 <code>vm-session</code>。</li>
 <li>网络能访问哪里，由来宾和它所在的基础设施决定，OC 不管。</li>
 </ul>
-<p><code>group</code> 的范围是“一次运行里的一个环境池”。注意子 Workflow 的情况：</p>
-<ul>
-<li>成员启动自己写的子 Workflow 时，子运行有自己的环境池。子运行再选 <code>vm-group</code>，可能领到另一台 VM。</li>
-<li>想让子 Agent 留在成员当前的 VM 里，子 Workflow 的 <code>launch</code> 要选 <code>worktree</code>。</li>
-<li>子调用选 <code>vm-session</code> 时，池里要有父 VM 之外的空闲机器。</li>
-</ul>
-<p>其他策略怎么选见 <a href="../isolation-overview/index.html">隔离怎么选</a>。</p>
+<p><code>group</code> 的范围是“一次运行里的一个环境池”。成员启动自己写的子 Workflow 时，子运行有自己的环境池：子运行再选 <code>vm-group</code> 可能领到另一台 VM；想让子 Agent 留在成员当前的 VM 里，子运行要选 <code>worktree</code>；子调用选 <code>vm-session</code> 时，池里要有父 VM 之外的空闲机器。和其他策略的对比见 <a href="../isolation-overview/index.html#%E5%85%AD%E7%A7%8D%E5%86%85%E7%BD%AE%E7%AD%96%E7%95%A5">隔离</a>。</p>
 <h2 id="第一步准备控制端和来宾">第一步：准备控制端和来宾</h2>
 <h3 id="环境要求">环境要求</h3>
 <table>
@@ -135,8 +94,8 @@ await client.workflow(flow, inputs, isolation=&quot;vm-group&quot;)
 </tbody>
 </table>
 <p>内核那一行的用途：任务取消或 SSH 断线后，OC 要靠这些能力找到远端命令并结束它。</p>
-<h3 id="安装同一个-wheel">安装同一个 wheel</h3>
-<p>控制端和每台来宾必须装同一份安装包。做法是从固定源码提交构建一次 wheel，到处安装这一个文件。这个提交的包版本号仍是 <code>0.9.5</code>，真正区分来源的是下面的完整提交号。</p>
+<h3 id="在控制端和来宾上安装同一个-wheel">在控制端和来宾上安装同一个 wheel</h3>
+<p>控制端和每台来宾必须装同一份安装包。做法是从固定的源码提交构建一次 wheel，到处安装这一个文件。这个提交的包版本号仍是 <code>0.9.5</code>，真正区分来源的是完整提交号。</p>
 <p>先在一个独立的源码目录里构建，并装到控制端：</p>
 <pre><code class="language-bash">git clone https://github.com/RISE-X-Lab/OpenCollab.git OpenCollab-vm
 cd OpenCollab-vm
@@ -146,32 +105,26 @@ python3 -m venv .venv
 .venv/bin/python -m pip install dist/opencollab-0.9.5-py3-none-any.whl
 source .venv/bin/activate
 </code></pre>
-<p>把这份 wheel 复制到每台来宾的 <code>/home/worker/opencollab-0.9.5-py3-none-any.whl</code>。然后用来宾上的 <code>worker</code> 账号安装。pip 会按来宾系统装好运行依赖。</p>
+<p>把这份 wheel 复制到每台来宾的 <code>/home/worker/opencollab-0.9.5-py3-none-any.whl</code>，用来宾上的 <code>worker</code> 账号安装，pip 会按来宾系统装好运行依赖：</p>
 <pre><code class="language-bash">python3 -m venv /home/worker/.venvs/oc
 /home/worker/.venvs/oc/bin/python -m pip install /home/worker/opencollab-0.9.5-py3-none-any.whl
 </code></pre>
-<p>记下来宾虚拟环境里 Python 的绝对路径，后面要用两次：</p>
-<ul>
-<li>填到配置的 <code>connection.python</code>。</li>
-<li>成员自编 Workflow 的 <code>launch.python</code> 也指向它。</li>
-</ul>
-<p>后面的控制端示例都在你要处理的项目目录里执行，用的是刚才激活的 Python 环境。</p>
-<h3 id="在来宾上建目录">在来宾上建目录</h3>
+<p>记下来宾虚拟环境里 Python 的绝对路径，后面要用两次：填到配置的 <code>connection.python</code>，以及成员自编子 Workflow 的 <code>launch.python</code>。后面的控制端示例都在你要处理的项目目录里执行，用的是刚才激活的 Python 环境。</p>
+<h3 id="在来宾上建两个目录">在来宾上建两个目录</h3>
 <p>用 SSH 账号 <code>worker</code> 在每台来宾上执行（路径按你的账号调整）：</p>
 <pre><code class="language-bash">install -d -m 700 /home/worker/oc-workspaces
 install -d -m 700 /home/worker/oc-state
 </code></pre>
-<p>两个目录的作用：</p>
 <ul>
-<li><code>workspace_root</code>：放任务工作区。必须已经存在，并且可写。</li>
+<li><code>workspace_root</code>：放任务工作区，必须已经存在并且可写。</li>
 <li><code>state_directory</code>：远端辅助程序在这里保存运行记录和操作记录，断线后靠它重连和恢复。要放在工作区之外，归 SSH 账号所有，权限 <code>0700</code>。</li>
 </ul>
 <p>两个路径都要写成规范化的绝对路径，不能是 <code>/</code>。</p>
 <h3 id="检查-ssh">检查 SSH</h3>
-<p>OC 只用非交互认证，并严格校验主机密钥。准备工作：</p>
+<p>OC 只用非交互认证，并严格校验主机密钥：</p>
 <ol>
 <li>提前核对来宾的主机密钥，写进控制端信任的 <code>known_hosts</code> 文件。</li>
-<li><code>identity_file</code> 指向控制端上已有的私钥。</li>
+<li><code>identity_file</code> 指向控制端上已有的私钥。私钥只由控制端的 OpenSSH 使用，不会复制到来宾。</li>
 <li>OC 连接时用 <code>ssh -F /dev/null</code>，不读你的 SSH 配置文件。主机名、端口、账号、解释器都要在 VM 配置里写明。</li>
 </ol>
 <p>按实际配置手动连一次，确认账号、Python 包和 Git 都能用：</p>
@@ -183,12 +136,11 @@ install -d -m 700 /home/worker/oc-state
   '/home/worker/.venvs/oc/bin/python -c &quot;import opencollab; print(opencollab.__version__)&quot; &amp;&amp; git --version'
 </code></pre>
 <h3 id="别让模型凭据进-vm">别让模型凭据进 VM</h3>
-<p>OC 会按快照规则把项目文件复制到 VM。项目里的 <code>configs/.env</code> 也可能被一起复制过去。所以模型凭据不要放在项目里。</p>
-<p>推荐做法：把模型认证配置放在控制端的专属目录，用 <code>OPENCOLLAB_CONFIG_FILE</code> 指定它的绝对路径。后面的示例都这样做。</p>
+<p>OC 会按快照规则把项目文件复制到 VM，项目里的 <code>configs/.env</code> 也可能被一起复制过去。所以模型凭据不要放在项目里。推荐做法：把模型认证配置放在控制端的专属目录，用 <code>OPENCOLLAB_CONFIG_FILE</code> 指定它的绝对路径，后面的示例都这样做：</p>
 <pre><code class="language-bash">export OPENCOLLAB_CONFIG_FILE=/home/controller/.config/opencollab/model.env
 </code></pre>
 <h2 id="第二步写-vm-配置">第二步：写 VM 配置</h2>
-<p>把下面的 JSON 存成控制端项目里的 <code>vm-profile.json</code>。把主机、账号、密钥、目录和重置程序路径换成你的。示例里有两台来宾，这样可以验证“父成员占一台，子调用再领另一台”。</p>
+<p>把下面的 JSON 存成控制端项目里的 <code>vm-profile.json</code>，把主机、账号、密钥、目录和重置程序路径换成你的。示例有两台来宾，这样可以验证“父成员占一台，子调用再领另一台”。</p>
 <pre><code class="language-json">{
   &quot;resources&quot;: [
     {
@@ -227,7 +179,6 @@ install -d -m 700 /home/worker/oc-state
   &quot;cleanup_timeout&quot;: 60
 }
 </code></pre>
-<p>几个关键字段：</p>
 <table>
 <thead>
 <tr>
@@ -259,37 +210,18 @@ install -d -m 700 /home/worker/oc-state
 </tr>
 <tr>
 <td><code>reset_command</code></td>
-<td>归还 VM 前运行的管理员程序</td>
+<td>归还 VM 之前运行的管理员程序</td>
 <td>VM 池要求每台都写</td>
 </tr>
 </tbody>
 </table>
-<h3 id="resource_id">resource_id</h3>
-<p>一个 ID 对应一台真实机器。同一台机器即使用不同主机名或 SSH 连接访问，所有配置里也要用同一个 ID。同一份资源列表里，ID 不能重复。</p>
-<h3 id="lease_database">lease_database</h3>
-<p>同一台控制主机上，所有共用这个机器池的进程都要指向同一个数据库文件。OC 用 SQLite 事务和资源 ID 的唯一约束保证一台 VM 同时只分给一方。</p>
-<p>如果多台控制主机要共同分配 VM，一个本地 SQLite 文件就不够了。这时用 <a href="../custom-environment-providers/index.html">自定义环境提供器</a> 接入外部分配服务。</p>
-<h3 id="wait_timeout">wait_timeout</h3>
-<ul>
-<li><code>0</code>（默认）：没有空闲机器就立刻抛出 <code>VMCapacityError</code>。</li>
-<li>正数：最多等这么多秒。</li>
-<li>JSON 里写 <code>null</code>：一直等，直到有机器空出来或运行被取消。</li>
-</ul>
-<p>注意：如果父任务已经占了全部机器，子调用再怎么等也要靠别的任务归还。按实际最大并发量多准备几台资源。</p>
-<h3 id="cleanup_timeout">cleanup_timeout</h3>
-<p>SDK 的 Team 和 Workflow、CLI、成员自编子 Workflow 都用这个值。覆盖顺序：</p>
-<ol>
-<li>SDK 运行参数或子运行 <code>launch</code> 里显式写的值优先。</li>
-<li>Workflow CLI 可以用 <code>--cleanup-timeout</code> 覆盖。</li>
-<li>都没写时用配置里的值，默认 <code>60</code> 秒。</li>
-</ol>
-<p>重置程序跑得慢，就按实测耗时调大这个值。</p>
-<h3 id="reset_command">reset_command</h3>
-<p>每台资源的 <code>reset_command</code> 都要指向管理员准备好、验证过的程序。示例里的 <code>/usr/local/sbin/reset-opencollab-guest</code> 只是占位路径，要换成你的脚本。</p>
-<p>OC 自己只删除任务目录，这只能回收任务文件。依赖安装、后台服务、系统配置这些整机状态，要由这个脚本恢复。工作负载可能改到的来宾状态，脚本都要负责还原。脚本成功退出，OC 才认为恢复完成。</p>
+<p><strong><code>resource_id</code></strong>：一个 ID 对应一台真实机器。同一台机器即使用不同的主机名或 SSH 连接访问，所有配置里也要用同一个 ID；同一份资源列表里 ID 不能重复。</p>
+<p><strong><code>lease_database</code></strong>：同一台控制主机上，所有共用这个机器池的进程都要指向同一个数据库文件。OC 用 SQLite 事务和资源 ID 的唯一约束，保证一台 VM 同时只分给一方。多台控制主机要共同分配 VM 时，一个本地 SQLite 文件就不够了，要用 <a href="../execution-environments/index.html#%E6%96%B9%E5%BC%8F%E4%BA%8C%E6%B3%A8%E5%86%8C%E4%B8%80%E4%B8%AA%E6%96%B0%E7%9A%84%E9%9A%94%E7%A6%BB%E7%AD%96%E7%95%A5">自定义环境提供器</a> 接入外部分配服务。</p>
+<p><strong><code>wait_timeout</code></strong>：<code>0</code>（默认）表示没有空闲机器就立刻抛出 <code>VMCapacityError</code>；正数表示最多等这么多秒；JSON 里写 <code>null</code> 表示一直等，直到有机器空出来或运行被取消。注意：如果父任务已经占了全部机器，子调用再怎么等也要靠别的任务归还，所以按实际最大并发量多准备几台。</p>
+<p><strong><code>cleanup_timeout</code></strong>：SDK 的 Team 和 Workflow、CLI、成员自编子 Workflow 都用这个值。SDK 运行参数或子运行 <code>launch</code> 里显式写的值优先；Workflow CLI 可以用 <code>--cleanup-timeout</code> 覆盖；都没写时用配置里的值，默认 <code>60</code> 秒。重置程序跑得慢，就按实测耗时调大。</p>
+<p><strong><code>reset_command</code></strong>：要指向管理员准备好、验证过的程序，示例里的路径只是占位。OC 自己只删除任务目录，这只能回收任务文件；依赖安装、后台服务、系统配置这些整机状态，要由这个脚本恢复。工作负载可能改到的来宾状态，脚本都要负责还原。脚本成功退出，OC 才认为恢复完成。</p>
 <h2 id="第三步用-sdk-跑一次检查">第三步：用 SDK 跑一次检查</h2>
-<p>先在控制端配好模型端点和凭据，方法见 <a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a>。</p>
-<p>创建 <code>workflows/vm_check.py</code>：</p>
+<p>先在控制端配好模型端点和凭据，见 <a href="../provider-endpoint-credentials/index.html">接入模型服务</a>。然后创建 <code>workflows/vm_check.py</code>：</p>
 <pre><code class="language-python">from opencollab import workflow
 from opencollab.tools import builtin_tools
 
@@ -301,7 +233,7 @@ async def vm_check(ctx, args):
     )
     return {&quot;inspection&quot;: output}
 </code></pre>
-<p>在项目根目录创建并运行 <code>run_vm.py</code>。它把这次运行的默认策略设成 <code>vm-group</code>，Agent 调用会进入 VM。</p>
+<p>在项目根目录创建并运行 <code>run_vm.py</code>。它把这次运行的默认策略设成 <code>vm-group</code>，Agent 调用会进入 VM：</p>
 <pre><code class="language-python">import asyncio
 import json
 from pathlib import Path
@@ -322,20 +254,15 @@ async def main():
 
 asyncio.run(main())
 </code></pre>
-<p>跑完检查三件事：</p>
-<ol>
-<li>模型报告的主机名和目录是 VM 的。</li>
-<li><code>vm-run</code> 下有导出的 VM 工作区。</li>
-<li>如果项目要构建或测试，把真实命令写进任务，看它的退出码和输出。</li>
-</ol>
-<p><code>config[&quot;vm&quot;]</code> 会同时注册 <code>vm-group</code> 和 <code>vm-session</code>。如果你已有资源服务，可以在 SDK 的 <code>environment_providers</code> 里注册同名工厂来覆盖它们。公开工厂是 <code>vm_isolation_provider</code>。</p>
+<p>跑完检查三件事：模型报告的主机名和目录是 VM 的；<code>vm-run</code> 下有导出的 VM 工作区；项目要构建或测试的话，把真实命令写进任务，看它的退出码和输出。</p>
+<p><code>config[&quot;vm&quot;]</code> 会同时注册 <code>vm-group</code> 和 <code>vm-session</code>。如果你已有资源服务，可以在 SDK 的 <code>environment_providers</code> 里注册同名工厂覆盖它们，公开工厂是 <code>vm_isolation_provider</code>，见 <a href="../execution-environments/index.html#%E4%BD%BF%E7%94%A8%E7%8E%B0%E6%9C%89-vm-%E6%8F%90%E4%BE%9B%E5%99%A8">使用现有 VM 提供器</a>。</p>
 <h2 id="用-cli-或-team-选择-vm">用 CLI 或 Team 选择 VM</h2>
-<p>带装饰器的工作流可以直接按名字运行。CLI 从环境变量 <code>OPENCOLLAB_VM</code> 读 JSON。模型配置还是用前面指定的外部 env 文件。</p>
+<p>带装饰器的 Workflow 可以直接按名字运行。CLI 从环境变量 <code>OPENCOLLAB_VM</code> 读 JSON，模型配置还是用前面指定的外部 env 文件：</p>
 <pre><code class="language-bash">OPENCOLLAB_VM=&quot;$(cat vm-profile.json)&quot; \
   opencollab workflow run vm-check --workspace . \
   --isolation vm-group --cleanup-timeout 60
 </code></pre>
-<p>Team 文件可以设整次运行的默认策略，也可以给单个角色设策略。把下面内容存成 <code>team.yaml</code>：</p>
+<p>团队文件可以设整次运行的默认策略，也可以给单个角色设。把下面内容存成 <code>team.yaml</code>：</p>
 <pre><code class="language-yaml">entry: inspector
 isolation: vm-group
 roles:
@@ -343,19 +270,13 @@ roles:
     prompt: Read the project and report the hostname, working directory, and test result.
     tools: [file_read, bash]
 </code></pre>
-<p>用 SDK 跑：拿上面配好 VM profile 的 <code>client</code>，调用 <code>await client.team(&quot;检查项目&quot;, config=&quot;team.yaml&quot;, artifacts=&quot;team-vm-run&quot;)</code>。</p>
-<p>用交互式 Team CLI 跑，读同一份配置：</p>
+<p>用 SDK 跑：拿上面配好 VM 的 <code>client</code>，调用 <code>await client.team(&quot;检查项目&quot;, config=&quot;team.yaml&quot;, artifacts=&quot;team-vm-run&quot;)</code>。用交互式 Team CLI 跑：</p>
 <pre><code class="language-bash">OPENCOLLAB_VM=&quot;$(cat vm-profile.json)&quot; \
   opencollab --workspace . --team-config team.yaml
 </code></pre>
-<p>优先级从高到低：Team 角色上的策略，SDK 运行参数，Team 文件的默认值。完整规则见 <a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a>。</p>
+<p>优先级从高到低：角色上的策略、SDK 运行参数、团队文件的默认值，见 <a href="../isolation-overview/index.html#%E5%9C%A8%E5%93%AA%E9%87%8C%E8%AE%BE%E7%BD%AE%E8%B0%81%E4%BC%98%E5%85%88">在哪里设置，谁优先</a>。</p>
 <h2 id="让成员的子-workflow-留在自己的-vm">让成员的子 Workflow 留在自己的 VM</h2>
-<p><code>manage_workflow</code> 是 OC 的一个工具，成员 Agent 用它写出并启动自己的子 Workflow。步骤：</p>
-<ol>
-<li>成员先调用 <code>{&quot;action&quot;: &quot;describe&quot;}</code>，看当前能用哪些策略、有哪些工具权限。</li>
-<li>成员写出子 Workflow 源文件。</li>
-<li>成员用下面的参数启动子运行。子 Agent 会在成员 VM 里的独立工作树中执行。<code>python</code> 要和来宾上的实际安装位置一致。</li>
-</ol>
+<p>成员 Agent 可以用 <code>manage_workflow</code> 写出并启动自己的子 Workflow：先调用 <code>{&quot;action&quot;: &quot;describe&quot;}</code> 看能用哪些策略和工具，写出源文件，再用下面的参数启动。子 Agent 会在成员 VM 里的独立工作树中执行，<code>python</code> 要和来宾上的实际安装位置一致：</p>
 <pre><code class="language-json">{
   &quot;action&quot;: &quot;launch&quot;,
   &quot;source&quot;: &quot;generated.py&quot;,
@@ -363,43 +284,27 @@ roles:
   &quot;python&quot;: &quot;/home/worker/.venvs/oc/bin/python&quot;
 }
 </code></pre>
-<ol start="4">
-<li>之后成员用 <code>status</code>、<code>wait</code>、<code>result</code> 或 <code>stop</code> 管理子运行。</li>
-</ol>
-<p>子 Workflow 里也可以给单次 <code>ctx.agent</code> 写 <code>isolation=&quot;vm-session&quot;</code>，这次调用会领取父 VM 之外的另一台机器。Team 成员之间的通信仍按配置的拓扑走。完整过程见 <a href="../member-authored-workflow/index.html">让成员编写并管理自己的子 Workflow</a>。</p>
-<p>子运行里各部分在哪里：</p>
-<ul>
-<li>模型路由、凭据、请求容量：在控制端，由桥接层管理。</li>
-<li>工作区文件：按快照规则复制到 VM。</li>
-<li>工具在哪里执行：由 VM 配置决定。</li>
-</ul>
-<p>同一台控制主机上的模型请求可以共用本地请求池。多台控制机器要统一额度，就交给外部网关或调度服务，见 <a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a>。</p>
+<p>之后用 <code>status</code>、<code>wait</code>、<code>result</code> 或 <code>stop</code> 管理子运行。子 Workflow 里也可以给单次 <code>ctx.agent</code> 写 <code>isolation=&quot;vm-session&quot;</code>，这次调用会领取父 VM 之外的另一台机器。模型路由、凭据和请求容量都留在控制端，由桥接层管理；工作区文件按快照规则复制到 VM。完整过程见 <a href="../team-run-workflow/index.html#%E5%9C%A8-vm-%E6%88%90%E5%91%98%E9%87%8C%E7%94%A8%E7%8B%AC%E7%AB%8B%E5%B7%A5%E4%BD%9C%E6%A0%91">让 Team 成员运行 Workflow</a>。</p>
+<p>仓库有一个 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/vm-authored-workflow/demo.py">双 VM 离线示例</a>。它默认用 <code>python3</code> 启动成员写的源码；如果你按本页的方式在来宾上建了虚拟环境，就在示例的 <code>manage_workflow</code> 启动参数里加上 <code>&quot;python&quot;: &quot;/home/worker/.venvs/oc/bin/python&quot;</code>，再用同一份 VM 配置运行。</p>
 <h2 id="导出改动和归还机器">导出改动和归还机器</h2>
-<h3 id="改动在哪里">改动在哪里</h3>
-<p>VM 环境释放前，OC 把候选内容导出到控制端运行产物的 <code>vm/&lt;租约 token&gt;/&lt;角色目录&gt;</code> 下。显式设置了隔离的 Team，入口补丁还可以从 <code>result.metrics.get(&quot;entry_patch&quot;)</code> 拿到。</p>
-<p>先看完整文件或补丁，再按任务要求采纳到交付目录，见 <a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a>。</p>
-<h3 id="oc-怎样归还机器">OC 怎样归还机器</h3>
-<ol>
-<li>结束自己发起的操作。</li>
-<li>清理工作树。</li>
-<li>仍然持有租约，运行管理员的重置程序。</li>
-<li>重置成功、任务目录删掉之后，才释放租约。</li>
-</ol>
-<h3 id="归还失败怎么办">归还失败怎么办</h3>
+<p><strong>改动在哪里</strong>：VM 环境释放前，OC 把候选内容导出到控制端运行产物的 <code>vm/&lt;租约 token&gt;/&lt;角色目录&gt;</code> 下。显式设置了隔离的 Team，入口补丁还可以从 <code>result.metrics.get(&quot;entry_patch&quot;)</code> 拿到。先看完整文件或补丁，再按任务要求采纳，见 <a href="../candidate-delivery/index.html">隔离改动怎样回到项目</a>。</p>
+<p><strong>OC 怎样归还机器</strong>：结束自己发起的操作 → 清理工作树 → 仍然持有租约，运行管理员的重置程序 → 重置成功、任务目录删掉之后，才释放租约。</p>
+<p><strong>归还失败怎么办</strong>：</p>
 <ul>
-<li>如果导出、连接、清理或重置失败：OC 会保留租约和恢复资料。记下错误里的资源 ID、远端路径、操作 ID 和控制端产物位置，然后按 <a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a> 处理。</li>
-<li>如果池对象还活着：可以重试清理。</li>
-<li>如果控制进程已经退出：SQLite 里的租约仍然保留。重新创建池时，OC 会认出已有租约。管理员确认三件事后，可以删掉这台资源对应的那一条租约记录：远端操作已经结束，改动已经导出，来宾已经成功重置。</li>
-<li>如果报 <code>VMCapacityError</code>：没有空闲 VM。等别的任务归还，或调大 <code>wait_timeout</code>，或增加资源。</li>
+<li>导出、连接、清理或重置失败时，OC 会保留租约和恢复资料。记下错误里的资源 ID、远端路径、操作 ID 和控制端产物位置。</li>
+<li>池对象还活着：对同一个对象再调用一次清理即可重试。</li>
+<li>控制进程已经退出：SQLite 里的租约仍然保留，重新创建池时 OC 会认出已有租约。管理员确认三件事（远端操作已经结束、改动已经导出、来宾已经成功重置）后，可以删掉这台资源对应的那一条租约记录，步骤见 <a href="../candidate-delivery/index.html#vm-%E6%96%AD%E7%BA%BF%E4%B8%8E%E7%A7%9F%E7%BA%A6%E6%81%A2%E5%A4%8D">VM 断线与租约恢复</a>。</li>
+<li>报 <code>VMCapacityError</code>：没有空闲 VM。等别的任务归还，调大 <code>wait_timeout</code>，或增加资源。</li>
 </ul>
-<h2 id="运行仓库里的双-vm-示例">运行仓库里的双 VM 示例</h2>
-<p>仓库有一个 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/vm-authored-workflow/demo.py">双 VM 离线示例</a>。它默认用 <code>python3</code> 启动成员写的源码。如果你按本页的方式在来宾上建了虚拟环境，就在示例的 <code>manage_workflow</code> 启动参数里加上 <code>&quot;python&quot;: &quot;/home/worker/.venvs/oc/bin/python&quot;</code>，再用同一份 VM profile 运行。</p>
-<h2 id="源码依据">源码依据</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/virtual-machines.zh-CN.md">VM 使用指南</a>、<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/environment_profiles.py">VMProfile 配置</a>、<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/vm_config.py">VM 资源字段</a>、<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/vm_isolation.py">VM 分配与释放</a>、<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/vm-authored-workflow/README.zh-CN.md">成员自编 VM 示例</a>。</p>
+<h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/virtual-machines.zh-CN.md">VM 使用指南</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/environment_profiles.py">VMProfile 配置</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/vm_config.py">VM 资源字段</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/vm_isolation.py">VM 分配与释放</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/vm-authored-workflow/README.zh-CN.md">成员自编 VM 示例</a></li>
+<li>相关指南：<a href="../isolation-overview/index.html">隔离</a> · <a href="../execution-environments/index.html">使用自己的执行环境</a> · <a href="../candidate-delivery/index.html">隔离改动怎样回到项目</a> · <a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a></li>
+</ul>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/topics/isolation/vm-environment-extension.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%85%88%E9%80%89-vm-group-%E8%BF%98%E6%98%AF-vm-session">先选 vm-group 还是 vm-session</a><a href="#%E7%AC%AC%E4%B8%80%E6%AD%A5%E5%87%86%E5%A4%87%E6%8E%A7%E5%88%B6%E7%AB%AF%E5%92%8C%E6%9D%A5%E5%AE%BE">第一步：准备控制端和来宾</a><a href="#%E7%8E%AF%E5%A2%83%E8%A6%81%E6%B1%82">环境要求</a><a href="#%E5%AE%89%E8%A3%85%E5%90%8C%E4%B8%80%E4%B8%AA-wheel">安装同一个 wheel</a><a href="#%E5%9C%A8%E6%9D%A5%E5%AE%BE%E4%B8%8A%E5%BB%BA%E7%9B%AE%E5%BD%95">在来宾上建目录</a><a href="#%E6%A3%80%E6%9F%A5-ssh">检查 SSH</a><a href="#%E5%88%AB%E8%AE%A9%E6%A8%A1%E5%9E%8B%E5%87%AD%E6%8D%AE%E8%BF%9B-vm">别让模型凭据进 VM</a><a href="#%E7%AC%AC%E4%BA%8C%E6%AD%A5%E5%86%99-vm-%E9%85%8D%E7%BD%AE">第二步：写 VM 配置</a><a href="#resource_id">resource_id</a><a href="#lease_database">lease_database</a><a href="#wait_timeout">wait_timeout</a><a href="#cleanup_timeout">cleanup_timeout</a><a href="#reset_command">reset_command</a><a href="#%E7%AC%AC%E4%B8%89%E6%AD%A5%E7%94%A8-sdk-%E8%B7%91%E4%B8%80%E6%AC%A1%E6%A3%80%E6%9F%A5">第三步：用 SDK 跑一次检查</a><a href="#%E7%94%A8-cli-%E6%88%96-team-%E9%80%89%E6%8B%A9-vm">用 CLI 或 Team 选择 VM</a><a href="#%E8%AE%A9%E6%88%90%E5%91%98%E7%9A%84%E5%AD%90-workflow-%E7%95%99%E5%9C%A8%E8%87%AA%E5%B7%B1%E7%9A%84-vm">让成员的子 Workflow 留在自己的 VM</a><a href="#%E5%AF%BC%E5%87%BA%E6%94%B9%E5%8A%A8%E5%92%8C%E5%BD%92%E8%BF%98%E6%9C%BA%E5%99%A8">导出改动和归还机器</a><a href="#%E6%94%B9%E5%8A%A8%E5%9C%A8%E5%93%AA%E9%87%8C">改动在哪里</a><a href="#oc-%E6%80%8E%E6%A0%B7%E5%BD%92%E8%BF%98%E6%9C%BA%E5%99%A8">OC 怎样归还机器</a><a href="#%E5%BD%92%E8%BF%98%E5%A4%B1%E8%B4%A5%E6%80%8E%E4%B9%88%E5%8A%9E">归还失败怎么办</a><a href="#%E8%BF%90%E8%A1%8C%E4%BB%93%E5%BA%93%E9%87%8C%E7%9A%84%E5%8F%8C-vm-%E7%A4%BA%E4%BE%8B">运行仓库里的双 VM 示例</a><a href="#%E6%BA%90%E7%A0%81%E4%BE%9D%E6%8D%AE">源码依据</a></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%85%88%E7%90%86%E8%A7%A3%E5%9B%9B%E4%B8%AA%E5%90%8D%E8%AF%8D%E5%92%8C%E4%B8%80%E6%AC%A1%E8%BF%90%E8%A1%8C%E7%9A%84%E8%BF%87%E7%A8%8B">先理解四个名词和一次运行的过程</a><a href="#%E5%85%88%E9%80%89-vm-group-%E8%BF%98%E6%98%AF-vm-session">先选 vm-group 还是 vm-session</a><a href="#%E7%AC%AC%E4%B8%80%E6%AD%A5%E5%87%86%E5%A4%87%E6%8E%A7%E5%88%B6%E7%AB%AF%E5%92%8C%E6%9D%A5%E5%AE%BE">第一步：准备控制端和来宾</a><a href="#%E7%8E%AF%E5%A2%83%E8%A6%81%E6%B1%82">环境要求</a><a href="#%E5%9C%A8%E6%8E%A7%E5%88%B6%E7%AB%AF%E5%92%8C%E6%9D%A5%E5%AE%BE%E4%B8%8A%E5%AE%89%E8%A3%85%E5%90%8C%E4%B8%80%E4%B8%AA-wheel">在控制端和来宾上安装同一个 wheel</a><a href="#%E5%9C%A8%E6%9D%A5%E5%AE%BE%E4%B8%8A%E5%BB%BA%E4%B8%A4%E4%B8%AA%E7%9B%AE%E5%BD%95">在来宾上建两个目录</a><a href="#%E6%A3%80%E6%9F%A5-ssh">检查 SSH</a><a href="#%E5%88%AB%E8%AE%A9%E6%A8%A1%E5%9E%8B%E5%87%AD%E6%8D%AE%E8%BF%9B-vm">别让模型凭据进 VM</a><a href="#%E7%AC%AC%E4%BA%8C%E6%AD%A5%E5%86%99-vm-%E9%85%8D%E7%BD%AE">第二步：写 VM 配置</a><a href="#%E7%AC%AC%E4%B8%89%E6%AD%A5%E7%94%A8-sdk-%E8%B7%91%E4%B8%80%E6%AC%A1%E6%A3%80%E6%9F%A5">第三步：用 SDK 跑一次检查</a><a href="#%E7%94%A8-cli-%E6%88%96-team-%E9%80%89%E6%8B%A9-vm">用 CLI 或 Team 选择 VM</a><a href="#%E8%AE%A9%E6%88%90%E5%91%98%E7%9A%84%E5%AD%90-workflow-%E7%95%99%E5%9C%A8%E8%87%AA%E5%B7%B1%E7%9A%84-vm">让成员的子 Workflow 留在自己的 VM</a><a href="#%E5%AF%BC%E5%87%BA%E6%94%B9%E5%8A%A8%E5%92%8C%E5%BD%92%E8%BF%98%E6%9C%BA%E5%99%A8">导出改动和归还机器</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>
 </body>
 </html>

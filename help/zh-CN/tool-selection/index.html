@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>选择 Agent 能使用的工具 · OpenCollab Wiki</title>
-<meta name="description" content="用 builtin_tools 挑选普通编码工具并设置输出上限；Team 协作工具只能在团队角色里声明。">
+<title>内置工具：怎么选、文件怎么改、命令怎么跑 · OpenCollab Wiki</title>
+<meta name="description" content="Agent 能做什么完全由工具列表决定：怎样挑选和限制内置工具，文件工具怎样安全地读写，bash 在哪里执行、谁允许它执行，以及怎样确认命令真的成功。">
 <link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/tool-selection/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,13 +35,14 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details open><summary>工具、Skill 与扩展 <small>6</small></summary><a href="index.html" aria-current="page">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="../duo-workflow/index.html">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details><summary>模型与配置 <small>5</small></summary><a href="../provider-endpoint-credentials/index.html">接入模型服务：端点、凭据、协议与流式</a><a href="../thinking-reasoning-sampling/index.html">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details open><summary>工具与扩展 <small>4</small></summary><a href="index.html" aria-current="page">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">使用自己的执行环境</a><a href="../candidate-delivery/index.html">隔离改动怎样回到项目：采纳、找回与清理</a></details><details><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../session-save-resume/index.html">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">工具、Skill 与扩展</p>
-<h1 id="选择-agent-能使用的工具">选择 Agent 能使用的工具</h1>
-<p>在 OC 里，Agent 能请求哪些操作完全由它的工具列表决定。OC 把工具分成两组分别组装：普通编码工具用公开函数 <code>builtin_tools(...)</code> 构造，可以直接传给 SDK；需要调度器、技能存储等运行时能力的工具（如 <code>spawn_agent</code>、<code>use_skill</code>），由 Team 运行环境提供，只能在团队角色的 <code>tools</code> 里按注册名声明。最小用法是 <code>builtin_tools(&quot;file_read&quot;, &quot;grep&quot;, &quot;git_diff&quot;)</code>，得到一个只读 Agent。</p>
+<p class="category">工具与扩展</p>
+<h1 id="内置工具怎么选文件怎么改命令怎么跑">内置工具：怎么选、文件怎么改、命令怎么跑</h1>
+<p>在 OC 里，Agent 能请求哪些操作，<strong>完全由它的工具列表决定</strong>；不在列表里的操作，模型想做也做不了。这篇先讲怎样挑选和限制工具，再分别讲文件工具和 <code>bash</code>：它们在哪里执行、有哪些安全检查、怎样确认操作真的成功。</p>
 <h2 id="工具一览">工具一览</h2>
+<p>OC 把工具分成两组，组装方式不同：</p>
 <table>
 <thead>
 <tr>
@@ -71,20 +72,28 @@
 <td><code>builtin_tools</code> 或角色 <code>tools</code></td>
 </tr>
 <tr>
+<td>提交</td>
+<td><code>submit</code></td>
+<td>结束当前回合并交付</td>
+<td><code>builtin_tools</code> 或角色 <code>tools</code></td>
+</tr>
+<tr>
 <td>Team 协作</td>
 <td><code>spawn_agent</code>、<code>message_agent</code>、<code>team_status</code>、<code>adopt_agent</code></td>
 <td>派发、通信、状态、交付</td>
-<td>只能在角色 <code>tools</code> 里声明</td>
+<td>只能在团队角色的 <code>tools</code> 里声明</td>
 </tr>
 <tr>
 <td>扩展与组合</td>
 <td><code>use_skill</code>、<code>run_workflow</code>、<code>manage_workflow</code></td>
-<td>载入指导、执行工作单元</td>
-<td>在角色 <code>tools</code> 里声明</td>
+<td>载入说明、运行 Workflow</td>
+<td>在团队角色的 <code>tools</code> 里声明</td>
 </tr>
 </tbody>
 </table>
-<h2 id="最小示例只读-agent">最小示例：只读 Agent</h2>
+<p>普通编码工具用公开函数 <code>builtin_tools(...)</code> 构造，可以直接传给 SDK。需要调度器、技能存储等运行时能力的工具（如 <code>spawn_agent</code>、<code>use_skill</code>），由 Team 运行环境提供，只能在团队角色的 <code>tools</code> 里按名称声明。想加自己的工具，见 <a href="../custom-tools/index.html">自定义工具</a>。</p>
+<h2 id="给-agent-挑工具">给 Agent 挑工具</h2>
+<p>最小用法：只给读取和差异工具，得到一个只读 Agent。</p>
 <pre><code class="language-python">import asyncio
 from opencollab import OpenCollab
 from opencollab.tools import builtin_tools
@@ -100,12 +109,12 @@ async def main():
 
 asyncio.run(main())
 </code></pre>
-<p>确认实际选中了哪些工具，看运行指标 <code>agent_tool_names</code>。<code>profile_tool_names(&quot;base&quot;)</code> 返回的是 profile 的默认列表，显式传入工具后，以实际运行记录为准。</p>
-<h2 id="有工具不等于能执行">有工具不等于能执行</h2>
+<p>想确认实际用了哪些工具，看运行指标 <code>agent_tool_names</code>。<code>profile_tool_names(&quot;base&quot;)</code> 返回的是 Agent 配置的默认列表；显式传入工具之后，以运行记录为准。</p>
+<p><strong>有工具不等于能执行。</strong> 有三件事要分开看：</p>
 <ul>
-<li><code>builtin_tools</code> 的 <code>headless=True</code> 要求 shell 工具运行在有进程隔离的环境里。明确传 <code>headless=False</code> 才允许宿主 shell，要结合实际运行环境确认。</li>
-<li>工作树只解决目录分离，宿主权限和网络仍由父环境决定。</li>
-<li><code>allow_file_creation=False</code> 只关闭原生文件工具的创建能力。Bash 能做什么是另一回事，要通过独立的权限和环境策略管理，见 <a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a>。</li>
+<li><code>builtin_tools</code> 默认 <code>headless=True</code>，要求 shell 运行在有进程隔离的环境里；明确传 <code>headless=False</code> 才允许本机 shell。</li>
+<li>工作树只解决目录分离，本机权限和网络仍由父环境决定。</li>
+<li><code>allow_file_creation=False</code> 只关闭原生文件工具的“新建文件”能力，<code>bash</code> 能做什么是另一回事，见下文的 <a href="#bash%E5%91%BD%E4%BB%A4%E5%9C%A8%E5%93%AA%E9%87%8C%E6%89%A7%E8%A1%8C%E8%B0%81%E5%85%81%E8%AE%B8%E5%AE%83%E6%89%A7%E8%A1%8C">bash</a>。</li>
 </ul>
 <h2 id="调整工具输出上限">调整工具输出上限</h2>
 <p>大文件、长测试日志和大范围差异会占满上下文。构造工具时用 <code>limits</code> 设置上限：</p>
@@ -119,8 +128,8 @@ tools = builtin_tools(
         'git_diff': {'max_diff_chars': 24000, 'max_status_chars': 4000},
     },
 )
-print(profile_tool_names('single2'))    # 查询 profile 的默认工具顺序
-print(profile_tool_limits('single2'))   # 查询 profile 的默认上限，返回独立字典
+print(profile_tool_names('single2'))    # 查询 Agent 配置的默认工具顺序
+print(profile_tool_limits('single2'))   # 查询默认上限，返回独立字典
 </code></pre>
 <table>
 <thead>
@@ -153,19 +162,187 @@ print(profile_tool_limits('single2'))   # 查询 profile 的默认上限，返�
 </tr>
 </tbody>
 </table>
-<p>规则：</p>
 <ul>
 <li>取值是 1 到 10,000,000 的整数。</li>
-<li>工作流启用了 profile 时，<code>builtin_tools</code> 先继承该 profile 的默认上限，再应用显式的 <code>limits</code>。</li>
-<li><code>evidence_tools</code> 接受同样的参数，并额外记录真实测试结果。</li>
+<li>Workflow 启用了 Agent 配置时，<code>builtin_tools</code> 先继承该配置的默认上限，再应用显式的 <code>limits</code>。</li>
+<li><code>evidence_tools</code> 接受同样的参数，并额外记录真实测试结果，见 <a href="../run-results/index.html#%E7%94%A8%E6%B5%8B%E8%AF%95%E8%AF%81%E6%8D%AE%E7%A1%AE%E8%AE%A4%E5%81%9A%E5%AF%B9%E4%BA%86">测试证据</a>。</li>
 </ul>
 <p>上限只决定一次工具结果显示多少。与其一味调大，不如缩小范围：大文件用 <code>offset</code> 和 <code>limit</code> 分页读，搜索缩小 <code>path</code> 和 <code>glob</code>，差异按文件看或用 <code>stat_only</code>。</p>
+<h2 id="文件工具读搜改">文件工具：读、搜、改</h2>
+<p>先记住一个和直觉不同的地方：<strong>所有路径都相对于 Agent 自己的执行工作区</strong>，而不是你启动进程的目录。Agent 在工作树或容器里时，改的是那里的副本。读写时还会检查路径越界、符号链接和文件类型。</p>
+<table>
+<thead>
+<tr>
+<th>想做什么</th>
+<th>工具与模式</th>
+<th>关键参数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>分页读文件</td>
+<td><code>file_read</code></td>
+<td><code>path</code>、<code>offset</code>、<code>limit</code></td>
+</tr>
+<tr>
+<td>搜索</td>
+<td><code>grep</code></td>
+<td><code>pattern</code>（正则）、<code>path</code>、<code>glob</code>、<code>max_results</code>（默认 50）</td>
+</tr>
+<tr>
+<td>新建或整体替换</td>
+<td><code>file_write</code> 的 <code>create</code></td>
+<td><code>content</code>；大幅缩短已有长文件需 <code>overwrite=true</code></td>
+</tr>
+<tr>
+<td>替换一段唯一的原文</td>
+<td><code>file_write</code> 的 <code>str_replace</code></td>
+<td><code>old_str</code>、<code>new_str</code></td>
+</tr>
+<tr>
+<td>按行替换或插入</td>
+<td><code>apply_patch</code> 的 <code>line_replace</code></td>
+<td><code>start_line</code>、<code>end_line</code>、<code>expected_str</code>、<code>new_str</code></td>
+</tr>
+<tr>
+<td>一次改多处</td>
+<td><code>apply_patch</code> 的 <code>unified_diff</code></td>
+<td><code>patch</code></td>
+</tr>
+<tr>
+<td>查看改动</td>
+<td><code>git_diff</code></td>
+<td><code>path</code>、<code>staged</code>、<code>stat_only</code>、<code>include_status</code></td>
+</tr>
+</tbody>
+</table>
+<p>具体参数以所选工具的 schema 为准。</p>
+<h3 id="读取与定位">读取与定位</h3>
+<pre><code class="language-json">{&quot;path&quot;: &quot;src/parser.py&quot;, &quot;offset&quot;: 1, &quot;limit&quot;: 120}
+</code></pre>
+<p>大文件分段返回，看结果里实际显示的范围和下一段的位置再继续读。可以先用 <code>grep</code> 找到函数，再读附近的内容。单个工具的输出上限和历史压缩可能让模型看不到全部内容，但文件本身仍完整地在执行环境里，用更窄的范围重读即可。</p>
+<h3 id="四种编辑方式">四种编辑方式</h3>
+<p><strong>整体写入 <code>create</code></strong>：完整内容放进 <code>content</code>，也能整体替换已有文件。新内容让一个已有的长文件大幅变短时，必须显式传 <code>overwrite=true</code>，这是防止误覆盖的保护。</p>
+<pre><code class="language-json">{&quot;path&quot;:&quot;settings.py&quot;,&quot;mode&quot;:&quot;create&quot;,&quot;content&quot;:&quot;RETRIES = 2\n&quot;}
+</code></pre>
+<p><strong>局部替换 <code>str_replace</code></strong>：<code>old_str</code> 必须在文件里恰好出现一次；不唯一时，多带几行邻近代码。</p>
+<pre><code class="language-json">{&quot;path&quot;:&quot;settings.py&quot;,&quot;mode&quot;:&quot;str_replace&quot;,&quot;old_str&quot;:&quot;RETRIES = 2&quot;,&quot;new_str&quot;:&quot;RETRIES = 3&quot;}
+</code></pre>
+<p><strong>按行替换 <code>line_replace</code></strong>：</p>
+<pre><code class="language-json">{&quot;path&quot;:&quot;settings.py&quot;,&quot;mode&quot;:&quot;line_replace&quot;,&quot;start_line&quot;:1,&quot;end_line&quot;:1,&quot;expected_str&quot;:&quot;RETRIES = 3&quot;,&quot;new_str&quot;:&quot;RETRIES = 4&quot;,&quot;relocate_expected&quot;:true}
+</code></pre>
+<p>行号从 1 开始，<code>end_line</code> 包含在范围内；<code>end_line</code> 等于 <code>start_line - 1</code> 时表示在该行之前插入。<code>expected_str</code> 用来核对当前范围的原文，适合读过文件之后再编辑；行号过期、但原文在文件里唯一时，显式开启 <code>relocate_expected</code> 让工具先找到原文再改。</p>
+<p><strong>一次改多处 <code>unified_diff</code></strong>：</p>
+<pre><code class="language-json">{&quot;path&quot;:&quot;settings.py&quot;,&quot;mode&quot;:&quot;unified_diff&quot;,&quot;patch&quot;:&quot;@@ -1 +1 @@\n-RETRIES = 4\n+RETRIES = 5\n&quot;}
+</code></pre>
+<p><code>patch</code> 接受标准的 <code>@@ -a,b +c,d @@</code> hunk，可以省略文件头。工具按上下文和旧内容匹配，容许行号小幅漂移；显式 <code>normalize_hunks=true</code> 会重算 hunk 行数，并允许上下文唯一的裸 <code>@@</code> 标头。只要有一个 hunk 匹配失败，整个编辑都不生效，文件保持原样。</p>
+<p>用 <code>FileWriteTool(allow_create=False)</code> 禁止新建文件时，模型看到的 <code>mode</code> 只剩 <code>str_replace</code>；成员自己写的子 Workflow 也会继承这项限制。</p>
+<h3 id="改完之后">改完之后</h3>
+<p>用 <code>git_diff</code> 或原生 Git 命令确认改动范围，再跑相关测试。写入成功只说明文件写好了，功能对不对要靠项目的实际验证。</p>
+<table>
+<thead>
+<tr>
+<th><code>git_diff</code> 参数</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>path</code></td>
+<td>只看某个文件</td>
+</tr>
+<tr>
+<td><code>staged=true</code></td>
+<td>看暂存区内容</td>
+</tr>
+<tr>
+<td><code>stat_only=true</code></td>
+<td>只看文件级统计</td>
+</tr>
+<tr>
+<td><code>include_status=false</code></td>
+<td>省略状态部分</td>
+</tr>
+</tbody>
+</table>
+<p>默认显示相对 HEAD 的未提交改动，并附上未被忽略的未跟踪文件。结果可能被截断，之后可以按文件继续看。</p>
+<h3 id="路径为什么被拒绝">路径为什么被拒绝</h3>
+<p>内置的本地文件适配器会检查路径、链接和是否为普通文件；容器里的路径由对应的环境检查。遇到链接或越界路径被拒绝时，先确认目标文件确实是任务需要的；是的话，通过环境配置安排正确的工作目录或挂载，而不是绕过检查。</p>
+<p>注意：这些路径限制<strong>只约束原生文件工具</strong>。本机上的 <code>bash</code> 仍然拥有本机进程的全部权限，两者要分开看。</p>
+<h3 id="多个-agent-同时修改">多个 Agent 同时修改</h3>
+<p>共享目录里的成员看到的是同一份文件。文件写锁能保护单次原生编辑，但多个任务的修改仍可能互相影响。想让各自独立实现、再挑结果，就用工作树或候选环境，再通过明确的采纳交付。</p>
+<p>出现“Agent 已经改好，但源目录没变”时，先看当前环境和候选的交付状态，再怀疑编辑工具：隔离任务在自己的目录里修改后，要通过采纳或恢复补丁把结果带回目标目录，见 <a href="../candidate-delivery/index.html">隔离改动怎样回到项目</a>。</p>
+<h2 id="bash命令在哪里执行谁允许它执行">bash：命令在哪里执行、谁允许它执行</h2>
+<p><code>bash</code> 在 Agent 绑定的执行环境里运行命令：本地环境和本地工作树用本机进程权限，Docker 环境在容器里，VM 策略通过 SSH 在来宾机里执行（网络和系统权限由来宾机自己的设置决定）。</p>
+<p>最小调用：</p>
+<pre><code class="language-json">{&quot;command&quot;:&quot;python -m pytest tests/test_parser.py -q&quot;,&quot;timeout&quot;:180}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>command</code></td>
+<td>要执行的命令</td>
+</tr>
+<tr>
+<td><code>timeout</code></td>
+<td>秒数，默认 120</td>
+</tr>
+</tbody>
+</table>
+<p><code>max_output_chars</code> 不是调用参数，而是构造工具时通过 <code>limits</code> 设置。两条执行规则：</p>
+<ul>
+<li>命令在非交互环境运行。带分页器或确认提示的命令，要加上对应的非交互选项，否则无法完成。</li>
+<li>每次调用都从绑定的工作区开始，上一次的 <code>cd</code> 不会保留。要进子目录，就在同一条命令里完成切换和执行，或者用绝对路径。</li>
+</ul>
+<h3 id="一条命令要过三道关">一条命令要过三道关</h3>
+<p>一条命令最终能不能跑、跑在哪里，由三层共同决定：执行环境、角色的工具授权、风险命令确认策略。OC 默认偏保守，在本机直接执行 shell 需要显式开关：</p>
+<table>
+<thead>
+<tr>
+<th>设置</th>
+<th>管理的行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CLI <code>--yolo</code></td>
+<td>自动批准被判定为需要确认的风险命令</td>
+</tr>
+<tr>
+<td>CLI <code>--allow-local-child-shell</code></td>
+<td>允许运行中派生的子成员在没有系统进程沙箱时执行本机 shell</td>
+</tr>
+<tr>
+<td>SDK 或 Workflow 的 <code>allow_unisolated_shell</code></td>
+<td>显式允许这次运行使用本机 shell</td>
+</tr>
+<tr>
+<td><code>builtin_tools(..., headless=False)</code></td>
+<td>让构造出的 shell 工具允许本机执行方式</td>
+</tr>
+</tbody>
+</table>
+<p>这些开关只放开权限，<strong>不会自动加工具</strong>：团队配置和工具集合里仍然要有 <code>bash</code>。还有一点容易忽略：Workflow 的 Python 编排代码本身跑在调用方进程里，你在业务代码里直接调用本机文件或子进程操作，不经过 <code>bash</code> 工具，要单独考虑影响范围。</p>
+<p>执行不可信的项目代码时，优先配置进程和网络隔离，见 <a href="../isolation-overview/index.html">隔离</a>。</p>
+<h3 id="怎样确认命令真的成功">怎样确认命令真的成功</h3>
+<ol>
+<li>读工具返回的退出状态、标准输出、错误输出和超时标志。</li>
+<li>测试类命令，要确认预期的测试目标确实执行了：<code>--help</code> 的输出只说明用法，测试收集结果只说明有哪些待执行目标，都不代表通过。</li>
+<li>需要机器可读的测试证据时，用 <code>evidence_tools</code> 和支持的 runner，见 <a href="../run-results/index.html#%E7%94%A8%E6%B5%8B%E8%AF%95%E8%AF%81%E6%8D%AE%E7%A1%AE%E8%AE%A4%E5%81%9A%E5%AF%B9%E4%BA%86">测试证据</a>。</li>
+</ol>
+<p>长命令要区分三种期限：命令自身的 <code>timeout</code>、Agent 的运行期限、模型请求超时。调大模型超时，没法延长一个已经被 <code>bash</code> 工具终止的进程。调整方法见 <a href="../timeouts-retries/index.html#%E5%B7%A5%E5%85%B7%E6%89%A7%E8%A1%8C%E5%8D%A1%E4%BD%8F%E6%97%B6%E8%B0%83%E5%93%AA%E4%B8%80%E5%B1%82">工具执行卡住时调哪一层</a>。取消运行时，框架清理它自己创建的命令和环境；调用方传入的环境由调用方继续管理。</p>
 <h2 id="常见问题">常见问题</h2>
 <table>
 <thead>
 <tr>
 <th>报错或现象</th>
-<th>原因</th>
+<th>原因与方向</th>
 </tr>
 </thead>
 <tbody>
@@ -179,21 +356,44 @@ print(profile_tool_limits('single2'))   # 查询 profile 的默认上限，返�
 </tr>
 <tr>
 <td><code>builtin_tools</code> 传 <code>spawn_agent</code> 报错</td>
-<td><code>builtin_tools</code> 只接受普通编码工具。协作工具要在 Team 角色里用注册名声明，并确保拓扑允许相关操作</td>
+<td><code>builtin_tools</code> 只接受普通编码工具；协作工具要在 Team 角色里声明，并确保拓扑允许</td>
 </tr>
 <tr>
 <td>模型只输出文字，不调用工具</td>
 <td>先检查实际发出的工具 schema，再看提示词和工具选择设置</td>
 </tr>
+<tr>
+<td>命令找不到依赖</td>
+<td>检查执行环境或镜像里是否安装</td>
+</tr>
+<tr>
+<td>命令的工作目录不对</td>
+<td>每次调用都从工作区开始，<code>cd</code> 不保留</td>
+</tr>
+<tr>
+<td>环境已被撤销</td>
+<td>环境已经释放，查看清理状态</td>
+</tr>
+<tr>
+<td>权限被拒绝</td>
+<td>先判断是哪一层拦的：角色工具、命令授权（上面的开关和 <code>headless</code>）、路径检查，还是环境限制</td>
+</tr>
+<tr>
+<td>测试断言失败</td>
+<td>这是真实的测试结果，按项目问题处理</td>
+</tr>
 </tbody>
 </table>
-<p>工具列表决定能请求什么，工具回执记录实际执行了什么。</p>
-<h2 id="源码与进一步阅读">源码与进一步阅读</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/tools.py">opencollab/tools.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/bootstrap/tool_registry.py">opencollab/bootstrap/tool_registry.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/README.md">opencollab/README.md</a></p>
+<p>保留原命令、退出状态和相关环境设置，比重新启动整个任务更容易定位原因。工具列表决定能请求什么，工具回执记录实际执行了什么。</p>
+<h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/tools.py">opencollab/tools.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/tool_registry.py">opencollab/bootstrap/tool_registry.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/tools/fs.py">opencollab/adapters/tools/fs.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/tools/apply_patch.py">opencollab/adapters/tools/apply_patch.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/safe_anchored_files.py">opencollab/adapters/safe_anchored_files.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/tools/bash.py">opencollab/adapters/tools/bash.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/safety.py">opencollab/adapters/safety.py</a></li>
+<li>相关指南：<a href="../custom-tools/index.html">自定义工具</a> · <a href="../isolation-overview/index.html">隔离</a> · <a href="../run-results/index.html">判断任务是否真的完成</a> · <a href="../configure-team/index.html">Team 入门</a></li>
+</ul>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/topics/extensions/tool-selection.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%B7%A5%E5%85%B7%E4%B8%80%E8%A7%88">工具一览</a><a href="#%E6%9C%80%E5%B0%8F%E7%A4%BA%E4%BE%8B%E5%8F%AA%E8%AF%BB-agent">最小示例：只读 Agent</a><a href="#%E6%9C%89%E5%B7%A5%E5%85%B7%E4%B8%8D%E7%AD%89%E4%BA%8E%E8%83%BD%E6%89%A7%E8%A1%8C">有工具不等于能执行</a><a href="#%E8%B0%83%E6%95%B4%E5%B7%A5%E5%85%B7%E8%BE%93%E5%87%BA%E4%B8%8A%E9%99%90">调整工具输出上限</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E6%BA%90%E7%A0%81%E4%B8%8E%E8%BF%9B%E4%B8%80%E6%AD%A5%E9%98%85%E8%AF%BB">源码与进一步阅读</a></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%B7%A5%E5%85%B7%E4%B8%80%E8%A7%88">工具一览</a><a href="#%E7%BB%99-agent-%E6%8C%91%E5%B7%A5%E5%85%B7">给 Agent 挑工具</a><a href="#%E8%B0%83%E6%95%B4%E5%B7%A5%E5%85%B7%E8%BE%93%E5%87%BA%E4%B8%8A%E9%99%90">调整工具输出上限</a><a href="#%E6%96%87%E4%BB%B6%E5%B7%A5%E5%85%B7%E8%AF%BB%E6%90%9C%E6%94%B9">文件工具：读、搜、改</a><a href="#%E8%AF%BB%E5%8F%96%E4%B8%8E%E5%AE%9A%E4%BD%8D">读取与定位</a><a href="#%E5%9B%9B%E7%A7%8D%E7%BC%96%E8%BE%91%E6%96%B9%E5%BC%8F">四种编辑方式</a><a href="#%E6%94%B9%E5%AE%8C%E4%B9%8B%E5%90%8E">改完之后</a><a href="#%E8%B7%AF%E5%BE%84%E4%B8%BA%E4%BB%80%E4%B9%88%E8%A2%AB%E6%8B%92%E7%BB%9D">路径为什么被拒绝</a><a href="#%E5%A4%9A%E4%B8%AA-agent-%E5%90%8C%E6%97%B6%E4%BF%AE%E6%94%B9">多个 Agent 同时修改</a><a href="#bash%E5%91%BD%E4%BB%A4%E5%9C%A8%E5%93%AA%E9%87%8C%E6%89%A7%E8%A1%8C%E8%B0%81%E5%85%81%E8%AE%B8%E5%AE%83%E6%89%A7%E8%A1%8C">bash：命令在哪里执行、谁允许它执行</a><a href="#%E4%B8%80%E6%9D%A1%E5%91%BD%E4%BB%A4%E8%A6%81%E8%BF%87%E4%B8%89%E9%81%93%E5%85%B3">一条命令要过三道关</a><a href="#%E6%80%8E%E6%A0%B7%E7%A1%AE%E8%AE%A4%E5%91%BD%E4%BB%A4%E7%9C%9F%E7%9A%84%E6%88%90%E5%8A%9F">怎样确认命令真的成功</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>
 </body>
 </html>

@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>配置深度思考与采样参数 · OpenCollab Wiki</title>
-<meta name="description" content="在 OC 里打开或关闭深度思考、设置推理强度和 temperature/top_p，并知道 OC 会替你省略哪些字段。">
+<title>深度思考与采样参数 · OpenCollab Wiki</title>
+<meta name="description" content="打开或关闭深度思考、设置推理强度和 temperature/top_p，并理解 OC 为什么有时会替你省略某些字段。">
 <link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/thinking-reasoning-sampling/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,12 +35,13 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details open><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="index.html" aria-current="page">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="../duo-workflow/index.html">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details open><summary>模型与配置 <small>5</small></summary><a href="../provider-endpoint-credentials/index.html">接入模型服务：端点、凭据、协议与流式</a><a href="index.html" aria-current="page">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details><summary>工具与扩展 <small>4</small></summary><a href="../tool-selection/index.html">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">使用自己的执行环境</a><a href="../candidate-delivery/index.html">隔离改动怎样回到项目：采纳、找回与清理</a></details><details><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../session-save-resume/index.html">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">模型接入与配置</p>
-<h1 id="配置深度思考与采样参数">配置深度思考与采样参数</h1>
-<p>OC 默认 <code>thinking=false</code>。打开思考要设 <code>thinking=true</code>，再用 <code>thinking_params</code>（Chat、原生 Anthropic）或 <code>reasoning_effort</code>（Responses）写目标服务认可的原生格式。OC 不做跨厂商的统一抽象：参数基本原样透传，最终发哪些字段由协议和 OC 内置的模型能力表决定，必要时 OC 会自动省略 <code>temperature</code>、<code>top_p</code>。团队角色可以单独覆盖 <code>thinking</code> 与 <code>temperature</code>。</p>
+<p class="category">模型与配置</p>
+<h1 id="深度思考与采样参数">深度思考与采样参数</h1>
+<p>OC 默认关闭深度思考（<code>thinking=false</code>）。打开它要两步：设 <code>thinking=true</code>，再用目标服务认可的<strong>原生格式</strong>写参数：Chat 和原生 Anthropic 用 <code>thinking_params</code>，Responses 用 <code>reasoning_effort</code>。</p>
+<p>先理解 OC 的设计取舍：它<strong>不做跨厂商的统一抽象</strong>。参数基本原样透传，最终发出哪些字段，由协议和 OC 内置的模型能力表决定；必要时 OC 会自动省略 <code>temperature</code>、<code>top_p</code>。所以“设了却没发出去”，可能是 OC 有意为之。</p>
 <h2 id="关键设置一览">关键设置一览</h2>
 <table>
 <thead>
@@ -62,7 +63,7 @@
 <td><code>OPENCOLLAB_THINKING_PARAMS</code></td>
 <td><code>thinking_params</code></td>
 <td><code>{&quot;enable_thinking&quot;: true}</code></td>
-<td>Chat（经 <code>extra_body</code>）、原生 Anthropic</td>
+<td>Chat（经 <code>extra_body</code> 发出）、原生 Anthropic</td>
 </tr>
 <tr>
 <td><code>OPENCOLLAB_REASONING_EFFORT</code></td>
@@ -84,57 +85,41 @@
 </tr>
 </tbody>
 </table>
-<p>先确认物理模型和协议，再写该服务支持的原生格式。</p>
-<h2 id="为-chat-和-responses-设置推理">为 Chat 和 Responses 设置推理</h2>
-<h3 id="openai-兼容-chat">OpenAI 兼容 Chat</h3>
-<p><code>thinking_params</code> 会通过 <code>extra_body</code> 发出去。服务接受 <code>enable_thinking</code> 时可以这样写：</p>
+<p>先确认物理模型和协议，再写该服务支持的原生格式。SDK 里对应 <code>config</code> 的小写字段 <code>thinking</code>、<code>thinking_params</code>、<code>reasoning_effort</code>。</p>
+<h2 id="openai-兼容-chat-和-responses">OpenAI 兼容 Chat 和 Responses</h2>
+<p><strong>Chat</strong>：<code>thinking_params</code> 会通过 <code>extra_body</code> 发出去。服务接受 <code>enable_thinking</code> 时可以这样写：</p>
 <pre><code class="language-dotenv">OPENCOLLAB_THINKING=true
 OPENCOLLAB_THINKING_PARAMS={&quot;enable_thinking&quot;:true}
 </code></pre>
-<h3 id="responses">Responses</h3>
-<p>用 <code>OPENCOLLAB_REASONING_EFFORT</code> 设推理强度。OC 接受 <code>none</code>、<code>minimal</code>、<code>low</code>、<code>medium</code>、<code>high</code>、<code>xhigh</code> 和 <code>max</code>，具体模型支持哪些值以服务为准。</p>
+<p><strong>Responses</strong>：用 <code>OPENCOLLAB_REASONING_EFFORT</code> 设推理强度。OC 接受 <code>none</code>、<code>minimal</code>、<code>low</code>、<code>medium</code>、<code>high</code>、<code>xhigh</code> 和 <code>max</code>，具体模型支持哪些值以服务为准。</p>
 <pre><code class="language-dotenv">OPENCOLLAB_WIRE_PROTOCOL=responses
 OPENCOLLAB_REASONING_EFFORT=high
 </code></pre>
-<h3 id="格式要求">格式要求</h3>
-<ul>
-<li>SDK 里对应 <code>config</code> 的小写字段 <code>thinking</code>、<code>thinking_params</code>、<code>reasoning_effort</code>。</li>
-<li><code>thinking_params</code> 必须是能序列化成 JSON 的对象。环境变量里也必须是 JSON 对象。数组或无效 JSON 会在配置阶段报错。</li>
-<li>切换协议或物理模型后，重新检查这些参数。上一个服务的字段留着不改，会改变请求内容：服务可能直接拒绝，也可能按它自己的默认处理。</li>
-</ul>
-<h2 id="使用原生-anthropic-thinking">使用原生 Anthropic thinking</h2>
-<h3 id="手动-thinkingbudget_tokens">手动 thinking（<code>budget_tokens</code>）</h3>
-<p>thinking token 至少 1,024，并且要小于单次 <code>max_output_tokens</code>。下面预留 16,000 thinking token，并把总输出调大。模型名和凭据沿用已配置的服务。</p>
+<p>格式要求：<code>thinking_params</code> 必须是能序列化成 JSON 的对象，环境变量里也必须写成 JSON 对象，数组或无效 JSON 会在配置阶段报错。切换协议或物理模型后要重新检查这些参数：上一个服务的字段留着不改，服务可能直接拒绝，也可能按它自己的默认处理。</p>
+<h2 id="原生-anthropic-thinking">原生 Anthropic thinking</h2>
+<p><strong>手动 thinking（<code>budget_tokens</code>）</strong>：thinking token 至少 1,024，并且要小于单次 <code>max_output_tokens</code>。下面预留 16,000 thinking token，并把总输出调大，模型名和凭据沿用已配置的服务：</p>
 <pre><code class="language-dotenv">OPENCOLLAB_PROVIDER=anthropic
 OPENCOLLAB_MAX_OUTPUT_TOKENS=32768
 OPENCOLLAB_THINKING=true
 OPENCOLLAB_THINKING_PARAMS={&quot;thinking&quot;:{&quot;type&quot;:&quot;enabled&quot;,&quot;budget_tokens&quot;:16000}}
 </code></pre>
-<h3 id="adaptive-thinking">adaptive thinking</h3>
-<p>支持 adaptive thinking 的模型，可以用原生 adaptive 结构加该模型认可的 effort：</p>
+<p><strong>adaptive thinking</strong>：支持它的模型，用原生 adaptive 结构加该模型认可的 effort：</p>
 <pre><code class="language-dotenv">OPENCOLLAB_THINKING_PARAMS={&quot;thinking&quot;:{&quot;type&quot;:&quot;adaptive&quot;},&quot;output_config&quot;:{&quot;effort&quot;:&quot;high&quot;}}
 </code></pre>
-<h3 id="oc-对采样字段的处理">OC 对采样字段的处理</h3>
+<p>OC 对采样字段的处理：</p>
 <ul>
 <li>原生 thinking 请求会按模型能力省略 <code>temperature</code>。</li>
-<li>以下模型可按能力使用 0.95 到 1.0 的 <code>top_p</code>：支持的较早 Claude 4 手动 thinking 模型、Claude Opus 4.6 与 Sonnet 4.6 的 adaptive thinking，以及已声明的 DeepSeek 原生 Anthropic 模型。</li>
-<li>更新的模型遵守各自的采样要求。</li>
-<li>工具调用后的续轮需要保留原生 thinking blocks 和签名数据。OC 的标准传输会处理这件事。</li>
+<li>以下模型可按能力使用 0.95 到 1.0 的 <code>top_p</code>：支持的较早 Claude 4 手动 thinking 模型、Claude Opus 4.6 与 Sonnet 4.6 的 adaptive thinking，以及已声明的 DeepSeek 原生 Anthropic 模型。更新的模型遵守各自的采样要求。</li>
+<li>工具调用后的续轮需要保留原生 thinking blocks 和签名数据，OC 的标准传输会处理这件事，见 <a href="../provider-endpoint-credentials/index.html#%E5%B7%A5%E5%85%B7%E8%B0%83%E7%94%A8%E4%B9%8B%E5%90%8E%E7%9A%84%E7%BB%AD%E8%BD%AE%E6%95%B0%E6%8D%AE">续轮数据</a>。</li>
 </ul>
-<h2 id="调整采样与角色覆盖">调整采样与角色覆盖</h2>
-<p>全局采样：</p>
+<h2 id="采样参数与角色覆盖">采样参数与角色覆盖</h2>
 <ul>
-<li><code>temperature</code> 默认 0.2，范围 0 到 2。显式写 0.0 是有效值。</li>
-<li><code>top_p</code> 范围 0 到 1，不写就用 provider 的默认值。</li>
-<li>在支持采样的原生 Claude 4 普通请求里，显式 <code>top_p</code> 优先于温度。</li>
-<li>如果模型或 thinking 模式有要求，请求构造器会省略对应的采样字段。所以“设了却没发出去”可能是 OC 有意为之。</li>
+<li><code>temperature</code> 默认 0.2，范围 0 到 2；显式写 0.0 是有效值，会正常覆盖。</li>
+<li><code>top_p</code> 范围 0 到 1，不写就用服务端的默认值。在支持采样的原生 Claude 4 普通请求里，显式 <code>top_p</code> 优先于温度。</li>
+<li>模型或 thinking 模式有要求时，请求构造器会省略对应的采样字段。</li>
 </ul>
-<p>团队 YAML 里的角色覆盖：</p>
-<ul>
-<li>角色可以把 <code>temperature</code> 设为 0.0，把 <code>thinking</code> 设为 true。不写就继承全局值。</li>
-<li>原生 thinking 的详细参数通过客户端模型设置传入。角色能写哪些字段，见团队 schema。</li>
-</ul>
-<h2 id="查看默认行为">查看默认行为</h2>
+<p>团队 YAML 里，角色可以单独把 <code>temperature</code> 设为 0.0、把 <code>thinking</code> 设为 true，不写就继承全局值。原生 thinking 的详细参数通过客户端配置传入；角色能写哪些字段，见 <a href="../configure-team/index.html#%E5%AD%97%E6%AE%B5%E8%AF%B4%E6%98%8E">Team 入门</a>。</p>
+<h2 id="内置的模型默认行为">内置的模型默认行为</h2>
 <p>部分模型在 OC 能力表里有专门的默认值：</p>
 <table>
 <thead>
@@ -150,33 +135,23 @@ OPENCOLLAB_THINKING_PARAMS={&quot;thinking&quot;:{&quot;type&quot;:&quot;enabled
 </tr>
 <tr>
 <td><code>deepseek-flash</code>、<code>deepseek-v4-pro</code>、<code>deepseek-v4-flash</code></td>
-<td>Chat 与 Anthropic 路径使用 disabled thinking。Responses 把 <code>reasoning</code> 的 <code>effort</code> 设为 <code>none</code></td>
+<td>Chat 与 Anthropic 路径使用 disabled thinking；Responses 把 <code>reasoning</code> 的 <code>effort</code> 设为 <code>none</code></td>
 </tr>
 </tbody>
 </table>
-<p>显式设置的 Responses reasoning effort 优先于上面的默认值。其它模型的默认行为按 provider 能力处理。</p>
-<p>查看方法：</p>
+<p>显式设置的 Responses reasoning effort 优先于上面的默认值，其他模型按 provider 能力处理。用 <code>inspect_model_runtime</code> 查看当前安装版本的模型能力，用 <code>client.configuration</code> 查看你显式覆盖了哪些值，见 <a href="../configuration-precedence/index.html#%E5%90%AF%E5%8A%A8%E5%87%BA%E9%94%99%E6%8C%89%E9%98%B6%E6%AE%B5%E6%8E%92%E6%9F%A5">启动出错怎么查</a>。本地能力表只用来构造请求，参数是否真的被支持，以你用的端点为准。</p>
+<h2 id="给思考留出额度">给思考留出额度</h2>
+<p>单次输出上限 <code>max_output_tokens</code> 和整次会话的 <code>budget</code> 是分开控制的。会话预算有限时，先给输入留出 token，再定输出空间；手动 thinking 还要同时留出思考额度和回答空间。剩余额度低于最低需求时，运行会以预算用尽为原因停止，已完成的工具结果和用量会保留。见 <a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a>。</p>
+<p>报参数错误，就检查模型和参数格式；报额度不够，就检查会话预算、输入长度和单次输出上限。</p>
+<h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li><code>inspect_model_runtime</code>：显示当前安装版本的模型能力。</li>
-<li><code>OpenCollab.configuration</code>：显示你显式覆盖了哪些值。</li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md">configs/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/config.py">opencollab/bootstrap/config.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/model-inspection.md">docs/model-inspection.md</a></li>
+<li>相关指南：<a href="../provider-endpoint-credentials/index.html">接入模型服务</a> · <a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a> · <a href="../configuration-precedence/index.html">配置从哪来、哪个生效</a></li>
 </ul>
-<p>本地能力表只用来构造请求。参数是否真的被支持，以你用的端点为准。</p>
-<h2 id="留出会话额度">留出会话额度</h2>
-<p>单次输出上限 <code>max_output_tokens</code> 与整次会话 <code>budget</code> 是分开控制的。会话预算有限时，先给输入留出 token，再定输出空间。手动 thinking 要同时留出思考额度和回答空间。</p>
-<p>如果剩余额度低于最低需求，运行会以 budget-exceeded 原因停止，已完成的工具结果和用量会保留。</p>
-<p>排错：</p>
-<ul>
-<li>如果报参数错误，就检查模型和参数格式。</li>
-<li>如果额度不够，就检查会话预算、输入长度和单次输出上限。</li>
-</ul>
-<h2 id="来源">来源</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/configs/README.md#L140">configs/README.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/configs/README.md#L162">configs/README.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/configs/README.md#L192">configs/README.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/bootstrap/config.py#L176">opencollab/bootstrap/config.py</a></p>
-<h2 id="相关指南">相关指南</h2>
-<p><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a>　<a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a>　<a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></p>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/topics/models/thinking-reasoning-sampling.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%85%B3%E9%94%AE%E8%AE%BE%E7%BD%AE%E4%B8%80%E8%A7%88">关键设置一览</a><a href="#%E4%B8%BA-chat-%E5%92%8C-responses-%E8%AE%BE%E7%BD%AE%E6%8E%A8%E7%90%86">为 Chat 和 Responses 设置推理</a><a href="#openai-%E5%85%BC%E5%AE%B9-chat">OpenAI 兼容 Chat</a><a href="#responses">Responses</a><a href="#%E6%A0%BC%E5%BC%8F%E8%A6%81%E6%B1%82">格式要求</a><a href="#%E4%BD%BF%E7%94%A8%E5%8E%9F%E7%94%9F-anthropic-thinking">使用原生 Anthropic thinking</a><a href="#%E6%89%8B%E5%8A%A8-thinkingbudget_tokens">手动 thinking（budget_tokens）</a><a href="#adaptive-thinking">adaptive thinking</a><a href="#oc-%E5%AF%B9%E9%87%87%E6%A0%B7%E5%AD%97%E6%AE%B5%E7%9A%84%E5%A4%84%E7%90%86">OC 对采样字段的处理</a><a href="#%E8%B0%83%E6%95%B4%E9%87%87%E6%A0%B7%E4%B8%8E%E8%A7%92%E8%89%B2%E8%A6%86%E7%9B%96">调整采样与角色覆盖</a><a href="#%E6%9F%A5%E7%9C%8B%E9%BB%98%E8%AE%A4%E8%A1%8C%E4%B8%BA">查看默认行为</a><a href="#%E7%95%99%E5%87%BA%E4%BC%9A%E8%AF%9D%E9%A2%9D%E5%BA%A6">留出会话额度</a><a href="#%E6%9D%A5%E6%BA%90">来源</a><a href="#%E7%9B%B8%E5%85%B3%E6%8C%87%E5%8D%97">相关指南</a></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%85%B3%E9%94%AE%E8%AE%BE%E7%BD%AE%E4%B8%80%E8%A7%88">关键设置一览</a><a href="#openai-%E5%85%BC%E5%AE%B9-chat-%E5%92%8C-responses">OpenAI 兼容 Chat 和 Responses</a><a href="#%E5%8E%9F%E7%94%9F-anthropic-thinking">原生 Anthropic thinking</a><a href="#%E9%87%87%E6%A0%B7%E5%8F%82%E6%95%B0%E4%B8%8E%E8%A7%92%E8%89%B2%E8%A6%86%E7%9B%96">采样参数与角色覆盖</a><a href="#%E5%86%85%E7%BD%AE%E7%9A%84%E6%A8%A1%E5%9E%8B%E9%BB%98%E8%AE%A4%E8%A1%8C%E4%B8%BA">内置的模型默认行为</a><a href="#%E7%BB%99%E6%80%9D%E8%80%83%E7%95%99%E5%87%BA%E9%A2%9D%E5%BA%A6">给思考留出额度</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>
 </body>
 </html>

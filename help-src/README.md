@@ -5,10 +5,27 @@ guides on first visit. A global Chinese and English switch selects the wiki
 edition. The browser remembers the selected edition when entering through `help/`
 again. Explicit article URLs open their specified edition. The English
 page at `help/en/` uses the same reader layout and displays "Coming soon."
-Chinese article URLs remain under `help/zh-CN/`. The 70 guides are
+Chinese article URLs remain under `help/zh-CN/`. The 43 guides are
 maintained in `zh-CN/topics/`. Navigation pages link the guides by task and reader questions. Each Markdown document is rendered to an
 independent HTML page, so article links work with JavaScript disabled. Browser
 search reads a local static index.
+
+## Structure and writing conventions
+
+The categories follow one model of a run, which the home page and the
+orientation guide explain to readers: each session combines a model, tools, an
+execution environment and limits; a run organizes sessions as a single agent,
+a Team or a Workflow; delivery means adopting changes and verifying them with
+evidence. Categories therefore cover organization (Team, Workflow), the four
+session elements (models, tools, isolation, run control) and results.
+
+Each guide owns one user task. When two guides explain the same mechanism, merge
+them and keep the fact in one place; other guides link to the owning section.
+Guides follow the same outline: the problem and the key conclusion first, the
+concept the reader needs, a minimal runnable example, details and parameters,
+common problems, and a closing `延伸阅读` section with source references and
+related guides. Define each OpenCollab term in plain words where a guide first
+uses it.
 
 ## Edit and build
 
@@ -16,9 +33,13 @@ Topic front matter is a JSON object enclosed in YAML delimiters. It stores the
 document ID, title, category, summary, search terms, related topics and source
 revision. `catalog.json` stores the documented version, category labels and
 navigation order. `search-routes.json` maps synonyms and ambiguous queries to guides.
-Natural questions in `questions.md` also become search routes during the build.
+Natural questions in `questions.md` also become search routes during the build;
+their links may point to a section anchor.
 
-Preserve document IDs when changing titles. Relative Markdown links are resolved
+Preserve document IDs when changing titles. When guides are merged, add each
+removed ID to `redirects` in `catalog.json` with the surviving ID and section
+anchor. The builder publishes a forwarding page at the removed URL, so external
+links keep working. Relative Markdown links are resolved
 to generated HTML destinations. The builder reports missing link destinations. Source references identify the framework
 revision that the guide describes. Update those references after checking the
 corresponding API, CLI, configuration or runtime behavior.
@@ -44,9 +65,9 @@ the site's existing static publishing behavior.
 
 ## Validation and publication
 
-The local checks verify generated links and anchors, guide coverage, source
-metadata, code-block syntax, search routes, subpath URL resolution and homepage
-entry points. Run changed examples against the documented framework revision with the model,
+The local checks verify generated links and anchors, guide coverage, redirect
+pages, stale generated pages, source metadata, code-block syntax, search routes,
+subpath URL resolution and homepage entry points. Run changed examples against the documented framework revision with the model,
 Docker or service setup specified in each guide.
 
 Keep existing guides aligned when parameters, defaults, or behavior change. Add a

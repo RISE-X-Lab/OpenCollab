@@ -1,7 +1,7 @@
 ---
 {
   "id": "reconstruct-workflow",
-  "title": "用 Reconstruct 从输入输出反推程序",
+  "title": "Reconstruct：从输入输出反推一个程序",
   "category": "workflow",
   "summary": "Reconstruct 是内置 Workflow：反复向一个可查询的隐藏程序要输入输出样例，让 Agent 写出行为相同的 candidate.py。",
   "aliases": [
@@ -18,7 +18,6 @@
   ],
   "keywords": [
     "Reconstruct",
-    "reconstruct",
     "黑盒程序重建",
     "ReconstructionTask",
     "register_task",
@@ -35,22 +34,24 @@
   ],
   "related": [
     "run-registered-workflow",
-    "author-custom-workflow",
-    "workflow-agent-calls"
+    "workflow-agent-calls",
+    "workflow-programming-model"
   ],
   "verified_ref": "0c47f74a"
 }
 ---
 
-# 用 Reconstruct 从输入输出反推程序
+# Reconstruct：从输入输出反推一个程序
 
-Reconstruct 是 OC 内置的 Workflow，名称 `reconstruct`，用于黑盒程序重建（类似 IO2CodeBench 这类“只给输入输出，写出程序”的任务）。你提供隐藏程序的查询函数 oracle，工作流逐批向它要样例，让编码 Agent 写一个行为相同的 `candidate.py`，并在已知样例上反复验证、补充能区分假设的新输入。
+Reconstruct 是 OC 内置的 Workflow，名称 `reconstruct`，用于黑盒程序重建：你手上有一个看不到源码、但能查询的隐藏程序，想写出一个行为相同的程序（类似 IO2CodeBench 这类“只给输入输出、写出程序”的任务）。
 
-OC 在这里的设计取舍：oracle 只由工作流调用，留在调用方进程里，Agent 看不到它，只能看到公开样例和反馈。所以调用方要提供三样东西：oracle、在受控环境里执行候选程序的执行器、独立的最终评分方式。
+它的工作方式：你提供隐藏程序的查询函数（oracle），Workflow 逐批向它要输入输出样例，让编码 Agent 写一个行为相同的 `candidate.py`，在已知样例上反复验证，并补充能区分不同猜测的新输入。
+
+一个关键的设计取舍：**oracle 只由 Workflow 调用，留在调用方进程里，Agent 看不到它**，只能看到公开的样例和反馈。所以你要提供三样东西：oracle、在受控环境里执行候选程序的执行器，以及独立的最终评分方式。
 
 ## 最小用法
 
-### 1. 用 SDK 绑定任务
+### 用 SDK 绑定任务
 
 下面的函数把应用已有的 oracle、候选执行器和检查工具接进 `ReconstructionTask`：
 
@@ -82,20 +83,16 @@ async def reconstruct_task(workspace, environment, oracle, evaluate, check_candi
     return result.raise_for_status().output
 ```
 
-需要你准备的对象：
-
-| 对象 | 要求 |
+| 你要准备的对象 | 要求 |
 | --- | --- |
-| `oracle(input)` | 返回隐藏程序的输出。输入无效时抛异常 |
+| `oracle(input)` | 返回隐藏程序的输出；输入无效时抛异常 |
 | `evaluate(program_path, inputs)` | 异步函数。每个输入返回一条字典：成功为 `ok=True` 加 `output`，失败为 `ok=False` 加 `error`。应在同一个受控候选环境里执行生成的程序 |
 | `environment` | 供 Agent 执行工具的环境对象 |
 | `check_candidate` | 给编码角色用的实际检查工具 |
 
-候选代码放在 Agent 所在的受控环境里执行，oracle 留在调用方。
+候选代码在 Agent 所在的受控环境里执行，oracle 留在调用方。`register_task` 把本进程里的这些活对象存起来，返回一个可序列化的一次性句柄，Workflow 解析时会消费掉它，所以每次运行都要重新注册。
 
-`register_task` 的作用：它把本进程里的活对象存起来，返回一个可序列化的一次性句柄，工作流解析时会消费掉它。所以每次运行都要重新注册。
-
-### 2. 或者用 CLI
+### 或者用 CLI
 
 CLI 用 `module:callable` 工厂的方式，用 `task_args` 里的关键字参数构造绑定对象：
 
@@ -112,46 +109,32 @@ opencollab workflow run reconstruct \
 
 1. 获取初始样例，开启编码会话。
 2. 候选写完后，在所有已知样例上执行。
-3. 如果全部通过，记一次 promotion（晋级），接着请求更多能区分不同假设的输入。
-4. 如果有失败，把实际失败反馈送回编码阶段，继续用已有样例。
+3. 全部通过：记一次晋级（promotion），接着请求更多能区分不同猜测的输入。
+4. 有失败：把实际失败反馈送回编码阶段，继续用已有样例。
 
-输入提议的规则：
+输入提议必须满足数量、去重、输入约束，并且被 oracle 接受；提议失败时最多按 `propose_attempts` 次重试。
 
-- 必须满足数量、去重、输入约束，并且 oracle 接受。
-- 提议失败时，最多按 `propose_attempts` 次重试。
-
-候选的保存和选择：
-
-- 每轮候选归档在 `.oc_candidates/`。
-- 结束时，按最终样例集上的阶段得分，从本次归档中选一个复制为 `candidate.py`。
-- 以前运行留在目录里的文件，不算进本次候选集合。
+每轮候选都归档在 `.oc_candidates/`。结束时，按最终样例集上的阶段得分，从本次归档中选一个复制为 `candidate.py`。之前运行留在目录里的文件不算进本次候选集合。
 
 ## 参数
 
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
 | `initial_batch` | 2 | 第一批样例数量 |
-| `batch_step` | 2 | 后续批次增长量 |
+| `batch_step` | 2 | 后续批次的增长量 |
 | `max_iterations` | 50 | 编码迭代上限 |
-| `early_stop` | 5 | 连续晋级达到该值后结束 |
+| `early_stop` | 5 | 连续晋级达到这个次数后结束 |
 | `propose_attempts` | 3 | 一批输入提议的尝试上限 |
 | `examples_shown` | 12 | 输入提议角色看到的最近样例数 |
 | `random_share` | 0.0 | 从独立随机源取得的样例比例 |
 | `coverage_gate` | false | 让覆盖类别参与晋级判断 |
-| `memorisation_gate` | false | 识别对已知输入的直接嵌入 |
+| `memorisation_gate` | false | 识别把已知输入直接写进代码的做法 |
 | `complexity_gate` | false | 让高复杂度惩罚影响晋级 |
-| `domain_check` | false | 检查提议数字范围 |
+| `domain_check` | false | 检查提议的数值范围 |
 
-取值规则：
-
-- 前六个计数参数是正整数。
-- `random_share` 在 0 到 1 之间。
-- 策略开关在 JSON 里用布尔值。
-
-几个参数的补充说明：
-
-- `examples_shown` 只缩小输入提议角色看到的样例窗口。编码角色和候选验证仍用全部已知样例。
-- 设了 `random_share` 时，还要提供 `random_inputs(k, exclude)`，返回独立生成、尚未用过的输入。
+- 前六个计数参数是正整数，`random_share` 在 0 到 1 之间，开关在 JSON 里用布尔值。
+- `examples_shown` 只缩小输入提议角色看到的样例窗口；编码角色和候选验证仍用全部已知样例。
+- 设了 `random_share` 时，还要提供 `random_inputs(k, exclude)`，返回独立生成、尚未用过的输入。`exclude` 是输入的字符串表示，生成器可以先过滤已有值，Workflow 还会再校验新输入并排除等价的重复。
 
 ### 描述输入域
 
@@ -166,35 +149,29 @@ opencollab workflow run reconstruct \
 | `complexity_gate` | 复杂度惩罚至少 0.8 的候选会继续补样例，前三次暂不计入晋级 |
 | `domain_check` | 按 `lo` 和 `hi` 检查提议里的数值 |
 
-`kind='other'` 时跳过结构覆盖和数值域检查。
+`kind='other'` 时跳过结构覆盖和数值域检查。这些开关只影响探索和提前停止，最终评分仍用应用自己的独立样例。
 
-这些开关只影响探索和提前停止。最终评分仍用应用自己的独立样例。
-
-## 什么时候停止，返回什么
+## 什么时候停，返回什么
 
 预算判断放在当前候选执行和归档之后，这样最后一轮的工作能保留下来。
 
-`stop_reason` 的取值：
-
-| 值 | 含义 |
+| `stop_reason` | 含义 |
 | --- | --- |
 | `early_stop` | 连续晋级次数达到 `early_stop` |
 | `max_iterations` | 达到编码迭代上限 |
 | `proposer_failed` | 输入提议失败 |
 | `budget_exhausted` | 预算用完 |
 
-输出还包含：迭代次数、晋级次数、已知样例、逐轮事件、`final_program` 和 `final_score`。
+输出还包含：迭代次数、晋级次数、已知样例、逐轮事件、`final_program` 和 `final_score`。注意 `final_score` 是**阶段得分**，根据已知样例和协议惩罚计算；用独立的隐藏测试评分，要由调用方在运行结束后自己做。
 
-注意 `final_score` 是阶段得分，根据已知样例和协议惩罚计算。用独立隐藏测试评分，要由调用方在运行结束后自己做。
-
-## 进阶：定制绑定和样例记录
+## 定制绑定和样例记录
 
 `ReconstructionTask` 还有几个可选字段：
 
 | 字段 | 作用 |
 | --- | --- |
 | `candidate_file` | 把默认的 `candidate.py` 改成任务需要的相对路径 |
-| `outputs_match(actual, expected)` | 自定义输出相等规则。适合业务确实允许浮点误差或等价结构的任务 |
+| `outputs_match(actual, expected)` | 自定义输出相等规则，适合业务确实允许浮点误差或等价结构的任务 |
 | `on_example(input, output, source)` | 收到每条实际被接纳的样例和来源，可以接到应用日志 |
 
 ```python
@@ -207,14 +184,9 @@ def numeric_match(actual, expected):
     return abs(actual - expected) <= 1e-8
 ```
 
-数值标量任务可以在构造绑定时传入 `outputs_match=numeric_match, on_example=record_example`。列表或嵌套结构要用符合自身数据形状的比较函数。
+数值标量任务可以在构造绑定时传入 `outputs_match=numeric_match, on_example=record_example`；列表或嵌套结构要用符合自身数据形状的比较函数。
 
-随机源收到的 `exclude` 是输入的字符串表示。生成器可以先过滤掉已有值，工作流还会再校验新输入，并排除等价的重复输入。
+## 延伸阅读
 
-## 源码依据
-
-[docs/reconstruct.md](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/reconstruct.md#L3)、[opencollab/builtin_workflows/reconstruct.py](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/builtin_workflows/reconstruct.py#L118)、[opencollab/builtin_workflows/__init__.py](https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/builtin_workflows/__init__.py#L21)。
-
-## 相关章节
-
-[运行一个工作流（Workflow）](run-registered-workflow.md)、[编写第一个自定义 Workflow](author-custom-workflow.md)、[在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run](workflow-agent-calls.md)。
+- 源码依据：[docs/reconstruct.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/reconstruct.md) · [opencollab/builtin_workflows/reconstruct.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/builtin_workflows/reconstruct.py) · [opencollab/builtin_workflows/__init__.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/builtin_workflows/__init__.py)
+- 相关指南：[运行一个 Workflow](run-registered-workflow.md) · [在 Workflow 里调用 Agent](workflow-agent-calls.md#哪些数据能跨进程) · [编写 Workflow](workflow-programming-model.md)

@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>把候选结果采纳到交付目录 · OpenCollab Wiki</title>
-<meta name="description" content="Agent 在隔离环境里改的代码不会自动回到项目，本文教你挑一个结果并采纳回来。">
+<title>隔离改动怎样回到项目：采纳、找回与清理 · OpenCollab Wiki</title>
+<meta name="description" content="隔离环境里的改动不会自动回到项目：怎样挑一个候选采纳到交付目录；任务被取消、补丁不完整或清理失败时，怎样先找回完整改动再清理资源。">
 <link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/candidate-delivery/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,123 +35,199 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details open><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="index.html" aria-current="page">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="../duo-workflow/index.html">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details><summary>模型与配置 <small>5</small></summary><a href="../provider-endpoint-credentials/index.html">接入模型服务：端点、凭据、协议与流式</a><a href="../thinking-reasoning-sampling/index.html">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details><summary>工具与扩展 <small>4</small></summary><a href="../tool-selection/index.html">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details open><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">使用自己的执行环境</a><a href="index.html" aria-current="page">隔离改动怎样回到项目：采纳、找回与清理</a></details><details><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../session-save-resume/index.html">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
 <p class="category">执行环境与隔离</p>
-<h1 id="把候选结果采纳到交付目录">把候选结果采纳到交付目录</h1>
-<p>在 OC 里，Agent 在工作树或容器里的改动不会自动写回项目。它们先作为候选保存，由代码或入口 Agent 显式采纳。这样可以并行跑几种实现再挑一个，代价是多一步采纳。</p>
-<p>OC 名词：</p>
+<h1 id="隔离改动怎样回到项目采纳找回与清理">隔离改动怎样回到项目：采纳、找回与清理</h1>
+<p>Agent 在工作树、容器或 VM 里改的代码，<strong>不会自动写回你的项目</strong>。它们先作为“候选”保存，由你的代码或入口成员显式采纳之后，才进入交付目录。这篇讲清楚这条交付路径：正常情况下怎样采纳，出了问题（任务被取消、补丁不完整、清理失败）怎样先保住改动、再清理资源。</p>
+<h2 id="先理解为什么要多一步采纳">先理解：为什么要多一步采纳</h2>
 <ul>
-<li>候选（candidate）：一次在独立工作区里完成的实现，带着它的改动。</li>
-<li>采纳（adopt）：把候选的文件改动应用到交付目录。</li>
-<li>交付目录：最终要拿到改动的目录，通常就是你的项目。</li>
+<li><strong>候选（candidate）</strong>：一次在独立工作区里完成的实现，带着它的改动。</li>
+<li><strong>采纳（adopt）</strong>：把候选的文件改动应用到交付目录。</li>
+<li><strong>交付目录</strong>：最终要拿到改动的目录，通常就是你的项目。</li>
 </ul>
-<p>最小用法：Workflow 里 <code>ctx.candidate_agent(...)</code> 加 <code>ctx.adopt_candidate(candidate)</code>；Team 里入口角色用 <code>adopt_agent</code> 工具。</p>
-<h2 id="workflow先运行候选再采纳">Workflow：先运行候选，再采纳</h2>
-<pre><code class="language-python">from opencollab import workflow
-from opencollab.tools import builtin_tools
-
-@workflow(name=&quot;inspect-and-adopt&quot;)
-async def inspect_and_adopt(ctx, inputs):
-    # 1. 在候选工作区里跑一次实现
-    candidate = await ctx.candidate_agent(
-        inputs[&quot;task&quot;],
-        label=&quot;implementation&quot;,
-        tools=builtin_tools(&quot;file_read&quot;, &quot;apply_patch&quot;, &quot;grep&quot;),
-        budget=40_000,
-    )
-    # 2. 看看它改了什么
-    await ctx.log(candidate.diff)
-    # 3. 出错或没有输出就不采纳
-    if candidate.lifecycle_errors or candidate.output is None:
-        return {&quot;adopted&quot;: False, &quot;output&quot;: candidate.output}
-    # 4. 采纳到交付目录
-    await ctx.adopt_candidate(candidate)
-    return {&quot;adopted&quot;: True, &quot;output&quot;: candidate.output}
-</code></pre>
-<p><code>ctx.candidate_agent</code> 返回一个 <code>CandidateRun</code>，常用字段：</p>
+<p>多一步采纳，换来的是：几个 Agent 可以各改各的、互不干扰，你比较之后只采纳一个；某个候选做坏了，也不会弄乱项目。</p>
+<p>三条交付路径：</p>
 <table>
 <thead>
 <tr>
-<th>字段</th>
-<th>含义</th>
+<th>谁在交付</th>
+<th>怎么采纳</th>
+<th>详见</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>output</code></td>
-<td>Agent 的输出</td>
+<td>Workflow</td>
+<td><code>ctx.candidate_agent</code> 或 <code>ctx.candidate_workflow</code> 拿到候选，再 <code>ctx.adopt_candidate(candidate)</code></td>
+<td><a href="../workflow-composition-hierarchy/index.html#%E5%80%99%E9%80%89%E5%9C%A8%E9%9A%94%E7%A6%BB%E7%8E%AF%E5%A2%83%E9%87%8C%E8%AF%95%E6%94%B9%E5%8A%A8">候选：在隔离环境里试改动</a></td>
 </tr>
 <tr>
-<td><code>diff</code></td>
-<td>完整的文件改动</td>
+<td>Team 入口成员</td>
+<td>用 <code>adopt_agent</code> 工具传入已完成 Coder 的 aid</td>
+<td><a href="../dispatch-team-agents/index.html#%E7%AC%AC%E5%9B%9B%E6%AD%A5%E9%87%87%E7%BA%B3%E6%94%B9%E5%8A%A8%E5%86%8D%E9%AA%8C%E8%AF%81">Team 协作：采纳改动</a></td>
 </tr>
 <tr>
-<td><code>test_records</code></td>
-<td>测试记录</td>
-</tr>
-<tr>
-<td><code>verified_targets</code></td>
-<td>支持验证观察的工具记录下的验证目标；空集合表示没有记录到验证</td>
-</tr>
-<tr>
-<td><code>lifecycle_errors</code></td>
-<td>生命周期错误</td>
+<td>入口成员自己被隔离</td>
+<td>从 <code>result.metrics[&quot;entry_patch&quot;]</code> 取补丁，由你应用</td>
+<td>见下文</td>
 </tr>
 </tbody>
 </table>
-<p>它还带来源版本等信息。</p>
-<p><code>ctx.candidate_workflow</code> 可以把整个异步子工作流放进一份候选工作区。</p>
-<p>示例只在“有输出且 <code>lifecycle_errors</code> 为空”时采纳。你也可以按测试记录、人工选择或多个候选的比较结果来决定。判断候选好不好，要结合命令输出和交付文件一起看。</p>
-<p>采纳完，在交付目录里运行项目验证，检查最终文件是否满足任务要求。</p>
-<h2 id="怎样比较几个候选">怎样比较几个候选</h2>
-<p>两个候选回答可能差不多，改的文件却不同。也可能补丁一样，执行环境不同。比较步骤：</p>
-<ol>
-<li>保留每个候选对象。</li>
-<li>查看完整差异、测试记录和生命周期信息。</li>
-<li>把选中的那个对象传给 <code>adopt_candidate</code>。</li>
-</ol>
-<p>如果候选工作流默认返回的测试字段是空的，可以让业务工作流在 output 里一起返回它实际执行的检查结果。</p>
-<p>有多个候选时，先比较完，再按选定的顺序采纳。</p>
-<h2 id="采纳时保留某些文件">采纳时保留某些文件</h2>
-<p>传 <code>preserve_paths=(&quot;notes/local.txt&quot;,)</code> 可以保留指定路径。</p>
-<h2 id="team入口成员采纳-coder-的结果">Team：入口成员采纳 Coder 的结果</h2>
-<ol>
-<li>入口角色声明 <code>adopt_agent</code> 工具。</li>
-<li>成功的 Coder 完成结果会带 <code>aid</code>，例如显示 <code>Completed coder aid=3</code>。</li>
-<li>入口调用 <code>adopt_agent</code>，传 <code>{&quot;aid&quot;: 3}</code>。</li>
-<li>采纳后派一个新的 Tester，从更新后的交付内容开始测试。</li>
-</ol>
-<p>注意：</p>
-<ul>
-<li>这个工具只采用当前入口轮次里成功完成的、直接下属的 Coder 子任务。</li>
-<li>采用会保留源索引和你独立做的修改。有冲突时，保证交付文件完整。</li>
-<li>采纳前派的旧 Tester，它的结果对应的是采纳前的文件。</li>
-</ul>
-<p>完整流程和修订处理见 <a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a>。</p>
-<h2 id="入口自己被隔离时怎么拿到改动">入口自己被隔离时怎么拿到改动</h2>
-<p>入口 Agent 自己也可以跑在工作树或容器里。它的改动会在资源回收前保存下来。</p>
+<p>无论哪条路径，采纳之后都要在交付目录里运行项目验证，检查最终文件是否满足任务要求。</p>
+<h3 id="workflow-里的最短写法">Workflow 里的最短写法</h3>
+<pre><code class="language-python">from opencollab import workflow
+from opencollab.tools import builtin_tools
+
+@workflow(name=&quot;adopt-when-clean&quot;)
+async def adopt_when_clean(ctx, inputs):
+    candidate = await ctx.candidate_agent(
+        inputs[&quot;task&quot;], label=&quot;implementation&quot;,
+        tools=builtin_tools(&quot;file_read&quot;, &quot;apply_patch&quot;, &quot;grep&quot;),
+    )
+    # 出错或没有输出就不采纳
+    if candidate.lifecycle_errors or candidate.output is None:
+        return {&quot;adopted&quot;: False}
+    await ctx.adopt_candidate(candidate)
+    return {&quot;adopted&quot;: True, &quot;diff&quot;: candidate.diff}
+</code></pre>
+<p>想采纳时保留某些文件不被覆盖，传 <code>preserve_paths=(&quot;notes/local.txt&quot;,)</code>。有多个候选时，先比较完完整差异、测试记录和生命周期信息，再按选定的顺序采纳。字段含义见 <a href="../workflow-composition-hierarchy/index.html#%E8%AF%BB%E5%8F%96%E5%80%99%E9%80%89%E7%BB%93%E6%9E%9C">读取候选结果</a>。</p>
+<h3 id="入口成员自己被隔离时">入口成员自己被隔离时</h3>
+<p>入口 Agent 自己也可以跑在工作树或容器里，它的改动会在资源回收之前保存下来：</p>
 <ol>
 <li>从 <code>result.metrics[&quot;entry_patch&quot;]</code> 拿到补丁位置。</li>
 <li>先通读完整改动。</li>
 <li>在源仓库里显式应用这个补丁。</li>
 <li>运行项目测试。</li>
 </ol>
-<p>即使关闭了轨迹记录，入口补丁仍会保存。没指定产物目录时，会自动创建一个恢复目录。</p>
+<p>即使关闭了轨迹记录，入口补丁仍会保存；没指定产物目录时，会自动创建一个恢复目录。</p>
+<h2 id="出了问题先找回改动再清理">出了问题：先找回改动，再清理</h2>
+<p>隔离任务被取消、补丁导出失败或清理出错时，改动通常还在，只是放在了被保留的工作树、容器或 VM 工作区里。处理顺序永远是：<strong>先把完整改动保存下来，再清理工作树、容器或 VM 租约。</strong></p>
+<p>还要注意：OC 给父成员的摘要、工具输出都有显示长度限制，看到的可能只是半截补丁。完整的补丁是另外保存的，别直接用摘要，去读完整补丁或保留目录里的实际文件。</p>
+<h3 id="步骤一找到改动在哪">步骤一：找到改动在哪</h3>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>去哪找</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>显式隔离的 Team 入口</td>
+<td><code>result.metrics.get(&quot;entry_patch&quot;)</code>，回收前就保存了</td>
+</tr>
+<tr>
+<td>失败或停止的子任务</td>
+<td>结果里会尽可能带上已有改动；补丁较大时，会报告保留的工作区</td>
+</tr>
+<tr>
+<td>采纳冲突或捕获失败</td>
+<td>错误信息直接给出完整候选材料或恢复补丁的位置；没启用产物目录时，存进私有的临时恢复目录</td>
+</tr>
+</tbody>
+</table>
+<p>恢复位置的形式：本地是工作树路径；容器是完整容器 ID 加容器内目录；VM 的完整工作区会导出到控制端运行产物下的 <code>vm/&lt;租约 token&gt;/&lt;角色目录&gt;</code>，导出成功后直接在本机看文件和 Git 差异。VM 导出失败时，记下错误里的机器 ID、来宾目录、操作 ID 和本机产物路径，等 SSH 恢复后再继续导出。</p>
+<h3 id="步骤二导出">步骤二：导出</h3>
+<p>从容器导出到一个新的恢复目录：</p>
+<pre><code class="language-bash"># CONTAINER_ID 和 /reported/workspace 换成报错给出的真实值
+docker cp CONTAINER_ID:/reported/workspace ./recovered-workspace
+</code></pre>
+<p>然后检查里面的 Git 差异和任务产物。</p>
+<h3 id="步骤三应用补丁">步骤三：应用补丁</h3>
+<ol>
+<li>
+<p>先通读补丁内容。</p>
+</li>
+<li>
+<p>在目标目录检查能否应用：</p>
+<pre><code class="language-bash">git apply --check /path/to/recovery.patch
+</code></pre>
+</li>
+<li>
+<p>检查通过后再实际应用。</p>
+</li>
+</ol>
+<p>本机还有正在改的文件要保留时，先把恢复材料放到单独的目录里比较，再决定怎么合并。</p>
+<h3 id="步骤四清理残留资源">步骤四：清理残留资源</h3>
+<ol>
+<li>保存报错、完整资源 ID 和已经导出的材料。</li>
+<li>确认资源状态：<code>git worktree list</code>、目标目录里的文件、<code>docker inspect</code>。</li>
+<li>停止还在运行的任务，导出改动。</li>
+<li>重试清理对应的资源。</li>
+</ol>
+<h2 id="vm-断线与租约恢复">VM 断线与租约恢复</h2>
+<p>租约是 OC 在控制端 SQLite 文件里写的一条记录，表示某台 VM 正被占用。VM 的问题分三种情况：</p>
+<p><strong>你直接用 <code>VMEnvironment</code>，SSH 断了。</strong> SSH 出错时 OC 抛出 <code>VMTransportError</code>，里面带着 <code>operation_id</code>，远端命令不会因为断线而丢失。等连接恢复后，调用 <code>await environment.recover_operation(error.operation_id)</code> 拿回这次操作的原始结果，用 <code>pending_operations</code> 看还有哪些操作没处理完。控制端要重建环境对象时，用原来的连接、工作区、状态目录和 <code>run_id</code>，新对象就会读到同一份远端记录。操作状态还不确定时，环境会先等恢复结果，再接受新的工作。</p>
+<p><strong>VM 池归还机器时失败。</strong> 归还一台 VM 要依次做完：导出内容、停止自己发起的操作、清理工作树、运行重置。管理员的 <code>reset_command</code> 成功、任务目录删掉之后，池才释放租约。其中任何一步失败，租约和恢复资料都会保留；只要池对象还活着，就可以重试清理。</p>
+<p><strong>控制进程已经退出。</strong> SQLite 里的租约不会自动消失。要手动释放一台机器，按顺序做：</p>
+<ol>
+<li>确认这台机器上对应的远端进程已经结束。</li>
+<li>导出需要保留的文件。</li>
+<li>完成管理员的来宾恢复程序。</li>
+<li>打开配置里 <code>lease_database</code> 指定的文件，按 <code>resource_id</code>、<code>owner</code> 和 <code>workspace</code> 核对，只删除这台资源对应的那一条记录。</li>
+</ol>
+<pre><code class="language-bash"># 表名和列名来自 OC 源码；先查看，再只删确认过的那一条
+sqlite3 /home/controller/oc-state/vm-leases.sqlite3 \
+  &quot;SELECT resource_id, owner, workspace FROM vm_leases;&quot;
+sqlite3 /home/controller/oc-state/vm-leases.sqlite3 \
+  &quot;DELETE FROM vm_leases WHERE resource_id = 'worker-01' AND owner = '&lt;租约 token&gt;';&quot;
+</code></pre>
+<p>还有机器在正常使用时，不要删它们的记录。新建的池只要继续用原数据库和同样的 <code>resource_id</code>，就能认出当前哪些机器被占用。VM 的准备和配置见 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a>。</p>
+<h2 id="保留取消和资源归属的规则">保留、取消和资源归属的规则</h2>
+<p><strong>保留与释放</strong>：</p>
+<ul>
+<li>带采纳能力的工作区，交付没完成时会保留实际文件，并拒绝过早释放。</li>
+<li>原生工作树之后如果成功拿到完整的 <code>get_diff()</code>，可以清除保留状态，继续清理。</li>
+<li>Team 采纳冲突时会给出完整的恢复补丁，释放运行资源之前把它另外存好。</li>
+<li>自定义提供器也应该提供对应的导出和重试流程。</li>
+</ul>
+<p><strong>取消时发生了什么</strong>：先撤销环境的后续操作，再处理正在进行的命令和文件操作，最后释放资源。环境被撤销后，后续模型调用不会再产生工具副作用；Workflow 里排队等待的调用也会检查环境状态。</p>
+<p><strong>资源归谁</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>资源</th>
+<th>归谁</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>运行自己创建的工作树或容器</td>
+<td>对应的环境池</td>
+</tr>
+<tr>
+<td>外部传入的父环境</td>
+<td>调用方</td>
+</tr>
+<tr>
+<td>连接的已有容器</td>
+<td>原来创建它的服务</td>
+</tr>
+<tr>
+<td>VM 池分配的机器租约</td>
+<td>对应的环境池，归还前运行管理员的重置程序；VM 本身由你的基础设施管理</td>
+</tr>
+</tbody>
+</table>
+<p>某个审阅环境依赖另一个候选目录时，清理会先处理依赖它的一方，被依赖的来源会保留到导出和释放都结束。</p>
 <h2 id="常见问题">常见问题</h2>
 <ul>
-<li>如果 Agent 改完了，项目里却没变化：改动还在候选里，需要采纳。入口被隔离时，去 <code>entry_patch</code> 拿补丁。</li>
-<li>如果看到的 diff 不完整：显示用的 diff 有长度限制。完整采纳和恢复用的是另外捕获的完整材料。</li>
-<li>如果报 source tracking 错误：候选执行时会跟踪源工作区，采纳时也会检查来源版本。运行期间改了源目录就可能触发这个错误。候选位置会保留下来，方便恢复。来源变了以后再采纳，可能覆盖后来的修改。先比较当前源文件和候选起点，再决定重跑还是重新准备候选。</li>
-<li>如果出现捕获错误：按 <a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a> 找到保留的目录或容器。</li>
+<li><strong>Agent 改完了，项目里却没变化</strong>：改动还在候选里，需要采纳。入口被隔离时，去 <code>entry_patch</code> 拿补丁。</li>
+<li><strong>看到的 diff 不完整</strong>：显示用的 diff 有长度限制，完整采纳和恢复用的是另外捕获的完整材料。</li>
+<li><strong>报 source tracking 错误</strong>：候选执行时会跟踪源工作区，采纳时也会检查来源版本，运行期间改了源目录就可能触发。候选位置会保留下来；来源变了以后再采纳，可能覆盖后来的修改。先比较当前源文件和候选起点，再决定重跑还是重新准备候选。</li>
+<li><strong>出现捕获错误</strong>：按上面的“先找回改动，再清理”处理。</li>
 </ul>
-<h2 id="参考">参考</h2>
-<p>候选 API 见<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/workflow_candidates.py">Workflow 候选实现</a>。Team 交付见<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/application/_scheduler_team.py">调度器采纳逻辑</a>。</p>
+<h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/session-isolation.zh-CN.md">隔离指南</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_candidates.py">Workflow 候选实现</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/_scheduler_team.py">调度器采纳逻辑</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/_team_candidate_environment.py">候选环境保留机制</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/docker_isolation.py">Docker 池清理</a></li>
+<li>相关指南：<a href="../isolation-overview/index.html">隔离</a> · <a href="../dispatch-team-agents/index.html">Team 协作</a> · <a href="../workflow-composition-hierarchy/index.html">组合与嵌套</a> · <a href="../timeouts-retries/index.html">运行怎样停下</a></li>
+</ul>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/topics/isolation/candidate-delivery.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#workflow%E5%85%88%E8%BF%90%E8%A1%8C%E5%80%99%E9%80%89%E5%86%8D%E9%87%87%E7%BA%B3">Workflow：先运行候选，再采纳</a><a href="#%E6%80%8E%E6%A0%B7%E6%AF%94%E8%BE%83%E5%87%A0%E4%B8%AA%E5%80%99%E9%80%89">怎样比较几个候选</a><a href="#%E9%87%87%E7%BA%B3%E6%97%B6%E4%BF%9D%E7%95%99%E6%9F%90%E4%BA%9B%E6%96%87%E4%BB%B6">采纳时保留某些文件</a><a href="#team%E5%85%A5%E5%8F%A3%E6%88%90%E5%91%98%E9%87%87%E7%BA%B3-coder-%E7%9A%84%E7%BB%93%E6%9E%9C">Team：入口成员采纳 Coder 的结果</a><a href="#%E5%85%A5%E5%8F%A3%E8%87%AA%E5%B7%B1%E8%A2%AB%E9%9A%94%E7%A6%BB%E6%97%B6%E6%80%8E%E4%B9%88%E6%8B%BF%E5%88%B0%E6%94%B9%E5%8A%A8">入口自己被隔离时怎么拿到改动</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%8F%82%E8%80%83">参考</a></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%85%88%E7%90%86%E8%A7%A3%E4%B8%BA%E4%BB%80%E4%B9%88%E8%A6%81%E5%A4%9A%E4%B8%80%E6%AD%A5%E9%87%87%E7%BA%B3">先理解：为什么要多一步采纳</a><a href="#workflow-%E9%87%8C%E7%9A%84%E6%9C%80%E7%9F%AD%E5%86%99%E6%B3%95">Workflow 里的最短写法</a><a href="#%E5%85%A5%E5%8F%A3%E6%88%90%E5%91%98%E8%87%AA%E5%B7%B1%E8%A2%AB%E9%9A%94%E7%A6%BB%E6%97%B6">入口成员自己被隔离时</a><a href="#%E5%87%BA%E4%BA%86%E9%97%AE%E9%A2%98%E5%85%88%E6%89%BE%E5%9B%9E%E6%94%B9%E5%8A%A8%E5%86%8D%E6%B8%85%E7%90%86">出了问题：先找回改动，再清理</a><a href="#%E6%AD%A5%E9%AA%A4%E4%B8%80%E6%89%BE%E5%88%B0%E6%94%B9%E5%8A%A8%E5%9C%A8%E5%93%AA">步骤一：找到改动在哪</a><a href="#%E6%AD%A5%E9%AA%A4%E4%BA%8C%E5%AF%BC%E5%87%BA">步骤二：导出</a><a href="#%E6%AD%A5%E9%AA%A4%E4%B8%89%E5%BA%94%E7%94%A8%E8%A1%A5%E4%B8%81">步骤三：应用补丁</a><a href="#%E6%AD%A5%E9%AA%A4%E5%9B%9B%E6%B8%85%E7%90%86%E6%AE%8B%E7%95%99%E8%B5%84%E6%BA%90">步骤四：清理残留资源</a><a href="#vm-%E6%96%AD%E7%BA%BF%E4%B8%8E%E7%A7%9F%E7%BA%A6%E6%81%A2%E5%A4%8D">VM 断线与租约恢复</a><a href="#%E4%BF%9D%E7%95%99%E5%8F%96%E6%B6%88%E5%92%8C%E8%B5%84%E6%BA%90%E5%BD%92%E5%B1%9E%E7%9A%84%E8%A7%84%E5%88%99">保留、取消和资源归属的规则</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>
 </body>
 </html>

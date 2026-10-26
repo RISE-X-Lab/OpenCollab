@@ -10,10 +10,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,13 +35,14 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="index.html" aria-current="page">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="../duo-workflow/index.html">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details><summary>模型与配置 <small>5</small></summary><a href="../provider-endpoint-credentials/index.html">接入模型服务：端点、凭据、协议与流式</a><a href="../thinking-reasoning-sampling/index.html">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details><summary>工具与扩展 <small>4</small></summary><a href="../tool-selection/index.html">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">使用自己的执行环境</a><a href="../candidate-delivery/index.html">隔离改动怎样回到项目：采纳、找回与清理</a></details><details><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../session-save-resume/index.html">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
 <p class="category">阅读导航</p>
 <h1 id="问题导航">问题导航</h1>
-<p><a href="../index.html">Wiki</a> · <a href="https://rise-x-lab.github.io/OpenCollab/">返回项目站主页</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab">GitHub 源码</a></p>
-<p>按下面的常见问题找答案，点右侧链接查看详细解释和示例。没找到的话，试试页面上方的搜索。</p>
+<p><a href="../index.html">Wiki</a> · <a href="../reading-paths/index.html">阅读路径</a> · <a href="https://rise-x-lab.github.io/OpenCollab/">返回项目站主页</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab">GitHub 源码</a></p>
+<p>按常见问题找答案，点右侧链接直接跳到解答所在的段落。问题按 <a href="../concepts-and-modes/index.html#%E8%BF%90%E8%A1%8C%E7%BB%93%E6%9D%9F%E6%94%B9%E5%8A%A8%E8%A6%81%E9%87%87%E7%BA%B3%E7%BB%93%E6%9E%9C%E8%A6%81%E9%AA%8C%E8%AF%81">OC 的整体图</a> 分组：先是组织方式，再是会话的四个要素（模型、工具、执行环境、限额），最后是结果。没找到的话，试试页面上方的搜索。</p>
+<h2 id="认识与上手">认识与上手</h2>
 <table>
 <thead>
 <tr>
@@ -51,128 +52,226 @@
 </thead>
 <tbody>
 <tr>
-<td>哪些环境变量和 SDK 字段控制模型与运行参数</td>
-<td><a href="../configuration-reference/index.html">配置参数与环境变量速查</a></td>
-</tr>
-<tr>
-<td>如何查看各项配置的内置默认值</td>
-<td><a href="../configuration-reference/index.html">配置参数与环境变量速查</a></td>
-</tr>
-<tr>
 <td>OC 本身提供什么，为何还需要模型服务</td>
-<td><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a></td>
-</tr>
-<tr>
-<td>默认终端启动的是一个 Agent 还是一个团队</td>
-<td><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a></td>
+<td><a href="../concepts-and-modes/index.html#%E4%B8%80%E5%88%87%E4%BB%8E%E4%BC%9A%E8%AF%9D%E5%BC%80%E5%A7%8B">OC 是什么</a></td>
 </tr>
 <tr>
 <td>Base、Single2、Team 和 Workflow 怎么选</td>
-<td><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></td>
+<td><a href="../concepts-and-modes/index.html#%E6%80%8E%E4%B9%88%E9%80%89%E8%B5%B7%E7%82%B9">OC 是什么：怎么选起点</a></td>
 </tr>
 <tr>
 <td>第一次使用 OC 应该运行哪个例子</td>
-<td><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a></td>
+<td><a href="../first-run-workspace/index.html#%E7%AC%AC%E4%B8%89%E6%AD%A5%E5%9C%A8%E4%BD%A0%E7%9A%84%E9%A1%B9%E7%9B%AE%E4%B8%8A%E8%BF%90%E8%A1%8C">安装并完成第一次运行</a></td>
 </tr>
 <tr>
-<td>模型名、端点和环境变量谁优先</td>
-<td><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a></td>
+<td>默认终端启动的是一个 Agent 还是一个团队</td>
+<td><a href="../concepts-and-modes/index.html#%E5%A4%9A%E4%B8%AA%E4%BC%9A%E8%AF%9D%E6%80%8E%E6%A0%B7%E7%BB%84%E7%BB%87%E4%B8%89%E7%A7%8D%E6%96%B9%E5%BC%8F">OC 是什么：三种组织方式</a></td>
 </tr>
+</tbody>
+</table>
+<h2 id="team">Team</h2>
+<table>
+<thead>
 <tr>
-<td>一个团队可以使用不同模型吗</td>
-<td><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a></td>
+<th>问题</th>
+<th>对应指南</th>
 </tr>
-<tr>
-<td>同一台机器的多个进程怎样共用模型额度</td>
-<td><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a></td>
-</tr>
-<tr>
-<td>并发 Agent 数和模型请求数是同一个设置吗</td>
-<td><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a></td>
-</tr>
-<tr>
-<td>保存的 reasoning 是否都属于当前可见正文</td>
-<td><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></td>
-</tr>
-<tr>
-<td>上下文什么时候压缩，历史是否仍保留</td>
-<td><a href="../context-compaction/index.html">上下文窗口与自动压缩</a></td>
-</tr>
-<tr>
-<td>Workflow 支持哪些语法，可以用 if、while 和导入模块吗</td>
-<td><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a></td>
-</tr>
-<tr>
-<td>任何协作想法都能写成 Workflow 吗</td>
-<td><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a></td>
-</tr>
-<tr>
-<td>Workflow 的控制粒度有哪些，有统一的低中高档位吗</td>
-<td><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a></td>
-</tr>
-<tr>
-<td>写 Python 流程时可用的 ctx API 有哪些</td>
-<td><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a></td>
-</tr>
-<tr>
-<td>怎样把上一轮结果送给下一轮 Agent</td>
-<td><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a></td>
-</tr>
-<tr>
-<td>普通 async 函数可以组合为子 Workflow 吗</td>
-<td><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a></td>
-</tr>
-<tr>
-<td>Workflow 能否直接通过 ctx 启动一个 Team</td>
-<td><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a></td>
-</tr>
-<tr>
-<td>Team 怎样运行一个已注册 Workflow</td>
-<td><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a></td>
-</tr>
-<tr>
-<td>成员能否自己生成 Python 工作流并在运行中启动</td>
-<td><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a></td>
-</tr>
+</thead>
+<tbody>
 <tr>
 <td>什么时候用 spawn_agent，什么时候用 run_workflow</td>
-<td><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a></td>
+<td><a href="../team-run-workflow/index.html#%E4%B8%A4%E7%A7%8D%E5%B7%A5%E5%85%B7%E6%80%8E%E4%B9%88%E9%80%89">让 Team 成员运行 Workflow</a></td>
 </tr>
 <tr>
-<td>怎样并行跑候选，再按检查结果只采用一个</td>
-<td><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a></td>
-</tr>
-<tr>
-<td>Duo 的两个候选是否同时执行</td>
-<td><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a></td>
-</tr>
-<tr>
-<td>Weave 的检查和修复由谁定义</td>
-<td><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a></td>
-</tr>
-<tr>
-<td>Reconstruct 怎样通过观察探索隐藏程序</td>
-<td><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></td>
-</tr>
-<tr>
-<td>一个 Agent 失败会怎样影响其余步骤</td>
-<td><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a></td>
-</tr>
-<tr>
-<td>进程退出后能否自动从任意 Python 语句继续</td>
-<td><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a></td>
-</tr>
-<tr>
-<td>怎样在没有模型额度时验证自己写的流程</td>
-<td><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a></td>
-</tr>
-<tr>
-<td>工作树能隔离进程、网络和宿主权限吗</td>
-<td><a href="../isolation-overview/index.html">隔离怎么选</a></td>
+<td>子 Agent 改好了，为什么主目录没有变化</td>
+<td><a href="../dispatch-team-agents/index.html#%E7%AC%AC%E5%9B%9B%E6%AD%A5%E9%87%87%E7%BA%B3%E6%94%B9%E5%8A%A8%E5%86%8D%E9%AA%8C%E8%AF%81">Team 协作：采纳改动</a></td>
 </tr>
 <tr>
 <td>几个 Agent 会自动共享对话吗</td>
-<td><a href="../isolation-overview/index.html">隔离怎么选</a></td>
+<td><a href="../isolation-overview/index.html#%E5%85%88%E7%90%86%E8%A7%A3%E9%9A%94%E7%A6%BB%E5%85%B6%E5%AE%9E%E6%98%AF%E4%BA%94%E4%BB%B6%E4%BA%8B">隔离其实是五件事</a></td>
+</tr>
+<tr>
+<td>如何检查团队实际的分工协作情况</td>
+<td><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="workflow">Workflow</h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>对应指南</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workflow 支持哪些语法，可以用 if、while 和导入模块吗</td>
+<td><a href="../workflow-programming-model/index.html#%E7%94%A8-python-%E6%8E%A7%E5%88%B6%E6%B5%81%E7%A8%8B">编写 Workflow：用 Python 控制流程</a></td>
+</tr>
+<tr>
+<td>任何协作想法都能写成 Workflow 吗</td>
+<td><a href="../workflow-programming-model/index.html#oc-%E7%AE%A1%E4%BB%80%E4%B9%88%E4%BD%A0%E8%87%AA%E5%B7%B1%E7%AE%A1%E4%BB%80%E4%B9%88">OC 管什么，你自己管什么</a></td>
+</tr>
+<tr>
+<td>Workflow 的控制粒度有哪些，有统一的低中高档位吗</td>
+<td><a href="../workflow-public-api-map/index.html#%E5%85%88%E6%89%BE%E5%AF%B9%E5%B1%82%E4%B8%80%E4%B8%AA%E8%AE%BE%E7%BD%AE%E8%AF%A5%E6%94%BE%E5%9C%A8%E5%93%AA">先找对层</a></td>
+</tr>
+<tr>
+<td>写 Python 流程时可用的 ctx API 有哪些</td>
+<td><a href="../workflow-public-api-map/index.html#%E6%8C%89%E9%9C%80%E6%B1%82%E6%9F%A5%E6%8E%A5%E5%8F%A3">Workflow API 速查</a></td>
+</tr>
+<tr>
+<td>怎样把上一轮结果送给下一轮 Agent</td>
+<td><a href="../workflow-agent-calls/index.html#%E5%85%88%E8%AE%B0%E4%BD%8F%E6%AF%8F%E6%AC%A1%E8%B0%83%E7%94%A8%E9%83%BD%E6%98%AF%E4%B8%80%E4%B8%AA%E6%96%B0%E4%BC%9A%E8%AF%9D">每次调用都是一个新会话</a></td>
+</tr>
+<tr>
+<td>普通 async 函数可以组合为子 Workflow 吗</td>
+<td><a href="../workflow-composition-hierarchy/index.html#%E6%96%B9%E5%BC%8F%E4%B8%80%E7%9B%B4%E6%8E%A5%E8%B0%83%E7%94%A8%E5%AD%90%E5%87%BD%E6%95%B0">直接调用子函数</a></td>
+</tr>
+<tr>
+<td>Workflow 能否直接通过 ctx 启动一个 Team</td>
+<td><a href="../workflow-composition-hierarchy/index.html#%E5%9C%A8-workflow-%E9%87%8C%E5%90%AF%E5%8A%A8-team">在 Workflow 里启动 Team</a></td>
+</tr>
+<tr>
+<td>Team 怎样运行一个已注册 Workflow</td>
+<td><a href="../team-run-workflow/index.html#%E6%96%B9%E5%BC%8F%E4%B8%80run_workflow-%E8%BF%90%E8%A1%8C%E5%B7%B2%E6%B3%A8%E5%86%8C%E7%9A%84-workflow">run_workflow 运行已注册的 Workflow</a></td>
+</tr>
+<tr>
+<td>成员能否自己生成 Python 工作流并在运行中启动</td>
+<td><a href="../team-run-workflow/index.html#%E6%96%B9%E5%BC%8F%E4%BA%8Cmanage_workflow-%E8%AE%A9%E6%88%90%E5%91%98%E8%87%AA%E5%B7%B1%E5%86%99%E5%AD%90-workflow">manage_workflow 让成员自己写子 Workflow</a></td>
+</tr>
+<tr>
+<td>怎样并行跑候选，再按检查结果只采用一个</td>
+<td><a href="../workflow-composition-hierarchy/index.html#%E5%80%99%E9%80%89%E5%9C%A8%E9%9A%94%E7%A6%BB%E7%8E%AF%E5%A2%83%E9%87%8C%E8%AF%95%E6%94%B9%E5%8A%A8">候选：在隔离环境里试改动</a></td>
+</tr>
+<tr>
+<td>Duo 的两个候选是否同时执行</td>
+<td><a href="../duo-workflow/index.html#%E6%89%A7%E8%A1%8C%E8%BF%87%E7%A8%8B">Duo 的执行过程</a></td>
+</tr>
+<tr>
+<td>Weave 的检查和修复由谁定义</td>
+<td><a href="../weave-workflow/index.html#%E6%A3%80%E6%9F%A5%E4%B8%8E%E4%BF%AE%E5%A4%8D">Weave 的检查与修复</a></td>
+</tr>
+<tr>
+<td>Reconstruct 怎样通过观察探索隐藏程序</td>
+<td><a href="../reconstruct-workflow/index.html#%E6%AF%8F%E4%B8%80%E8%BD%AE%E6%80%8E%E4%B9%88%E6%8E%A8%E8%BF%9B">Reconstruct 每一轮怎么推进</a></td>
+</tr>
+<tr>
+<td>一个 Agent 失败会怎样影响其余步骤</td>
+<td><a href="../workflow-failure-recovery-lifecycle/index.html#%E5%87%BA%E9%94%99%E6%97%B6%E5%85%88%E7%9C%8B%E6%98%AF%E5%93%AA%E4%B8%80%E5%B1%82">出错时先看是哪一层</a></td>
+</tr>
+<tr>
+<td>进程退出后能否自动从任意 Python 语句继续</td>
+<td><a href="../workflow-failure-recovery-lifecycle/index.html#%E8%BF%9B%E7%A8%8B%E9%80%80%E5%87%BA%E5%90%8E%E8%83%BD%E6%8E%A5%E7%9D%80%E8%B7%91%E5%90%97">进程退出后能接着跑吗</a></td>
+</tr>
+<tr>
+<td>怎样在没有模型额度时验证自己写的流程</td>
+<td><a href="../workflow-failure-recovery-lifecycle/index.html#%E7%AC%AC%E4%B8%80%E5%B1%82%E7%94%A8%E6%9B%BF%E8%BA%AB%E6%B5%8B%E6%8E%A7%E5%88%B6%E6%B5%81">用替身测控制流</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="成员在自己的-vm-里运行子-workflow">成员在自己的 VM 里运行子 Workflow</h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>对应指南</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>vm-group 和 vm-session 该选哪个</td>
+<td><a href="../vm-environment-extension/index.html#%E5%85%88%E9%80%89-vm-group-%E8%BF%98%E6%98%AF-vm-session">先选 vm-group 还是 vm-session</a></td>
+</tr>
+<tr>
+<td>VM 都被占用时，新会话怎样排队等待</td>
+<td><a href="../vm-environment-extension/index.html#%E7%AC%AC%E4%BA%8C%E6%AD%A5%E5%86%99-vm-%E9%85%8D%E7%BD%AE">VM 配置的 wait_timeout</a></td>
+</tr>
+<tr>
+<td>怎样让每个成员独占一台 VM，并在里面运行自己写的子 Workflow</td>
+<td><a href="../team-run-workflow/index.html#%E5%9C%A8-vm-%E6%88%90%E5%91%98%E9%87%8C%E7%94%A8%E7%8B%AC%E7%AB%8B%E5%B7%A5%E4%BD%9C%E6%A0%91">在 VM 成员里用独立工作树</a></td>
+</tr>
+<tr>
+<td>成员写的子 Workflow 里的 Agent，怎样留在这个成员的 VM 里执行</td>
+<td><a href="../team-run-workflow/index.html#%E5%AD%90-agent-%E5%9C%A8%E5%93%AA%E9%87%8C%E6%89%A7%E8%A1%8C">子 Agent 在哪里执行</a></td>
+</tr>
+<tr>
+<td>成员 Agent 怎样查出自己能用哪些隔离策略和工具</td>
+<td><a href="../team-run-workflow/index.html#%E7%AC%AC-1-%E6%AD%A5%E7%9C%8B%E7%9C%8B%E8%83%BD%E7%94%A8%E4%BB%80%E4%B9%88">看看能用什么</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="模型与配置">模型与配置</h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>对应指南</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>模型名、端点和环境变量谁优先</td>
+<td><a href="../configuration-precedence/index.html#%E4%BC%98%E5%85%88%E9%A1%BA%E5%BA%8F">配置的优先顺序</a></td>
+</tr>
+<tr>
+<td>哪些环境变量和 SDK 字段控制模型与运行参数</td>
+<td><a href="../configuration-reference/index.html">配置参数速查</a></td>
+</tr>
+<tr>
+<td>如何查看各项配置的内置默认值</td>
+<td><a href="../configuration-reference/index.html">配置参数速查</a></td>
+</tr>
+<tr>
+<td>一个团队可以使用不同模型吗</td>
+<td><a href="../model-routing-request-capacity/index.html#%E5%AE%9A%E4%B9%89%E4%B8%80%E6%9D%A1%E9%80%BB%E8%BE%91%E8%B7%AF%E7%94%B1">定义一条逻辑路由</a></td>
+</tr>
+<tr>
+<td>同一台机器的多个进程怎样共用模型额度</td>
+<td><a href="../model-routing-request-capacity/index.html#%E9%99%90%E5%88%B6%E5%90%8C%E4%B8%80%E5%8F%B0%E6%9C%BA%E5%99%A8%E4%B8%8A%E7%9A%84%E8%AF%B7%E6%B1%82%E6%95%B0">限制同一台机器上的请求数</a></td>
+</tr>
+<tr>
+<td>保存的 reasoning 是否都属于当前可见正文</td>
+<td><a href="../thinking-reasoning-sampling/index.html">深度思考与采样</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="工具与扩展">工具与扩展</h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>对应指南</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Skill 与工具、Workflow 的关系是什么</td>
+<td><a href="../skills-on-demand/index.html#skill%E5%B7%A5%E5%85%B7%E5%92%8C-workflow-%E7%9A%84%E5%85%B3%E7%B3%BB">Skill、工具和 Workflow 的关系</a></td>
+</tr>
+<tr>
+<td>能否写一个业务工具，怎样传给模型</td>
+<td><a href="../custom-tools/index.html">自定义工具</a></td>
+</tr>
+<tr>
+<td>PreToolUse Hook 可以阻止危险命令吗</td>
+<td><a href="../team-hooks/index.html">Hook</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="执行环境与隔离">执行环境与隔离</h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>对应指南</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>工作树能隔离进程、网络和宿主权限吗</td>
+<td><a href="../isolation-overview/index.html#%E5%85%88%E7%90%86%E8%A7%A3%E9%9A%94%E7%A6%BB%E5%85%B6%E5%AE%9E%E6%98%AF%E4%BA%94%E4%BB%B6%E4%BA%8B">隔离其实是五件事</a></td>
 </tr>
 <tr>
 <td>docker-group 和 docker-session 的差别是什么</td>
@@ -180,98 +279,99 @@
 </tr>
 <tr>
 <td>Agent 在 Docker 中运行时，编排代码在哪里执行</td>
-<td><a href="../execution-environments/index.html">让任务在指定目录或现有容器里执行</a></td>
+<td><a href="../workflow-programming-model/index.html#%E4%BB%A3%E7%A0%81%E5%88%B0%E5%BA%95%E5%9C%A8%E5%93%AA%E9%87%8C%E8%BF%90%E8%A1%8C">代码到底在哪里运行</a></td>
 </tr>
 <tr>
 <td>能否让任务使用现有容器或自定义执行服务</td>
-<td><a href="../custom-environment-providers/index.html">接入自己的执行环境</a></td>
-</tr>
-<tr>
-<td>子 Agent 改好了，为什么主目录没有变化</td>
-<td><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></td>
-</tr>
-<tr>
-<td>用户取消以后，命令和容器是否已经清理完</td>
-<td><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a></td>
+<td><a href="../execution-environments/index.html">使用自己的执行环境</a></td>
 </tr>
 <tr>
 <td>模型报错以后，已经生成的改动去哪里找</td>
-<td><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></td>
+<td><a href="../candidate-delivery/index.html#%E5%87%BA%E4%BA%86%E9%97%AE%E9%A2%98%E5%85%88%E6%89%BE%E5%9B%9E%E6%94%B9%E5%8A%A8%E5%86%8D%E6%B8%85%E7%90%86">先找回改动，再清理</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="运行控制">运行控制</h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>对应指南</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>并发 Agent 数和模型请求数是同一个设置吗</td>
+<td><a href="../token-step-concurrency-limits/index.html#workflow-%E7%9A%84%E4%B8%A4%E7%B1%BB%E5%B9%B6%E5%8F%91">Workflow 的两类并发</a></td>
 </tr>
 <tr>
-<td>Skill 与工具、Workflow 的关系是什么</td>
-<td><a href="../skills-on-demand/index.html">使用与编写 Skill</a></td>
+<td>上下文什么时候压缩，历史是否仍保留</td>
+<td><a href="../context-compaction/index.html">上下文窗口与自动压缩</a></td>
 </tr>
 <tr>
-<td>能否写一个业务工具，怎样传给模型</td>
-<td><a href="../custom-tools/index.html">把自己的函数接成工具</a></td>
+<td>用户取消以后，命令和容器是否已经清理完</td>
+<td><a href="../timeouts-retries/index.html#%E5%81%9C%E6%AD%A2%E4%B9%8B%E5%90%8E%E7%A1%AE%E8%AE%A4%E6%B8%85%E7%90%86%E5%AE%8C%E6%88%90">停止之后：确认清理完成</a></td>
 </tr>
+</tbody>
+</table>
+<h2 id="结果与记录">结果与记录</h2>
+<table>
+<thead>
 <tr>
-<td>PreToolUse Hook 可以阻止危险命令吗</td>
-<td><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a></td>
+<th>问题</th>
+<th>对应指南</th>
 </tr>
+</thead>
+<tbody>
 <tr>
 <td>为什么运行完成还要检查测试证据</td>
-<td><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a></td>
+<td><a href="../run-results/index.html#%E7%AC%AC%E4%BA%8C%E6%AD%A5%E7%A1%AE%E8%AE%A4%E4%BB%BB%E5%8A%A1%E5%81%9A%E5%AF%B9%E4%BA%86">确认任务做对了</a></td>
 </tr>
 <tr>
 <td>测试过后继续改文件，旧通过记录是否还适用</td>
-<td><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a></td>
+<td><a href="../run-results/index.html#%E6%B5%8B%E8%AF%95%E4%B9%8B%E5%90%8E%E5%8F%88%E6%94%B9%E4%BA%86%E6%96%87%E4%BB%B6">测试之后又改了文件</a></td>
 </tr>
 <tr>
 <td>trace、会话文件和用量账本有什么区别</td>
-<td><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a></td>
+<td><a href="../artifacts-and-history/index.html">运行记录</a></td>
 </tr>
 <tr>
 <td>缓存与 reasoning token 是否还要加到 total 上</td>
-<td><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a></td>
-</tr>
-<tr>
-<td>如何检查团队实际的分工协作情况</td>
-<td><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></td>
+<td><a href="../token-cache-cost/index.html#%E8%BF%99%E4%BA%9B%E6%95%B0%E6%80%8E%E6%A0%B7%E7%9B%B8%E5%8A%A0">这些数怎样相加</a></td>
 </tr>
 <tr>
 <td>OC 与 OCE 哪个负责正式 benchmark 评分</td>
-<td><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></td>
+<td><a href="../extension-and-evaluation-boundaries/index.html#oc-%E5%92%8C-oce-%E6%80%8E%E6%A0%B7%E5%88%86%E5%B7%A5">OC 和 OCE 怎样分工</a></td>
 </tr>
+</tbody>
+</table>
+<h2 id="集成与维护">集成与维护</h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>对应指南</th>
+</tr>
+</thead>
+<tbody>
 <tr>
 <td>怎样把 OC 加到 Web 服务或后台任务系统里</td>
-<td><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a></td>
+<td><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a></td>
 </tr>
 <tr>
 <td>版本升级后旧团队文件和旧示例怎样检查</td>
-<td><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a></td>
+<td><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a></td>
 </tr>
 <tr>
 <td>遇到问题时应该带哪些材料来反馈</td>
-<td><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></td>
-</tr>
-<tr>
-<td>vm-group 和 vm-session 该选哪个</td>
-<td><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a></td>
-</tr>
-<tr>
-<td>怎样让每个成员独占一台 VM，并在里面运行自己写的子 Workflow</td>
-<td><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a></td>
-</tr>
-<tr>
-<td>成员写的子 Workflow 里的 Agent，怎样留在这个成员的 VM 里执行</td>
-<td><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a></td>
-</tr>
-<tr>
-<td>VM 都被占用时，新会话怎样排队等待</td>
-<td><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a></td>
-</tr>
-<tr>
-<td>成员 Agent 怎样查出自己能用哪些隔离策略和工具</td>
-<td><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a></td>
+<td><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈</a></td>
 </tr>
 </tbody>
 </table>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/questions.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E8%AE%A4%E8%AF%86%E4%B8%8E%E4%B8%8A%E6%89%8B">认识与上手</a><a href="#team">Team</a><a href="#workflow">Workflow</a><a href="#%E6%88%90%E5%91%98%E5%9C%A8%E8%87%AA%E5%B7%B1%E7%9A%84-vm-%E9%87%8C%E8%BF%90%E8%A1%8C%E5%AD%90-workflow">成员在自己的 VM 里运行子 Workflow</a><a href="#%E6%A8%A1%E5%9E%8B%E4%B8%8E%E9%85%8D%E7%BD%AE">模型与配置</a><a href="#%E5%B7%A5%E5%85%B7%E4%B8%8E%E6%89%A9%E5%B1%95">工具与扩展</a><a href="#%E6%89%A7%E8%A1%8C%E7%8E%AF%E5%A2%83%E4%B8%8E%E9%9A%94%E7%A6%BB">执行环境与隔离</a><a href="#%E8%BF%90%E8%A1%8C%E6%8E%A7%E5%88%B6">运行控制</a><a href="#%E7%BB%93%E6%9E%9C%E4%B8%8E%E8%AE%B0%E5%BD%95">结果与记录</a><a href="#%E9%9B%86%E6%88%90%E4%B8%8E%E7%BB%B4%E6%8A%A4">集成与维护</a></aside>
 </div>
 </body>
 </html>

@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>让任务在指定目录、容器或 VM 中执行 · OpenCollab Wiki</title>
-<meta name="description" content="把 Agent 的读写文件和执行命令接到你指定的目录、容器或 VM，并弄清谁负责清理。">
+<title>使用自己的执行环境 · OpenCollab Wiki</title>
+<meta name="description" content="两种接入自己执行环境的方式：把一个现成的目录、容器或 VM 直接交给 SDK（你负责清理），或注册一个新的隔离策略名，由你的提供器按会话分配和回收环境。">
 <link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/execution-environments/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-search-index="../search-index.json?v=5">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -35,33 +35,45 @@
 <nav id="help-navigation" aria-label="帮助分类">
 <div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
 <p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details open><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="index.html" aria-current="page">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<details><summary>认识 OC <small>1</small></summary><a href="../concepts-and-modes/index.html">OC 是什么：一张图看懂会话、Team 和 Workflow</a></details><details><summary>上手使用 <small>3</small></summary><a href="../first-run-workspace/index.html">安装并完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里使用 OC</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a></details><details><summary>Team：让模型分工 <small>2</small></summary><a href="../configure-team/index.html">Team 入门：用 team.yaml 组织多个 Agent</a><a href="../dispatch-team-agents/index.html">Team 协作：派发、消息、等待与采纳</a></details><details><summary>Workflow：用代码编排 <small>10</small></summary><a href="../run-registered-workflow/index.html">运行一个 Workflow</a><a href="../workflow-programming-model/index.html">编写 Workflow：普通 Python 加上 ctx</a><a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent：会话、数据传递与并行</a><a href="../workflow-composition-hierarchy/index.html">组合与嵌套：子流程、候选环境与互相调用</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 的失败处理、测试与调试</a><a href="../workflow-public-api-map/index.html">Workflow API 速查</a><a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a><a href="../duo-workflow/index.html">Duo：让两个 coder 各写一版，再挑一个</a><a href="../weave-workflow/index.html">Weave：分组接力完成任务，用检查命令判定交付</a><a href="../reconstruct-workflow/index.html">Reconstruct：从输入输出反推一个程序</a></details><details><summary>模型与配置 <small>5</small></summary><a href="../provider-endpoint-credentials/index.html">接入模型服务：端点、凭据、协议与流式</a><a href="../thinking-reasoning-sampling/index.html">深度思考与采样参数</a><a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a><a href="../configuration-precedence/index.html">配置从哪来、哪个生效、出错怎么查</a><a href="../configuration-reference/index.html">配置参数速查</a></details><details><summary>工具与扩展 <small>4</small></summary><a href="../tool-selection/index.html">内置工具：怎么选、文件怎么改、命令怎么跑</a><a href="../custom-tools/index.html">自定义工具：把你的函数交给 Agent 调用</a><a href="../skills-on-demand/index.html">Skill：按需加载的说明书</a><a href="../team-hooks/index.html">Hook：在工具调用和成员生命周期里运行命令</a></details><details open><summary>执行环境与隔离 <small>5</small></summary><a href="../isolation-overview/index.html">隔离：Agent 的文件和命令落在哪里</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="index.html" aria-current="page">使用自己的执行环境</a><a href="../candidate-delivery/index.html">隔离改动怎样回到项目：采纳、找回与清理</a></details><details><summary>运行控制：预算、停止与会话 <small>4</small></summary><a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a><a href="../timeouts-retries/index.html">运行怎样停下：超时、重试、取消与清理</a><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../session-save-resume/index.html">保存与恢复会话</a></details><details><summary>结果与记录 <small>4</small></summary><a href="../run-results/index.html">判断任务是否真的完成：运行结果与测试证据</a><a href="../artifacts-and-history/index.html">运行记录：产物目录、轨迹与实时事件</a><a href="../token-cache-cost/index.html">用量与费用：token、缓存命中和花费</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a></details><details><summary>原理、集成与维护 <small>5</small></summary><a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a><a href="../extension-and-evaluation-boundaries/index.html">OC 的边界：需求该从哪里扩展，评测由谁负责</a><a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OC 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
 </nav>
 <main id="content" tabindex="-1">
 <p class="category">执行环境与隔离</p>
-<h1 id="让任务在指定目录容器或-vm-中执行">让任务在指定目录、容器或 VM 中执行</h1>
-<p>OC 默认让工具在 <code>workspace</code> 目录里操作。用 <code>OpenCollab(workspace, environment=...)</code> 可以换成一个你自己创建的执行环境，例如另一个本机目录、你的服务已经在跑的容器，或已有 Linux VM。OC 的取舍是：传入的环境只被借用，由你负责 <code>setup()</code> 和 <code>cleanup()</code>。</p>
-<p>两个参数的分工：</p>
+<h1 id="使用自己的执行环境">使用自己的执行环境</h1>
+<p>内置的六种隔离策略不够用时，比如要让 Agent 在你的服务已经在跑的容器里干活，或者接入自己的远程执行服务，OC 提供两种接入方式。区别在于<strong>资源由谁管理</strong>：</p>
 <table>
 <thead>
 <tr>
-<th>参数</th>
-<th>作用</th>
+<th>方式</th>
+<th>怎么接</th>
+<th>谁负责准备和清理</th>
+<th>适合</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>workspace</code></td>
-<td>标识调用方的项目</td>
+<td>方式一：交给 SDK 一个现成的环境</td>
+<td><code>OpenCollab(workspace, environment=...)</code></td>
+<td>你。SDK 只是借用</td>
+<td>一个固定的目录、容器或 VM，整次运行都用它</td>
 </tr>
 <tr>
-<td><code>environment</code></td>
-<td>决定工具实际看到的目录和执行位置</td>
+<td>方式二：注册一个新的隔离策略</td>
+<td><code>OpenCollab(..., environment_providers={&quot;名字&quot;: 工厂})</code>，再用 <code>isolation=&quot;名字&quot;</code></td>
+<td>你的提供器负责实际资源；OC 负责什么时候申请、交付和清理</td>
+<td>每个会话要分配一份独立环境</td>
 </tr>
 </tbody>
 </table>
-<p>接入已有容器时，文件要从环境里读。你本机上的同名路径，内容可能完全不同。</p>
-<h2 id="最小示例本机目录">最小示例：本机目录</h2>
+<p>先分清三个名词：</p>
+<ul>
+<li><strong>环境（Environment）</strong>：OC 工具实际读写文件、执行命令的对象，比如本机目录或容器。</li>
+<li><strong>环境池（EnvironmentPool）</strong>：负责给每个会话发放环境、回收环境。</li>
+<li><strong>环境提供器（environment provider）</strong>：一个工厂函数，每次运行时为某个策略名创建一个环境池。</li>
+</ul>
+<h2 id="方式一把一个现成的环境交给-sdk">方式一：把一个现成的环境交给 SDK</h2>
+<p>OC 默认让工具在 <code>workspace</code> 目录里操作。用 <code>environment=</code> 可以换成你自己创建的执行环境。两个参数分工不同：<code>workspace</code> 标识调用方的项目（配置发现在这里进行）；<code>environment</code> 决定工具实际看到的目录和执行位置。</p>
+<h3 id="最小例子本机目录">最小例子：本机目录</h3>
 <pre><code class="language-python">import asyncio
 from opencollab import OpenCollab
 from opencollab.environments import local_environment, build_repo_map_via_env
@@ -81,7 +93,8 @@ async def main():
 
 asyncio.run(main())
 </code></pre>
-<p>常用工厂：</p>
+<p><code>build_repo_map_via_env</code> 从目标环境读取路径概览，会限制概览大小。</p>
+<h3 id="常用工厂">常用工厂</h3>
 <table>
 <thead>
 <tr>
@@ -96,7 +109,7 @@ asyncio.run(main())
 </tr>
 <tr>
 <td><code>worktree_environment(path)</code></td>
-<td>还没准备的工作树环境</td>
+<td>还没准备好的工作树环境</td>
 </tr>
 <tr>
 <td><code>docker_environment(image, backing_environment, options=...)</code></td>
@@ -108,13 +121,31 @@ asyncio.run(main())
 </tr>
 <tr>
 <td><code>VMEnvironment(connection, workspace, state_directory=...)</code></td>
-<td>借用已有 Linux VM 的项目目录</td>
+<td>借用已有 Linux VM 上的项目目录</td>
 </tr>
 </tbody>
 </table>
-<p>这些公开工厂都把对象交给你持有。你负责调用 <code>setup()</code>，最后调用 <code>cleanup()</code>。</p>
-<p><code>build_repo_map_via_env</code> 从目标环境读取路径概览，会限制概览大小。</p>
-<h2 id="连接已有容器">连接已有容器</h2>
+<p>这些公开工厂都把对象交给你持有：你负责调用 <code>setup()</code>，最后调用 <code>cleanup()</code>。</p>
+<h3 id="手动管理一个工作树">手动管理一个工作树</h3>
+<p>在一个干净的 Git 项目或普通目录里运行：</p>
+<pre><code class="language-python">import asyncio
+from opencollab.environments import worktree_environment
+
+async def main():
+    environment = worktree_environment(&quot;.&quot;)   # 只创建对象，还没有建目录
+    try:
+        await environment.setup()             # 这一步才真正准备目录
+        print(environment.workspace)          # 工具实际使用的路径
+        result = await environment.exec_cmd(&quot;pwd&quot;)
+        print(result.returncode, result.stdout)
+    finally:
+        await environment.cleanup()           # 用完要自己清理
+
+asyncio.run(main())
+</code></pre>
+<p><code>worktree_environment(&quot;.&quot;)</code> 只创建对象，<code>setup()</code> 才准备目录，<code>workspace</code> 是工具实际读写的路径。这样单独创建的工作树由你自己管理：先导出需要的改动，再 <code>cleanup()</code>。工作树从哪个版本开始，见 <a href="../isolation-overview/index.html#%E8%B5%B7%E7%82%B9%E6%98%AF%E5%93%AA%E4%B8%AA%E7%89%88%E6%9C%AC">工作树的起点</a>。</p>
+<h3 id="连接一个已经在运行的容器">连接一个已经在运行的容器</h3>
+<p>下面的代码放在已有的异步函数里执行：</p>
 <pre><code class="language-python">from opencollab.environments import attach_container
 
 environment = attach_container(
@@ -125,25 +156,16 @@ await environment.setup()
 probe = await environment.exec_cmd(&quot;pwd&quot;)
 print(probe.returncode, probe.stdout)
 </code></pre>
-<p>这段代码要放在已有的异步函数里执行。</p>
-<p>参数说明：</p>
 <ul>
 <li><code>container_id</code>：完整容器 ID 或合法名称。</li>
-<li><code>workspace</code>：容器内规范化后的绝对路径，应指向项目目录。</li>
-<li><code>command_prefix</code>：可接入已有的命令包装。</li>
-<li><code>timeout_returncode</code>：可匹配你集成端约定的超时返回码。</li>
+<li><code>workspace</code>：容器内规范化后的绝对路径，指向项目目录。</li>
+<li><code>command_prefix</code>：可接入已有的命令包装；<code>timeout_returncode</code>：可匹配你约定的超时返回码。</li>
 </ul>
-<h2 id="新建容器">新建容器</h2>
-<ol>
-<li>用 <code>docker_environment(image, backing_environment, options=...)</code> 创建。</li>
-<li>需要把宿主目录映射为容器工作区时，先准备好来源，再调用 <code>await container.setup(mount_dir=prepared_path)</code>。</li>
-<li>项目通过这个挂载读写。附加的只读素材用 DockerOptions 里的 DockerMount。</li>
-<li>清理容器时，会一并处理它拥有的 backing_environment 资源。按这一点安排清理顺序。</li>
-</ol>
-<h2 id="连接已有-linux-vm-工作区">连接已有 Linux VM 工作区</h2>
-<p>如果项目已经放在某台 Linux VM（下文叫来宾）上，你想让 Agent 直接在那个目录里干活，就构造一个 <code>VMEnvironment</code> 传给 SDK。OC 通过 SSH 在来宾上读写文件、执行命令。</p>
-<p>开始前要准备好：来宾上的 Linux 和 SSH、与控制端同版本的 OpenCollab、一个私有状态目录。步骤见 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a>。</p>
-<p>下面的连接值换成你的。来宾上的项目目录要已经存在。</p>
+<p>接入已有容器时，文件要从环境里读：你本机上的同名路径，内容可能完全不同。</p>
+<h3 id="新建容器">新建容器</h3>
+<p>用 <code>docker_environment(image, backing_environment, options=...)</code> 创建。需要把宿主目录映射为容器工作区时，先准备好来源，再调用 <code>await container.setup(mount_dir=prepared_path)</code>，项目通过这个挂载读写；附加的只读素材用 <code>DockerOptions</code> 里的 <code>DockerMount</code>。清理容器时，会一并处理它拥有的 <code>backing_environment</code> 资源，按这一点安排清理顺序。</p>
+<h3 id="连接已有-linux-vm-上的项目目录">连接已有 Linux VM 上的项目目录</h3>
+<p>项目已经放在某台 Linux VM（来宾）上，想让 Agent 直接在那个目录里干活，就构造一个 <code>VMEnvironment</code> 传给 SDK。OC 通过 SSH 在来宾上读写文件、执行命令。来宾上要准备好 Linux 和 SSH、与控制端同版本的 OC、一个私有状态目录，步骤见 <a href="../vm-environment-extension/index.html#%E7%AC%AC%E4%B8%80%E6%AD%A5%E5%87%86%E5%A4%87%E6%8E%A7%E5%88%B6%E7%AB%AF%E5%92%8C%E6%9D%A5%E5%AE%BE">在现有 Linux VM 中运行任务</a>。</p>
 <pre><code class="language-python">import asyncio
 from opencollab import OpenCollab
 from opencollab.environments import VMConnection, VMEnvironment
@@ -173,23 +195,16 @@ async def main():
 
 asyncio.run(main())
 </code></pre>
-<p>几点说明：</p>
 <ul>
-<li>这种方式直接改来宾上的项目目录，不复制。</li>
-<li>环境对象归你持有，清理也由你负责。</li>
-<li><code>cleanup()</code> 会停止这个环境发起的操作，删掉它的临时文件。来宾继续运行，项目和操作记录都保留。</li>
-<li>如果你要的是“每个会话领一台机器、先复制项目、用完重置来宾”，就别手动建 <code>VMEnvironment</code>，改用 <code>config[&quot;vm&quot;]</code> 加 <code>vm-group</code> 或 <code>vm-session</code> 策略。</li>
+<li>这种方式<strong>直接改来宾上的项目目录</strong>，不复制。</li>
+<li><code>cleanup()</code> 会停止这个环境发起的操作、删掉它的临时文件；来宾继续运行，项目和操作记录都保留。</li>
+<li>如果你要的是“每个会话领一台机器、先复制项目、用完重置来宾”，别手动建 <code>VMEnvironment</code>，改用 <code>config[&quot;vm&quot;]</code> 加 <code>vm-group</code> 或 <code>vm-session</code> 策略。</li>
 </ul>
-<h2 id="连接后先做一次检查">连接后先做一次检查</h2>
-<ol>
-<li>读一个项目里确实存在的小文件，确认看到的是目标内容。</li>
-<li>执行一条和任务相关的命令，确认依赖和当前目录。</li>
-</ol>
-<h2 id="路径怎么算">路径怎么算</h2>
-<p>本机工作树目录和容器里的项目目录可以不一样。工具的相对路径始终从 <code>environment.workspace</code> 算起。</p>
-<p>服务可以把宿主上的项目作为客户端的 <code>workspace</code>，把容器里的工作目录交给 environment。这样，配置发现在宿主侧进行，工具执行在容器里进行，各有明确位置。</p>
-<p>如果服务在容器或 VM 里运行子 Agent，<code>worktree</code> 策略会继续用父环境所在的那台机器。想让每个子会话拿到另一个容器或 VM，就选 <code>docker-session</code> 或 <code>vm-session</code>，并准备好资源。见 <a href="../docker-isolation/index.html">在容器中运行任务</a> 和 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a>。</p>
-<h2 id="谁负责清理">谁负责清理</h2>
+<h3 id="路径怎么算">路径怎么算</h3>
+<p>工具的相对路径始终从 <code>environment.workspace</code> 算起，本机工作树目录和容器里的项目目录可以不一样。服务可以把宿主上的项目作为客户端的 <code>workspace</code>，把容器里的工作目录交给 <code>environment</code>：配置发现在宿主侧进行，工具执行在容器里进行，各有明确位置。</p>
+<p>如果服务在容器或 VM 里运行子 Agent，<code>worktree</code> 策略会继续用父环境所在的那台机器。想让每个子会话拿到另一个容器或 VM，就选 <code>docker-session</code> 或 <code>vm-session</code> 并准备好资源。</p>
+<p>连接后先做一次检查：读一个项目里确实存在的小文件，确认看到的是目标内容；再执行一条和任务相关的命令，确认依赖和当前目录。</p>
+<h3 id="谁负责清理">谁负责清理</h3>
 <table>
 <thead>
 <tr>
@@ -199,7 +214,7 @@ asyncio.run(main())
 </thead>
 <tbody>
 <tr>
-<td>你传给 SDK 的 environment</td>
+<td>你传给 SDK 的 <code>environment</code></td>
 <td>你。SDK 只是借用，运行结束后由你清理</td>
 </tr>
 <tr>
@@ -216,19 +231,159 @@ asyncio.run(main())
 </tr>
 </tbody>
 </table>
-<p>你自己提供环境时，SDK 结果里表示“环境活动已结束”的指标是 <code>None</code>。由你清理环境并确认操作已停止。会话执行和持久化是否完成，看 <code>session_quiesced</code>。详见 <a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a>。</p>
+<p>你自己提供环境时，结果里表示“环境活动已结束”的指标是 <code>None</code>，需要你在清理后自己确认操作已停止；会话执行和持久化是否完成，看 <code>session_quiesced</code>。见 <a href="../timeouts-retries/index.html#%E5%81%9C%E6%AD%A2%E4%B9%8B%E5%90%8E%E7%A1%AE%E8%AE%A4%E6%B8%85%E7%90%86%E5%AE%8C%E6%88%90">确认清理完成</a>。</p>
+<h2 id="方式二注册一个新的隔离策略">方式二：注册一个新的隔离策略</h2>
+<p>用 <code>environment_providers</code> 注册：键名就是新的策略名，值是工厂。之后 <code>isolation=&quot;名字&quot;</code> 就会用它。OC 仍负责申请环境、交付改动和清理的调度，你的提供器负责实际资源。</p>
+<h3 id="最小例子把-docker-提供器包一层">最小例子：把 Docker 提供器包一层</h3>
+<p>下面把现成的 Docker 提供器注册成 <code>custom</code>，镜像、网络和隔离能力都来自这份 Docker 配置：</p>
+<pre><code class="language-python">from opencollab import OpenCollab
+from opencollab.environments import DockerOptions, docker_isolation_provider
+
+container_factory = docker_isolation_provider(
+    DockerOptions(image=&quot;python:3.11&quot;, network=&quot;none&quot;), scope=&quot;session&quot;
+)
+
+# 工厂接收运行信息，返回一个环境池
+def project_environment_factory(
+    *, workspace, base_environment, owned_save_dir,
+    enable_adoption, owned_output_paths,
+):
+    return container_factory(
+        workspace=workspace,
+        base_environment=base_environment,
+        owned_save_dir=owned_save_dir,
+        enable_adoption=enable_adoption,
+        owned_output_paths=owned_output_paths,
+    )
+
+client = OpenCollab(&quot;.&quot;, environment_providers={
+    &quot;custom&quot;: project_environment_factory,
+})
+</code></pre>
+<p>使用：Workflow 里 <code>await client.workflow(flow, inputs, isolation=&quot;custom&quot;)</code>；Team 里在团队文件或角色里写 <code>isolation: custom</code>。策略名要合法，并且和注册的键一致。</p>
+<h3 id="工厂收到的参数">工厂收到的参数</h3>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workspace</code></td>
+<td>调用方项目的位置</td>
+</tr>
+<tr>
+<td><code>base_environment</code></td>
+<td>真实的来源环境</td>
+</tr>
+<tr>
+<td><code>owned_save_dir</code></td>
+<td>当前运行的产物目录</td>
+</tr>
+<tr>
+<td><code>owned_output_paths</code></td>
+<td>帮环境区分“运行自己写出的记录”和“任务源内容”</td>
+</tr>
+<tr>
+<td><code>enable_adoption</code></td>
+<td>运行是否需要采纳能力，会影响候选准备和交付方式</td>
+</tr>
+</tbody>
+</table>
+<h3 id="使用现有-vm-提供器">使用现有 VM 提供器</h3>
+<p>有现成的 Linux VM 时，可以直接用内置的 <code>vm_isolation_provider</code>，不用自己写环境池。它返回的工厂和 Docker 工厂收同一组运行参数，可以用任意策略名注册。注册前先按 <a href="../vm-environment-extension/index.html">VM 指南</a> 准备好 SSH 连接、来宾目录和管理员的重置程序。</p>
+<pre><code class="language-python">from opencollab import OpenCollab
+from opencollab.environments import VMConnection, VMResource, vm_isolation_provider
+
+resources = [VMResource(
+    resource_id=&quot;worker-01&quot;,
+    connection=VMConnection(
+        host=&quot;vm-a.example.net&quot;, user=&quot;worker&quot;,
+        python=&quot;/home/worker/.venvs/oc/bin/python&quot;,
+        identity_file=&quot;/home/controller/.ssh/vm-key&quot;,
+        known_hosts_file=&quot;/home/controller/.ssh/known_hosts&quot;,
+    ),
+    workspace_root=&quot;/home/worker/oc-workspaces&quot;,
+    state_directory=&quot;/home/worker/oc-state&quot;,
+    reset_command=&quot;/usr/local/sbin/reset-opencollab-guest&quot;,
+)]
+client = OpenCollab(&quot;.&quot;, environment_providers={
+    &quot;vm-group&quot;: vm_isolation_provider(
+        resources,
+        lease_database=&quot;/home/controller/oc-state/vm-leases.sqlite3&quot;,
+        scope=&quot;group&quot;,
+        wait_timeout=0,
+    ),
+})
+</code></pre>
+<p>使用：<code>await client.workflow(flow, inputs, isolation=&quot;vm-group&quot;, cleanup_timeout=60)</code>。</p>
+<ul>
+<li>直接注册提供器时，清理等待时间要在运行参数 <code>cleanup_timeout</code> 里写。想让 SDK、CLI 和 Team 共用一份可序列化的配置，就改用 <code>config[&quot;vm&quot;]</code> 或环境变量 <code>OPENCOLLAB_VM</code>，这时 <code>cleanup_timeout</code> 默认 60 秒。</li>
+<li>如果 <code>environment_providers</code> 里注册了和 <code>config[&quot;vm&quot;]</code> 同名的工厂，以 <code>environment_providers</code> 为准。</li>
+<li>多台控制主机共用一个机器池时，本地 SQLite 文件不够用。可以把外部分配服务包成自己的 <code>EnvironmentPool</code>，由这个服务负责跨机器分配和归还。</li>
+</ul>
+<h3 id="自己写环境池要实现什么">自己写环境池要实现什么</h3>
+<p>环境池实现公开接口 <code>opencollab.environments.EnvironmentPool</code>：</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>acquire(role, source=...)</code></td>
+<td>接收角色和实际的父环境或审阅源，返回已经能执行工具的环境</td>
+</tr>
+<tr>
+<td><code>adopt(patch)</code></td>
+<td>把改动应用到交付工作区</td>
+</tr>
+<tr>
+<td><code>release_env(environment)</code></td>
+<td>归还一次分配</td>
+</tr>
+<tr>
+<td><code>release()</code></td>
+<td>结束池拥有的全部资源</td>
+</tr>
+</tbody>
+</table>
+<p>环境本身要提供准备、文件读写、命令执行、撤销、停止和清理，详细签名见 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/ports.py">公开端口</a>。几条要遵守的规则：</p>
+<ul>
+<li>审阅源可能来自另一种策略，也可能在容器里，要通过环境操作读取它的内容。直接从宿主机同名目录复制，审阅任务会读到错误的版本。</li>
+<li>传进来的源环境是借来的，释放时只释放池自己分配的资源。</li>
+<li>想清楚环境对象和底层资源的关系。例如一个环境对象代表一份会话租约、底层容器由池统一管理时，多个环境引用同一个资源，归还其中一个后资源还要留到其他使用者都结束。审阅和清理都按这个关系来。</li>
+<li>取消可能发生在申请资源的途中：提供器要跟踪还没结束的申请，等它有了明确结果再完成撤销。补丁导出失败时，保留可恢复的文件和资源信息，并让同一个池能再次清理。</li>
+<li>自定义提供器同样要遵守工具权限、工作区检查和输出限制。</li>
+</ul>
+<h3 id="接入新后端时怎样测试">接入新后端时怎样测试</h3>
+<ol>
+<li>在一个环境里写入一个文件，再读回来。</li>
+<li>执行一条短命令，看退出码。</li>
+<li>申请两份环境，分别写入同名文件，确认内容互不影响。</li>
+<li>实际试一下文件写入、命令取消和导出失败后的恢复，确认资源能被正确清理。</li>
+</ol>
+<p>最后，为你的提供器写清楚三件事给使用者看：文件共享到什么程度、进程和网络怎么隔离、权限有哪些限制。</p>
 <h2 id="常见问题">常见问题</h2>
 <ul>
-<li>如果 <code>build_repo_map_via_env</code> 返回空字符串：可能是读取失败。用 <code>exec_cmd(&quot;pwd&quot;)</code> 和 <code>read_file(&quot;README.md&quot;)</code> 查看执行位置和文件内容。</li>
-<li>如果 Agent 读到的文件和你本机看到的不一样：检查它是不是在容器里，相对路径从 <code>environment.workspace</code> 算起。</li>
-<li>不确定该用哪种策略：见 <a href="../isolation-overview/index.html">隔离怎么选</a>。</li>
+<li><strong>提示该策略需要 environment provider</strong>：这个策略名还没注册。检查 <code>environment_providers</code> 的键和 <code>isolation</code> 写的名字是否一致。</li>
+<li><strong><code>build_repo_map_via_env</code> 返回空字符串</strong>：可能是读取失败，用 <code>exec_cmd(&quot;pwd&quot;)</code> 和 <code>read_file(&quot;README.md&quot;)</code> 查看执行位置和文件内容。</li>
+<li><strong>Agent 读到的文件和你本机看到的不一样</strong>：检查它是不是在容器里；相对路径从 <code>environment.workspace</code> 算起。</li>
+<li><strong>想用虚拟机</strong>：内置 VM 提供器已经做好了领取机器、复制项目、导出改动和归还前重置，见 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a>。</li>
 </ul>
-<h2 id="参考">参考</h2>
-<p>工厂签名见<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/environments.py">公开环境 API</a>和<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/programmatic.py">环境组合实现</a>。</p>
+<h2 id="延伸阅读">延伸阅读</h2>
+<ul>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/environments.py">公开环境 API</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/programmatic.py">环境组合实现</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/session_environments.py">策略池实现</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/ports.py">公开端口</a></li>
+<li>相关指南：<a href="../isolation-overview/index.html">隔离</a> · <a href="../docker-isolation/index.html">在容器中运行任务</a> · <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a> · <a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a></li>
+</ul>
 
 <footer class="article-footer"><a href="../../../help-src/zh-CN/topics/isolation/execution-environments.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E7%A4%BA%E4%BE%8B%E6%9C%AC%E6%9C%BA%E7%9B%AE%E5%BD%95">最小示例：本机目录</a><a href="#%E8%BF%9E%E6%8E%A5%E5%B7%B2%E6%9C%89%E5%AE%B9%E5%99%A8">连接已有容器</a><a href="#%E6%96%B0%E5%BB%BA%E5%AE%B9%E5%99%A8">新建容器</a><a href="#%E8%BF%9E%E6%8E%A5%E5%B7%B2%E6%9C%89-linux-vm-%E5%B7%A5%E4%BD%9C%E5%8C%BA">连接已有 Linux VM 工作区</a><a href="#%E8%BF%9E%E6%8E%A5%E5%90%8E%E5%85%88%E5%81%9A%E4%B8%80%E6%AC%A1%E6%A3%80%E6%9F%A5">连接后先做一次检查</a><a href="#%E8%B7%AF%E5%BE%84%E6%80%8E%E4%B9%88%E7%AE%97">路径怎么算</a><a href="#%E8%B0%81%E8%B4%9F%E8%B4%A3%E6%B8%85%E7%90%86">谁负责清理</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%8F%82%E8%80%83">参考</a></aside>
+<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%96%B9%E5%BC%8F%E4%B8%80%E6%8A%8A%E4%B8%80%E4%B8%AA%E7%8E%B0%E6%88%90%E7%9A%84%E7%8E%AF%E5%A2%83%E4%BA%A4%E7%BB%99-sdk">方式一：把一个现成的环境交给 SDK</a><a href="#%E6%9C%80%E5%B0%8F%E4%BE%8B%E5%AD%90%E6%9C%AC%E6%9C%BA%E7%9B%AE%E5%BD%95">最小例子：本机目录</a><a href="#%E5%B8%B8%E7%94%A8%E5%B7%A5%E5%8E%82">常用工厂</a><a href="#%E6%89%8B%E5%8A%A8%E7%AE%A1%E7%90%86%E4%B8%80%E4%B8%AA%E5%B7%A5%E4%BD%9C%E6%A0%91">手动管理一个工作树</a><a href="#%E8%BF%9E%E6%8E%A5%E4%B8%80%E4%B8%AA%E5%B7%B2%E7%BB%8F%E5%9C%A8%E8%BF%90%E8%A1%8C%E7%9A%84%E5%AE%B9%E5%99%A8">连接一个已经在运行的容器</a><a href="#%E6%96%B0%E5%BB%BA%E5%AE%B9%E5%99%A8">新建容器</a><a href="#%E8%BF%9E%E6%8E%A5%E5%B7%B2%E6%9C%89-linux-vm-%E4%B8%8A%E7%9A%84%E9%A1%B9%E7%9B%AE%E7%9B%AE%E5%BD%95">连接已有 Linux VM 上的项目目录</a><a href="#%E8%B7%AF%E5%BE%84%E6%80%8E%E4%B9%88%E7%AE%97">路径怎么算</a><a href="#%E8%B0%81%E8%B4%9F%E8%B4%A3%E6%B8%85%E7%90%86">谁负责清理</a><a href="#%E6%96%B9%E5%BC%8F%E4%BA%8C%E6%B3%A8%E5%86%8C%E4%B8%80%E4%B8%AA%E6%96%B0%E7%9A%84%E9%9A%94%E7%A6%BB%E7%AD%96%E7%95%A5">方式二：注册一个新的隔离策略</a><a href="#%E6%9C%80%E5%B0%8F%E4%BE%8B%E5%AD%90%E6%8A%8A-docker-%E6%8F%90%E4%BE%9B%E5%99%A8%E5%8C%85%E4%B8%80%E5%B1%82">最小例子：把 Docker 提供器包一层</a><a href="#%E5%B7%A5%E5%8E%82%E6%94%B6%E5%88%B0%E7%9A%84%E5%8F%82%E6%95%B0">工厂收到的参数</a><a href="#%E4%BD%BF%E7%94%A8%E7%8E%B0%E6%9C%89-vm-%E6%8F%90%E4%BE%9B%E5%99%A8">使用现有 VM 提供器</a><a href="#%E8%87%AA%E5%B7%B1%E5%86%99%E7%8E%AF%E5%A2%83%E6%B1%A0%E8%A6%81%E5%AE%9E%E7%8E%B0%E4%BB%80%E4%B9%88">自己写环境池要实现什么</a><a href="#%E6%8E%A5%E5%85%A5%E6%96%B0%E5%90%8E%E7%AB%AF%E6%97%B6%E6%80%8E%E6%A0%B7%E6%B5%8B%E8%AF%95">接入新后端时怎样测试</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>
 </body>
 </html>

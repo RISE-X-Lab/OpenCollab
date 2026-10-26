@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>安全地查找读取和修改文件 · OpenCollab Wiki</title>
-<meta name="description" content="OC 内置文件工具（file_read、grep、file_write、apply_patch、git_diff）的参数和编辑模式，以及路径越界、符号链接、覆盖保护等报错的含义。">
-<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/file-editing-safe-workspace/index.html">
+<title>内置工具：怎么选、文件怎么改、命令怎么跑 · OpenCollab Wiki</title>
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url=../tool-selection/index.html#%E6%96%87%E4%BB%B6%E5%B7%A5%E5%85%B7%E8%AF%BB%E6%90%9C%E6%94%B9">
+<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/tool-selection/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-redirect="tool-selection#文件工具读搜改">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -33,149 +34,13 @@
 </div></header>
 <div class="layout">
 <nav id="help-navigation" aria-label="帮助分类">
-<div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
-<p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details open><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="index.html" aria-current="page">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<div class="nav-start"><a href="../index.html">Wiki 首页</a></div>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">工具、Skill 与扩展</p>
-<h1 id="安全地查找读取和修改文件">安全地查找读取和修改文件</h1>
-<p>OC 内置的文件工具是 <code>file_read</code>、<code>grep</code>、<code>file_write</code>、<code>apply_patch</code> 和 <code>git_diff</code>。它们有一个和直觉不同的地方：所有路径都相对于 Agent 自己的执行工作区解释，而不是你启动进程的目录。Agent 在工作树或容器里时，改的是那里的副本。读写还会检查路径越界、符号链接和文件类型。本文给出各工具的参数和编辑模式，以及常见报错怎么处理。</p>
-<h2 id="速查">速查</h2>
-<table>
-<thead>
-<tr>
-<th>想做什么</th>
-<th>工具与模式</th>
-<th>关键参数</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>分页读文件</td>
-<td><code>file_read</code></td>
-<td><code>path</code>、<code>offset</code>、<code>limit</code></td>
-</tr>
-<tr>
-<td>搜索</td>
-<td><code>grep</code></td>
-<td><code>pattern</code>（正则）、<code>path</code>、<code>glob</code>、<code>max_results</code>（默认 50）</td>
-</tr>
-<tr>
-<td>新建或整体替换</td>
-<td><code>file_write</code> <code>create</code></td>
-<td><code>content</code>，大幅缩短已有长文件需 <code>overwrite=true</code></td>
-</tr>
-<tr>
-<td>替换一段唯一原文</td>
-<td><code>file_write</code> <code>str_replace</code></td>
-<td><code>old_str</code>、<code>new_str</code></td>
-</tr>
-<tr>
-<td>按行替换或插入</td>
-<td><code>apply_patch</code> <code>line_replace</code></td>
-<td><code>start_line</code>、<code>end_line</code>、<code>expected_str</code>、<code>new_str</code></td>
-</tr>
-<tr>
-<td>一次改多处</td>
-<td><code>apply_patch</code> <code>unified_diff</code></td>
-<td><code>patch</code></td>
-</tr>
-<tr>
-<td>查看改动</td>
-<td><code>git_diff</code></td>
-<td><code>path</code>、<code>staged</code>、<code>stat_only</code>、<code>include_status</code></td>
-</tr>
-</tbody>
-</table>
-<p>具体参数以所选工具的 schema 为准。</p>
-<h2 id="读取与定位">读取与定位</h2>
-<pre><code class="language-json">{&quot;path&quot;: &quot;src/parser.py&quot;, &quot;offset&quot;: 1, &quot;limit&quot;: 120}
-</code></pre>
-<ul>
-<li>大文件分段返回。看结果里实际显示的范围和下一段的位置，再继续读。</li>
-<li>可以先用 <code>grep</code> 找到函数，再读附近的内容。</li>
-<li>单个工具的输出上限和历史压缩可能让模型看不到全部内容。文件本身仍完整地在执行环境里，用更窄的范围重读即可。</li>
-</ul>
-<h2 id="编辑文件">编辑文件</h2>
-<h3 id="新建或整体写入create">新建或整体写入：<code>create</code></h3>
-<pre><code class="language-json">{&quot;path&quot;:&quot;settings.py&quot;,&quot;mode&quot;:&quot;create&quot;,&quot;content&quot;:&quot;RETRIES = 2\n&quot;}
-</code></pre>
-<p>完整内容放进 <code>content</code>。这个模式也能整体替换已有文件。如果新内容让一个已有的长文件大幅变短，必须显式传 <code>overwrite=true</code>，这是防止误覆盖的保护。</p>
-<h3 id="局部替换str_replace">局部替换：<code>str_replace</code></h3>
-<pre><code class="language-json">{&quot;path&quot;:&quot;settings.py&quot;,&quot;mode&quot;:&quot;str_replace&quot;,&quot;old_str&quot;:&quot;RETRIES = 2&quot;,&quot;new_str&quot;:&quot;RETRIES = 3&quot;}
-</code></pre>
-<p><code>old_str</code> 必须在文件里恰好出现一次。不唯一时，多带几行邻近代码。</p>
-<h3 id="按行替换line_replace">按行替换：<code>line_replace</code></h3>
-<pre><code class="language-json">{&quot;path&quot;:&quot;settings.py&quot;,&quot;mode&quot;:&quot;line_replace&quot;,&quot;start_line&quot;:1,&quot;end_line&quot;:1,&quot;expected_str&quot;:&quot;RETRIES = 3&quot;,&quot;new_str&quot;:&quot;RETRIES = 4&quot;,&quot;relocate_expected&quot;:true}
-</code></pre>
-<ul>
-<li>行号从 1 开始，<code>end_line</code> 包含在替换范围内。</li>
-<li><code>expected_str</code> 用来核对当前范围的原文，适合读过文件之后再编辑。</li>
-<li>行号过期、但原文在文件里唯一时，可以显式开启 <code>relocate_expected</code>，让工具先找到原文再改。</li>
-<li><code>end_line</code> 等于 <code>start_line - 1</code> 时，表示在该行之前插入。</li>
-</ul>
-<h3 id="一次改多处unified_diff">一次改多处：<code>unified_diff</code></h3>
-<pre><code class="language-json">{&quot;path&quot;:&quot;settings.py&quot;,&quot;mode&quot;:&quot;unified_diff&quot;,&quot;patch&quot;:&quot;@@ -1 +1 @@\n-RETRIES = 4\n+RETRIES = 5\n&quot;}
-</code></pre>
-<ul>
-<li><code>patch</code> 接受标准的 <code>@@ -a,b +c,d @@</code> hunk，可以省略文件头。</li>
-<li>工具按上下文和旧内容匹配，容许行号小幅漂移。</li>
-<li>显式 <code>normalize_hunks=true</code> 会重算 hunk 行数，并允许上下文唯一的裸 <code>@@</code> 标头。</li>
-<li>只要有一个 hunk 或范围匹配失败，整个编辑都不生效，文件保持原样。</li>
-</ul>
-<h3 id="改完之后">改完之后</h3>
-<p>用 <code>git_diff</code> 或原生 Git 命令确认改动范围，再跑相关测试。写入成功只说明文件写好了，功能对不对要靠项目的实际验证。</p>
-<p><code>git_diff</code> 参数：</p>
-<table>
-<thead>
-<tr>
-<th>参数</th>
-<th>作用</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>path</code></td>
-<td>只看某个文件</td>
-</tr>
-<tr>
-<td><code>staged=true</code></td>
-<td>看暂存区内容</td>
-</tr>
-<tr>
-<td><code>stat_only=true</code></td>
-<td>只看文件级统计</td>
-</tr>
-<tr>
-<td><code>include_status=false</code></td>
-<td>省略状态部分</td>
-</tr>
-</tbody>
-</table>
-<p>默认显示相对 HEAD 的未提交改动，并附上未被忽略的未跟踪文件。结果可能被截断，之后可以按文件继续看。</p>
-<h2 id="路径为什么被拒绝">路径为什么被拒绝</h2>
-<p>内置的本地文件适配器会检查路径、链接和是否为普通文件。容器里的路径由对应的环境检查。</p>
-<p>如果遇到链接或越界路径被拒绝：</p>
-<ol>
-<li>先确认目标文件是否真是任务需要的。</li>
-<li>是的话，通过环境配置安排正确的工作目录或挂载资源，而不是绕过检查。</li>
-</ol>
-<p>注意：这些路径限制只约束原生文件工具。宿主 Bash 仍然拥有宿主进程的全部权限，两者要分开看。执行不可信的项目代码时，优先配置进程和网络隔离，见 <a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a>。</p>
-<h2 id="多个-agent-同时修改">多个 Agent 同时修改</h2>
-<ul>
-<li>共享目录里的成员看到的是同一份文件。文件写锁能保护单次原生编辑，但多个任务的修改仍可能互相影响。</li>
-<li>想让各自独立实现、再挑结果，用工作树或候选环境，再通过明确的采用动作交付。</li>
-</ul>
-<p>如果出现&quot;Agent 已经改好，但源目录没变&quot;：先看当前环境和候选的交付状态，再怀疑编辑工具。隔离任务在自己的目录里修改后，要通过采用或恢复补丁把结果带回目标目录。</p>
-<p>如果你用 <code>FileWriteTool(allow_create=False)</code> 禁止创建文件，模型看到的工具 schema 里 <code>mode</code> 只剩 <code>str_replace</code> 一个选项。成员自己写的子 Workflow 会继承父成员的这项限制。子会话里的工具说明也会同步改成只能编辑已有文件。</p>
-<h2 id="源码与进一步阅读">源码与进一步阅读</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/tools/fs.py#L42">opencollab/adapters/tools/fs.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/tools/apply_patch.py#L28">opencollab/adapters/tools/apply_patch.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/safe_anchored_files.py#L27">opencollab/adapters/safe_anchored_files.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/_env_docker.py#L748">opencollab/adapters/_env_docker.py</a></p>
-<p><a href="../execution-environments/index.html">让任务在指定目录或现有容器里执行</a> · <a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a> · <a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></p>
-
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/extensions/file-editing-safe-workspace.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<p class="category">已合并</p>
+<h1>这篇指南已合并</h1>
+<p>内容现在位于 <a href="../tool-selection/index.html#%E6%96%87%E4%BB%B6%E5%B7%A5%E5%85%B7%E8%AF%BB%E6%90%9C%E6%94%B9">内置工具：怎么选、文件怎么改、命令怎么跑</a>。浏览器没有自动跳转时，请点击这个链接。</p>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E9%80%9F%E6%9F%A5">速查</a><a href="#%E8%AF%BB%E5%8F%96%E4%B8%8E%E5%AE%9A%E4%BD%8D">读取与定位</a><a href="#%E7%BC%96%E8%BE%91%E6%96%87%E4%BB%B6">编辑文件</a><a href="#%E6%96%B0%E5%BB%BA%E6%88%96%E6%95%B4%E4%BD%93%E5%86%99%E5%85%A5create">新建或整体写入：create</a><a href="#%E5%B1%80%E9%83%A8%E6%9B%BF%E6%8D%A2str_replace">局部替换：str_replace</a><a href="#%E6%8C%89%E8%A1%8C%E6%9B%BF%E6%8D%A2line_replace">按行替换：line_replace</a><a href="#%E4%B8%80%E6%AC%A1%E6%94%B9%E5%A4%9A%E5%A4%84unified_diff">一次改多处：unified_diff</a><a href="#%E6%94%B9%E5%AE%8C%E4%B9%8B%E5%90%8E">改完之后</a><a href="#%E8%B7%AF%E5%BE%84%E4%B8%BA%E4%BB%80%E4%B9%88%E8%A2%AB%E6%8B%92%E7%BB%9D">路径为什么被拒绝</a><a href="#%E5%A4%9A%E4%B8%AA-agent-%E5%90%8C%E6%97%B6%E4%BF%AE%E6%94%B9">多个 Agent 同时修改</a><a href="#%E6%BA%90%E7%A0%81%E4%B8%8E%E8%BF%9B%E4%B8%80%E6%AD%A5%E9%98%85%E8%AF%BB">源码与进一步阅读</a></aside>
 </div>
 </body>
 </html>

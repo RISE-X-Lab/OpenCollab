@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>找回隔离任务的改动并清理资源 · OpenCollab Wiki</title>
-<meta name="description" content="任务被取消、输出被截断或清理失败后，找回完整改动，再把残留的工作树、容器或 VM 租约清理好。">
-<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/workspace-recovery/index.html">
+<title>隔离改动怎样回到项目：采纳、找回与清理 · OpenCollab Wiki</title>
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url=../candidate-delivery/index.html#%E5%87%BA%E4%BA%86%E9%97%AE%E9%A2%98%E5%85%88%E6%89%BE%E5%9B%9E%E6%94%B9%E5%8A%A8%E5%86%8D%E6%B8%85%E7%90%86">
+<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/candidate-delivery/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-redirect="candidate-delivery#出了问题先找回改动再清理">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -33,164 +34,13 @@
 </div></header>
 <div class="layout">
 <nav id="help-navigation" aria-label="帮助分类">
-<div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
-<p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details open><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="index.html" aria-current="page">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<div class="nav-start"><a href="../index.html">Wiki 首页</a></div>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">执行环境与隔离</p>
-<h1 id="找回隔离任务的改动并清理资源">找回隔离任务的改动并清理资源</h1>
-<p>隔离任务被取消、补丁导出失败，或者清理出错时，改动通常还在，只是放在了保留的工作树、容器或 VM 工作区里。处理顺序永远是：先把完整改动保存下来，再清理工作树、容器或 VM 租约。</p>
-<p>OC 给父成员的摘要有长度限制，可能只有半截补丁。别直接用它，去读完整补丁或保留目录里的实际文件。</p>
-<h2 id="步骤一找到改动在哪">步骤一：找到改动在哪</h2>
-<table>
-<thead>
-<tr>
-<th>来源</th>
-<th>去哪找</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>显式隔离的 Team 入口</td>
-<td><code>result.metrics.get(&quot;entry_patch&quot;)</code>，回收前就保存了；关闭轨迹记录后仍可获得</td>
-</tr>
-<tr>
-<td>失败或停止的子任务</td>
-<td>结果里会尽可能带上已有改动；补丁较大时可能报告保留的工作区</td>
-</tr>
-<tr>
-<td>错误或保留提示</td>
-<td>直接给出恢复位置的真实值</td>
-</tr>
-</tbody>
-</table>
-<p>恢复位置的形式：</p>
-<ul>
-<li>本地：工作树路径。</li>
-<li>容器：完整容器 ID 加容器内目录。</li>
-<li>VM：OC 会把完整工作区导出到控制端（运行 OC 的机器）运行产物下的 <code>vm/&lt;租约 token&gt;/&lt;角色目录&gt;</code>。导出成功后，直接在本机看文件和 Git 差异。</li>
-</ul>
-<p>如果 VM 导出失败：记下错误里的机器 ID、来宾目录、操作 ID 和本机产物路径。等 SSH 连接恢复后，再继续导出。</p>
-<h2 id="步骤二导出">步骤二：导出</h2>
-<p>从容器导出到一个新的恢复目录：</p>
-<pre><code class="language-bash"># CONTAINER_ID 和 /reported/workspace 换成报错给出的真实值
-docker cp CONTAINER_ID:/reported/workspace ./recovered-workspace
-</code></pre>
-<p>然后检查里面的 Git 差异和任务产物。</p>
-<h2 id="步骤三应用补丁">步骤三：应用补丁</h2>
-<ol>
-<li>
-<p>先通读补丁内容。</p>
-</li>
-<li>
-<p>在目标目录检查能否应用：</p>
-<pre><code class="language-bash">git apply --check /path/to/recovery.patch
-</code></pre>
-</li>
-<li>
-<p>检查通过后，再实际采纳。</p>
-</li>
-</ol>
-<p>如果本机还有正在改的文件要保留，先把恢复材料放到单独的目录里比较，再决定怎么合并。</p>
-<h2 id="步骤四清理残留资源">步骤四：清理残留资源</h2>
-<ol>
-<li>保存报错、完整资源 ID 和已经导出的材料。</li>
-<li>确认资源状态：
-<ul>
-<li><code>git worktree list</code></li>
-<li>看目标目录里的文件</li>
-<li><code>docker inspect</code></li>
-</ul>
-</li>
-<li>停止还在运行的任务，导出改动。</li>
-<li>重试清理对应的资源。</li>
-</ol>
-<h2 id="vm-断线与租约恢复">VM 断线与租约恢复</h2>
-<p>VM 的问题分三种情况处理。租约是 OC 在控制端 SQLite 文件里写的一条记录，表示某台 VM 正被占用。</p>
-<h3 id="情况一你直接用-vmenvironmentssh-断了">情况一：你直接用 <code>VMEnvironment</code>，SSH 断了</h3>
-<p>SSH 出错时，OC 抛出 <code>VMTransportError</code>，里面带着 <code>operation_id</code>。远端命令不会因为断线而丢失。</p>
-<ol>
-<li>等连接恢复。</li>
-<li>调用 <code>await environment.recover_operation(error.operation_id)</code>，拿回这次操作的原始结果。</li>
-<li>用 <code>pending_operations</code> 看还有哪些操作没处理完。</li>
-</ol>
-<p>如果控制端要重建环境对象：用原来的连接、工作区、状态目录和 <code>run_id</code>。这样新对象会读到同一份远端记录。</p>
-<p>操作状态还不确定时，环境会先等恢复结果，再接受新的工作。</p>
-<h3 id="情况二vm-池归还机器时失败">情况二：VM 池归还机器时失败</h3>
-<p>OC 归还一台 VM 要依次做完：导出内容，停止自己发起的操作，清理工作树，运行重置。管理员的 <code>reset_command</code> 成功、任务目录删掉之后，池才释放租约。</p>
-<p>如果导出、清理、连接或重置失败：租约和恢复资料都会保留。只要池对象还活着，就可以重试清理。</p>
-<h3 id="情况三控制进程已经退出">情况三：控制进程已经退出</h3>
-<p>SQLite 里的租约不会自动消失。要手动释放一台机器，按顺序做：</p>
-<ol>
-<li>确认这台机器上对应的远端进程已经结束。</li>
-<li>导出需要保留的文件。</li>
-<li>完成管理员的来宾恢复程序。</li>
-<li>打开配置里 <code>lease_database</code> 指定的文件，按 <code>resource_id</code>、<code>owner</code> 和 <code>workspace</code> 核对，只删除这台资源对应的那一条租约记录。</li>
-</ol>
-<pre><code class="language-bash"># 表名和列名来自 OC 源码；先查看，再只删确认过的那一条
-sqlite3 /home/controller/oc-state/vm-leases.sqlite3 \
-  &quot;SELECT resource_id, owner, workspace FROM vm_leases;&quot;
-sqlite3 /home/controller/oc-state/vm-leases.sqlite3 \
-  &quot;DELETE FROM vm_leases WHERE resource_id = 'worker-01' AND owner = '&lt;租约 token&gt;';&quot;
-</code></pre>
-<p>如果还有机器在正常使用，不要删它们的记录。新建的池只要继续用原数据库和同样的 <code>resource_id</code>，就能认出当前哪些机器被占用。</p>
-<p>准备和配置步骤见 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a>。</p>
-<h2 id="为什么看到的补丁不完整">为什么看到的补丁不完整</h2>
-<p>父任务通知和工具输出有显示长度限制，完整补丁是另外保存的。以下情况要从保留的工作区读原始文件：</p>
-<ul>
-<li>导出失败</li>
-<li>来源检查失败</li>
-<li>通知装不下完整补丁</li>
-</ul>
-<h2 id="进阶保留和释放的规则">进阶：保留和释放的规则</h2>
-<ul>
-<li>带采纳能力的工作区，交付没完成时会保留实际文件，并拒绝过早释放。</li>
-<li>原生工作树之后如果成功拿到完整的 <code>get_diff()</code>，可以清除保留状态，继续清理。</li>
-<li>自定义提供器也应该提供对应的导出和重试流程。</li>
-<li>Team 采用冲突时会给出完整的恢复补丁。释放运行资源之前，把它另外存好。</li>
-</ul>
-<h2 id="进阶取消时发生了什么">进阶：取消时发生了什么</h2>
-<ol>
-<li>先撤销环境的后续操作。</li>
-<li>处理正在进行的命令和文件操作。</li>
-<li>再释放资源。</li>
-</ol>
-<p>环境被撤销后，后续模型调用不会再产生工具副作用。Workflow 里排队等待的调用也会检查环境状态。</p>
-<h2 id="进阶资源归谁">进阶：资源归谁</h2>
-<table>
-<thead>
-<tr>
-<th>资源</th>
-<th>归谁</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>运行自己创建的工作树或容器</td>
-<td>对应的环境池</td>
-</tr>
-<tr>
-<td>外部传入的父环境</td>
-<td>调用方</td>
-</tr>
-<tr>
-<td>连接的已有容器</td>
-<td>原来的服务</td>
-</tr>
-<tr>
-<td>VM 池分配的机器租约</td>
-<td>对应的环境池，归还前运行管理员的重置程序。VM 本身由你的基础设施管理</td>
-</tr>
-</tbody>
-</table>
-<p>如果某个审阅环境依赖另一个候选目录，清理会先处理依赖它的一方。被依赖的来源会保留到导出和释放都结束。具体接法见 <a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a>。</p>
-<h2 id="参考">参考</h2>
-<p>恢复行为可对照<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/session-isolation.zh-CN.md">隔离指南</a>、<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/_team_candidate_environment.py">候选环境保留机制</a>和<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/docker_isolation.py">Docker 池清理</a>。完整交付过程见 <a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a>。</p>
-
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/isolation/workspace-recovery.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<p class="category">已合并</p>
+<h1>这篇指南已合并</h1>
+<p>内容现在位于 <a href="../candidate-delivery/index.html#%E5%87%BA%E4%BA%86%E9%97%AE%E9%A2%98%E5%85%88%E6%89%BE%E5%9B%9E%E6%94%B9%E5%8A%A8%E5%86%8D%E6%B8%85%E7%90%86">隔离改动怎样回到项目：采纳、找回与清理</a>。浏览器没有自动跳转时，请点击这个链接。</p>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%AD%A5%E9%AA%A4%E4%B8%80%E6%89%BE%E5%88%B0%E6%94%B9%E5%8A%A8%E5%9C%A8%E5%93%AA">步骤一：找到改动在哪</a><a href="#%E6%AD%A5%E9%AA%A4%E4%BA%8C%E5%AF%BC%E5%87%BA">步骤二：导出</a><a href="#%E6%AD%A5%E9%AA%A4%E4%B8%89%E5%BA%94%E7%94%A8%E8%A1%A5%E4%B8%81">步骤三：应用补丁</a><a href="#%E6%AD%A5%E9%AA%A4%E5%9B%9B%E6%B8%85%E7%90%86%E6%AE%8B%E7%95%99%E8%B5%84%E6%BA%90">步骤四：清理残留资源</a><a href="#vm-%E6%96%AD%E7%BA%BF%E4%B8%8E%E7%A7%9F%E7%BA%A6%E6%81%A2%E5%A4%8D">VM 断线与租约恢复</a><a href="#%E6%83%85%E5%86%B5%E4%B8%80%E4%BD%A0%E7%9B%B4%E6%8E%A5%E7%94%A8-vmenvironmentssh-%E6%96%AD%E4%BA%86">情况一：你直接用 VMEnvironment，SSH 断了</a><a href="#%E6%83%85%E5%86%B5%E4%BA%8Cvm-%E6%B1%A0%E5%BD%92%E8%BF%98%E6%9C%BA%E5%99%A8%E6%97%B6%E5%A4%B1%E8%B4%A5">情况二：VM 池归还机器时失败</a><a href="#%E6%83%85%E5%86%B5%E4%B8%89%E6%8E%A7%E5%88%B6%E8%BF%9B%E7%A8%8B%E5%B7%B2%E7%BB%8F%E9%80%80%E5%87%BA">情况三：控制进程已经退出</a><a href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E7%9C%8B%E5%88%B0%E7%9A%84%E8%A1%A5%E4%B8%81%E4%B8%8D%E5%AE%8C%E6%95%B4">为什么看到的补丁不完整</a><a href="#%E8%BF%9B%E9%98%B6%E4%BF%9D%E7%95%99%E5%92%8C%E9%87%8A%E6%94%BE%E7%9A%84%E8%A7%84%E5%88%99">进阶：保留和释放的规则</a><a href="#%E8%BF%9B%E9%98%B6%E5%8F%96%E6%B6%88%E6%97%B6%E5%8F%91%E7%94%9F%E4%BA%86%E4%BB%80%E4%B9%88">进阶：取消时发生了什么</a><a href="#%E8%BF%9B%E9%98%B6%E8%B5%84%E6%BA%90%E5%BD%92%E8%B0%81">进阶：资源归谁</a><a href="#%E5%8F%82%E8%80%83">参考</a></aside>
 </div>
 </body>
 </html>

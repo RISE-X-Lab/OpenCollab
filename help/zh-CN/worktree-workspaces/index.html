@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>让多个任务在独立工作区改代码 · OpenCollab Wiki</title>
-<meta name="description" content="让几个任务同时改同一个项目而不互相踩到，并知道改动最后去了哪里。">
-<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/worktree-workspaces/index.html">
+<title>隔离：Agent 的文件和命令落在哪里 · OpenCollab Wiki</title>
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url=../isolation-overview/index.html#%E5%B7%A5%E4%BD%9C%E6%A0%91%E4%BB%8E%E5%93%AA%E4%B8%AA%E7%89%88%E6%9C%AC%E5%BC%80%E5%A7%8B%E6%94%B9%E5%8A%A8%E5%8E%BB%E4%BA%86%E5%93%AA%E9%87%8C">
+<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/isolation-overview/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-redirect="isolation-overview#工作树从哪个版本开始改动去了哪里">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -33,107 +34,13 @@
 </div></header>
 <div class="layout">
 <nav id="help-navigation" aria-label="帮助分类">
-<div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
-<p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details open><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="index.html" aria-current="page">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="../configuration-diagnostics/index.html">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<div class="nav-start"><a href="../index.html">Wiki 首页</a></div>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">执行环境与隔离</p>
-<h1 id="让多个任务在独立工作区改代码">让多个任务在独立工作区改代码</h1>
-<p><code>isolation=&quot;worktree&quot;</code> 让每个会话在自己的 Git worktree 里改代码，用于并行实现和候选比较。OC 的默认取舍：普通工作树从 <code>HEAD</code> 创建，要求源仓库干净；带 <code>adopt_agent</code> 的 Team 则从当前交付内容做快照；改动不会自动写回，要经过采纳。非 Git 目录会退化为目录副本。</p>
-<p>本文讲：手动创建工作树、起点是哪个版本、改动怎么交回来。</p>
-<h2 id="最小示例创建一个工作树">最小示例：创建一个工作树</h2>
-<p>在一个干净的 Git 项目或普通目录里运行：</p>
-<pre><code class="language-python">import asyncio
-from opencollab.environments import worktree_environment
-
-async def main():
-    environment = worktree_environment(&quot;.&quot;)   # 只创建对象，还没有建目录
-    try:
-        await environment.setup()             # 这一步才真正准备目录
-        print(environment.workspace)          # 工具实际使用的路径
-        result = await environment.exec_cmd(&quot;pwd&quot;)
-        print(result.returncode, result.stdout)
-    finally:
-        await environment.cleanup()           # 用完要自己清理
-
-asyncio.run(main())
-</code></pre>
-<p>要点：</p>
-<ol>
-<li><code>worktree_environment(&quot;.&quot;)</code> 只创建对象。</li>
-<li><code>setup()</code> 才准备目录。</li>
-<li><code>workspace</code> 是工具实际读写的路径。</li>
-<li>如果你从仓库的子目录启动，新工作树里也会停在同样的子目录。这样已有脚本里的相对路径还能用。</li>
-<li>这样单独创建的工作树由你自己管理。先导出需要的改动，再 <code>cleanup()</code>。</li>
-</ol>
-<h2 id="工作区从哪个版本开始">工作区从哪个版本开始</h2>
-<p>普通的工作树从 Git 提交创建，所以有两个要求：</p>
-<ul>
-<li>源仓库要有能解析的 <code>HEAD</code>。</li>
-<li>源仓库要是干净的，没有未提交的改动。</li>
-</ul>
-<p>如果不干净，会报错 <code>source workspace has uncommitted changes</code>，并列出相关文件。处理步骤：</p>
-<ol>
-<li>运行 <code>git status --short</code> 看看是哪些文件。</li>
-<li>按项目习惯提交这些修改，或者用 stash 先存起来。</li>
-<li>再次运行。</li>
-</ol>
-<p>当前运行自己生成的未跟踪产物目录不算在内。已跟踪文件的改动仍然会被检查。</p>
-<p>带采纳能力的 Team 不一样。如果 Team 声明了 <code>adopt_agent</code>，子任务会从“候选快照”开始。候选快照包含交付目录里当前的内容，包括你的修改和之前已经采纳的结果。审阅任务还可以直接以被审阅成员的真实环境为起点。</p>
-<p>简单记：</p>
-<table>
-<thead>
-<tr>
-<th>情况</th>
-<th>起点</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>普通 <code>worktree</code></td>
-<td>Git 提交</td>
-</tr>
-<tr>
-<td>带 <code>adopt_agent</code> 的 Team</td>
-<td>当前交付内容做成的候选快照</td>
-</tr>
-</tbody>
-</table>
-<h2 id="改动怎么交回来">改动怎么交回来</h2>
-<ul>
-<li>子成员的完成结果里可以带工作树的 diff。</li>
-<li>声明了采纳工具的入口成员，要显式采用成功的 Coder 的结果。</li>
-<li>采用之后再派一个新的 Tester，它才会从已经更新的交付内容开始检查。</li>
-</ul>
-<p>完整流程见 <a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a>。</p>
-<h2 id="进阶普通目录子模块和共享资源">进阶：普通目录、子模块和共享资源</h2>
-<p>如果源目录不是 Git 仓库，环境会复制一份独立副本，并用文件差异记录改动。</p>
-<p>如果是 Git 项目，还要注意：</p>
-<ul>
-<li>已初始化的子模块</li>
-<li>文件的可执行位</li>
-<li>实际写到磁盘上的内容</li>
-</ul>
-<p>候选准备会处理能用的源子模块，并检查实际文件内容能否重建。</p>
-<p>工作树只把文件编辑分开。进程和网络仍然和父环境一样，而且工作树位于父执行环境里：父任务在容器中，子工作树也在那个容器里执行。所以：</p>
-<ul>
-<li>两个任务在同一端口启动服务，仍可能冲突。</li>
-<li>共用同一个外部缓存，也可能互相影响。</li>
-</ul>
-<p>需要连进程都分开时，按 <a href="../isolation-overview/index.html">隔离怎么选</a> 选容器策略。</p>
-<h2 id="常见问题">常见问题</h2>
-<ul>
-<li>如果报 <code>source workspace has uncommitted changes</code>：见上面“工作区从哪个版本开始”的三个步骤。</li>
-<li>如果报子模块准备错误：确认源端子模块已经初始化到需要的状态，再看报错里指出的子模块路径。</li>
-<li>如果补丁捕获失败，或看到改动被保留的提示：先按 <a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a> 导出完整材料。</li>
-</ul>
-<h2 id="参考">参考</h2>
-<p>创建过程见<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/_env_worktree.py">工作树环境</a>和<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/adapters/worktree_pool.py">工作树池</a>。交付入口见 <a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a>。</p>
-
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/isolation/worktree-workspaces.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<p class="category">已合并</p>
+<h1>这篇指南已合并</h1>
+<p>内容现在位于 <a href="../isolation-overview/index.html#%E5%B7%A5%E4%BD%9C%E6%A0%91%E4%BB%8E%E5%93%AA%E4%B8%AA%E7%89%88%E6%9C%AC%E5%BC%80%E5%A7%8B%E6%94%B9%E5%8A%A8%E5%8E%BB%E4%BA%86%E5%93%AA%E9%87%8C">隔离：Agent 的文件和命令落在哪里</a>。浏览器没有自动跳转时，请点击这个链接。</p>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E7%A4%BA%E4%BE%8B%E5%88%9B%E5%BB%BA%E4%B8%80%E4%B8%AA%E5%B7%A5%E4%BD%9C%E6%A0%91">最小示例：创建一个工作树</a><a href="#%E5%B7%A5%E4%BD%9C%E5%8C%BA%E4%BB%8E%E5%93%AA%E4%B8%AA%E7%89%88%E6%9C%AC%E5%BC%80%E5%A7%8B">工作区从哪个版本开始</a><a href="#%E6%94%B9%E5%8A%A8%E6%80%8E%E4%B9%88%E4%BA%A4%E5%9B%9E%E6%9D%A5">改动怎么交回来</a><a href="#%E8%BF%9B%E9%98%B6%E6%99%AE%E9%80%9A%E7%9B%AE%E5%BD%95%E5%AD%90%E6%A8%A1%E5%9D%97%E5%92%8C%E5%85%B1%E4%BA%AB%E8%B5%84%E6%BA%90">进阶：普通目录、子模块和共享资源</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%8F%82%E8%80%83">参考</a></aside>
 </div>
 </body>
 </html>

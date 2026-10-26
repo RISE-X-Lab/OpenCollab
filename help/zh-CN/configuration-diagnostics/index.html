@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>检查生效配置与排查启动故障 · OpenCollab Wiki</title>
-<meta name="description" content="按报错阶段选检查入口：读客户端生效配置、离线查模型能力、检查团队和工作流加载、发一次真实请求测连接。">
-<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/configuration-diagnostics/index.html">
+<title>配置从哪来、哪个生效、出错怎么查 · OpenCollab Wiki</title>
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url=../configuration-precedence/index.html#%E5%90%AF%E5%8A%A8%E5%87%BA%E9%94%99%E6%8C%89%E9%98%B6%E6%AE%B5%E6%8E%92%E6%9F%A5">
+<link rel="canonical" href="https://rise-x-lab.github.io/OpenCollab/help/zh-CN/configuration-precedence/index.html">
 <link rel="icon" href="../../../fig/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&amp;family=Noto+Sans:wght@400;500;600;700&amp;family=Google+Sans+Code:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="../../assets/help.css?v=4">
-<script type="module" src="../../assets/help.mjs?v=4"></script>
+<link rel="stylesheet" href="../../assets/help.css?v=5">
+<script type="module" src="../../assets/help.mjs?v=5"></script>
 </head>
-<body class="help-article" data-search-index="../search-index.json?v=4">
+<body class="help-article" data-redirect="configuration-precedence#启动出错按阶段排查">
 <a class="skip" href="#content">跳到正文</a>
 <header class="topbar"><div class="topbar-inner">
 <a class="brand" href="../index.html"><img src="../../../fig/mark.svg" alt="" width="32" height="32"><span>OpenCollab<small>Wiki</small></span></a>
@@ -33,126 +34,13 @@
 </div></header>
 <div class="layout">
 <nav id="help-navigation" aria-label="帮助分类">
-<div class="nav-start"><a href="../index.html">Wiki 首页</a><a href="../reading-paths/index.html">阅读路径</a><a href="../questions/index.html">问题导航</a></div>
-<p class="nav-label">文档目录</p>
-<details><summary>认识 OC <small>2</small></summary><a href="../concepts-and-modes/index.html">先认识 Agent、Session、Team 和 Workflow</a><a href="../choose-working-mode/index.html">我该用默认 CLI、Base、Team 还是 Workflow</a></details><details><summary>安装与开始使用 <small>5</small></summary><a href="../install-source-checkout/index.html">安装 OpenCollab</a><a href="../first-run-workspace/index.html">在自己的项目中完成第一次运行</a><a href="../interactive-cli-controls/index.html">在终端里和 Agent 对话，以及命令参数该写在哪</a><a href="../python-sdk-entrypoints/index.html">从 Python 调用 OpenCollab</a><a href="../base-single2/index.html">使用 Base 单 Agent 与 Single2 配置</a></details><details><summary>模型接入与配置 <small>6</small></summary><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a><a href="../configuration-reference/index.html">配置参数与环境变量速查</a><a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a><a href="../model-routing-request-capacity/index.html">逻辑模型路由与共享请求容量</a><a href="../wire-protocol-streaming/index.html">选择调用协议与流式响应</a><a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a></details><details><summary>执行环境与隔离 <small>9</small></summary><a href="../isolation-overview/index.html">隔离怎么选</a><a href="../isolation-configuration/index.html">默认隔离与单次覆盖怎么配</a><a href="../worktree-workspaces/index.html">让多个任务在独立工作区改代码</a><a href="../docker-isolation/index.html">在容器中运行任务</a><a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a><a href="../execution-environments/index.html">让任务在指定目录、容器或 VM 中执行</a><a href="../custom-environment-providers/index.html">接入自己的执行环境</a><a href="../candidate-delivery/index.html">把候选结果采纳到交付目录</a><a href="../workspace-recovery/index.html">找回隔离任务的改动并清理资源</a></details><details><summary>Team 与子 Agent <small>5</small></summary><a href="../configure-team/index.html">Team 入门：配置你的多 Agent 团队</a><a href="../dispatch-team-agents/index.html">派发 Agent 任务并安排审阅</a><a href="../message-team-agents/index.html">向队友发消息并继续协作</a><a href="../wait-for-team-results/index.html">等待队友结果并读懂团队状态</a><a href="../adopt-team-changes/index.html">采用队友改动并验证交付</a></details><details><summary>Workflow 与子 Workflow <small>18</small></summary><a href="../run-registered-workflow/index.html">运行一个工作流（Workflow）</a><a href="../workflow-programming-model/index.html">工作流就是普通 Python：编程模型入门</a><a href="../workflow-capabilities-boundaries/index.html">工作流能做什么、不能做什么</a><a href="../author-custom-workflow/index.html">编写第一个自定义 Workflow</a><a href="../workflow-public-api-map/index.html">Workflow 公开 API 速查</a><a href="../workflow-control-granularity/index.html">在哪一层调整 Workflow：从 CLI 参数到单次调用回调</a><a href="../workflow-dataflow-structured-io/index.html">Workflow 里的数据怎么传：输入、步骤结果、文件与输出</a><a href="../workflow-agent-calls/index.html">在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run</a><a href="../workflow-parallel-pipeline/index.html">在 Workflow 中并行处理多项任务</a><a href="../workflow-composition-hierarchy/index.html">Agent、Team 和 Workflow 怎么互相调用</a><a href="../compose-workflow-candidates/index.html">复用子 Workflow，并在候选环境里试改动</a><a href="../workflow-failure-recovery-lifecycle/index.html">Workflow 出错了：失败、重试与恢复</a><a href="../workflow-testing-debugging/index.html">测试和调试你写的 Workflow</a><a href="../team-run-workflow/index.html">让 Team 成员调用已注册的 Workflow</a><a href="../member-authored-workflow/index.html">让成员自己写并运行子 Workflow</a><a href="../duo-workflow/index.html">用 Duo 跑两个候选方案并选出一个</a><a href="../weave-workflow/index.html">用 Weave 分组接力完成任务并检查交付</a><a href="../reconstruct-workflow/index.html">用 Reconstruct 从输入输出反推程序</a></details><details open><summary>预算、上下文与运行恢复 <small>6</small></summary><a href="../context-compaction/index.html">上下文窗口与自动压缩</a><a href="../token-step-concurrency-limits/index.html">设置 token 预算、步数与运行并发</a><a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a><a href="../session-save-resume/index.html">保存会话与恢复历史</a><a href="../cancellation-cleanup/index.html">停止任务并确认清理完成</a><a href="index.html" aria-current="page">检查生效配置与排查启动故障</a></details><details><summary>工具、Skill 与扩展 <small>6</small></summary><a href="../tool-selection/index.html">选择 Agent 能使用的工具</a><a href="../custom-tools/index.html">把自己的函数接成工具</a><a href="../skills-on-demand/index.html">使用与编写 Skill</a><a href="../team-hooks/index.html">在工具执行和生命周期中加入 Hook</a><a href="../file-editing-safe-workspace/index.html">安全地查找读取和修改文件</a><a href="../shell-permissions-execution/index.html">管理终端权限并确认命令结果</a></details><details><summary>结果、轨迹与评测 <small>7</small></summary><a href="../run-results/index.html">读取运行结果与判断任务是否完成</a><a href="../artifacts-and-history/index.html">找到运行记录、会话和交付文件</a><a href="../trace-and-events/index.html">查看 Agent 做了什么</a><a href="../token-cache-cost/index.html">统计 token、缓存命中和费用</a><a href="../native-test-evidence/index.html">用实际测试验证 Agent 的交付</a><a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a><a href="../evaluation-boundary/index.html">用 OCE 评测 OC 的 Agent、Team 和 Workflow</a></details><details><summary>架构、集成与维护 <small>6</small></summary><a href="../runtime-execution-model/index.html">一次任务是怎么跑起来的</a><a href="../session-state-lifecycle/index.html">Session 怎样保存进度和继续执行</a><a href="../extension-and-evaluation-boundaries/index.html">OpenCollab 管什么，我的需求该从哪里扩展</a><a href="../service-integration-lifecycle/index.html">把 OpenCollab 接进自己的服务</a><a href="../upgrade-existing-integration/index.html">升级 OpenCollab 后怎样迁移和验证</a><a href="../report-problem-and-request-help/index.html">遇到问题怎么反馈、求助或提建议</a></details>
+<div class="nav-start"><a href="../index.html">Wiki 首页</a></div>
 </nav>
 <main id="content" tabindex="-1">
-<p class="category">预算、上下文与运行恢复</p>
-<h1 id="检查生效配置与排查启动故障">检查生效配置与排查启动故障</h1>
-<p>这篇是 OC 启动失败时的排错索引。先看错误出在哪个阶段，再用对应的本地检查入口：读客户端生效配置、离线查模型能力表、检查团队和工作流加载、最后才发一次真实请求测连接。执行开始之后的问题，看 <code>RunResult.reason</code>、子 Agent 故障记录和轨迹。</p>
-<h2 id="按症状找入口">按症状找入口</h2>
-<table>
-<thead>
-<tr>
-<th>症状</th>
-<th>先做什么</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>Cannot load configuration</code> 或参数没生效</td>
-<td><a href="#%E5%85%88%E8%AF%BB%E5%8F%96%E5%AE%A2%E6%88%B7%E7%AB%AF%E7%94%9F%E6%95%88%E8%AE%BE%E7%BD%AE">读取客户端生效配置</a>，再看<a href="#%E5%A4%84%E7%90%86%E5%B8%B8%E8%A7%81%E6%A0%BC%E5%BC%8F%E4%B8%8E%E5%85%A5%E5%8F%A3%E9%94%99%E8%AF%AF">格式错误</a></td>
-</tr>
-<tr>
-<td>根选项位置错误</td>
-<td>把模型、预算选项放到 <code>workflow run NAME</code> 后面</td>
-</tr>
-<tr>
-<td><code>unknown workflow</code></td>
-<td>用同一工作区执行 <code>workflow list</code>，核对 <code>OPENCOLLAB_WORKFLOWS_DIR</code></td>
-</tr>
-<tr>
-<td>模型不支持、<code>context length exceeded</code>、限流</td>
-<td><a href="#%E7%A6%BB%E7%BA%BF%E6%9F%A5%E7%9C%8B%E6%A8%A1%E5%9E%8B%E5%92%8C%E8%A7%92%E8%89%B2%E8%83%BD%E5%8A%9B">离线查看模型能力</a></td>
-</tr>
-<tr>
-<td>配置看起来都对但请求失败</td>
-<td><a href="#%E6%98%BE%E5%BC%8F%E6%89%A7%E8%A1%8C%E4%B8%80%E6%AC%A1%E8%BF%9E%E6%8E%A5%E6%A3%80%E6%9F%A5">显式执行一次连接检查</a></td>
-</tr>
-<tr>
-<td>运行中途失败</td>
-<td><a href="#%E4%BF%9D%E7%95%99%E6%95%85%E9%9A%9C%E8%AE%B0%E5%BD%95">保留故障记录</a></td>
-</tr>
-</tbody>
-</table>
-<h2 id="先读取客户端生效设置">先读取客户端生效设置</h2>
-<p>构造 <code>OpenCollab</code> 客户端时会合并工作区、进程环境变量、env 文件和显式覆盖。下面的程序只查询本地配置，不发请求，适合确认修改是否进入了新客户端。</p>
-<pre><code class="language-python">from opencollab import OpenCollab
-
-client = OpenCollab(&quot;.&quot;)
-settings = client.configuration  # 只读、已筛选的元数据
-for key in (
-    &quot;provider&quot;, &quot;model&quot;, &quot;wire_protocol&quot;, &quot;context_window&quot;,
-    &quot;llm_timeout&quot;, &quot;llm_max_retries&quot;, &quot;provider_error_time_budget&quot;,
-):
-    print(key, settings.get(key))
-</code></pre>
-<ul>
-<li><code>configuration</code> 不含凭据。端点用 <code>base_url_sha256</code> 标识。嵌套值与内部配置隔离。</li>
-<li>改了文件但值没变，依次检查：进程里是否有同名环境变量、工作区搜索顺序、客户端是否还是修改前构造的旧实例。</li>
-</ul>
-<h2 id="离线查看模型和角色能力">离线查看模型和角色能力</h2>
-<p><code>inspect_model_runtime</code> 查询已安装版本的本地能力表，不发请求。它还能把错误样例交给现有分类器，看 OC 会把某条报错归为上下文溢出还是可重试错误。下面脚本输出窗口、历史阈值、错误分类和 Base profile 的默认工具。</p>
-<pre><code class="language-python">from opencollab.models import inspect_model_runtime
-from opencollab.tools import profile_tool_names
-
-settings = inspect_model_runtime(
-    &quot;gpt-4o&quot;,  # 换成你的物理模型名
-    overflow_samples=[{
-        &quot;label&quot;: &quot;context&quot;,
-        &quot;message&quot;: &quot;context length exceeded&quot;,
-        &quot;status&quot;: 400,
-    }],
-    retry_samples=[{
-        &quot;label&quot;: &quot;concurrency&quot;,
-        &quot;class_name&quot;: &quot;APIError&quot;,
-        &quot;message&quot;: &quot;Concurrency limit exceeded for user&quot;,
-    }],
-)
-print(settings[&quot;capabilities&quot;])
-print(settings[&quot;history&quot;])
-print(settings[&quot;overflow&quot;])
-print(settings[&quot;retry&quot;])
-print(profile_tool_names(&quot;base&quot;))
-</code></pre>
-<p>能力字段描述的是安装版本的默认值。显式设置的窗口和本次 reasoning 配置仍以客户端 <code>configuration</code> 为准。实际运行时用到的工具从 <code>metrics[&quot;agent_tool_names&quot;]</code> 核对。</p>
-<p>团队角色、关系和工作流可以先用本地命令检查。工作流列表按工作区目录加载调用方模块，名字冲突会报错。</p>
-<pre><code class="language-bash">opencollab team show --team-config team.yaml
-opencollab workflow list --workspace /path/to/application
-opencollab workflow run duo --help
-</code></pre>
-<p>在自己的 Python 程序里读团队声明，用 <code>opencollab.teams</code>。公开查询函数按团队加载规则返回角色名、声明工具、profile、角色额度和上下文策略，入口角色排第一。配置编辑器可以用它展示待运行的团队。实际运行后，再从成员记录确认工具过滤和交接行为，完整示例见<a href="../collaboration-adherence/index.html">检查团队是否真的按分工协作</a>。</p>
-<h2 id="处理常见格式与入口错误">处理常见格式与入口错误</h2>
-<ul>
-<li>SDK <code>config</code> 用小写字段名，未知字段直接拒绝。</li>
-<li>团队 YAML 按 schema 检查，字段拼错就改正。</li>
-<li><code>thinking_params</code> 和 CLI <code>--args</code> 必须是 JSON 对象。数组和残缺 JSON 会失败。</li>
-<li>预算是正整数，超时是有限正数。</li>
-<li>空凭据、空地址都当作未设置。</li>
-<li>模型和预算选项属于具体运行入口。<code>workflow run NAME --workspace PATH --model MODEL</code> 是正确位置。把它们放在 <code>workflow</code> 前面会触发根选项位置错误。</li>
-<li>工作流名称未知时，先用相同工作区执行 <code>workflow list</code>，再核对 <code>OPENCOLLAB_WORKFLOWS_DIR</code>。</li>
-</ul>
-<h2 id="显式执行一次连接检查">显式执行一次连接检查</h2>
-<p>端点和凭据都准备好后，用源码里的 <code>scripts/check_dashscope.py</code> 按常规配置发一次真实 completion。脚本名来自最初用途，实际走的是当前选中的 provider。在 OpenCollab 源码根目录执行，<code>--workspace</code> 指向要读取配置的项目：</p>
-<pre><code class="language-bash">uv run python scripts/check_dashscope.py --workspace /path/to/application
-</code></pre>
-<p>它会打印服务返回的一段文本，结束时关闭客户端。注意这一步会产生真实请求和用量，前面的离线能力查询只读本地元数据。</p>
-<h2 id="保留故障记录">保留故障记录</h2>
-<p>运行结束后保留 <code>status</code>、<code>reason</code>、<code>metrics</code> 和产物路径。</p>
-<ul>
-<li><code>agent_failures</code>：已脱敏的子 provider 故障类型、HTTP 状态等。</li>
-<li><code>exception_chain</code>：类型、模块、整数 errno 和状态码，适合定位嵌套异常或 OS 故障。</li>
-</ul>
-<p>用同一个 <code>run_id</code> 关联会话、manifest 和轨迹，再检查对应的模型调用和清理记录。</p>
-<h2 id="来源">来源</h2>
-<p><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/docs/model-inspection.md#L1">docs/model-inspection.md</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/opencollab/sdk/client.py#L156">opencollab/sdk/client.py</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/scripts/check_dashscope.py#L24">scripts/check_dashscope.py</a>　<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/e7946a42be378e0bf6dc02e24f9ded9752ce2a41/configs/README.md#L367">configs/README.md</a></p>
-<h2 id="相关指南">相关指南</h2>
-<p><a href="../configuration-precedence/index.html">配置从哪里读取以及哪一项生效</a>　<a href="../provider-endpoint-credentials/index.html">接入模型端点与认证凭据</a>　<a href="../thinking-reasoning-sampling/index.html">配置深度思考与采样参数</a>　<a href="../timeouts-retries/index.html">超时、重试与请求卡住诊断</a>　<a href="../trace-and-events/index.html">查看 Agent 做了什么</a>　<a href="../run-results/index.html">读取运行结果与判断任务是否完成</a></p>
-
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/operations/configuration-diagnostics.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<p class="category">已合并</p>
+<h1>这篇指南已合并</h1>
+<p>内容现在位于 <a href="../configuration-precedence/index.html#%E5%90%AF%E5%8A%A8%E5%87%BA%E9%94%99%E6%8C%89%E9%98%B6%E6%AE%B5%E6%8E%92%E6%9F%A5">配置从哪来、哪个生效、出错怎么查</a>。浏览器没有自动跳转时，请点击这个链接。</p>
 </main>
-<aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%8C%89%E7%97%87%E7%8A%B6%E6%89%BE%E5%85%A5%E5%8F%A3">按症状找入口</a><a href="#%E5%85%88%E8%AF%BB%E5%8F%96%E5%AE%A2%E6%88%B7%E7%AB%AF%E7%94%9F%E6%95%88%E8%AE%BE%E7%BD%AE">先读取客户端生效设置</a><a href="#%E7%A6%BB%E7%BA%BF%E6%9F%A5%E7%9C%8B%E6%A8%A1%E5%9E%8B%E5%92%8C%E8%A7%92%E8%89%B2%E8%83%BD%E5%8A%9B">离线查看模型和角色能力</a><a href="#%E5%A4%84%E7%90%86%E5%B8%B8%E8%A7%81%E6%A0%BC%E5%BC%8F%E4%B8%8E%E5%85%A5%E5%8F%A3%E9%94%99%E8%AF%AF">处理常见格式与入口错误</a><a href="#%E6%98%BE%E5%BC%8F%E6%89%A7%E8%A1%8C%E4%B8%80%E6%AC%A1%E8%BF%9E%E6%8E%A5%E6%A3%80%E6%9F%A5">显式执行一次连接检查</a><a href="#%E4%BF%9D%E7%95%99%E6%95%85%E9%9A%9C%E8%AE%B0%E5%BD%95">保留故障记录</a><a href="#%E6%9D%A5%E6%BA%90">来源</a><a href="#%E7%9B%B8%E5%85%B3%E6%8C%87%E5%8D%97">相关指南</a></aside>
 </div>
 </body>
 </html>

@@ -1,53 +1,53 @@
 # 阅读路径
 
-[Wiki](index.md) · [返回项目站主页](https://rise-x-lab.github.io/OpenCollab/) · [GitHub 源码](https://github.com/RISE-X-Lab/OpenCollab)
+[Wiki](index.md) · [问题导航](questions.md) · [返回项目站主页](https://rise-x-lab.github.io/OpenCollab/) · [GitHub 源码](https://github.com/RISE-X-Lab/OpenCollab)
 
-下面每条路径是一组按顺序排好的指南，适合想系统学习某个主题的人。从左往右读，已经会的可以跳过。
+下面每条路径是一组按顺序排好的指南，适合想系统学一个主题的人。每条路径都从“为什么”讲到“怎么做”，再到“怎么确认做对了”。从左往右读，已经会的可以跳过。
 
-## 刚接触 OC
+## 第一次用 OC
 
-从零开始：了解概念，装好，跑通第一个任务，看懂结果。
+建立整体图，装好，跑通第一个任务，看懂结果。
 
-[先认识 Agent、Session、Team 和 Workflow](topics/orientation/concepts-and-modes.md) → [我该用默认 CLI、Base、Team 还是 Workflow](topics/orientation/choose-working-mode.md) → [安装 OpenCollab](topics/setup/install-source-checkout.md) → [在自己的项目中完成第一次运行](topics/setup/first-run-workspace.md) → [在终端里和 Agent 对话，以及命令参数该写在哪](topics/setup/interactive-cli-controls.md) → [读取运行结果与判断任务是否完成](topics/observability/run-results.md)
+[OC 是什么](topics/orientation/concepts-and-modes.md) → [安装并完成第一次运行](topics/setup/first-run-workspace.md) → [在终端里使用 OC](topics/setup/interactive-cli-controls.md) → [从 Python 调用 OC](topics/setup/python-sdk-entrypoints.md) → [判断任务是否真的完成](topics/observability/run-results.md)
 
-## 设计新的 Workflow
+## 组建一个 Team
 
-想用 Python 写自己的协作流程。
+让几个 Agent 按角色分工：先写团队文件，再掌握协作循环，最后检查它们是否真的按分工干活。
 
-[工作流就是普通 Python：编程模型入门](topics/workflow/workflow-programming-model.md) → [工作流能做什么、不能做什么](topics/workflow/workflow-capabilities-boundaries.md) → [编写第一个自定义 Workflow](topics/workflow/author-custom-workflow.md) → [Workflow 公开 API 速查](topics/workflow/workflow-public-api-map.md) → [Workflow 里的数据怎么传：输入、步骤结果、文件与输出](topics/workflow/workflow-dataflow-structured-io.md) → [在 Workflow 中调用 Agent：ctx.agent 与 ctx.agent_run](topics/workflow/workflow-agent-calls.md) → [在 Workflow 中并行处理多项任务](topics/workflow/workflow-parallel-pipeline.md) → [Agent、Team 和 Workflow 怎么互相调用](topics/workflow/workflow-composition-hierarchy.md) → [复用子 Workflow，并在候选环境里试改动](topics/workflow/compose-workflow-candidates.md) → [Workflow 出错了：失败、重试与恢复](topics/workflow/workflow-failure-recovery-lifecycle.md) → [测试和调试你写的 Workflow](topics/workflow/workflow-testing-debugging.md)
+[Team 入门](topics/team/configure-team.md) → [Team 协作：派发、消息、等待与采纳](topics/team/dispatch-team-agents.md) → [隔离：Agent 的文件和命令落在哪里](topics/isolation/isolation-overview.md) → [让 Team 成员运行 Workflow](topics/workflow/team-run-workflow.md) → [检查团队是否真的按分工协作](topics/observability/collaboration-adherence.md)
 
-## 建立团队并派发任务
+## 编写自己的 Workflow
 
-想让多个 Agent 分工合作。
+用 Python 写协作流程：先理解编程模型，再学调用 Agent 和组合，最后学处理失败和测试。
 
-[Team 入门：配置你的多 Agent 团队](topics/team/configure-team.md) → [派发 Agent 任务并安排审阅](topics/team/dispatch-team-agents.md) → [向队友发消息并继续协作](topics/team/message-team-agents.md) → [等待队友结果并读懂团队状态](topics/team/wait-for-team-results.md) → [采用队友改动并验证交付](topics/team/adopt-team-changes.md) → [让 Team 成员调用已注册的 Workflow](topics/workflow/team-run-workflow.md) → [让成员自己写并运行子 Workflow](topics/workflow/member-authored-workflow.md)
+[编写 Workflow](topics/workflow/workflow-programming-model.md) → [在 Workflow 里调用 Agent](topics/workflow/workflow-agent-calls.md) → [组合与嵌套](topics/workflow/workflow-composition-hierarchy.md) → [失败处理、测试与调试](topics/workflow/workflow-failure-recovery-lifecycle.md) → [Workflow API 速查](topics/workflow/workflow-public-api-map.md) → [Duo](topics/workflow/duo-workflow.md)（一个现成的完整例子）
 
-## 理解与配置隔离
+## 让 Agent 安全地改代码、跑命令
 
-想让 Agent 在独立目录或容器里干活。
+决定 Agent 能做什么、在哪里做，以及改动怎样安全地回到项目。
 
-[隔离怎么选](topics/isolation/isolation-overview.md) → [默认隔离与单次覆盖怎么配](topics/isolation/isolation-configuration.md) → [让多个任务在独立工作区改代码](topics/isolation/worktree-workspaces.md) → [在容器中运行任务](topics/isolation/docker-isolation.md) → [在现有 Linux VM 中运行任务](topics/isolation/vm-environment-extension.md) → [让任务在指定目录或现有容器里执行](topics/isolation/execution-environments.md) → [把候选结果采纳到交付目录](topics/isolation/candidate-delivery.md) → [找回隔离任务的改动并清理资源](topics/isolation/workspace-recovery.md)
+[内置工具](topics/extensions/tool-selection.md) → [隔离](topics/isolation/isolation-overview.md) → [在容器中运行任务](topics/isolation/docker-isolation.md) → [在现有 Linux VM 中运行任务](topics/isolation/vm-environment-extension.md) → [隔离改动怎样回到项目](topics/isolation/candidate-delivery.md)
 
-## 配置模型与运行参数
+## 接入模型和调好配置
 
-想接入自己的模型服务，或者搞清楚某个配置为什么没生效。
+让 OC 连上你的模型服务，或者搞清楚某个配置为什么没生效。
 
-[配置从哪里读取以及哪一项生效](topics/models/configuration-precedence.md) → [配置参数与环境变量速查](topics/models/configuration-reference.md) → [接入模型端点与认证凭据](topics/models/provider-endpoint-credentials.md) → [选择调用协议与流式响应](topics/models/wire-protocol-streaming.md) → [配置深度思考与采样参数](topics/models/thinking-reasoning-sampling.md) → [检查生效配置与排查启动故障](topics/operations/configuration-diagnostics.md)
+[接入模型服务](topics/models/provider-endpoint-credentials.md) → [配置从哪来、哪个生效、出错怎么查](topics/models/configuration-precedence.md) → [深度思考与采样](topics/models/thinking-reasoning-sampling.md) → [模型路由与共享请求容量](topics/models/model-routing-request-capacity.md) → [配置参数速查](topics/models/configuration-reference.md)
 
-## 接入自己的应用服务
+## 把 OC 接进自己的服务
 
-想在自己的 Python 程序或后台服务里调用 OC。
+在自己的 Python 程序或后台服务里调用 OC，并管好额度、停止和记录。
 
-[从 Python 调用 OpenCollab](topics/setup/python-sdk-entrypoints.md) → [接入模型端点与认证凭据](topics/models/provider-endpoint-credentials.md) → [逻辑模型路由与共享请求容量](topics/models/model-routing-request-capacity.md) → [把 OpenCollab 接进自己的服务](topics/architecture/service-integration-lifecycle.md) → [停止任务并确认清理完成](topics/operations/cancellation-cleanup.md) → [查看 Agent 做了什么](topics/observability/trace-and-events.md) → [找到运行记录、会话和交付文件](topics/observability/artifacts-and-history.md)
+[从 Python 调用 OC](topics/setup/python-sdk-entrypoints.md) → [把 OC 接进自己的服务](topics/architecture/service-integration-lifecycle.md) → [预算、步数与并发](topics/operations/token-step-concurrency-limits.md) → [运行怎样停下](topics/operations/timeouts-retries.md) → [运行记录](topics/observability/artifacts-and-history.md) → [用量与费用](topics/observability/token-cache-cost.md)
 
-## 理解原理与架构
+## 让每个成员在自己的 VM 里编写并运行子 Workflow
 
-想知道 OC 内部是怎么运转的。
+让 Team 成员现场写一段 Workflow 代码，在自己的 VM 里并行调用多个 Agent，再把结论交回团队。先选好成员在哪执行，再准备 VM，然后学写子 Workflow；多个子运行同时请求模型时，用共享请求容量控制额度；最后用团队消息把结论发给队友。
 
-[一次任务是怎么跑起来的](topics/architecture/runtime-execution-model.md) → [Session 怎样保存进度和继续执行](topics/architecture/session-state-lifecycle.md) → [工作流就是普通 Python：编程模型入门](topics/workflow/workflow-programming-model.md) → [工作流能做什么、不能做什么](topics/workflow/workflow-capabilities-boundaries.md) → [隔离怎么选](topics/isolation/isolation-overview.md) → [OpenCollab 管什么，我的需求该从哪里扩展](topics/architecture/extension-and-evaluation-boundaries.md) → [检查团队是否真的按分工协作](topics/observability/collaboration-adherence.md) → [用实际测试验证 Agent 的交付](topics/observability/native-test-evidence.md)
+[隔离](topics/isolation/isolation-overview.md) → [在现有 Linux VM 中运行任务](topics/isolation/vm-environment-extension.md) → [manage_workflow 让成员自己写子 Workflow](topics/workflow/team-run-workflow.md#方式二manage_workflow-让成员自己写子-workflow) → [模型路由与共享请求容量](topics/models/model-routing-request-capacity.md) → [和已有成员沟通](topics/team/dispatch-team-agents.md#第二步和已有成员沟通)
 
-## 让每个成员编写并运行自己的子 Workflow
+## 理解 OC 的内部原理
 
-想让 Team 成员现场写一段 Workflow 代码，在自己的执行环境里并行调用多个 Agent，再把结论交回团队。先选好成员在哪执行，再准备 VM，然后学写子 Workflow。多个子运行同时请求模型时，用共享请求容量控制额度。最后用团队消息把结论发给队友。
+想知道 OC 内部是怎么运转的，以及它的边界在哪里。
 
-[隔离怎么选](topics/isolation/isolation-overview.md) → [在现有 Linux VM 中运行任务](topics/isolation/vm-environment-extension.md) → [让成员自己写并运行子 Workflow](topics/workflow/member-authored-workflow.md) → [逻辑模型路由与共享请求容量](topics/models/model-routing-request-capacity.md) → [向队友发消息并继续协作](topics/team/message-team-agents.md)
+[原理：一次运行在内部怎样推进](topics/architecture/runtime-execution-model.md) → [保存与恢复会话](topics/operations/session-save-resume.md) → [上下文窗口与自动压缩](topics/operations/context-compaction.md) → [隔离](topics/isolation/isolation-overview.md) → [OC 的边界](topics/architecture/extension-and-evaluation-boundaries.md)
