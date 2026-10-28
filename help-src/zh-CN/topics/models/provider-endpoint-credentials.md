@@ -61,7 +61,7 @@
     "model-routing-request-capacity",
     "timeouts-retries"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -202,5 +202,5 @@ OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT=180
 
 ## 延伸阅读
 
-- 源码依据：[configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md) · [opencollab/bootstrap/config.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/config.py) · [opencollab/adapters/cli/main.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/main.py) · [docs/model-routing.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/model-routing.md) · [docs/model-inspection.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/model-inspection.md) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md)
+- 源码依据：[configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/README.md) · [opencollab/bootstrap/config.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/config.py) · [opencollab/adapters/cli/main.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/main.py) · [docs/model-routing.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/model-routing.md) · [docs/model-inspection.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/model-inspection.md) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md)
 - 相关指南：[配置从哪来、哪个生效](configuration-precedence.md) · [深度思考与采样](thinking-reasoning-sampling.md) · [模型路由与共享请求容量](model-routing-request-capacity.md) · [运行怎样停下](../operations/timeouts-retries.md)

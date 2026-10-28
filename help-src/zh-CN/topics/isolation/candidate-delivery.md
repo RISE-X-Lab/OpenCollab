@@ -52,7 +52,7 @@
     "vm-environment-extension",
     "timeouts-retries"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -213,5 +213,5 @@ sqlite3 /home/controller/oc-state/vm-leases.sqlite3 \
 
 ## 延伸阅读
 
-- 源码依据：[隔离指南](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/session-isolation.zh-CN.md) · [Workflow 候选实现](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_candidates.py) · [调度器采纳逻辑](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/_scheduler_team.py) · [候选环境保留机制](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/_team_candidate_environment.py) · [Docker 池清理](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/docker_isolation.py)
+- 源码依据：[隔离指南](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/session-isolation.zh-CN.md) · [Workflow 候选实现](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow_candidates.py) · [调度器采纳逻辑](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/_scheduler_team.py) · [候选环境保留机制](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/_team_candidate_environment.py) · [Docker 池清理](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/docker_isolation.py)
 - 相关指南：[隔离](isolation-overview.md) · [Team 协作](../team/dispatch-team-agents.md) · [组合与嵌套](../workflow/workflow-composition-hierarchy.md) · [运行怎样停下](../operations/timeouts-retries.md)

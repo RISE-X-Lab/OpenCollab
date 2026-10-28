@@ -156,11 +156,19 @@ asyncio.run(main())
 <h3 id="检查命令怎么写">检查命令怎么写</h3>
 <p><code>check_commands</code> 的每一项可以是：</p>
 <ul>
-<li>一个测试命令字符串。原生能识别 pytest、Go 和 Django 的测试结果。</li>
-<li>一个含 <code>command</code> 和 <code>expected_output</code> 的对象。按输出子串匹配，同时要求退出码为零、执行完成、输出完整捕获。建议像示例那样把断言放在成功标记之前打印。</li>
+<li>一个测试命令字符串。原生能识别 pytest、Go 和 Django 的测试结果。识别出的 pytest 命令执行时会自动加上 <code>-rA</code>，保留每个执行过的测试项。报告里的 <code>command</code> 保持原样，实际执行的命令记在 <code>executed_command</code>。</li>
+<li>一个含 <code>command</code> 和 <code>expected_output</code> 的对象。按输出子串匹配，同时要求退出码为零、执行完成、输出完整捕获。期望的文字必须由被检查的程序输出：它直接写在 <code>echo</code>、<code>printf</code> 等打印命令的参数里，或者来自 <code>python -c</code>、<code>node -e</code>、<code>perl -e</code> 这类单行脚本时，检查不算通过（<code>expected output is supplied by a static printer</code>）。pytest 命令即使写了 <code>expected_output</code>，也要有每个测试目标的执行记录。建议像示例那样把断言写进脚本文件，放在成功标记之前打印。</li>
 </ul>
-<p>以下情况结果是“未验证”，不算通过：检查为空、命令只显示了帮助、只收集了测试没有执行、普通命令缺少可解析的测试证据。Weave 要求检查同时满足 <code>ok</code> 和 <code>executed</code>，<code>delivery_ok</code> 反映最终执行的检查是否通过。</p>
-<p>默认的命令适配器在每次组检查和最终检查时，都会执行列出的全部命令。自定义适配器可以用传入的 <code>targets</code> 缩小验证范围。</p>
+<p>以下情况结果是“未验证”，不算通过：检查为空、命令只显示了帮助、只收集了测试没有执行、普通命令缺少可解析的测试证据。</p>
+<p>下面这些写法 Weave 不会执行，也记为未验证：</p>
+<ul>
+<li>用 <code>;</code>、<code>|</code>、后台 <code>&amp;</code>、括号、花括号、<code>$(...)</code>、反引号或 <code>&lt;&lt;&lt;</code> 组合的命令，以及写成多行的命令。多条命令只能用 <code>&amp;&amp;</code> 连接。</li>
+<li>只由 <code>echo</code>、<code>printf</code>、<code>test</code>、<code>true</code>、<code>awk</code>、<code>sed</code>、<code>jq</code> 这类命令组成的检查。</li>
+<li>真正的程序藏在 <code>timeout</code>、<code>nice</code>、<code>sudo</code>、<code>xargs</code>、<code>eval</code>、<code>bash -c</code> 等包装后面的检查。</li>
+</ul>
+<p>需要复杂的 shell 逻辑时，写成脚本文件，用 <code>bash check.sh</code> 运行，或者接入自己的适配器。</p>
+<p>Weave 要求检查同时满足 <code>ok</code> 和 <code>executed</code>，<code>delivery_ok</code> 反映最终执行的检查是否通过。</p>
+<p>默认的命令适配器在每次组检查和最终检查时，都会检查列出的全部命令，上面不支持的写法不会执行。自定义适配器可以用传入的 <code>targets</code> 缩小验证范围。</p>
 <h3 id="修复轮数">修复轮数</h3>
 <table>
 <thead>
@@ -379,8 +387,13 @@ asyncio.run(main())
 </tbody>
 </table>
 <h2 id="中断后继续">中断后继续</h2>
-<p>Weave 能从显式的状态快照继续，前提是：同一个工作区、相同的组定义、复用原来的 <code>run_id</code>。继续的方式有两种：把快照作为 JSON 输入 <code>state</code> 传入；或者构造 <code>WeaveState(saved_snapshot)</code> 传给 <code>run_weave</code>，并在 SDK 里复用保存的 <code>run_id</code>。</p>
+<p>Weave 能从显式的状态快照继续，前提是：同一个工作区、相同的组定义、复用原来的 <code>run_id</code>。继续的方式有两种：把快照作为 JSON 输入 <code>state</code> 传入，同时沿用快照里的 <code>run_id</code>（SDK 写 <code>run_id=...</code>，CLI 写 <code>--run-id RUN_ID</code>）；或者构造 <code>WeaveState(saved_snapshot)</code> 传给 <code>run_weave</code>，并在 SDK 里复用保存的 <code>run_id</code>。</p>
 <p>继续时：已经生成的组从检查那一步继续；已经检查过的组保留生成结果；已用掉的修复轮数继续累计。</p>
+<p>命令行继续时，上次运行输出里的 <code>state</code> 就是快照，<code>state.run_id</code> 是原来的运行标识。把 <code>state</code> 加进原来的 <code>flow.json</code>，再运行：</p>
+<pre><code class="language-bash">opencollab workflow run weave --workspace /path/to/workspace \
+  --args &quot;$(cat flow.json)&quot; --run-id RUN_ID
+</code></pre>
+<p><code>--run-id</code> 和快照不一致，或者组定义变了，运行会直接失败，报 <code>continuation requires</code> 开头的错误，不会重跑检查。</p>
 <p>下面的包装流程沿用原生命令检查，把状态写到调用方指定的宿主文件。<code>launch</code> 接受和前面示例相同的 <code>groups</code> 与 <code>check_commands</code>；再次传入同一个检查点时，会恢复原来的 <code>run_id</code>。</p>
 <pre><code class="language-python">import json
 from pathlib import Path
@@ -420,11 +433,11 @@ async def launch(workspace, checkpoint, groups, check_commands):
 <p>检查点的父目录要事先存在。恢复时会用原工作区里已经生成的文件。</p>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/weave.md">docs/weave.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/builtin_workflows/weave.py">WeaveConfig 与 WeaveAdapter</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/builtin_workflows/_weave_execution.py">命令检查实现</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/weave.md">docs/weave.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/builtin_workflows/weave.py">WeaveConfig 与 WeaveAdapter</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/builtin_workflows/_weave_execution.py">命令检查实现</a></li>
 <li>相关指南：<a href="../run-registered-workflow/index.html">运行一个 Workflow</a> · <a href="../workflow-failure-recovery-lifecycle/index.html">失败处理、测试与调试</a> · <a href="../run-results/index.html">判断任务是否真的完成</a> · <a href="../duo-workflow/index.html">Duo</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/weave-workflow.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/weave-workflow.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E5%8F%AF%E8%BF%90%E8%A1%8C%E4%BE%8B%E5%AD%90">最小可运行例子</a><a href="#%E5%AE%9A%E4%B9%89%E7%BB%84">定义组</a><a href="#%E6%A3%80%E6%9F%A5%E4%B8%8E%E4%BF%AE%E5%A4%8D">检查与修复</a><a href="#%E6%A3%80%E6%9F%A5%E5%91%BD%E4%BB%A4%E6%80%8E%E4%B9%88%E5%86%99">检查命令怎么写</a><a href="#%E4%BF%AE%E5%A4%8D%E8%BD%AE%E6%95%B0">修复轮数</a><a href="#%E9%A2%84%E7%AE%97">预算</a><a href="#%E5%AE%8C%E6%95%B4%E9%85%8D%E7%BD%AE">完整配置</a><a href="#%E8%AF%BB%E5%8F%96%E4%BA%A4%E4%BB%98%E7%BB%93%E6%9E%9C">读取交付结果</a><a href="#%E6%8E%A5%E5%85%A5%E8%87%AA%E5%B7%B1%E7%9A%84%E6%A3%80%E6%9F%A5">接入自己的检查</a><a href="#%E4%B8%AD%E6%96%AD%E5%90%8E%E7%BB%A7%E7%BB%AD">中断后继续</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

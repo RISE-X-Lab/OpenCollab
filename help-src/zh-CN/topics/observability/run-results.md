@@ -47,7 +47,7 @@
     "weave-workflow",
     "extension-and-evaluation-boundaries"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -204,5 +204,5 @@ print(patch_paths(patch))    # 涉及的全部路径
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/sdk/result.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/result.py) · [docs/test-evidence.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/test-evidence.md) · [opencollab/adapters/tools/evidence/bash_evidence.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/tools/evidence/bash_evidence.py) · [opencollab/tools.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/tools.py) · [opencollab/patches.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/patches.py) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md)
+- 源码依据：[opencollab/sdk/result.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/result.py) · [docs/test-evidence.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/test-evidence.md) · [opencollab/adapters/tools/evidence/bash_evidence.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/tools/evidence/bash_evidence.py) · [opencollab/tools.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/tools.py) · [opencollab/patches.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/patches.py) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md)
 - 相关指南：[运行记录](artifacts-and-history.md) · [隔离改动怎样回到项目](../isolation/candidate-delivery.md) · [Duo](../workflow/duo-workflow.md) · [Weave](../workflow/weave-workflow.md)

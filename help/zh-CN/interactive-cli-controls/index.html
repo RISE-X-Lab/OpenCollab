@@ -88,7 +88,7 @@
 <li>每个成员有独立的显示历史。切换时，界面会重画该成员在本次终端里收到的消息；输入框里还没提交的文字会保留。</li>
 <li>配置里声明了、但还没真正创建的角色（标为 <code>available</code>）也在切换顺序里。它产生会话之后，界面才开始显示它的消息。</li>
 <li>消息在<strong>提交那一刻</strong>就绑定到当前成员。排队期间你切到别人，这条消息仍然发给原来那个。</li>
-<li>如果成员正在向你提问，你的下一次输入会被当作回答，<code>/save</code> 这类文字也一样。回答之后，才能继续用本地命令或提交新任务。</li>
+<li>如果成员正在向你提问，你的下一次输入会被当作回答，<code>/save</code> 这类文字也一样。回答之后，才能继续用本地命令或提交新任务。按 Ctrl+C 中断这一轮后，这一轮剩下的提问不会再出现，记为用户拒绝回答（<code>User declined to answer.</code>），待确认的命令按拒绝处理，输入框交还给你。</li>
 </ul>
 <p>Ctrl+C 中断之后，先看终端报告的停止原因和保留下来的文件，再决定下一步。见 <a href="../timeouts-retries/index.html">运行怎样停下</a> 和 <a href="../session-save-resume/index.html">保存与恢复会话</a>。</p>
 <h2 id="参数要跟着自己的命令写">参数要跟着自己的命令写</h2>
@@ -135,11 +135,11 @@ opencollab workflow run duo --workspace /path/to/application \
 <p>要分清两件事：Git 工作树只把成员的<strong>文件改动</strong>分开；命令能访问哪些进程、网络和系统资源，由执行环境决定。两者的关系见 <a href="../isolation-overview/index.html">隔离</a>，命令权限的完整规则见 <a href="../tool-selection/index.html#bash%E5%91%BD%E4%BB%A4%E5%9C%A8%E5%93%AA%E9%87%8C%E6%89%A7%E8%A1%8C%E8%B0%81%E5%85%81%E8%AE%B8%E5%AE%83%E6%89%A7%E8%A1%8C">内置工具</a>。</p>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/main.py">opencollab/adapters/cli/main.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md">opencollab/README.md</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/main.py">opencollab/adapters/cli/main.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md">opencollab/README.md</a></li>
 <li>相关指南：<a href="../first-run-workspace/index.html">安装并完成第一次运行</a> · <a href="../session-save-resume/index.html">保存与恢复会话</a> · <a href="../timeouts-retries/index.html">运行怎样停下</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/setup/interactive-cli-controls.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/setup/interactive-cli-controls.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%B8%B8%E7%94%A8%E6%93%8D%E4%BD%9C">常用操作</a><a href="#%E5%8D%95%E7%8B%AC%E5%92%8C%E6%9F%90%E4%B8%AA%E6%88%90%E5%91%98%E8%AF%B4%E8%AF%9D">单独和某个成员说话</a><a href="#%E5%8F%82%E6%95%B0%E8%A6%81%E8%B7%9F%E7%9D%80%E8%87%AA%E5%B7%B1%E7%9A%84%E5%91%BD%E4%BB%A4%E5%86%99">参数要跟着自己的命令写</a><a href="#%E4%B8%89%E4%B8%AA%E4%B8%8E%E5%91%BD%E4%BB%A4%E6%89%A7%E8%A1%8C%E6%9C%89%E5%85%B3%E7%9A%84%E5%BC%80%E5%85%B3">三个与命令执行有关的开关</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

@@ -51,7 +51,7 @@
     "session-save-resume",
     "collaboration-adherence"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -214,5 +214,5 @@ for event in events:
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/adapters/trace.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/trace.py) · [opencollab/application/run_control.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/run_control.py) · [opencollab/sdk/result.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/result.py) · [opencollab/bootstrap/workflow_runtime.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/workflow_runtime.py) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md) · [docs/runtime-design.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/runtime-design.md)
+- 源码依据：[opencollab/adapters/trace.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/trace.py) · [opencollab/application/run_control.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/run_control.py) · [opencollab/sdk/result.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/result.py) · [opencollab/bootstrap/workflow_runtime.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/workflow_runtime.py) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md) · [docs/runtime-design.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/runtime-design.md)
 - 相关指南：[判断任务是否真的完成](run-results.md) · [用量与费用](token-cache-cost.md) · [保存与恢复会话](../operations/session-save-resume.md) · [检查团队是否真的按分工协作](collaboration-adherence.md)

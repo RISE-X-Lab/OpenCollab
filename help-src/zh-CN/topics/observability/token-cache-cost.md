@@ -30,7 +30,7 @@
     "token-step-concurrency-limits",
     "context-compaction"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -133,5 +133,5 @@ print("missing_cost_records", sum(usage["cost_usd"] is None for usage in usages)
 
 ## 延伸阅读
 
-- 源码依据：[configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md) · [opencollab/adapters/llm/usage_ledger.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/llm/usage_ledger.py) · [opencollab/adapters/llm/types.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/llm/types.py) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md)
+- 源码依据：[configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/README.md) · [opencollab/adapters/llm/usage_ledger.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/llm/usage_ledger.py) · [opencollab/adapters/llm/types.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/llm/types.py) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md)
 - 相关指南：[运行记录](artifacts-and-history.md) · [预算、步数与并发](../operations/token-step-concurrency-limits.md) · [上下文窗口与压缩](../operations/context-compaction.md)

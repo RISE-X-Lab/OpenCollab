@@ -51,7 +51,7 @@
     "token-step-concurrency-limits",
     "tool-selection"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -72,7 +72,7 @@
 
 除此之外，函数体本身就是最灵活的控制入口：分支、循环、动态创建任务、处理结果都写在这里。比如根据结构化审阅结果进入修复轮，或者时间不够时返回已有产物。
 
-第 1 层的字段只对对应的 Workflow 有效，例如 Duo 的 `submission_mode`、Weave 的 `groups` 和 `check_commands`、Reconstruct 的 `max_iterations`。第 2 层在 CLI 上对应 `workflow run NAME` 后面的 `--budget`、`--concurrency`、`--task-concurrency`、`--isolation`，SDK 能设置的更多，见下面的参数表。
+第 1 层的字段只对对应的 Workflow 有效，例如 Duo 的 `submission_mode`、Weave 的 `groups` 和 `check_commands`、Reconstruct 的 `max_iterations`。第 2 层在 CLI 上对应 `workflow run NAME` 后面的 `--budget`、`--concurrency`、`--task-concurrency`、`--isolation`、`--run-id`，SDK 能设置的更多，见下面的参数表。
 
 期限和资源也分层设置：
 
@@ -141,7 +141,7 @@ async def run_example(workspace):
 | `artifacts` | 可选路径，须为新目录或空目录 | 持久产物目录 |
 | `trace` | `True` | 保存编排轨迹 |
 | `candidate_workspace` | 可选后端对象 | 注入候选的分配、捕获和采纳方式 |
-| `run_id` | 默认自动生成 | 关联清单、会话和轨迹 |
+| `run_id` | 默认自动生成，CLI 用 `--run-id` 指定 | 关联清单、会话和轨迹，也用于继续之前的运行 |
 | `llm` | 可选，符合协议的对象 | 注入模型传输层或测试替身 |
 | `limit_mode` | `environment`，可选 `explicit` | 是否读取环境里的无限额度设置，见 [无限制模式](../operations/token-step-concurrency-limits.md#无限制模式) |
 | `isolation` | 可选策略名 | Agent 的默认执行环境 |
@@ -228,7 +228,7 @@ async def controlled_answer(ctx, args):
 | `execute_verification(tool, params)` | 验证工具和参数 Mapping，返回字符串 | 在绑定环境里实际执行验证工具 |
 | `phase(title)` | 异步，返回 `None` | 标记当前阶段 |
 | `log(message)` | 异步，返回 `None` | 写流程日志 |
-| `tokens_spent()` | 整数 | 已观察到的 token 消耗 |
+| `tokens_spent()` | 整数 | 已观察到的 token 消耗，包括还在运行的候选子流程 |
 | `tokens_remaining()` | 余额，无上限时为无穷 | 决定后续工作规模 |
 | `seconds_left()` | 秒数，无期限时为无穷 | 读取剩余的绝对期限 |
 | `time_low()` | 布尔值 | 是否已进入运行的预留时间段 |
@@ -268,5 +268,5 @@ async def controlled_answer(ctx, args):
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/workflows.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/workflows.py) · [opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/client.py) · [opencollab/application/workflow_agent_run.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_agent_run.py) · [opencollab/application/workflow_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_collections.py) · [opencollab/tools.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/tools.py) · [opencollab/adapters/cli/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/workflow.py) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md)
+- 源码依据：[opencollab/workflows.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/workflows.py) · [opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/client.py) · [opencollab/application/workflow_agent_run.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow_agent_run.py) · [opencollab/application/workflow_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow_collections.py) · [opencollab/tools.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/tools.py) · [opencollab/adapters/cli/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/workflow.py) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md)
 - 相关指南：[编写 Workflow](workflow-programming-model.md) · [在 Workflow 里调用 Agent](workflow-agent-calls.md) · [组合与嵌套](workflow-composition-hierarchy.md) · [预算、步数与并发](../operations/token-step-concurrency-limits.md)

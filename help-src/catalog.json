@@ -1,5 +1,5 @@
 {
-  "verified_ref": "0c47f74a",
+  "verified_ref": "v0.9.6",
   "categories": [
     {
       "id": "orientation",
@@ -116,6 +116,6 @@
     "session-state-lifecycle": "runtime-execution-model#session-里存了什么",
     "evaluation-boundary": "extension-and-evaluation-boundaries#oc-和-oce-怎样分工"
   },
-  "source_commit_url": "https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f",
-  "documented_version": "0.9.5"
+  "source_commit_url": "https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6",
+  "documented_version": "0.9.6"
 }

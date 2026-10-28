@@ -30,7 +30,7 @@
     "tool-selection",
     "artifacts-and-history"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -103,5 +103,5 @@ Hook 让你在特定时刻自动运行一条 shell 命令：工具执行前后�
 
 ## 延伸阅读
 
-- 源码依据：[configs/team.example.yaml](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/team.example.yaml) · [configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md) · [opencollab/adapters/hooks.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/hooks.py) · [opencollab/domain/hooks.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/domain/hooks.py)
+- 源码依据：[configs/team.example.yaml](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/team.example.yaml) · [configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/README.md) · [opencollab/adapters/hooks.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/hooks.py) · [opencollab/domain/hooks.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/domain/hooks.py)
 - 相关指南：[Team 入门](../team/configure-team.md) · [内置工具](tool-selection.md) · [运行记录](../observability/artifacts-and-history.md)

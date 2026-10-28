@@ -39,7 +39,7 @@
     "custom-tools",
     "extension-and-evaluation-boundaries"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -61,13 +61,13 @@ git rev-parse HEAD
 opencollab --help
 ```
 
-CLI 和服务用的是不同的虚拟环境时，要分别检查，并确认服务进程实际导入的包位置和版本。注意同一个包版本号可能对应不同的源码提交（比如本 Wiki 核对的提交仍是 0.9.5），所以源码安装要以提交号为准，见 [安装](../setup/first-run-workspace.md#第一步安装)。
+CLI 和服务用的是不同的虚拟环境时，要分别检查，并确认服务进程实际导入的包位置和版本。从源码安装时，包版本号只在发布时更新，两次发布之间的提交都显示上一个版本号。所以源码安装要同时记下提交号（`git rev-parse HEAD`），见 [安装](../setup/first-run-workspace.md#第一步安装)。
 
 ## 第二步：沿迁移记录找到变化
 
-1. 打开 [迁移索引](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/README.md)，它按 0.5、0.6、0.7、0.8 串起主要变化。
+1. 打开 [迁移索引](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/README.md)，它按 0.5、0.6、0.7、0.8 串起主要变化。
 2. 先处理跨版本的接口变化。
-3. 再看 [CHANGELOG](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/CHANGELOG.md) 里目标补丁版本的修复。
+3. 再看 [CHANGELOG](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/CHANGELOG.md) 里目标补丁版本的修复。
 4. 当前的签名和默认值，以目标版本的包指南和 CLI 帮助为准。
 
 ### 默认 Agent 的变化（0.8.0）
@@ -115,5 +115,5 @@ opencollab workflow list --workspace .
 
 ## 延伸阅读
 
-- 源码依据：[0.8.0 迁移](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/migrations/0.8.0.md) · [0.7.0 迁移](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/migrations/0.7.0.md) · [包指南](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md) · [CHANGELOG](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/CHANGELOG.md)
+- 源码依据：[0.8.0 迁移](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/migrations/0.8.0.md) · [0.7.0 迁移](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/migrations/0.7.0.md) · [包指南](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md) · [CHANGELOG](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/CHANGELOG.md)
 - 相关指南：[安装并完成第一次运行](../setup/first-run-workspace.md) · [从 Python 调用 OC](../setup/python-sdk-entrypoints.md) · [Team 入门](../team/configure-team.md) · [自定义工具](../extensions/custom-tools.md)

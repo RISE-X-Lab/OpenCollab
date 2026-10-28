@@ -27,7 +27,7 @@
     "custom-tools",
     "configure-team"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -107,5 +107,5 @@ Skill 是一份写给 Agent 看的操作说明。OC 的 Skill 和 Claude Code �
 
 ## 延伸阅读
 
-- 源码依据：[skills/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/skills/README.md) · [opencollab/adapters/skills/file_skill_store.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/skills/file_skill_store.py) · [opencollab/adapters/tools/use_skill.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/tools/use_skill.py)
+- 源码依据：[skills/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/skills/README.md) · [opencollab/adapters/skills/file_skill_store.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/skills/file_skill_store.py) · [opencollab/adapters/tools/use_skill.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/tools/use_skill.py)
 - 相关指南：[内置工具](tool-selection.md) · [自定义工具](custom-tools.md) · [Team 入门](../team/configure-team.md)

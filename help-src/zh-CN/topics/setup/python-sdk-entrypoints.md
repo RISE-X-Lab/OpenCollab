@@ -54,7 +54,7 @@
     "token-step-concurrency-limits",
     "service-integration-lifecycle"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -241,5 +241,5 @@ asyncio.run(main())
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/client.py) · [opencollab/profiles.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/profiles.py) · [opencollab/bootstrap/agent_profiles.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/agent_profiles.py) · [docs/single2.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/single2.md) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md)
+- 源码依据：[opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/client.py) · [opencollab/profiles.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/profiles.py) · [opencollab/bootstrap/agent_profiles.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/agent_profiles.py) · [docs/single2.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/single2.md) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md)
 - 相关指南：[内置工具](../extensions/tool-selection.md) · [判断任务是否真的完成](../observability/run-results.md) · [预算、步数与并发](../operations/token-step-concurrency-limits.md) · [把 OC 接进自己的服务](../architecture/service-integration-lifecycle.md)

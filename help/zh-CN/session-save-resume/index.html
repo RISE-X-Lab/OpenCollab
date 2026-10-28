@@ -135,11 +135,11 @@ print(snapshot.get(&quot;run_id&quot;))
 <p>注意：保存下来的是<strong>执行证据</strong>，不是 Workflow 的程序状态，Workflow 不能从任意一行代码自动续跑，见 <a href="../workflow-failure-recovery-lifecycle/index.html#%E8%BF%9B%E7%A8%8B%E9%80%80%E5%87%BA%E5%90%8E%E8%83%BD%E6%8E%A5%E7%9D%80%E8%B7%91%E5%90%97">进程退出后能接着跑吗</a>。需要事后复查长任务时保留保存目录；每次继续前，确认工作区文件和最后的记录一致。</p>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/main.py">opencollab/adapters/cli/main.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/scheduler_factory.py">opencollab/bootstrap/scheduler_factory.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/runtime-design.md">docs/runtime-design.md</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/main.py">opencollab/adapters/cli/main.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/scheduler_factory.py">opencollab/bootstrap/scheduler_factory.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/runtime-design.md">docs/runtime-design.md</a></li>
 <li>相关指南：<a href="../interactive-cli-controls/index.html">在终端里使用 OC</a> · <a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a> · <a href="../artifacts-and-history/index.html">运行记录</a> · <a href="../timeouts-retries/index.html">运行怎样停下</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/operations/session-save-resume.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/operations/session-save-resume.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E7%94%A8%E6%B3%95">最小用法</a><a href="#%E6%96%87%E4%BB%B6%E5%AD%98%E5%9C%A8%E5%93%AA%E9%87%8C">文件存在哪里</a><a href="#%E6%81%A2%E5%A4%8D%E4%B9%8B%E5%90%8E%E9%A2%84%E7%AE%97%E5%92%8C%E6%89%A7%E8%A1%8C%E7%8A%B6%E6%80%81%E6%80%8E%E6%A0%B7">恢复之后，预算和执行状态怎样</a><a href="#%E7%94%A8-sdk-%E7%A6%BB%E7%BA%BF%E8%AF%BB%E5%8F%96">用 SDK 离线读取</a><a href="#workflow-%E7%9A%84%E4%BF%9D%E5%AD%98%E8%AE%BE%E7%BD%AE">Workflow 的保存设置</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

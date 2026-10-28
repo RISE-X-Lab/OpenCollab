@@ -40,7 +40,7 @@
     "artifacts-and-history",
     "upgrade-existing-integration"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -119,5 +119,5 @@ Include the sanitized tool result, final diff, and relevant traceback.
 
 ## 延伸阅读
 
-- 源码依据：[Bug report 模板](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/.github/ISSUE_TEMPLATE/bug_report.yml) · [使用问题模板](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/.github/ISSUE_TEMPLATE/question.yml) · [功能建议模板](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/.github/ISSUE_TEMPLATE/feature_request.yml) · [安全策略](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/SECURITY.md)
+- 源码依据：[Bug report 模板](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/.github/ISSUE_TEMPLATE/bug_report.yml) · [使用问题模板](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/.github/ISSUE_TEMPLATE/question.yml) · [功能建议模板](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/.github/ISSUE_TEMPLATE/feature_request.yml) · [安全策略](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/SECURITY.md)
 - 相关指南：[配置从哪来、哪个生效](../models/configuration-precedence.md) · [判断任务是否真的完成](../observability/run-results.md) · [运行记录](../observability/artifacts-and-history.md) · [升级 OC 后怎样迁移和验证](upgrade-existing-integration.md)

@@ -65,7 +65,7 @@
     "vm-environment-extension",
     "model-routing-request-capacity"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -159,7 +159,7 @@ Team 设置了保存目录时，子 Workflow 的记录在其中单独的 `workfl
 
 成员用文件工具写出一个 Python 文件，再调用 `launch` 启动它。OC 在成员自己的执行环境里起一个独立的 Python 进程导入这个文件，入口函数和普通 Workflow 一样接收 `ctx` 和 `args`。这样一段由成员现场编排的子 Workflow，团队内部也叫 DW（动态工作单元）。
 
-版本要求：需要源码提交 `0c47f74a` 对应的 OC，按 [安装指南](../setup/first-run-workspace.md#第一步安装) 准备解释器。包内版本号和实际安装的源码提交要分别核对。
+版本要求：OC 0.9.6 及以上，按 [安装指南](../setup/first-run-workspace.md#第一步安装) 准备解释器。
 
 ### 开始前，你（人类调用方）要准备好
 
@@ -175,7 +175,7 @@ Team 设置了保存目录时，子 Workflow 的记录在其中单独的 `workfl
       tools: [file_write, file_read, bash, manage_workflow]
   ```
 
-- 运行环境：角色必须有 `bash`，因为 `manage_workflow` 用成员的 shell 权限执行源码；目标环境里要有装了 OC 的 Python（默认 `python3`，可以用参数 `python` 指定别的路径）。在宿主机上直接执行时，Team 调用方要显式允许 `allow_unisolated_shell`。容器或 VM 成员在自己的环境里执行源文件，那里的解释器也要装同一个 OC 源码提交，工具原有的进程隔离要求和命令安全检查照常生效。
+- 运行环境：角色必须有 `bash`，因为 `manage_workflow` 用成员的 shell 权限执行源码；目标环境里要有装了 OC 的 Python（默认 `python3`，可以用参数 `python` 指定别的路径）。在宿主机上直接执行时，Team 调用方要显式允许 `allow_unisolated_shell`。容器或 VM 成员在自己的环境里执行源文件，那里的解释器也要装同一版本（0.9.6）的 OC，工具原有的进程隔离要求和命令安全检查照常生效。
 
 ### 第 1 步：看看能用什么
 
@@ -348,13 +348,13 @@ async def main(ctx, args):
 }
 ```
 
-- `python` 指向准备 VM 时装了 OC 的来宾解释器。VM、SSH、来宾里同一提交的 OC 和管理员重置程序，都要先按 [在现有 Linux VM 中运行任务](../isolation/vm-environment-extension.md) 准备好。
+- `python` 指向准备 VM 时装了 OC 的来宾解释器。VM、SSH、来宾里同一版本的 OC 和管理员重置程序，都要先按 [在现有 Linux VM 中运行任务](../isolation/vm-environment-extension.md) 准备好。
 - 子 Agent 要查看或修改文件，父角色得先有对应工具，再在源码里用 `builtin_tools` 传给会话，比如给一个明确的文件检查任务配上 `builtin_tools("bash")`。
 - 某次调用选 `isolation="vm-session"` 时，宿主会再为它申请一台空闲 VM。父成员手里那台也算在占用里，规划容量时要给额外的来宾留出位置。
 
 ### 从宿主启动这个 Team
 
-上面是成员这一侧的工具调用。在宿主这一侧，你只需要启动父 Team，成员会在任务里自己写并启动子 Workflow。配好模型服务后，把下面的代码存为工作区里的 `run_authored.py`，用装了指定提交的解释器运行。示例里的 `sys.executable` 只适用于父成员就在当前本地环境执行的情况。
+上面是成员这一侧的工具调用。在宿主这一侧，你只需要启动父 Team，成员会在任务里自己写并启动子 Workflow。配好模型服务后，把下面的代码存为工作区里的 `run_authored.py`，用装了 OC 0.9.6 的解释器运行。示例里的 `sys.executable` 只适用于父成员就在当前本地环境执行的情况。
 
 ```python
 import asyncio
@@ -411,13 +411,13 @@ asyncio.run(main())
 
 ### 先跑一下仓库自带的离线演示
 
-在装好当前源码的 checkout 里运行：
+在 `v0.9.6` 的源码目录里运行：
 
 ```bash
 python examples/member-authored-workflow/demo.py
 ```
 
-演示在回环地址上启动一个脚本化的 HTTP 模型（所有请求都留在本机），父成员真的写出 `generated.py`，再启动 Python 子进程收集结果。输出里会有 `Local answer`、计算值 `15` 和总用量 `90`，程序会打印保留了源码和运行产物的工作区路径。跑通之后，再用上面的三任务源码和 Team 调用接上你自己的模型服务。仓库还有一个 [双 VM 离线示例](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/vm-authored-workflow/demo.py)，用法见 VM 指南。
+演示在回环地址上启动一个脚本化的 HTTP 模型（所有请求都留在本机），父成员真的写出 `generated.py`，再启动 Python 子进程收集结果。输出里会有 `Local answer`、计算值 `15` 和总用量 `90`，程序会打印保留了源码和运行产物的工作区路径。跑通之后，再用上面的三任务源码和 Team 调用接上你自己的模型服务。仓库还有一个 [双 VM 离线示例](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/examples/vm-authored-workflow/demo.py)，用法见 VM 指南。
 
 ### 预算
 
@@ -452,5 +452,5 @@ python examples/member-authored-workflow/demo.py
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/bootstrap/team_workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/team_workflow.py) · [能力发现与子运行启动](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/authored_workflow.py) · [宿主模型桥接](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/authored_workflow_bridge.py) · [子会话权限继承](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/authored_workflow_runner.py) · [examples/member-authored-workflow/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/member-authored-workflow/README.md) · [tests/interfaces/test_team_workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/tests/interfaces/test_team_workflow.py)
+- 源码依据：[opencollab/bootstrap/team_workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/team_workflow.py) · [能力发现与子运行启动](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/authored_workflow.py) · [宿主模型桥接](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/authored_workflow_bridge.py) · [子会话权限继承](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/authored_workflow_runner.py) · [examples/member-authored-workflow/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/examples/member-authored-workflow/README.md) · [tests/interfaces/test_team_workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/tests/interfaces/test_team_workflow.py)
 - 相关指南：[Team 协作](../team/dispatch-team-agents.md) · [运行一个 Workflow](run-registered-workflow.md) · [在现有 Linux VM 中运行任务](../isolation/vm-environment-extension.md) · [模型路由与共享请求容量](../models/model-routing-request-capacity.md)

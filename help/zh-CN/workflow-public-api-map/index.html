@@ -75,7 +75,7 @@
 </tbody>
 </table>
 <p>除此之外，函数体本身就是最灵活的控制入口：分支、循环、动态创建任务、处理结果都写在这里。比如根据结构化审阅结果进入修复轮，或者时间不够时返回已有产物。</p>
-<p>第 1 层的字段只对对应的 Workflow 有效，例如 Duo 的 <code>submission_mode</code>、Weave 的 <code>groups</code> 和 <code>check_commands</code>、Reconstruct 的 <code>max_iterations</code>。第 2 层在 CLI 上对应 <code>workflow run NAME</code> 后面的 <code>--budget</code>、<code>--concurrency</code>、<code>--task-concurrency</code>、<code>--isolation</code>，SDK 能设置的更多，见下面的参数表。</p>
+<p>第 1 层的字段只对对应的 Workflow 有效，例如 Duo 的 <code>submission_mode</code>、Weave 的 <code>groups</code> 和 <code>check_commands</code>、Reconstruct 的 <code>max_iterations</code>。第 2 层在 CLI 上对应 <code>workflow run NAME</code> 后面的 <code>--budget</code>、<code>--concurrency</code>、<code>--task-concurrency</code>、<code>--isolation</code>、<code>--run-id</code>，SDK 能设置的更多，见下面的参数表。</p>
 <p>期限和资源也分层设置：</p>
 <table>
 <thead>
@@ -264,8 +264,8 @@ async def run_example(workspace):
 </tr>
 <tr>
 <td><code>run_id</code></td>
-<td>默认自动生成</td>
-<td>关联清单、会话和轨迹</td>
+<td>默认自动生成，CLI 用 <code>--run-id</code> 指定</td>
+<td>关联清单、会话和轨迹，也用于继续之前的运行</td>
 </tr>
 <tr>
 <td><code>llm</code></td>
@@ -441,7 +441,7 @@ async def controlled_answer(ctx, args):
 <tr>
 <td><code>tokens_spent()</code></td>
 <td>整数</td>
-<td>已观察到的 token 消耗</td>
+<td>已观察到的 token 消耗，包括还在运行的候选子流程</td>
 </tr>
 <tr>
 <td><code>tokens_remaining()</code></td>
@@ -510,11 +510,11 @@ async def controlled_answer(ctx, args):
 <p>普通函数可以直接交给 SDK；要按名称发现，才需要 <code>@workflow</code> 注册。评测集成也使用上面这些 SDK、环境和验证工具入口；数据集、隐藏测试和正式评分由外部评测包负责，见 <a href="../extension-and-evaluation-boundaries/index.html">OC 的边界与 OCE 评测</a>。</p>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/workflows.py">opencollab/workflows.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/client.py">opencollab/sdk/client.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_agent_run.py">opencollab/application/workflow_agent_run.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_collections.py">opencollab/application/workflow_collections.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/tools.py">opencollab/tools.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/workflow.py">opencollab/adapters/cli/workflow.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md">docs/evaluation-runtime.md</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/workflows.py">opencollab/workflows.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/client.py">opencollab/sdk/client.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow_agent_run.py">opencollab/application/workflow_agent_run.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow_collections.py">opencollab/application/workflow_collections.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/tools.py">opencollab/tools.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/workflow.py">opencollab/adapters/cli/workflow.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md">docs/evaluation-runtime.md</a></li>
 <li>相关指南：<a href="../workflow-programming-model/index.html">编写 Workflow</a> · <a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent</a> · <a href="../workflow-composition-hierarchy/index.html">组合与嵌套</a> · <a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/workflow-public-api-map.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/workflow-public-api-map.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%85%88%E6%89%BE%E5%AF%B9%E5%B1%82%E4%B8%80%E4%B8%AA%E8%AE%BE%E7%BD%AE%E8%AF%A5%E6%94%BE%E5%9C%A8%E5%93%AA">先找对层：一个设置该放在哪</a><a href="#%E6%8C%89%E9%9C%80%E6%B1%82%E6%9F%A5%E6%8E%A5%E5%8F%A3">按需求查接口</a><a href="#%E5%90%AF%E5%8A%A8%E4%B8%80%E6%AC%A1%E8%BF%90%E8%A1%8C">启动一次运行</a><a href="#workflow-%E5%8F%82%E6%95%B0">workflow() 参数</a><a href="#%E4%BC%9A%E8%AF%9D%E6%93%8D%E4%BD%9C">会话操作</a><a href="#%E8%B0%83%E7%94%A8%E8%BF%9B%E8%A1%8C%E4%B8%ADruncontrol">调用进行中：RunControl</a><a href="#%E9%9B%86%E5%90%88%E7%BB%84%E5%90%88%E4%B8%8E%E5%80%99%E9%80%89">集合、组合与候选</a><a href="#%E5%B7%A5%E4%BD%9C%E5%8C%BA%E9%AA%8C%E8%AF%81%E4%B8%8E%E8%BF%90%E8%A1%8C%E8%AE%B0%E5%BD%95">工作区、验证与运行记录</a><a href="#%E5%B7%A5%E5%85%B7%E7%8E%AF%E5%A2%83%E5%92%8C%E5%86%85%E7%BD%AE-workflow">工具、环境和内置 Workflow</a><a href="#%E7%BB%93%E6%9E%9C%E4%B8%8E%E6%8E%A7%E5%88%B6%E7%B1%BB%E5%9E%8B">结果与控制类型</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

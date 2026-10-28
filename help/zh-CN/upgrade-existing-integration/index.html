@@ -50,12 +50,12 @@ python -c 'from importlib.metadata import version; import opencollab; print(vers
 git rev-parse HEAD
 opencollab --help
 </code></pre>
-<p>CLI 和服务用的是不同的虚拟环境时，要分别检查，并确认服务进程实际导入的包位置和版本。注意同一个包版本号可能对应不同的源码提交（比如本 Wiki 核对的提交仍是 0.9.5），所以源码安装要以提交号为准，见 <a href="../first-run-workspace/index.html#%E7%AC%AC%E4%B8%80%E6%AD%A5%E5%AE%89%E8%A3%85">安装</a>。</p>
+<p>CLI 和服务用的是不同的虚拟环境时，要分别检查，并确认服务进程实际导入的包位置和版本。从源码安装时，包版本号只在发布时更新，两次发布之间的提交都显示上一个版本号。所以源码安装要同时记下提交号（<code>git rev-parse HEAD</code>），见 <a href="../first-run-workspace/index.html#%E7%AC%AC%E4%B8%80%E6%AD%A5%E5%AE%89%E8%A3%85">安装</a>。</p>
 <h2 id="第二步沿迁移记录找到变化">第二步：沿迁移记录找到变化</h2>
 <ol>
-<li>打开 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/README.md">迁移索引</a>，它按 0.5、0.6、0.7、0.8 串起主要变化。</li>
+<li>打开 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/README.md">迁移索引</a>，它按 0.5、0.6、0.7、0.8 串起主要变化。</li>
 <li>先处理跨版本的接口变化。</li>
-<li>再看 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/CHANGELOG.md">CHANGELOG</a> 里目标补丁版本的修复。</li>
+<li>再看 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/CHANGELOG.md">CHANGELOG</a> 里目标补丁版本的修复。</li>
 <li>当前的签名和默认值，以目标版本的包指南和 CLI 帮助为准。</li>
 </ol>
 <h3 id="默认-agent-的变化080">默认 Agent 的变化（0.8.0）</h3>
@@ -108,11 +108,11 @@ opencollab workflow list --workspace .
 <p>历史实验继续保留原来的版本信息，旧结果的模型、任务、提示词和限制也要一起保存。OCE 集成按它记录的框架依赖版本来理解，见 <a href="../extension-and-evaluation-boundaries/index.html#oc-%E5%92%8C-oce-%E6%80%8E%E6%A0%B7%E5%88%86%E5%B7%A5">OC 和 OCE 怎样分工</a>。</p>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/migrations/0.8.0.md">0.8.0 迁移</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/migrations/0.7.0.md">0.7.0 迁移</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md">包指南</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/CHANGELOG.md">CHANGELOG</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/migrations/0.8.0.md">0.8.0 迁移</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/migrations/0.7.0.md">0.7.0 迁移</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md">包指南</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/CHANGELOG.md">CHANGELOG</a></li>
 <li>相关指南：<a href="../first-run-workspace/index.html">安装并完成第一次运行</a> · <a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a> · <a href="../configure-team/index.html">Team 入门</a> · <a href="../custom-tools/index.html">自定义工具</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/architecture/upgrade-existing-integration.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/architecture/upgrade-existing-integration.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E7%AC%AC%E4%B8%80%E6%AD%A5%E8%AE%B0%E4%B8%8B%E6%AD%A3%E5%9C%A8%E8%BF%90%E8%A1%8C%E7%9A%84%E5%AE%89%E8%A3%85">第一步：记下正在运行的安装</a><a href="#%E7%AC%AC%E4%BA%8C%E6%AD%A5%E6%B2%BF%E8%BF%81%E7%A7%BB%E8%AE%B0%E5%BD%95%E6%89%BE%E5%88%B0%E5%8F%98%E5%8C%96">第二步：沿迁移记录找到变化</a><a href="#%E9%BB%98%E8%AE%A4-agent-%E7%9A%84%E5%8F%98%E5%8C%96080">默认 Agent 的变化（0.8.0）</a><a href="#%E5%B7%A5%E5%85%B7%E5%88%97%E8%A1%A8%E7%9A%84%E5%8F%98%E5%8C%96">工具列表的变化</a><a href="#%E7%AC%AC%E4%B8%89%E6%AD%A5%E6%A0%B8%E5%AF%B9%E9%85%8D%E7%BD%AE%E5%92%8C%E6%89%A9%E5%B1%95">第三步：核对配置和扩展</a><a href="#%E7%AC%AC%E5%9B%9B%E6%AD%A5%E7%94%A8%E5%8E%9F%E4%BB%BB%E5%8A%A1%E9%AA%8C%E8%AF%81">第四步：用原任务验证</a><a href="#%E5%8E%86%E5%8F%B2%E5%AE%9E%E9%AA%8C%E5%92%8C-oce">历史实验和 OCE</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

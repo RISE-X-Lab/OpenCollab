@@ -37,7 +37,7 @@
     "team-run-workflow",
     "run-results"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -92,6 +92,7 @@ opencollab workflow run duo \
 | `--task-concurrency` | `parallel` 和 `pipeline` 最多同时处理几项，默认等于 `--concurrency` |
 | `--isolation` | Agent 在什么环境里执行，见 [隔离](../isolation/isolation-overview.md) |
 | `--agent-profile` | 所有角色使用的 Agent 配置 |
+| `--run-id` | 沿用原运行的 `run_id`，用于继续之前的运行，例如 [Weave 从状态快照继续](weave-workflow.md#中断后继续) |
 
 几条规则：
 
@@ -163,5 +164,5 @@ Python 里对应 `artifacts` 和 `trace` 参数。这些记录用于事后调试
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md) · [opencollab/adapters/cli/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/workflow.py)
+- 源码依据：[opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md) · [opencollab/adapters/cli/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/workflow.py)
 - 相关指南：[编写 Workflow](workflow-programming-model.md) · [让 Team 成员运行 Workflow](team-run-workflow.md) · [判断任务是否真的完成](../observability/run-results.md)

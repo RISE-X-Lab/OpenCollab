@@ -37,7 +37,7 @@
     "workflow-agent-calls",
     "workflow-programming-model"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -188,5 +188,5 @@ def numeric_match(actual, expected):
 
 ## 延伸阅读
 
-- 源码依据：[docs/reconstruct.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/reconstruct.md) · [opencollab/builtin_workflows/reconstruct.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/builtin_workflows/reconstruct.py) · [opencollab/builtin_workflows/__init__.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/builtin_workflows/__init__.py)
+- 源码依据：[docs/reconstruct.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/reconstruct.md) · [opencollab/builtin_workflows/reconstruct.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/builtin_workflows/reconstruct.py) · [opencollab/builtin_workflows/__init__.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/builtin_workflows/__init__.py)
 - 相关指南：[运行一个 Workflow](run-registered-workflow.md) · [在 Workflow 里调用 Agent](workflow-agent-calls.md#哪些数据能跨进程) · [编写 Workflow](workflow-programming-model.md)

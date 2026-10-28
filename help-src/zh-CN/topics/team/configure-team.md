@@ -39,7 +39,7 @@
     "tool-selection",
     "token-step-concurrency-limits"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -224,5 +224,5 @@ uv run python scripts/run_collab_team.py \
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/bootstrap/team_config.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/team_config.py) · [configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md) · [scripts/run_collab_team.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/scripts/run_collab_team.py) · [configs/team.collab.yaml](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/team.collab.yaml)
+- 源码依据：[opencollab/bootstrap/team_config.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/team_config.py) · [configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/README.md) · [scripts/run_collab_team.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/scripts/run_collab_team.py) · [configs/team.collab.yaml](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/team.collab.yaml)
 - 相关指南：[Team 协作](dispatch-team-agents.md) · [内置工具](../extensions/tool-selection.md) · [隔离](../isolation/isolation-overview.md) · [预算、步数与并发](../operations/token-step-concurrency-limits.md)

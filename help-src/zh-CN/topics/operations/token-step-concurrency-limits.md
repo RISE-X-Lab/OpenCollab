@@ -48,7 +48,7 @@
     "token-cache-cost",
     "workflow-public-api-map"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -236,5 +236,5 @@ OPENCOLLAB_BUDGET_NUDGE_MODE=thresholds \
 
 ## 延伸阅读
 
-- 源码依据：[运行提示策略](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/steering.py) · [运行控制](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/run_control.py) · [docs/runtime-design.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/runtime-design.md) · [configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md) · [opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/client.py)
+- 源码依据：[运行提示策略](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/steering.py) · [运行控制](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/run_control.py) · [docs/runtime-design.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/runtime-design.md) · [configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/README.md) · [opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/client.py)
 - 相关指南：[运行怎样停下](timeouts-retries.md) · [上下文窗口与压缩](context-compaction.md) · [模型路由与共享请求容量](../models/model-routing-request-capacity.md) · [用量与费用](../observability/token-cache-cost.md)

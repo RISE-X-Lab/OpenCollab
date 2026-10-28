@@ -161,7 +161,7 @@ async def prepare_candidate(ctx, args):
 </code></pre>
 <p><code>candidate_workflow</code> 为子流程准备一个候选环境和一个子上下文，子函数里的多次会话都在这个环境里工作。</p>
 <ul>
-<li><strong>资源</strong>：候选和父运行共享 Agent 并发容量、集合任务容量和最终截止时间；候选的有限预算从父运行的授权里出。</li>
+<li><strong>资源</strong>：候选和父运行共享 Agent 并发容量、集合任务容量和最终截止时间；候选的有限预算从父运行的授权里出。候选运行期间用掉的 token 会实时计入父运行，父流程的 <code>ctx.tokens_spent()</code> 和 <code>ctx.tokens_remaining()</code> 不用等候选结束；父运行余额不够时，新的调用会抛出 <code>WorkflowBudgetExceeded</code>。</li>
 <li><strong>嵌套</strong>：默认的候选子上下文没有再配备候选后端，所以子流程里不能再开一层候选环境。子流程可以继续调用普通子函数，也可以给单次会话选隔离策略；确实需要再建一层候选环境，要由集成方提供对应的后端。</li>
 </ul>
 <h3 id="读取候选结果">读取候选结果</h3>
@@ -326,11 +326,11 @@ async def run_independent_examples(workspace, team_config):
 </ul>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/workflows.py">opencollab/workflows.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_candidates.py">opencollab/application/workflow_candidates.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/tools.py">opencollab/tools.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md">opencollab/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/duo.md">docs/duo.md</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/workflows.py">opencollab/workflows.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow_candidates.py">opencollab/application/workflow_candidates.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/tools.py">opencollab/tools.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md">opencollab/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/duo.md">docs/duo.md</a></li>
 <li>相关指南：<a href="../workflow-agent-calls/index.html">在 Workflow 里调用 Agent</a> · <a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a> · <a href="../candidate-delivery/index.html">隔离改动怎样回到项目</a> · <a href="../duo-workflow/index.html">Duo</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/workflow-composition-hierarchy.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/workflow-composition-hierarchy.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E4%B8%89%E7%A7%8D%E5%A4%8D%E7%94%A8%E6%96%B9%E5%BC%8F%E6%80%8E%E4%B9%88%E9%80%89">三种复用方式怎么选</a><a href="#%E6%96%B9%E5%BC%8F%E4%B8%80%E7%9B%B4%E6%8E%A5%E8%B0%83%E7%94%A8%E5%AD%90%E5%87%BD%E6%95%B0">方式一：直接调用子函数</a><a href="#%E5%80%99%E9%80%89%E5%9C%A8%E9%9A%94%E7%A6%BB%E7%8E%AF%E5%A2%83%E9%87%8C%E8%AF%95%E6%94%B9%E5%8A%A8">候选：在隔离环境里试改动</a><a href="#%E5%8F%AA%E8%B7%91%E4%B8%80%E4%B8%AA%E5%80%99%E9%80%89-agent">只跑一个候选 Agent</a><a href="#%E6%8A%8A%E6%95%B4%E5%A5%97%E5%AD%90%E6%B5%81%E7%A8%8B%E4%BD%9C%E4%B8%BA%E5%80%99%E9%80%89">把整套子流程作为候选</a><a href="#%E8%AF%BB%E5%8F%96%E5%80%99%E9%80%89%E7%BB%93%E6%9E%9C">读取候选结果</a><a href="#%E9%87%87%E7%BA%B3%E5%80%99%E9%80%89%E6%94%B9%E5%8A%A8">采纳候选改动</a><a href="#%E9%87%87%E7%BA%B3%E5%A4%B1%E8%B4%A5%E6%97%B6">采纳失败时</a><a href="#agentteamworkflow-%E6%80%8E%E6%A0%B7%E4%BA%92%E7%9B%B8%E5%B5%8C%E5%A5%97">Agent、Team、Workflow 怎样互相嵌套</a><a href="#team-%E6%88%90%E5%91%98%E8%BF%90%E8%A1%8C-workflow">Team 成员运行 Workflow</a><a href="#%E5%9C%A8-workflow-%E9%87%8C%E5%90%AF%E5%8A%A8-team">在 Workflow 里启动 Team</a><a href="#%E5%9C%A8%E4%BD%A0%E7%9A%84%E7%A8%8B%E5%BA%8F%E9%87%8C%E5%88%86%E5%88%AB%E5%90%AF%E5%8A%A8%E4%B8%89%E8%80%85">在你的程序里分别启动三者</a><a href="#%E5%B0%8F%E7%BB%93">小结</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

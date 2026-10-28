@@ -47,12 +47,12 @@
 <p>在你平时放代码的目录里执行：</p>
 <pre><code class="language-bash">git clone https://github.com/RISE-X-Lab/OpenCollab.git
 cd OpenCollab
-# 切到本 Wiki 核对过的源码提交
-git checkout 0c47f74a27441888286a22012b23b658185f8b8f
+# 切到本 Wiki 对应的发布版本
+git checkout v0.9.6
 # 确认 Python 版本，应为 3.10 或更高
 python3 --version
 </code></pre>
-<p>这个提交的包版本号仍是 0.9.5，和更早的 0.9.5 代码没法靠版本号区分。本 Wiki 介绍的 VM 隔离和 <code>manage_workflow describe</code> 都需要这个提交，请以提交号为准。之后所有命令都在这个源码根目录里执行。</p>
+<p><code>v0.9.6</code> 是本 Wiki 核对的发布标签。VM 隔离和 <code>manage_workflow</code> 都从 0.9.6 开始提供，更早的版本没有。之后所有命令都在这个源码根目录里执行。</p>
 <h3 id="安装依赖">安装依赖</h3>
 <p>两种方式选一种，之后一直用同一种。</p>
 <p>方式 A，用 uv。它按仓库里的锁文件创建并同步环境：</p>
@@ -65,7 +65,12 @@ uv run opencollab --help
 .venv/bin/pip install -e .
 .venv/bin/opencollab --help
 </code></pre>
-<p>用发布版 wheel 的话，在你选好的虚拟环境里按该发布提供的方式安装，装完同样做下面的检查。</p>
+<p>不需要源码的话，也可以直接装发布页附带的 wheel。从 <a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">v0.9.6 发布页</a> 下载 <code>opencollab-0.9.6-py3-none-any.whl</code> 和 <code>SHA256SUMS</code>，核对后装进你的虚拟环境：</p>
+<pre><code class="language-bash">shasum -a 256 -c SHA256SUMS --ignore-missing
+python3 -m venv .venv
+.venv/bin/pip install opencollab-0.9.6-py3-none-any.whl
+</code></pre>
+<p>装完同样做下面的检查。</p>
 <h3 id="确认装好了">确认装好了</h3>
 <p>下面三条命令都正常输出，就说明安装完成。这是 uv 的写法；用 pip 的话，把 <code>uv run python</code> 换成 <code>.venv/bin/python</code>，把 <code>uv run opencollab</code> 换成 <code>.venv/bin/opencollab</code>。</p>
 <pre><code class="language-bash">uv run python -c 'from importlib.metadata import version; print(version(&quot;opencollab&quot;))'
@@ -173,15 +178,15 @@ uv run opencollab workflow run duo --help
 <li><strong>要复现别人的结果</strong>：用对方记录的发布版本和依赖，而不是当前提交。</li>
 <li><strong>需要 Weave、<code>RunControl</code> 或 <code>ctx.agent_run</code></strong>：这些在 <code>v0.9.3</code> 之后才加入，要选更新的版本。已发布的标签和安装包在仓库的发布页。</li>
 <li><strong>报 capability 错误</strong>：本机文件适配器依赖几项系统能力：基于目录描述符的相对路径操作、不跟随符号链接的文件检查、基于文件描述符的目录枚举、<code>fcntl.flock</code> 文件锁，以及不覆盖已有文件的原子重命名（Linux 用 <code>renameat2(RENAME_NOREPLACE)</code>，macOS 10.12 及以上用 <code>renameatx_np(RENAME_EXCL)</code>）。缺任何一项都会报这个错，请换一个满足要求的系统。</li>
-<li><strong>成员自己写的代码要在容器或 VM 里执行</strong>：控制端和容器或 VM 里都要装同一份源码构建出的 wheel，见 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a>。</li>
+<li><strong>成员自己写的代码要在容器或 VM 里执行</strong>：控制端和容器或 VM 里都要装同一份 wheel，最简单的是都装发布页的 <code>opencollab-0.9.6-py3-none-any.whl</code>，见 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a>。</li>
 </ul>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/pyproject.toml">pyproject.toml</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/README.zh-CN.md">README.zh-CN.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md">opencollab/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/main.py">opencollab/adapters/cli/main.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/client.py">opencollab/sdk/client.py</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/pyproject.toml">pyproject.toml</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/README.zh-CN.md">README.zh-CN.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md">opencollab/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/main.py">opencollab/adapters/cli/main.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/client.py">opencollab/sdk/client.py</a></li>
 <li>相关指南：<a href="../interactive-cli-controls/index.html">在终端里使用 OC</a> · <a href="../python-sdk-entrypoints/index.html">从 Python 调用 OC</a> · <a href="../configuration-precedence/index.html">配置从哪来、哪个生效</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/setup/first-run-workspace.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/setup/first-run-workspace.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E7%AC%AC%E4%B8%80%E6%AD%A5%E5%AE%89%E8%A3%85">第一步：安装</a><a href="#%E4%B8%8B%E8%BD%BD%E6%BA%90%E7%A0%81%E5%B9%B6%E9%80%89%E5%A5%BD%E7%89%88%E6%9C%AC">下载源码并选好版本</a><a href="#%E5%AE%89%E8%A3%85%E4%BE%9D%E8%B5%96">安装依赖</a><a href="#%E7%A1%AE%E8%AE%A4%E8%A3%85%E5%A5%BD%E4%BA%86">确认装好了</a><a href="#%E7%AC%AC%E4%BA%8C%E6%AD%A5%E6%8E%A5%E4%B8%8A%E6%A8%A1%E5%9E%8B">第二步：接上模型</a><a href="#%E7%AC%AC%E4%B8%89%E6%AD%A5%E5%9C%A8%E4%BD%A0%E7%9A%84%E9%A1%B9%E7%9B%AE%E4%B8%8A%E8%BF%90%E8%A1%8C">第三步：在你的项目上运行</a><a href="#%E4%BA%A4%E4%BA%92%E5%BC%8F%E5%90%AF%E5%8A%A8">交互式启动</a><a href="#%E6%88%96%E8%80%85%E4%B8%80%E6%AC%A1%E6%80%A7%E4%BB%BB%E5%8A%A1">或者：一次性任务</a><a href="#%E7%AC%AC%E5%9B%9B%E6%AD%A5%E7%9C%8B%E7%BB%93%E6%9E%9C%E5%92%8C%E8%AE%B0%E5%BD%95">第四步：看结果和记录</a><a href="#%E5%86%8D%E8%AF%95%E4%B8%80%E4%B8%8B-workflow">再试一下 Workflow</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

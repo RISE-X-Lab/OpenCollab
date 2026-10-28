@@ -159,7 +159,7 @@
 </tr>
 </tbody>
 </table>
-<p>好处是：接入一个新的外部执行服务时，核心代码只需要知道它能申请环境、读写文件、执行命令；怎么连接、资源 ID 是什么、怎么清理，都写在你的适配实现里。仓库的架构规则见 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/AGENTS.md">AGENTS.md</a>。</p>
+<p>好处是：接入一个新的外部执行服务时，核心代码只需要知道它能申请环境、读写文件、执行命令；怎么连接、资源 ID 是什么、怎么清理，都写在你的适配实现里。仓库的架构规则见 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/AGENTS.md">AGENTS.md</a>。</p>
 <h2 id="oc-和-oce-怎样分工">OC 和 OCE 怎样分工</h2>
 <p>OCE 是 OpenCollab-Eval，OC 的评测项目：</p>
 <table>
@@ -189,7 +189,7 @@
 <li>评测器通过 SDK 调用 OC 时，传入模型、预算、期限、执行环境和产物位置。</li>
 <li>正式运行前，确认两个仓库的版本和要用的功能。</li>
 </ol>
-<p>当前的评测命令与数据集设置以 <a href="https://github.com/RISE-X-Lab/OpenCollab-Eval#readme">OpenCollab-Eval</a> 为入口，具体 benchmark 的安装步骤和评分参数见对应的 OCE 指南。OC 这边的 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md">评测运行时文档</a> 说明 SDK 的预算、取消、清理与结果接口。项目里历史实验的命令，要对照当时的提交来读。</p>
+<p>当前的评测命令与数据集设置以 <a href="https://github.com/RISE-X-Lab/OpenCollab-Eval#readme">OpenCollab-Eval</a> 为入口，具体 benchmark 的安装步骤和评分参数见对应的 OCE 指南。OC 这边的 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md">评测运行时文档</a> 说明 SDK 的预算、取消、清理与结果接口。项目里历史实验的命令，要对照当时的提交来读。</p>
 <h3 id="跑完了不等于做对了">“跑完了”不等于“做对了”</h3>
 <p>一次评测通常包括：任务输入、初始仓库或镜像、模型与运行配置、生成的候选、原始验证结果、用量记录。评测里有几个不同的阶段，结果里要分开看：候选生成完成 → 验证器启动 → 测试通过 → 最终成绩被采用。OC 的 <code>RunResult</code> 只说明第一段怎样结束。比如：运行正常结束，却留下了失败的测试；或者基础设施出错，验证根本没能启动。</p>
 <h3 id="让比较公平">让比较公平</h3>
@@ -199,7 +199,7 @@
 <p>基础设施故障导致没评上分时，在恢复后用相应的恢复流程把已保存的候选重新评分；是否允许重新生成候选，由实验协议决定。建议保留原尝试、恢复过程和最终结果，方便解释前后差异。</p>
 <h3 id="研究结果去哪里看">研究结果去哪里看</h3>
 <ul>
-<li><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/results.md">benchmark 结果说明</a> 和 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/adherence.md">Adherence 说明</a>。README 里的图表由 <code>docs/benchmark-results.json</code> 经 <code>scripts/generate_benchmark_assets.py</code> 生成，数据对应已记录的实验。</li>
+<li><a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/results.md">benchmark 结果说明</a> 和 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/adherence.md">Adherence 说明</a>。README 里的图表由 <code>docs/benchmark-results.json</code> 经 <code>scripts/generate_benchmark_assets.py</code> 生成，数据对应已记录的实验。</li>
 <li>想分析你自己的新运行，参考 <a href="https://github.com/RISE-X-Lab/OpenCollab-Eval/blob/main/src/opencollab_eval/experiment/README.md">OCE 实验工具</a> 和 <a href="https://github.com/RISE-X-Lab/OpenCollab-Eval/blob/main/experiment/README.md">原始研究材料</a> 选择报告方式，并保留任务、模型、角色、工具、预算、上下文和实际验证结果。</li>
 </ul>
 <h2 id="常见问题">常见问题</h2>
@@ -209,11 +209,11 @@
 </ul>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/AGENTS.md">AGENTS.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md">opencollab/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md">docs/evaluation-runtime.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/README.md">docs/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/scripts/README.md">scripts/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/model-inspection.md">docs/model-inspection.md</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/AGENTS.md">AGENTS.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md">opencollab/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md">docs/evaluation-runtime.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/README.md">docs/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/scripts/README.md">scripts/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/model-inspection.md">docs/model-inspection.md</a></li>
 <li>相关指南：<a href="../custom-tools/index.html">自定义工具</a> · <a href="../execution-environments/index.html">使用自己的执行环境</a> · <a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a> · <a href="../run-results/index.html">判断任务是否真的完成</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/architecture/extension-and-evaluation-boundaries.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/architecture/extension-and-evaluation-boundaries.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E9%9C%80%E6%B1%82%E5%AF%B9%E5%BA%94%E5%93%AA%E4%B8%AA%E6%89%A9%E5%B1%95%E5%85%A5%E5%8F%A3">需求对应哪个扩展入口</a><a href="#%E8%B0%81%E8%B4%9F%E8%B4%A3%E5%88%A4%E6%96%AD%E5%81%9A%E5%AF%B9%E4%BA%86%E6%B2%A1%E6%9C%89">谁负责判断“做对了没有”</a><a href="#%E8%AF%BB%E5%8F%96%E9%85%8D%E7%BD%AE%E5%92%8C%E5%B7%B2%E4%BF%9D%E5%AD%98%E6%9D%90%E6%96%99%E7%9A%84%E5%85%AC%E5%BC%80%E5%85%A5%E5%8F%A3">读取配置和已保存材料的公开入口</a><a href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E6%A0%B8%E5%BF%83%E4%BB%A3%E7%A0%81%E9%80%9A%E8%BF%87%E6%8E%A5%E5%8F%A3%E4%BD%BF%E7%94%A8%E5%A4%96%E9%83%A8%E8%83%BD%E5%8A%9B">为什么核心代码通过接口使用外部能力</a><a href="#oc-%E5%92%8C-oce-%E6%80%8E%E6%A0%B7%E5%88%86%E5%B7%A5">OC 和 OCE 怎样分工</a><a href="#%E6%80%8E%E4%B9%88%E5%BC%80%E5%A7%8B%E4%B8%80%E6%AC%A1%E8%AF%84%E6%B5%8B">怎么开始一次评测</a><a href="#%E8%B7%91%E5%AE%8C%E4%BA%86%E4%B8%8D%E7%AD%89%E4%BA%8E%E5%81%9A%E5%AF%B9%E4%BA%86">“跑完了”不等于“做对了”</a><a href="#%E8%AE%A9%E6%AF%94%E8%BE%83%E5%85%AC%E5%B9%B3">让比较公平</a><a href="#%E4%BB%A3%E7%A0%81%E6%80%8E%E6%A0%B7%E4%BA%A4%E7%BB%99%E9%AA%8C%E8%AF%81%E5%99%A8">代码怎样交给验证器</a><a href="#%E7%A0%94%E7%A9%B6%E7%BB%93%E6%9E%9C%E5%8E%BB%E5%93%AA%E9%87%8C%E7%9C%8B">研究结果去哪里看</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

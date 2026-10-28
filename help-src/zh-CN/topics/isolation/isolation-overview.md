@@ -68,7 +68,7 @@
     "candidate-delivery",
     "tool-selection"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -250,9 +250,10 @@ topology:
 - **提示该策略需要 environment provider**：名字格式没问题，但还没注册对应的提供器，见 [使用自己的执行环境](execution-environments.md)。
 - **选了 `vm-group` 或 `vm-session`，报错要求提供 `config.vm`**：还没配 VM 资源。在 SDK 里传 `config={"vm": ...}`，或在命令行设置 `OPENCOLLAB_VM`。
 - **环境申请成功，却在准备工作区时失败**：比如普通工作树的源目录有未提交改动，见上文“起点是哪个版本”。
+- **报错 `unsafe repository Git configuration: core.sparsecheckout`**：仓库开着 sparse checkout。运行 `git sparse-checkout disable` 恢复完整检出后再试。已经关掉的 sparse checkout 设置不影响使用。
 - **补丁捕获失败，或看到改动被保留的提示**：先导出完整材料，见 [找回改动](candidate-delivery.md#出了问题先找回改动再清理)。
 
 ## 延伸阅读
 
-- 源码依据：[隔离指南](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/session-isolation.zh-CN.md) · [环境池实现](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/session_environments.py) · [入口策略解析](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/isolation.py) · [策略名解析](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/isolation.py) · [工作树环境](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/_env_worktree.py) · [工作树池](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/worktree_pool.py)
+- 源码依据：[隔离指南](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/session-isolation.zh-CN.md) · [环境池实现](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/session_environments.py) · [入口策略解析](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/isolation.py) · [策略名解析](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/isolation.py) · [工作树环境](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/_env_worktree.py) · [工作树池](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/worktree_pool.py)
 - 相关指南：[在容器中运行任务](docker-isolation.md) · [在现有 Linux VM 中运行任务](vm-environment-extension.md) · [使用自己的执行环境](execution-environments.md) · [隔离改动怎样回到项目](candidate-delivery.md)

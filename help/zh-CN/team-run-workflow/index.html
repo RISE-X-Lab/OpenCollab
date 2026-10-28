@@ -198,7 +198,7 @@ roles:
 <p>Team 设置了保存目录时，子 Workflow 的记录在其中单独的 <code>workflow-agent-...</code> 子目录里，可以用来查某个成员调用了哪个具体角色。用户停止父成员时，取消信号会打断正在等待的 Workflow；工具会等它清理完，再返回中断提示。</p>
 <h2 id="方式二manage_workflow-让成员自己写子-workflow">方式二：<code>manage_workflow</code> 让成员自己写子 Workflow</h2>
 <p>成员用文件工具写出一个 Python 文件，再调用 <code>launch</code> 启动它。OC 在成员自己的执行环境里起一个独立的 Python 进程导入这个文件，入口函数和普通 Workflow 一样接收 <code>ctx</code> 和 <code>args</code>。这样一段由成员现场编排的子 Workflow，团队内部也叫 DW（动态工作单元）。</p>
-<p>版本要求：需要源码提交 <code>0c47f74a</code> 对应的 OC，按 <a href="../first-run-workspace/index.html#%E7%AC%AC%E4%B8%80%E6%AD%A5%E5%AE%89%E8%A3%85">安装指南</a> 准备解释器。包内版本号和实际安装的源码提交要分别核对。</p>
+<p>版本要求：OC 0.9.6 及以上，按 <a href="../first-run-workspace/index.html#%E7%AC%AC%E4%B8%80%E6%AD%A5%E5%AE%89%E8%A3%85">安装指南</a> 准备解释器。</p>
 <h3 id="开始前你人类调用方要准备好">开始前，你（人类调用方）要准备好</h3>
 <ul>
 <li>
@@ -217,7 +217,7 @@ roles:
 </code></pre>
 </li>
 <li>
-<p>运行环境：角色必须有 <code>bash</code>，因为 <code>manage_workflow</code> 用成员的 shell 权限执行源码；目标环境里要有装了 OC 的 Python（默认 <code>python3</code>，可以用参数 <code>python</code> 指定别的路径）。在宿主机上直接执行时，Team 调用方要显式允许 <code>allow_unisolated_shell</code>。容器或 VM 成员在自己的环境里执行源文件，那里的解释器也要装同一个 OC 源码提交，工具原有的进程隔离要求和命令安全检查照常生效。</p>
+<p>运行环境：角色必须有 <code>bash</code>，因为 <code>manage_workflow</code> 用成员的 shell 权限执行源码；目标环境里要有装了 OC 的 Python（默认 <code>python3</code>，可以用参数 <code>python</code> 指定别的路径）。在宿主机上直接执行时，Team 调用方要显式允许 <code>allow_unisolated_shell</code>。容器或 VM 成员在自己的环境里执行源文件，那里的解释器也要装同一版本（0.9.6）的 OC，工具原有的进程隔离要求和命令安全检查照常生效。</p>
 </li>
 </ul>
 <h3 id="第-1-步看看能用什么">第 1 步：看看能用什么</h3>
@@ -473,12 +473,12 @@ async def main(ctx, args):
 }
 </code></pre>
 <ul>
-<li><code>python</code> 指向准备 VM 时装了 OC 的来宾解释器。VM、SSH、来宾里同一提交的 OC 和管理员重置程序，都要先按 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a> 准备好。</li>
+<li><code>python</code> 指向准备 VM 时装了 OC 的来宾解释器。VM、SSH、来宾里同一版本的 OC 和管理员重置程序，都要先按 <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a> 准备好。</li>
 <li>子 Agent 要查看或修改文件，父角色得先有对应工具，再在源码里用 <code>builtin_tools</code> 传给会话，比如给一个明确的文件检查任务配上 <code>builtin_tools(&quot;bash&quot;)</code>。</li>
 <li>某次调用选 <code>isolation=&quot;vm-session&quot;</code> 时，宿主会再为它申请一台空闲 VM。父成员手里那台也算在占用里，规划容量时要给额外的来宾留出位置。</li>
 </ul>
 <h3 id="从宿主启动这个-team">从宿主启动这个 Team</h3>
-<p>上面是成员这一侧的工具调用。在宿主这一侧，你只需要启动父 Team，成员会在任务里自己写并启动子 Workflow。配好模型服务后，把下面的代码存为工作区里的 <code>run_authored.py</code>，用装了指定提交的解释器运行。示例里的 <code>sys.executable</code> 只适用于父成员就在当前本地环境执行的情况。</p>
+<p>上面是成员这一侧的工具调用。在宿主这一侧，你只需要启动父 Team，成员会在任务里自己写并启动子 Workflow。配好模型服务后，把下面的代码存为工作区里的 <code>run_authored.py</code>，用装了 OC 0.9.6 的解释器运行。示例里的 <code>sys.executable</code> 只适用于父成员就在当前本地环境执行的情况。</p>
 <pre><code class="language-python">import asyncio
 import sys
 from pathlib import Path
@@ -544,10 +544,10 @@ asyncio.run(main())
 <p><code>request_pool</code> 和 <code>request_capacity</code> 要一起设置。多个 Team 或子 Workflow 用同一个模型服务时，让它们使用同一个 <code>request_pool</code> 绝对目录和同样的容量。一次模型请求结束、开始执行工具之前，OC 就会释放名额，所以父成员在等子运行时，子会话照样可以请求模型。见 <a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a>。</p>
 <p>宿主可以通过 <code>client.configuration</code> 查看公开配置；成员则通过工具 schema 和 <code>describe</code> 了解自己能做什么。模型路由和容量由你提前配好，成员只按拿到的接口组织任务。</p>
 <h3 id="先跑一下仓库自带的离线演示">先跑一下仓库自带的离线演示</h3>
-<p>在装好当前源码的 checkout 里运行：</p>
+<p>在 <code>v0.9.6</code> 的源码目录里运行：</p>
 <pre><code class="language-bash">python examples/member-authored-workflow/demo.py
 </code></pre>
-<p>演示在回环地址上启动一个脚本化的 HTTP 模型（所有请求都留在本机），父成员真的写出 <code>generated.py</code>，再启动 Python 子进程收集结果。输出里会有 <code>Local answer</code>、计算值 <code>15</code> 和总用量 <code>90</code>，程序会打印保留了源码和运行产物的工作区路径。跑通之后，再用上面的三任务源码和 Team 调用接上你自己的模型服务。仓库还有一个 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/vm-authored-workflow/demo.py">双 VM 离线示例</a>，用法见 VM 指南。</p>
+<p>演示在回环地址上启动一个脚本化的 HTTP 模型（所有请求都留在本机），父成员真的写出 <code>generated.py</code>，再启动 Python 子进程收集结果。输出里会有 <code>Local answer</code>、计算值 <code>15</code> 和总用量 <code>90</code>，程序会打印保留了源码和运行产物的工作区路径。跑通之后，再用上面的三任务源码和 Team 调用接上你自己的模型服务。仓库还有一个 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/examples/vm-authored-workflow/demo.py">双 VM 离线示例</a>，用法见 VM 指南。</p>
 <h3 id="预算">预算</h3>
 <table>
 <thead>
@@ -594,11 +594,11 @@ asyncio.run(main())
 </ul>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/team_workflow.py">opencollab/bootstrap/team_workflow.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/authored_workflow.py">能力发现与子运行启动</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/authored_workflow_bridge.py">宿主模型桥接</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/authored_workflow_runner.py">子会话权限继承</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/member-authored-workflow/README.md">examples/member-authored-workflow/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/tests/interfaces/test_team_workflow.py">tests/interfaces/test_team_workflow.py</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/team_workflow.py">opencollab/bootstrap/team_workflow.py</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/authored_workflow.py">能力发现与子运行启动</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/authored_workflow_bridge.py">宿主模型桥接</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/authored_workflow_runner.py">子会话权限继承</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/examples/member-authored-workflow/README.md">examples/member-authored-workflow/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/tests/interfaces/test_team_workflow.py">tests/interfaces/test_team_workflow.py</a></li>
 <li>相关指南：<a href="../dispatch-team-agents/index.html">Team 协作</a> · <a href="../run-registered-workflow/index.html">运行一个 Workflow</a> · <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a> · <a href="../model-routing-request-capacity/index.html">模型路由与共享请求容量</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/team-run-workflow.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/team-run-workflow.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E4%B8%A4%E7%A7%8D%E5%B7%A5%E5%85%B7%E6%80%8E%E4%B9%88%E9%80%89">两种工具怎么选</a><a href="#%E6%96%B9%E5%BC%8F%E4%B8%80run_workflow-%E8%BF%90%E8%A1%8C%E5%B7%B2%E6%B3%A8%E5%86%8C%E7%9A%84-workflow">方式一：run_workflow 运行已注册的 Workflow</a><a href="#%E6%9C%80%E5%B0%8F%E7%94%A8%E6%B3%95">最小用法</a><a href="#%E5%8F%82%E6%95%B0">参数</a><a href="#%E7%8E%AF%E5%A2%83%E9%A2%9D%E5%BA%A6%E5%92%8C%E6%9D%83%E9%99%90">环境、额度和权限</a><a href="#%E8%AF%BB%E5%8F%96%E8%BF%94%E5%9B%9E%E5%80%BC">读取返回值</a><a href="#%E6%96%B9%E5%BC%8F%E4%BA%8Cmanage_workflow-%E8%AE%A9%E6%88%90%E5%91%98%E8%87%AA%E5%B7%B1%E5%86%99%E5%AD%90-workflow">方式二：manage_workflow 让成员自己写子 Workflow</a><a href="#%E5%BC%80%E5%A7%8B%E5%89%8D%E4%BD%A0%E4%BA%BA%E7%B1%BB%E8%B0%83%E7%94%A8%E6%96%B9%E8%A6%81%E5%87%86%E5%A4%87%E5%A5%BD">开始前，你（人类调用方）要准备好</a><a href="#%E7%AC%AC-1-%E6%AD%A5%E7%9C%8B%E7%9C%8B%E8%83%BD%E7%94%A8%E4%BB%80%E4%B9%88">第 1 步：看看能用什么</a><a href="#%E7%AC%AC-2-%E6%AD%A5%E5%86%99%E5%87%BA%E5%AD%90-workflow-%E6%96%87%E4%BB%B6">第 2 步：写出子 Workflow 文件</a><a href="#%E7%AC%AC-3-%E6%AD%A5%E5%90%AF%E5%8A%A8">第 3 步：启动</a><a href="#%E7%AC%AC-4-%E6%AD%A5%E6%9F%A5%E8%AF%A2%E7%AD%89%E5%BE%85%E4%B8%8E%E5%81%9C%E6%AD%A2">第 4 步：查询、等待与停止</a><a href="#%E5%B9%B6%E8%A1%8C%E8%B7%91%E5%A4%9A%E4%B8%AA-agent-%E7%9A%84%E5%AD%90-workflow">并行跑多个 Agent 的子 Workflow</a><a href="#%E5%AD%90-agent-%E5%9C%A8%E5%93%AA%E9%87%8C%E6%89%A7%E8%A1%8C">子 Agent 在哪里执行</a><a href="#%E5%9C%A8-vm-%E6%88%90%E5%91%98%E9%87%8C%E7%94%A8%E7%8B%AC%E7%AB%8B%E5%B7%A5%E4%BD%9C%E6%A0%91">在 VM 成员里用独立工作树</a><a href="#%E4%BB%8E%E5%AE%BF%E4%B8%BB%E5%90%AF%E5%8A%A8%E8%BF%99%E4%B8%AA-team">从宿主启动这个 Team</a><a href="#%E5%85%88%E8%B7%91%E4%B8%80%E4%B8%8B%E4%BB%93%E5%BA%93%E8%87%AA%E5%B8%A6%E7%9A%84%E7%A6%BB%E7%BA%BF%E6%BC%94%E7%A4%BA">先跑一下仓库自带的离线演示</a><a href="#%E9%A2%84%E7%AE%97">预算</a><a href="#%E5%AD%90%E8%BF%90%E8%A1%8C%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E7%BB%93%E6%9D%9F">子运行什么时候结束</a><a href="#%E5%87%AD%E6%8D%AE%E5%92%8C%E9%85%8D%E7%BD%AE%E6%94%BE%E5%9C%A8%E5%93%AA">凭据和配置放在哪</a><a href="#%E6%8E%92%E6%9F%A5%E9%94%99%E8%AF%AF">排查错误</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

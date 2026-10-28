@@ -46,7 +46,7 @@
     "workflow-programming-model",
     "run-registered-workflow"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -142,4 +142,4 @@ Agent 在隔离环境（独立工作树、容器或 VM）里改的文件，**不
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md) · [opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/client.py) · [opencollab/domain/session.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/domain/session.py) · [docs/runtime-design.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/runtime-design.md) · [docs/single2.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/single2.md)
+- 源码依据：[opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md) · [opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/client.py) · [opencollab/domain/session.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/domain/session.py) · [docs/runtime-design.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/runtime-design.md) · [docs/single2.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/single2.md)
