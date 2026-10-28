@@ -39,7 +39,7 @@
     "token-step-concurrency-limits",
     "configuration-precedence"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -129,5 +129,5 @@ OC 对采样字段的处理：
 
 ## 延伸阅读
 
-- 源码依据：[configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md) · [opencollab/bootstrap/config.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/config.py) · [docs/model-inspection.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/model-inspection.md)
+- 源码依据：[configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/README.md) · [opencollab/bootstrap/config.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/config.py) · [docs/model-inspection.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/model-inspection.md)
 - 相关指南：[接入模型服务](provider-endpoint-credentials.md) · [预算、步数与并发](../operations/token-step-concurrency-limits.md) · [配置从哪来、哪个生效](configuration-precedence.md)

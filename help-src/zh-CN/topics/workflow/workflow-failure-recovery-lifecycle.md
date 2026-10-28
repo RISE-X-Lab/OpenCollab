@@ -54,7 +54,7 @@
     "weave-workflow",
     "run-results"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -117,7 +117,7 @@ async def read_with_retry(ctx, args):
 
 ## 几种特殊的失败
 
-**并行任务里有一项失败。** 在 `parallel` 或 `pipeline` 里，普通异常会让那一项变成 `None`，其他输入继续执行；想知道具体错在哪，就在单元函数里自己捕获异常，返回带索引、错误类型和部分结果的字典。预算耗尽、执行环境被撤销、外部取消这三种情况不会被吞掉，会向集合外传播。
+**并行任务里有一项失败。** 在 `parallel` 或 `pipeline` 里，普通异常会让那一项变成 `None`，其他输入继续执行；想知道具体错在哪，就在单元函数里自己捕获异常，返回带索引、错误类型和部分结果的字典。分支直接返回的异常对象会原样留在结果里，不会被抛出。预算耗尽、执行环境被撤销、外部取消这三种情况不会被吞掉，会向集合外传播。
 
 **执行环境被撤销。** Workflow 在启动新工作之前、以及等到会话容量之后，都会检查环境状态；还在排队的角色会停止，不再开始新的工作。已保存的会话、用量和候选恢复材料仍然可以用来排查。候选环境和父环境是分开管理的，排查时要对照失败发生在哪个环境。
 
@@ -241,5 +241,5 @@ asyncio.run(main())
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/application/workflow_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_collections.py) · [opencollab/application/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow.py) · [opencollab/bootstrap/programmatic.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/programmatic.py) · [opencollab/sdk/result.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/result.py) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md) · [tests/interfaces/test_sdk_workflow_nested_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/tests/interfaces/test_sdk_workflow_nested_collections.py)
+- 源码依据：[opencollab/application/workflow_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow_collections.py) · [opencollab/application/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow.py) · [opencollab/bootstrap/programmatic.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/programmatic.py) · [opencollab/sdk/result.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/result.py) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md) · [tests/interfaces/test_sdk_workflow_nested_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/tests/interfaces/test_sdk_workflow_nested_collections.py)
 - 相关指南：[在 Workflow 里调用 Agent](workflow-agent-calls.md) · [组合与嵌套](workflow-composition-hierarchy.md) · [运行怎样停下](../operations/timeouts-retries.md) · [Weave](weave-workflow.md)

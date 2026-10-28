@@ -76,7 +76,7 @@
     "workflow-public-api-map",
     "run-registered-workflow"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -314,5 +314,5 @@ async def composite(ctx, args):
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/application/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow.py) · [opencollab/application/workflow_registry.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_registry.py) · [opencollab/workflows.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/workflows.py) · [opencollab/bootstrap/_workflow_runtime_execution.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/_workflow_runtime_execution.py) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md)
+- 源码依据：[opencollab/application/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow.py) · [opencollab/application/workflow_registry.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow_registry.py) · [opencollab/workflows.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/workflows.py) · [opencollab/bootstrap/_workflow_runtime_execution.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/_workflow_runtime_execution.py) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md)
 - 相关指南：[在 Workflow 里调用 Agent](workflow-agent-calls.md) · [组合与嵌套](workflow-composition-hierarchy.md) · [失败处理、测试与调试](workflow-failure-recovery-lifecycle.md) · [Workflow API 速查](workflow-public-api-map.md)

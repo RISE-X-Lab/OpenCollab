@@ -38,7 +38,7 @@
     "timeouts-retries",
     "tool-selection"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -68,7 +68,7 @@
 - 每个成员有独立的显示历史。切换时，界面会重画该成员在本次终端里收到的消息；输入框里还没提交的文字会保留。
 - 配置里声明了、但还没真正创建的角色（标为 `available`）也在切换顺序里。它产生会话之后，界面才开始显示它的消息。
 - 消息在**提交那一刻**就绑定到当前成员。排队期间你切到别人，这条消息仍然发给原来那个。
-- 如果成员正在向你提问，你的下一次输入会被当作回答，`/save` 这类文字也一样。回答之后，才能继续用本地命令或提交新任务。
+- 如果成员正在向你提问，你的下一次输入会被当作回答，`/save` 这类文字也一样。回答之后，才能继续用本地命令或提交新任务。按 Ctrl+C 中断这一轮后，这一轮剩下的提问不会再出现，记为用户拒绝回答（`User declined to answer.`），待确认的命令按拒绝处理，输入框交还给你。
 
 Ctrl+C 中断之后，先看终端报告的停止原因和保留下来的文件，再决定下一步。见 [运行怎样停下](../operations/timeouts-retries.md) 和 [保存与恢复会话](../operations/session-save-resume.md)。
 
@@ -101,5 +101,5 @@ opencollab workflow run duo --workspace /path/to/application \
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/adapters/cli/main.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/main.py) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md)
+- 源码依据：[opencollab/adapters/cli/main.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/main.py) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md)
 - 相关指南：[安装并完成第一次运行](first-run-workspace.md) · [保存与恢复会话](../operations/session-save-resume.md) · [运行怎样停下](../operations/timeouts-retries.md)

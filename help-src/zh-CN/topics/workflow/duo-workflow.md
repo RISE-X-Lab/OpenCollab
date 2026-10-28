@@ -36,7 +36,7 @@
     "run-results",
     "weave-workflow"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -176,5 +176,5 @@ async def compatibility_duo(ctx, args):
 
 ## 延伸阅读
 
-- 源码依据：[docs/duo.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/duo.md) · [opencollab/builtin_workflows/_dual_coder.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/builtin_workflows/_dual_coder.py)
+- 源码依据：[docs/duo.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/duo.md) · [opencollab/builtin_workflows/_dual_coder.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/builtin_workflows/_dual_coder.py)
 - 相关指南：[运行一个 Workflow](run-registered-workflow.md) · [组合与嵌套](workflow-composition-hierarchy.md) · [判断任务是否真的完成](../observability/run-results.md) · [Weave](weave-workflow.md)

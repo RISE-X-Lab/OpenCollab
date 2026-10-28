@@ -74,7 +74,7 @@
     "run-results",
     "configure-team"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -300,5 +300,5 @@ print(profile_tool_limits('single2'))   # 查询默认上限，返回独立字�
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/tools.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/tools.py) · [opencollab/bootstrap/tool_registry.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/tool_registry.py) · [opencollab/adapters/tools/fs.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/tools/fs.py) · [opencollab/adapters/tools/apply_patch.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/tools/apply_patch.py) · [opencollab/adapters/safe_anchored_files.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/safe_anchored_files.py) · [opencollab/adapters/tools/bash.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/tools/bash.py) · [opencollab/adapters/safety.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/safety.py)
+- 源码依据：[opencollab/tools.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/tools.py) · [opencollab/bootstrap/tool_registry.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/tool_registry.py) · [opencollab/adapters/tools/fs.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/tools/fs.py) · [opencollab/adapters/tools/apply_patch.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/tools/apply_patch.py) · [opencollab/adapters/safe_anchored_files.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/safe_anchored_files.py) · [opencollab/adapters/tools/bash.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/tools/bash.py) · [opencollab/adapters/safety.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/safety.py)
 - 相关指南：[自定义工具](custom-tools.md) · [隔离](../isolation/isolation-overview.md) · [判断任务是否真的完成](../observability/run-results.md) · [Team 入门](../team/configure-team.md)

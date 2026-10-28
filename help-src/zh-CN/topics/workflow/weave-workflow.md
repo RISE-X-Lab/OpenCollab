@@ -39,7 +39,7 @@
     "run-results",
     "duo-workflow"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -132,12 +132,22 @@ asyncio.run(main())
 
 `check_commands` 的每一项可以是：
 
-- 一个测试命令字符串。原生能识别 pytest、Go 和 Django 的测试结果。
-- 一个含 `command` 和 `expected_output` 的对象。按输出子串匹配，同时要求退出码为零、执行完成、输出完整捕获。建议像示例那样把断言放在成功标记之前打印。
+- 一个测试命令字符串。原生能识别 pytest、Go 和 Django 的测试结果。识别出的 pytest 命令执行时会自动加上 `-rA`，保留每个执行过的测试项。报告里的 `command` 保持原样，实际执行的命令记在 `executed_command`。
+- 一个含 `command` 和 `expected_output` 的对象。按输出子串匹配，同时要求退出码为零、执行完成、输出完整捕获。期望的文字必须由被检查的程序输出：它直接写在 `echo`、`printf` 等打印命令的参数里，或者来自 `python -c`、`node -e`、`perl -e` 这类单行脚本时，检查不算通过（`expected output is supplied by a static printer`）。pytest 命令即使写了 `expected_output`，也要有每个测试目标的执行记录。建议像示例那样把断言写进脚本文件，放在成功标记之前打印。
 
-以下情况结果是“未验证”，不算通过：检查为空、命令只显示了帮助、只收集了测试没有执行、普通命令缺少可解析的测试证据。Weave 要求检查同时满足 `ok` 和 `executed`，`delivery_ok` 反映最终执行的检查是否通过。
+以下情况结果是“未验证”，不算通过：检查为空、命令只显示了帮助、只收集了测试没有执行、普通命令缺少可解析的测试证据。
 
-默认的命令适配器在每次组检查和最终检查时，都会执行列出的全部命令。自定义适配器可以用传入的 `targets` 缩小验证范围。
+下面这些写法 Weave 不会执行，也记为未验证：
+
+- 用 `;`、`|`、后台 `&`、括号、花括号、`$(...)`、反引号或 `<<<` 组合的命令，以及写成多行的命令。多条命令只能用 `&&` 连接。
+- 只由 `echo`、`printf`、`test`、`true`、`awk`、`sed`、`jq` 这类命令组成的检查。
+- 真正的程序藏在 `timeout`、`nice`、`sudo`、`xargs`、`eval`、`bash -c` 等包装后面的检查。
+
+需要复杂的 shell 逻辑时，写成脚本文件，用 `bash check.sh` 运行，或者接入自己的适配器。
+
+Weave 要求检查同时满足 `ok` 和 `executed`，`delivery_ok` 反映最终执行的检查是否通过。
+
+默认的命令适配器在每次组检查和最终检查时，都会检查列出的全部命令，上面不支持的写法不会执行。自定义适配器可以用传入的 `targets` 缩小验证范围。
 
 ### 修复轮数
 
@@ -230,9 +240,18 @@ CLI 的 JSON `config` 字段和 Python 的 `WeaveConfig(...)` 字段相同。可
 
 ## 中断后继续
 
-Weave 能从显式的状态快照继续，前提是：同一个工作区、相同的组定义、复用原来的 `run_id`。继续的方式有两种：把快照作为 JSON 输入 `state` 传入；或者构造 `WeaveState(saved_snapshot)` 传给 `run_weave`，并在 SDK 里复用保存的 `run_id`。
+Weave 能从显式的状态快照继续，前提是：同一个工作区、相同的组定义、复用原来的 `run_id`。继续的方式有两种：把快照作为 JSON 输入 `state` 传入，同时沿用快照里的 `run_id`（SDK 写 `run_id=...`，CLI 写 `--run-id RUN_ID`）；或者构造 `WeaveState(saved_snapshot)` 传给 `run_weave`，并在 SDK 里复用保存的 `run_id`。
 
 继续时：已经生成的组从检查那一步继续；已经检查过的组保留生成结果；已用掉的修复轮数继续累计。
+
+命令行继续时，上次运行输出里的 `state` 就是快照，`state.run_id` 是原来的运行标识。把 `state` 加进原来的 `flow.json`，再运行：
+
+```bash
+opencollab workflow run weave --workspace /path/to/workspace \
+  --args "$(cat flow.json)" --run-id RUN_ID
+```
+
+`--run-id` 和快照不一致，或者组定义变了，运行会直接失败，报 `continuation requires` 开头的错误，不会重跑检查。
 
 下面的包装流程沿用原生命令检查，把状态写到调用方指定的宿主文件。`launch` 接受和前面示例相同的 `groups` 与 `check_commands`；再次传入同一个检查点时，会恢复原来的 `run_id`。
 
@@ -277,5 +296,5 @@ async def launch(workspace, checkpoint, groups, check_commands):
 
 ## 延伸阅读
 
-- 源码依据：[docs/weave.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/weave.md) · [WeaveConfig 与 WeaveAdapter](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/builtin_workflows/weave.py) · [命令检查实现](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/builtin_workflows/_weave_execution.py)
+- 源码依据：[docs/weave.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/weave.md) · [WeaveConfig 与 WeaveAdapter](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/builtin_workflows/weave.py) · [命令检查实现](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/builtin_workflows/_weave_execution.py)
 - 相关指南：[运行一个 Workflow](run-registered-workflow.md) · [失败处理、测试与调试](workflow-failure-recovery-lifecycle.md) · [判断任务是否真的完成](../observability/run-results.md) · [Duo](duo-workflow.md)

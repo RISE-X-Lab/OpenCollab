@@ -352,7 +352,7 @@ client = OpenCollab(&quot;.&quot;, environment_providers={
 </tr>
 </tbody>
 </table>
-<p>环境本身要提供准备、文件读写、命令执行、撤销、停止和清理，详细签名见 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/ports.py">公开端口</a>。几条要遵守的规则：</p>
+<p>环境本身要提供准备、文件读写、命令执行、撤销、停止和清理，详细签名见 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/ports.py">公开端口</a>。几条要遵守的规则：</p>
 <ul>
 <li>审阅源可能来自另一种策略，也可能在容器里，要通过环境操作读取它的内容。直接从宿主机同名目录复制，审阅任务会读到错误的版本。</li>
 <li>传进来的源环境是借来的，释放时只释放池自己分配的资源。</li>
@@ -377,11 +377,11 @@ client = OpenCollab(&quot;.&quot;, environment_providers={
 </ul>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/environments.py">公开环境 API</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/programmatic.py">环境组合实现</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/session_environments.py">策略池实现</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/ports.py">公开端口</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/environments.py">公开环境 API</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/programmatic.py">环境组合实现</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/session_environments.py">策略池实现</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/ports.py">公开端口</a></li>
 <li>相关指南：<a href="../isolation-overview/index.html">隔离</a> · <a href="../docker-isolation/index.html">在容器中运行任务</a> · <a href="../vm-environment-extension/index.html">在现有 Linux VM 中运行任务</a> · <a href="../service-integration-lifecycle/index.html">把 OC 接进自己的服务</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/isolation/execution-environments.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/isolation/execution-environments.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%96%B9%E5%BC%8F%E4%B8%80%E6%8A%8A%E4%B8%80%E4%B8%AA%E7%8E%B0%E6%88%90%E7%9A%84%E7%8E%AF%E5%A2%83%E4%BA%A4%E7%BB%99-sdk">方式一：把一个现成的环境交给 SDK</a><a href="#%E6%9C%80%E5%B0%8F%E4%BE%8B%E5%AD%90%E6%9C%AC%E6%9C%BA%E7%9B%AE%E5%BD%95">最小例子：本机目录</a><a href="#%E5%B8%B8%E7%94%A8%E5%B7%A5%E5%8E%82">常用工厂</a><a href="#%E6%89%8B%E5%8A%A8%E7%AE%A1%E7%90%86%E4%B8%80%E4%B8%AA%E5%B7%A5%E4%BD%9C%E6%A0%91">手动管理一个工作树</a><a href="#%E8%BF%9E%E6%8E%A5%E4%B8%80%E4%B8%AA%E5%B7%B2%E7%BB%8F%E5%9C%A8%E8%BF%90%E8%A1%8C%E7%9A%84%E5%AE%B9%E5%99%A8">连接一个已经在运行的容器</a><a href="#%E6%96%B0%E5%BB%BA%E5%AE%B9%E5%99%A8">新建容器</a><a href="#%E8%BF%9E%E6%8E%A5%E5%B7%B2%E6%9C%89-linux-vm-%E4%B8%8A%E7%9A%84%E9%A1%B9%E7%9B%AE%E7%9B%AE%E5%BD%95">连接已有 Linux VM 上的项目目录</a><a href="#%E8%B7%AF%E5%BE%84%E6%80%8E%E4%B9%88%E7%AE%97">路径怎么算</a><a href="#%E8%B0%81%E8%B4%9F%E8%B4%A3%E6%B8%85%E7%90%86">谁负责清理</a><a href="#%E6%96%B9%E5%BC%8F%E4%BA%8C%E6%B3%A8%E5%86%8C%E4%B8%80%E4%B8%AA%E6%96%B0%E7%9A%84%E9%9A%94%E7%A6%BB%E7%AD%96%E7%95%A5">方式二：注册一个新的隔离策略</a><a href="#%E6%9C%80%E5%B0%8F%E4%BE%8B%E5%AD%90%E6%8A%8A-docker-%E6%8F%90%E4%BE%9B%E5%99%A8%E5%8C%85%E4%B8%80%E5%B1%82">最小例子：把 Docker 提供器包一层</a><a href="#%E5%B7%A5%E5%8E%82%E6%94%B6%E5%88%B0%E7%9A%84%E5%8F%82%E6%95%B0">工厂收到的参数</a><a href="#%E4%BD%BF%E7%94%A8%E7%8E%B0%E6%9C%89-vm-%E6%8F%90%E4%BE%9B%E5%99%A8">使用现有 VM 提供器</a><a href="#%E8%87%AA%E5%B7%B1%E5%86%99%E7%8E%AF%E5%A2%83%E6%B1%A0%E8%A6%81%E5%AE%9E%E7%8E%B0%E4%BB%80%E4%B9%88">自己写环境池要实现什么</a><a href="#%E6%8E%A5%E5%85%A5%E6%96%B0%E5%90%8E%E7%AB%AF%E6%97%B6%E6%80%8E%E6%A0%B7%E6%B5%8B%E8%AF%95">接入新后端时怎样测试</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

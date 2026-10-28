@@ -35,7 +35,7 @@
     "artifacts-and-history",
     "extension-and-evaluation-boundaries"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -133,5 +133,5 @@ OC 负责保存通用的运行和协作记录；OCE（OpenCollab-Eval）负责�
 
 ## 延伸阅读
 
-- 源码依据：[docs/adherence.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/adherence.md) · [opencollab/teams.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/teams.py) · [opencollab/adapters/trace.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/trace.py) · [docs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/README.md)
+- 源码依据：[docs/adherence.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/adherence.md) · [opencollab/teams.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/teams.py) · [opencollab/adapters/trace.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/trace.py) · [docs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/README.md)
 - 相关指南：[Team 入门](../team/configure-team.md) · [Team 协作](../team/dispatch-team-agents.md) · [运行记录](artifacts-and-history.md) · [OC 的边界与 OCE 评测](../architecture/extension-and-evaluation-boundaries.md)

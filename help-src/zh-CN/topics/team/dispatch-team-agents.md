@@ -86,7 +86,7 @@
     "candidate-delivery",
     "collaboration-adherence"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -277,5 +277,5 @@ Coder 通常在独立工作区（工作树或容器）里改代码，改动**不
 
 ## 延伸阅读
 
-- 源码依据：[派发工具](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/tools/spawn.py) · [消息工具](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/tools/message.py) · [采纳工具](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/tools/adopt_agent.py) · [调度器的采纳逻辑](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/_scheduler_team.py) · [消息唤醒测试](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/tests/workflows/test_message_wait_semantics.py)
+- 源码依据：[派发工具](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/tools/spawn.py) · [消息工具](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/tools/message.py) · [采纳工具](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/tools/adopt_agent.py) · [调度器的采纳逻辑](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/_scheduler_team.py) · [消息唤醒测试](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/tests/workflows/test_message_wait_semantics.py)
 - 相关指南：[Team 入门](configure-team.md) · [让 Team 成员运行 Workflow](../workflow/team-run-workflow.md) · [隔离改动怎样回到项目](../isolation/candidate-delivery.md) · [检查团队是否真的按分工协作](../observability/collaboration-adherence.md)

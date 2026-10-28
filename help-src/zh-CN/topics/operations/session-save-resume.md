@@ -36,7 +36,7 @@
     "artifacts-and-history",
     "timeouts-retries"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -117,5 +117,5 @@ opencollab workflow run duo --workspace /path/to/application \
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/adapters/cli/main.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/main.py) · [opencollab/bootstrap/scheduler_factory.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/scheduler_factory.py) · [docs/runtime-design.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/runtime-design.md)
+- 源码依据：[opencollab/adapters/cli/main.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/main.py) · [opencollab/bootstrap/scheduler_factory.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/scheduler_factory.py) · [docs/runtime-design.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/runtime-design.md)
 - 相关指南：[在终端里使用 OC](../setup/interactive-cli-controls.md) · [原理：一次运行在内部怎样推进](../architecture/runtime-execution-model.md) · [运行记录](../observability/artifacts-and-history.md) · [运行怎样停下](timeouts-retries.md)

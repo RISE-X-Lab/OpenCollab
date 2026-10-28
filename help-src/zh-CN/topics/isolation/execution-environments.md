@@ -51,7 +51,7 @@
     "candidate-delivery",
     "service-integration-lifecycle"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -311,7 +311,7 @@ client = OpenCollab(".", environment_providers={
 | `release_env(environment)` | 归还一次分配 |
 | `release()` | 结束池拥有的全部资源 |
 
-环境本身要提供准备、文件读写、命令执行、撤销、停止和清理，详细签名见 [公开端口](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/ports.py)。几条要遵守的规则：
+环境本身要提供准备、文件读写、命令执行、撤销、停止和清理，详细签名见 [公开端口](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/ports.py)。几条要遵守的规则：
 
 - 审阅源可能来自另一种策略，也可能在容器里，要通过环境操作读取它的内容。直接从宿主机同名目录复制，审阅任务会读到错误的版本。
 - 传进来的源环境是借来的，释放时只释放池自己分配的资源。
@@ -337,5 +337,5 @@ client = OpenCollab(".", environment_providers={
 
 ## 延伸阅读
 
-- 源码依据：[公开环境 API](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/environments.py) · [环境组合实现](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/programmatic.py) · [策略池实现](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/session_environments.py) · [公开端口](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/ports.py)
+- 源码依据：[公开环境 API](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/environments.py) · [环境组合实现](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/programmatic.py) · [策略池实现](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/session_environments.py) · [公开端口](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/ports.py)
 - 相关指南：[隔离](isolation-overview.md) · [在容器中运行任务](docker-isolation.md) · [在现有 Linux VM 中运行任务](vm-environment-extension.md) · [把 OC 接进自己的服务](../architecture/service-integration-lifecycle.md)

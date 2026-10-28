@@ -36,7 +36,7 @@
     "session-save-resume",
     "artifacts-and-history"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -104,6 +104,7 @@ result = await client.agent2(
 - 受保护的输入本身过大时，仍可能占满窗口。这时要缩小任务输入，或修正窗口声明。
 - 查看 `context_shaping` 事件和压缩轨迹，再结合 `reason` 判断，见 [运行记录](../observability/artifacts-and-history.md)。
 - 总结本身也要调用模型、消耗 token，单独计入用量。
+- 模型返回的总结因输出上限被截断时，OC 不采用这份总结，按总结失败处理。
 - `context_tokens` 是单次调用的输入大小，用来看窗口压力；`used_tokens` 是累计的输入加输出，用来统计消耗。
 - 要追溯完整的工具内容，回看保存的会话和工具记录。
 
@@ -127,5 +128,5 @@ result = await client.agent2(
 
 ## 延伸阅读
 
-- 源码依据：[docs/runtime-design.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/runtime-design.md) · [configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md)
+- 源码依据：[docs/runtime-design.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/runtime-design.md) · [configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/README.md) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md)
 - 相关指南：[深度思考与采样](../models/thinking-reasoning-sampling.md) · [预算、步数与并发](token-step-concurrency-limits.md) · [保存与恢复会话](session-save-resume.md) · [原理：一次运行在内部怎样推进](../architecture/runtime-execution-model.md)

@@ -27,7 +27,7 @@
     "skills-on-demand",
     "extension-and-evaluation-boundaries"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -129,5 +129,5 @@ class ReadProjectPolicy(ProjectPolicy):
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/tools.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/tools.py) · [opencollab/application/tool_execution.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/tool_execution.py) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md) · [CONTRIBUTING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/CONTRIBUTING.md)
+- 源码依据：[opencollab/tools.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/tools.py) · [opencollab/application/tool_execution.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/tool_execution.py) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md) · [CONTRIBUTING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/CONTRIBUTING.md)
 - 相关指南：[内置工具](tool-selection.md) · [Skill](skills-on-demand.md) · [OC 的边界：需求该从哪里扩展](../architecture/extension-and-evaluation-boundaries.md)

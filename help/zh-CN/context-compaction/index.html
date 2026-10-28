@@ -113,6 +113,7 @@ result = await client.agent2(
 <li>受保护的输入本身过大时，仍可能占满窗口。这时要缩小任务输入，或修正窗口声明。</li>
 <li>查看 <code>context_shaping</code> 事件和压缩轨迹，再结合 <code>reason</code> 判断，见 <a href="../artifacts-and-history/index.html">运行记录</a>。</li>
 <li>总结本身也要调用模型、消耗 token，单独计入用量。</li>
+<li>模型返回的总结因输出上限被截断时，OC 不采用这份总结，按总结失败处理。</li>
 <li><code>context_tokens</code> 是单次调用的输入大小，用来看窗口压力；<code>used_tokens</code> 是累计的输入加输出，用来统计消耗。</li>
 <li>要追溯完整的工具内容，回看保存的会话和工具记录。</li>
 </ul>
@@ -134,11 +135,11 @@ result = await client.agent2(
 </ul>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/runtime-design.md">docs/runtime-design.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md">configs/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md">docs/evaluation-runtime.md</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/runtime-design.md">docs/runtime-design.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/README.md">configs/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md">docs/evaluation-runtime.md</a></li>
 <li>相关指南：<a href="../thinking-reasoning-sampling/index.html">深度思考与采样</a> · <a href="../token-step-concurrency-limits/index.html">预算、步数与并发</a> · <a href="../session-save-resume/index.html">保存与恢复会话</a> · <a href="../runtime-execution-model/index.html">原理：一次运行在内部怎样推进</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/operations/context-compaction.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/operations/context-compaction.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E6%9C%80%E5%B0%8F%E7%94%A8%E6%B3%95%E7%A1%AE%E8%AE%A4%E5%AE%9E%E9%99%85%E7%AA%97%E5%8F%A3">最小用法：确认实际窗口</a><a href="#%E5%85%B3%E9%94%AE%E5%8F%82%E6%95%B0">关键参数</a><a href="#%E8%B0%83%E6%95%B4%E5%9B%A2%E9%98%9F%E5%92%8C%E5%8D%95-agent-%E7%9A%84%E7%AD%96%E7%95%A5">调整团队和单 Agent 的策略</a><a href="#%E9%81%87%E5%88%B0%E6%BA%A2%E5%87%BA%E6%97%B6%E7%9C%8B%E4%BB%80%E4%B9%88">遇到溢出时看什么</a><a href="#%E6%95%B4%E7%90%86%E7%9A%84%E5%85%B7%E4%BD%93%E8%A7%84%E5%88%99">整理的具体规则</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

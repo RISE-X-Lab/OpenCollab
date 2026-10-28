@@ -2,7 +2,7 @@
 
 OpenCollab（OC）是一个让 AI Agent 读代码、改代码、跑命令的框架。你可以只用一个 Agent；也可以让几个 Agent 组成团队，由模型自己分工（Team）；还可以用 Python 代码把协作步骤写清楚（Workflow）。
 
-本 Wiki 按 [main 分支提交 0c47f74a](https://github.com/RISE-X-Lab/OpenCollab/tree/0c47f74a27441888286a22012b23b658185f8b8f) 的源码核对。这份源码的包版本号仍是 0.9.5；要用 VM 隔离，或让成员用 `manage_workflow describe` 查询可用能力，请按 [安装指南](topics/setup/first-run-workspace.md#第一步安装) 安装这个提交。
+本 Wiki 对应 [OpenCollab 0.9.6](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6)，内容按 `v0.9.6` 标签的源码核对。VM 隔离、成员自编子 Workflow（`manage_workflow`）等功能都从 0.9.6 开始提供，安装方法见 [安装指南](topics/setup/first-run-workspace.md#第一步安装)。
 
 [返回项目站主页](https://rise-x-lab.github.io/OpenCollab/) · [GitHub 源码](https://github.com/RISE-X-Lab/OpenCollab) · [阅读路径](reading-paths.md) · [问题导航](questions.md)
 

@@ -50,7 +50,7 @@
     "tool-selection",
     "extension-and-evaluation-boundaries"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -193,5 +193,5 @@ print(sorted(snapshot))
 
 ## 延伸阅读
 
-- 源码依据：[会话状态](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/domain/session.py) · [会话执行](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/session_run.py) · [工具执行](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/tool_execution.py) · [运行设计](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/runtime-design.md)
+- 源码依据：[会话状态](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/domain/session.py) · [会话执行](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/session_run.py) · [工具执行](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/tool_execution.py) · [运行设计](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/runtime-design.md)
 - 相关指南：[OC 是什么](../orientation/concepts-and-modes.md) · [保存与恢复会话](../operations/session-save-resume.md) · [上下文窗口与压缩](../operations/context-compaction.md) · [OC 的边界：需求该从哪里扩展](extension-and-evaluation-boundaries.md)

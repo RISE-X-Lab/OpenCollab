@@ -48,7 +48,7 @@
     "run-results",
     "collaboration-adherence"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -104,7 +104,7 @@ OC 提供模型交互、工具执行、预算、取消和运行记录。任务�
 | adapters | 模型、工具、环境和存储的具体实现 |
 | bootstrap | 把这些实现组装起来 |
 
-好处是：接入一个新的外部执行服务时，核心代码只需要知道它能申请环境、读写文件、执行命令；怎么连接、资源 ID 是什么、怎么清理，都写在你的适配实现里。仓库的架构规则见 [AGENTS.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/AGENTS.md)。
+好处是：接入一个新的外部执行服务时，核心代码只需要知道它能申请环境、读写文件、执行命令；怎么连接、资源 ID 是什么、怎么清理，都写在你的适配实现里。仓库的架构规则见 [AGENTS.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/AGENTS.md)。
 
 ## OC 和 OCE 怎样分工
 
@@ -125,7 +125,7 @@ OCE 通过 OC 的公开 SDK 发起运行、拿到会话和交付记录，再用 
 4. 评测器通过 SDK 调用 OC 时，传入模型、预算、期限、执行环境和产物位置。
 5. 正式运行前，确认两个仓库的版本和要用的功能。
 
-当前的评测命令与数据集设置以 [OpenCollab-Eval](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme) 为入口，具体 benchmark 的安装步骤和评分参数见对应的 OCE 指南。OC 这边的 [评测运行时文档](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md) 说明 SDK 的预算、取消、清理与结果接口。项目里历史实验的命令，要对照当时的提交来读。
+当前的评测命令与数据集设置以 [OpenCollab-Eval](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme) 为入口，具体 benchmark 的安装步骤和评分参数见对应的 OCE 指南。OC 这边的 [评测运行时文档](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md) 说明 SDK 的预算、取消、清理与结果接口。项目里历史实验的命令，要对照当时的提交来读。
 
 ### “跑完了”不等于“做对了”
 
@@ -143,7 +143,7 @@ OCE 通过 OC 的公开 SDK 发起运行、拿到会话和交付记录，再用 
 
 ### 研究结果去哪里看
 
-- [benchmark 结果说明](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/results.md) 和 [Adherence 说明](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/adherence.md)。README 里的图表由 `docs/benchmark-results.json` 经 `scripts/generate_benchmark_assets.py` 生成，数据对应已记录的实验。
+- [benchmark 结果说明](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/results.md) 和 [Adherence 说明](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/adherence.md)。README 里的图表由 `docs/benchmark-results.json` 经 `scripts/generate_benchmark_assets.py` 生成，数据对应已记录的实验。
 - 想分析你自己的新运行，参考 [OCE 实验工具](https://github.com/RISE-X-Lab/OpenCollab-Eval/blob/main/src/opencollab_eval/experiment/README.md) 和 [原始研究材料](https://github.com/RISE-X-Lab/OpenCollab-Eval/blob/main/experiment/README.md) 选择报告方式，并保留任务、模型、角色、工具、预算、上下文和实际验证结果。
 
 ## 常见问题
@@ -153,5 +153,5 @@ OCE 通过 OC 的公开 SDK 发起运行、拿到会话和交付记录，再用 
 
 ## 延伸阅读
 
-- 源码依据：[AGENTS.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/AGENTS.md) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md) · [docs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/README.md) · [scripts/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/scripts/README.md) · [docs/model-inspection.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/model-inspection.md)
+- 源码依据：[AGENTS.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/AGENTS.md) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md) · [docs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/README.md) · [scripts/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/scripts/README.md) · [docs/model-inspection.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/model-inspection.md)
 - 相关指南：[自定义工具](../extensions/custom-tools.md) · [使用自己的执行环境](../isolation/execution-environments.md) · [把 OC 接进自己的服务](service-integration-lifecycle.md) · [判断任务是否真的完成](../observability/run-results.md)

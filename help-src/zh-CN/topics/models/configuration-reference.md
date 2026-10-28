@@ -33,7 +33,7 @@
     "timeouts-retries",
     "token-step-concurrency-limits"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -158,5 +158,5 @@ for name in ("model", "budget", "max_output_tokens", "llm_timeout"):
 
 ## 延伸阅读
 
-- 源码依据：[客户端配置与校验](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/config.py) · [公开客户端参数](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/client.py) · [配置指南](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md)
+- 源码依据：[客户端配置与校验](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/config.py) · [公开客户端参数](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/client.py) · [配置指南](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/README.md)
 - 相关指南：[配置从哪来、哪个生效](configuration-precedence.md) · [接入模型服务](provider-endpoint-credentials.md) · [运行怎样停下](../operations/timeouts-retries.md)

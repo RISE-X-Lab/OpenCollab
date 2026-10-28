@@ -122,6 +122,10 @@ opencollab workflow run duo --help
 <td><code>--agent-profile</code></td>
 <td>所有角色使用的 Agent 配置</td>
 </tr>
+<tr>
+<td><code>--run-id</code></td>
+<td>沿用原运行的 <code>run_id</code>，用于继续之前的运行，例如 <a href="../weave-workflow/index.html#%E4%B8%AD%E6%96%AD%E5%90%8E%E7%BB%A7%E7%BB%AD">Weave 从状态快照继续</a></td>
+</tr>
 </tbody>
 </table>
 <p>几条规则：</p>
@@ -223,11 +227,11 @@ asyncio.run(main())
 </ul>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md">opencollab/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/workflow.py">opencollab/adapters/cli/workflow.py</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md">opencollab/README.md</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/workflow.py">opencollab/adapters/cli/workflow.py</a></li>
 <li>相关指南：<a href="../workflow-programming-model/index.html">编写 Workflow</a> · <a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a> · <a href="../run-results/index.html">判断任务是否真的完成</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/run-registered-workflow.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/workflow/run-registered-workflow.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%85%88%E9%80%89%E4%B8%80%E4%B8%AA%E7%8E%B0%E6%88%90%E7%9A%84-workflow">先选一个现成的 Workflow</a><a href="#%E7%AC%AC-1-%E6%AD%A5%E5%88%97%E5%87%BA%E5%8F%AF%E7%94%A8%E7%9A%84-workflow">第 1 步：列出可用的 Workflow</a><a href="#%E7%AC%AC-2-%E6%AD%A5%E7%94%A8%E5%91%BD%E4%BB%A4%E8%A1%8C%E4%BA%A4%E7%BB%99%E5%AE%83%E4%B8%80%E9%A1%B9%E4%BB%BB%E5%8A%A1">第 2 步：用命令行交给它一项任务</a><a href="#%E7%AC%AC-3-%E6%AD%A5%E5%8F%AF%E9%80%89%E7%94%A8-python-%E5%90%AF%E5%8A%A8">第 3 步（可选）：用 Python 启动</a><a href="#%E7%AC%AC-4-%E6%AD%A5%E8%AF%BB%E7%BB%93%E6%9E%9C">第 4 步：读结果</a><a href="#%E8%BF%90%E8%A1%8C%E8%AE%B0%E5%BD%95%E4%BF%9D%E5%AD%98%E5%9C%A8%E5%93%AA%E9%87%8C">运行记录保存在哪里</a><a href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98">常见问题</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

@@ -64,7 +64,7 @@
     "service-integration-lifecycle",
     "vm-environment-extension"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -266,5 +266,5 @@ VM 清理比本地慢，所以单独用 `vm.cleanup_timeout`。OC 清理一台 V
 
 ## 延伸阅读
 
-- 源码依据：[configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/configs/README.md) · [opencollab/bootstrap/config.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/config.py) · [工具执行运行时](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/tool_execution_runtime.py) · [opencollab/adapters/cli/main.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/main.py) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md)
+- 源码依据：[configs/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/configs/README.md) · [opencollab/bootstrap/config.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/config.py) · [工具执行运行时](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/tool_execution_runtime.py) · [opencollab/adapters/cli/main.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/main.py) · [docs/evaluation-runtime.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md)
 - 相关指南：[预算、步数与并发](token-step-concurrency-limits.md) · [接入模型服务](../models/provider-endpoint-credentials.md) · [隔离改动怎样回到项目](../isolation/candidate-delivery.md) · [把 OC 接进自己的服务](../architecture/service-integration-lifecycle.md)

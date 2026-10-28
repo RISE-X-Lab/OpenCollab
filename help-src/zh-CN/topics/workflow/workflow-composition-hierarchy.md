@@ -56,7 +56,7 @@
     "duo-workflow",
     "run-results"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -183,7 +183,7 @@ async def prepare_candidate(ctx, args):
 
 `candidate_workflow` 为子流程准备一个候选环境和一个子上下文，子函数里的多次会话都在这个环境里工作。
 
-- **资源**：候选和父运行共享 Agent 并发容量、集合任务容量和最终截止时间；候选的有限预算从父运行的授权里出。
+- **资源**：候选和父运行共享 Agent 并发容量、集合任务容量和最终截止时间；候选的有限预算从父运行的授权里出。候选运行期间用掉的 token 会实时计入父运行，父流程的 `ctx.tokens_spent()` 和 `ctx.tokens_remaining()` 不用等候选结束；父运行余额不够时，新的调用会抛出 `WorkflowBudgetExceeded`。
 - **嵌套**：默认的候选子上下文没有再配备候选后端，所以子流程里不能再开一层候选环境。子流程可以继续调用普通子函数，也可以给单次会话选隔离策略；确实需要再建一层候选环境，要由集成方提供对应的后端。
 
 ### 读取候选结果
@@ -297,5 +297,5 @@ async def run_independent_examples(workspace, team_config):
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/workflows.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/workflows.py) · [opencollab/application/workflow_candidates.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_candidates.py) · [opencollab/tools.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/tools.py) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md) · [docs/duo.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/duo.md)
+- 源码依据：[opencollab/workflows.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/workflows.py) · [opencollab/application/workflow_candidates.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow_candidates.py) · [opencollab/tools.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/tools.py) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md) · [docs/duo.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/duo.md)
 - 相关指南：[在 Workflow 里调用 Agent](workflow-agent-calls.md) · [让 Team 成员运行 Workflow](team-run-workflow.md) · [隔离改动怎样回到项目](../isolation/candidate-delivery.md) · [Duo](duo-workflow.md)

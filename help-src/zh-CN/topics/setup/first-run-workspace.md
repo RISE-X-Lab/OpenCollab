@@ -55,7 +55,7 @@
     "provider-endpoint-credentials",
     "run-registered-workflow"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -74,13 +74,13 @@ OC 支持 Linux 和 macOS，需要 Python 3.10 及以上。
 ```bash
 git clone https://github.com/RISE-X-Lab/OpenCollab.git
 cd OpenCollab
-# 切到本 Wiki 核对过的源码提交
-git checkout 0c47f74a27441888286a22012b23b658185f8b8f
+# 切到本 Wiki 对应的发布版本
+git checkout v0.9.6
 # 确认 Python 版本，应为 3.10 或更高
 python3 --version
 ```
 
-这个提交的包版本号仍是 0.9.5，和更早的 0.9.5 代码没法靠版本号区分。本 Wiki 介绍的 VM 隔离和 `manage_workflow describe` 都需要这个提交，请以提交号为准。之后所有命令都在这个源码根目录里执行。
+`v0.9.6` 是本 Wiki 核对的发布标签。VM 隔离和 `manage_workflow` 都从 0.9.6 开始提供，更早的版本没有。之后所有命令都在这个源码根目录里执行。
 
 ### 安装依赖
 
@@ -103,7 +103,15 @@ python3 -m venv .venv
 .venv/bin/opencollab --help
 ```
 
-用发布版 wheel 的话，在你选好的虚拟环境里按该发布提供的方式安装，装完同样做下面的检查。
+不需要源码的话，也可以直接装发布页附带的 wheel。从 [v0.9.6 发布页](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6) 下载 `opencollab-0.9.6-py3-none-any.whl` 和 `SHA256SUMS`，核对后装进你的虚拟环境：
+
+```bash
+shasum -a 256 -c SHA256SUMS --ignore-missing
+python3 -m venv .venv
+.venv/bin/pip install opencollab-0.9.6-py3-none-any.whl
+```
+
+装完同样做下面的检查。
 
 ### 确认装好了
 
@@ -208,9 +216,9 @@ uv run opencollab workflow run duo --workspace /path/to/your-project \
 - **要复现别人的结果**：用对方记录的发布版本和依赖，而不是当前提交。
 - **需要 Weave、`RunControl` 或 `ctx.agent_run`**：这些在 `v0.9.3` 之后才加入，要选更新的版本。已发布的标签和安装包在仓库的发布页。
 - **报 capability 错误**：本机文件适配器依赖几项系统能力：基于目录描述符的相对路径操作、不跟随符号链接的文件检查、基于文件描述符的目录枚举、`fcntl.flock` 文件锁，以及不覆盖已有文件的原子重命名（Linux 用 `renameat2(RENAME_NOREPLACE)`，macOS 10.12 及以上用 `renameatx_np(RENAME_EXCL)`）。缺任何一项都会报这个错，请换一个满足要求的系统。
-- **成员自己写的代码要在容器或 VM 里执行**：控制端和容器或 VM 里都要装同一份源码构建出的 wheel，见 [在现有 Linux VM 中运行任务](../isolation/vm-environment-extension.md)。
+- **成员自己写的代码要在容器或 VM 里执行**：控制端和容器或 VM 里都要装同一份 wheel，最简单的是都装发布页的 `opencollab-0.9.6-py3-none-any.whl`，见 [在现有 Linux VM 中运行任务](../isolation/vm-environment-extension.md)。
 
 ## 延伸阅读
 
-- 源码依据：[pyproject.toml](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/pyproject.toml) · [README.zh-CN.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/README.zh-CN.md) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/README.md) · [opencollab/adapters/cli/main.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/cli/main.py) · [opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/client.py)
+- 源码依据：[pyproject.toml](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/pyproject.toml) · [README.zh-CN.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/README.zh-CN.md) · [opencollab/README.md](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/README.md) · [opencollab/adapters/cli/main.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/cli/main.py) · [opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/client.py)
 - 相关指南：[在终端里使用 OC](interactive-cli-controls.md) · [从 Python 调用 OC](python-sdk-entrypoints.md) · [配置从哪来、哪个生效](../models/configuration-precedence.md)

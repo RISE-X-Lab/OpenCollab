@@ -39,7 +39,7 @@
     "team-run-workflow",
     "model-routing-request-capacity"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -95,26 +95,27 @@ await client.workflow(flow, inputs, isolation="vm-group")
 
 ### 在控制端和来宾上安装同一个 wheel
 
-控制端和每台来宾必须装同一份安装包。做法是从固定的源码提交构建一次 wheel，到处安装这一个文件。这个提交的包版本号仍是 `0.9.5`，真正区分来源的是完整提交号。
+控制端和每台来宾必须装同一份安装包。最简单的做法是都装 [v0.9.6 发布页](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6) 附带的 wheel。
 
-先在一个独立的源码目录里构建，并装到控制端：
+先在控制端下载 wheel 和校验文件，核对后装进控制端的虚拟环境：
 
 ```bash
-git clone https://github.com/RISE-X-Lab/OpenCollab.git OpenCollab-vm
-cd OpenCollab-vm
-git checkout 0c47f74a27441888286a22012b23b658185f8b8f
-uv build --wheel
+mkdir OpenCollab-vm && cd OpenCollab-vm
+# 从发布页下载 opencollab-0.9.6-py3-none-any.whl 和 SHA256SUMS 到这个目录
+shasum -a 256 -c SHA256SUMS --ignore-missing
 python3 -m venv .venv
-.venv/bin/python -m pip install dist/opencollab-0.9.5-py3-none-any.whl
+.venv/bin/python -m pip install opencollab-0.9.6-py3-none-any.whl
 source .venv/bin/activate
 ```
 
-把这份 wheel 复制到每台来宾的 `/home/worker/opencollab-0.9.5-py3-none-any.whl`，用来宾上的 `worker` 账号安装，pip 会按来宾系统装好运行依赖：
+把这份 wheel 复制到每台来宾的 `/home/worker/opencollab-0.9.6-py3-none-any.whl`，用来宾上的 `worker` 账号安装，pip 会按来宾系统装好运行依赖：
 
 ```bash
 python3 -m venv /home/worker/.venvs/oc
-/home/worker/.venvs/oc/bin/python -m pip install /home/worker/opencollab-0.9.5-py3-none-any.whl
+/home/worker/.venvs/oc/bin/python -m pip install /home/worker/opencollab-0.9.6-py3-none-any.whl
 ```
+
+如果你要用自己改过的源码，就在源码目录里运行 `uv build --wheel`，把 `dist/` 下生成的 wheel 同样装到控制端和每台来宾。
 
 记下来宾虚拟环境里 Python 的绝对路径，后面要用两次：填到配置的 `connection.python`，以及成员自编子 Workflow 的 `launch.python`。后面的控制端示例都在你要处理的项目目录里执行，用的是刚才激活的 Python 环境。
 
@@ -311,7 +312,7 @@ OPENCOLLAB_VM="$(cat vm-profile.json)" \
 
 之后用 `status`、`wait`、`result` 或 `stop` 管理子运行。子 Workflow 里也可以给单次 `ctx.agent` 写 `isolation="vm-session"`，这次调用会领取父 VM 之外的另一台机器。模型路由、凭据和请求容量都留在控制端，由桥接层管理；工作区文件按快照规则复制到 VM。完整过程见 [让 Team 成员运行 Workflow](../workflow/team-run-workflow.md#在-vm-成员里用独立工作树)。
 
-仓库有一个 [双 VM 离线示例](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/vm-authored-workflow/demo.py)。它默认用 `python3` 启动成员写的源码；如果你按本页的方式在来宾上建了虚拟环境，就在示例的 `manage_workflow` 启动参数里加上 `"python": "/home/worker/.venvs/oc/bin/python"`，再用同一份 VM 配置运行。
+仓库有一个 [双 VM 离线示例](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/examples/vm-authored-workflow/demo.py)。它默认用 `python3` 启动成员写的源码；如果你按本页的方式在来宾上建了虚拟环境，就在示例的 `manage_workflow` 启动参数里加上 `"python": "/home/worker/.venvs/oc/bin/python"`，再用同一份 VM 配置运行。
 
 ## 导出改动和归还机器
 
@@ -328,5 +329,5 @@ OPENCOLLAB_VM="$(cat vm-profile.json)" \
 
 ## 延伸阅读
 
-- 源码依据：[VM 使用指南](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/virtual-machines.zh-CN.md) · [VMProfile 配置](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/environment_profiles.py) · [VM 资源字段](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/vm_config.py) · [VM 分配与释放](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/vm_isolation.py) · [成员自编 VM 示例](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/vm-authored-workflow/README.zh-CN.md)
+- 源码依据：[VM 使用指南](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/virtual-machines.zh-CN.md) · [VMProfile 配置](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/environment_profiles.py) · [VM 资源字段](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/vm_config.py) · [VM 分配与释放](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/vm_isolation.py) · [成员自编 VM 示例](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/examples/vm-authored-workflow/README.zh-CN.md)
 - 相关指南：[隔离](isolation-overview.md) · [使用自己的执行环境](execution-environments.md) · [隔离改动怎样回到项目](candidate-delivery.md) · [让 Team 成员运行 Workflow](../workflow/team-run-workflow.md)

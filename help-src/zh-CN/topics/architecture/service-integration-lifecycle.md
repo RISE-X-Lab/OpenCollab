@@ -38,7 +38,7 @@
     "run-results",
     "artifacts-and-history"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -181,5 +181,5 @@ finally:
 
 ## 延伸阅读
 
-- 源码依据：[公开运行结果](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/result.py) · [opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/client.py) · [运行参考：取消、运行身份与资源归属](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/evaluation-runtime.md)
+- 源码依据：[公开运行结果](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/result.py) · [opencollab/sdk/client.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/client.py) · [运行参考：取消、运行身份与资源归属](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/evaluation-runtime.md)
 - 相关指南：[从 Python 调用 OC](../setup/python-sdk-entrypoints.md) · [运行怎样停下](../operations/timeouts-retries.md) · [使用自己的执行环境](../isolation/execution-environments.md) · [运行记录](../observability/artifacts-and-history.md)

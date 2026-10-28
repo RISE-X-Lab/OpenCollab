@@ -95,20 +95,20 @@ await client.workflow(flow, inputs, isolation=&quot;vm-group&quot;)
 </table>
 <p>内核那一行的用途：任务取消或 SSH 断线后，OC 要靠这些能力找到远端命令并结束它。</p>
 <h3 id="在控制端和来宾上安装同一个-wheel">在控制端和来宾上安装同一个 wheel</h3>
-<p>控制端和每台来宾必须装同一份安装包。做法是从固定的源码提交构建一次 wheel，到处安装这一个文件。这个提交的包版本号仍是 <code>0.9.5</code>，真正区分来源的是完整提交号。</p>
-<p>先在一个独立的源码目录里构建，并装到控制端：</p>
-<pre><code class="language-bash">git clone https://github.com/RISE-X-Lab/OpenCollab.git OpenCollab-vm
-cd OpenCollab-vm
-git checkout 0c47f74a27441888286a22012b23b658185f8b8f
-uv build --wheel
+<p>控制端和每台来宾必须装同一份安装包。最简单的做法是都装 <a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">v0.9.6 发布页</a> 附带的 wheel。</p>
+<p>先在控制端下载 wheel 和校验文件，核对后装进控制端的虚拟环境：</p>
+<pre><code class="language-bash">mkdir OpenCollab-vm &amp;&amp; cd OpenCollab-vm
+# 从发布页下载 opencollab-0.9.6-py3-none-any.whl 和 SHA256SUMS 到这个目录
+shasum -a 256 -c SHA256SUMS --ignore-missing
 python3 -m venv .venv
-.venv/bin/python -m pip install dist/opencollab-0.9.5-py3-none-any.whl
+.venv/bin/python -m pip install opencollab-0.9.6-py3-none-any.whl
 source .venv/bin/activate
 </code></pre>
-<p>把这份 wheel 复制到每台来宾的 <code>/home/worker/opencollab-0.9.5-py3-none-any.whl</code>，用来宾上的 <code>worker</code> 账号安装，pip 会按来宾系统装好运行依赖：</p>
+<p>把这份 wheel 复制到每台来宾的 <code>/home/worker/opencollab-0.9.6-py3-none-any.whl</code>，用来宾上的 <code>worker</code> 账号安装，pip 会按来宾系统装好运行依赖：</p>
 <pre><code class="language-bash">python3 -m venv /home/worker/.venvs/oc
-/home/worker/.venvs/oc/bin/python -m pip install /home/worker/opencollab-0.9.5-py3-none-any.whl
+/home/worker/.venvs/oc/bin/python -m pip install /home/worker/opencollab-0.9.6-py3-none-any.whl
 </code></pre>
+<p>如果你要用自己改过的源码，就在源码目录里运行 <code>uv build --wheel</code>，把 <code>dist/</code> 下生成的 wheel 同样装到控制端和每台来宾。</p>
 <p>记下来宾虚拟环境里 Python 的绝对路径，后面要用两次：填到配置的 <code>connection.python</code>，以及成员自编子 Workflow 的 <code>launch.python</code>。后面的控制端示例都在你要处理的项目目录里执行，用的是刚才激活的 Python 环境。</p>
 <h3 id="在来宾上建两个目录">在来宾上建两个目录</h3>
 <p>用 SSH 账号 <code>worker</code> 在每台来宾上执行（路径按你的账号调整）：</p>
@@ -285,7 +285,7 @@ roles:
 }
 </code></pre>
 <p>之后用 <code>status</code>、<code>wait</code>、<code>result</code> 或 <code>stop</code> 管理子运行。子 Workflow 里也可以给单次 <code>ctx.agent</code> 写 <code>isolation=&quot;vm-session&quot;</code>，这次调用会领取父 VM 之外的另一台机器。模型路由、凭据和请求容量都留在控制端，由桥接层管理；工作区文件按快照规则复制到 VM。完整过程见 <a href="../team-run-workflow/index.html#%E5%9C%A8-vm-%E6%88%90%E5%91%98%E9%87%8C%E7%94%A8%E7%8B%AC%E7%AB%8B%E5%B7%A5%E4%BD%9C%E6%A0%91">让 Team 成员运行 Workflow</a>。</p>
-<p>仓库有一个 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/vm-authored-workflow/demo.py">双 VM 离线示例</a>。它默认用 <code>python3</code> 启动成员写的源码；如果你按本页的方式在来宾上建了虚拟环境，就在示例的 <code>manage_workflow</code> 启动参数里加上 <code>&quot;python&quot;: &quot;/home/worker/.venvs/oc/bin/python&quot;</code>，再用同一份 VM 配置运行。</p>
+<p>仓库有一个 <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/examples/vm-authored-workflow/demo.py">双 VM 离线示例</a>。它默认用 <code>python3</code> 启动成员写的源码；如果你按本页的方式在来宾上建了虚拟环境，就在示例的 <code>manage_workflow</code> 启动参数里加上 <code>&quot;python&quot;: &quot;/home/worker/.venvs/oc/bin/python&quot;</code>，再用同一份 VM 配置运行。</p>
 <h2 id="导出改动和归还机器">导出改动和归还机器</h2>
 <p><strong>改动在哪里</strong>：VM 环境释放前，OC 把候选内容导出到控制端运行产物的 <code>vm/&lt;租约 token&gt;/&lt;角色目录&gt;</code> 下。显式设置了隔离的 Team，入口补丁还可以从 <code>result.metrics.get(&quot;entry_patch&quot;)</code> 拿到。先看完整文件或补丁，再按任务要求采纳，见 <a href="../candidate-delivery/index.html">隔离改动怎样回到项目</a>。</p>
 <p><strong>OC 怎样归还机器</strong>：结束自己发起的操作 → 清理工作树 → 仍然持有租约，运行管理员的重置程序 → 重置成功、任务目录删掉之后，才释放租约。</p>
@@ -298,11 +298,11 @@ roles:
 </ul>
 <h2 id="延伸阅读">延伸阅读</h2>
 <ul>
-<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/docs/virtual-machines.zh-CN.md">VM 使用指南</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/bootstrap/environment_profiles.py">VMProfile 配置</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/vm_config.py">VM 资源字段</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/vm_isolation.py">VM 分配与释放</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/examples/vm-authored-workflow/README.zh-CN.md">成员自编 VM 示例</a></li>
+<li>源码依据：<a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/docs/virtual-machines.zh-CN.md">VM 使用指南</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/bootstrap/environment_profiles.py">VMProfile 配置</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/vm_config.py">VM 资源字段</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/vm_isolation.py">VM 分配与释放</a> · <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/examples/vm-authored-workflow/README.zh-CN.md">成员自编 VM 示例</a></li>
 <li>相关指南：<a href="../isolation-overview/index.html">隔离</a> · <a href="../execution-environments/index.html">使用自己的执行环境</a> · <a href="../candidate-delivery/index.html">隔离改动怎样回到项目</a> · <a href="../team-run-workflow/index.html">让 Team 成员运行 Workflow</a></li>
 </ul>
 
-<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/isolation/vm-environment-extension.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/commit/0c47f74a27441888286a22012b23b658185f8b8f">OpenCollab 0.9.5</a><a href="../../../index.html">返回项目主页</a></footer>
+<footer class="article-footer"><a href="../../../help-src/zh-CN/topics/isolation/vm-environment-extension.md">Markdown 源文档</a><a href="https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.6">OpenCollab 0.9.6</a><a href="../../../index.html">返回项目主页</a></footer>
 </main>
 <aside class="toc" aria-label="本页内容"><strong>本页内容</strong><a href="#%E5%85%88%E7%90%86%E8%A7%A3%E5%9B%9B%E4%B8%AA%E5%90%8D%E8%AF%8D%E5%92%8C%E4%B8%80%E6%AC%A1%E8%BF%90%E8%A1%8C%E7%9A%84%E8%BF%87%E7%A8%8B">先理解四个名词和一次运行的过程</a><a href="#%E5%85%88%E9%80%89-vm-group-%E8%BF%98%E6%98%AF-vm-session">先选 vm-group 还是 vm-session</a><a href="#%E7%AC%AC%E4%B8%80%E6%AD%A5%E5%87%86%E5%A4%87%E6%8E%A7%E5%88%B6%E7%AB%AF%E5%92%8C%E6%9D%A5%E5%AE%BE">第一步：准备控制端和来宾</a><a href="#%E7%8E%AF%E5%A2%83%E8%A6%81%E6%B1%82">环境要求</a><a href="#%E5%9C%A8%E6%8E%A7%E5%88%B6%E7%AB%AF%E5%92%8C%E6%9D%A5%E5%AE%BE%E4%B8%8A%E5%AE%89%E8%A3%85%E5%90%8C%E4%B8%80%E4%B8%AA-wheel">在控制端和来宾上安装同一个 wheel</a><a href="#%E5%9C%A8%E6%9D%A5%E5%AE%BE%E4%B8%8A%E5%BB%BA%E4%B8%A4%E4%B8%AA%E7%9B%AE%E5%BD%95">在来宾上建两个目录</a><a href="#%E6%A3%80%E6%9F%A5-ssh">检查 SSH</a><a href="#%E5%88%AB%E8%AE%A9%E6%A8%A1%E5%9E%8B%E5%87%AD%E6%8D%AE%E8%BF%9B-vm">别让模型凭据进 VM</a><a href="#%E7%AC%AC%E4%BA%8C%E6%AD%A5%E5%86%99-vm-%E9%85%8D%E7%BD%AE">第二步：写 VM 配置</a><a href="#%E7%AC%AC%E4%B8%89%E6%AD%A5%E7%94%A8-sdk-%E8%B7%91%E4%B8%80%E6%AC%A1%E6%A3%80%E6%9F%A5">第三步：用 SDK 跑一次检查</a><a href="#%E7%94%A8-cli-%E6%88%96-team-%E9%80%89%E6%8B%A9-vm">用 CLI 或 Team 选择 VM</a><a href="#%E8%AE%A9%E6%88%90%E5%91%98%E7%9A%84%E5%AD%90-workflow-%E7%95%99%E5%9C%A8%E8%87%AA%E5%B7%B1%E7%9A%84-vm">让成员的子 Workflow 留在自己的 VM</a><a href="#%E5%AF%BC%E5%87%BA%E6%94%B9%E5%8A%A8%E5%92%8C%E5%BD%92%E8%BF%98%E6%9C%BA%E5%99%A8">导出改动和归还机器</a><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB">延伸阅读</a></aside>
 </div>

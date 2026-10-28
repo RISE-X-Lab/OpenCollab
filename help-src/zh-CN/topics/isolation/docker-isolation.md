@@ -33,7 +33,7 @@
     "execution-environments",
     "candidate-delivery"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -138,5 +138,5 @@ from opencollab.environments import DockerMount
 
 ## 延伸阅读
 
-- 源码依据：[Docker 配置与默认值](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/domain/docker.py) · [Docker 隔离池](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/adapters/docker_isolation.py)
+- 源码依据：[Docker 配置与默认值](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/domain/docker.py) · [Docker 隔离池](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/adapters/docker_isolation.py)
 - 相关指南：[隔离](isolation-overview.md) · [使用自己的执行环境](execution-environments.md) · [隔离改动怎样回到项目](candidate-delivery.md)

@@ -75,7 +75,7 @@
     "workflow-public-api-map",
     "token-step-concurrency-limits"
   ],
-  "verified_ref": "0c47f74a"
+  "verified_ref": "v0.9.6"
 }
 ---
 
@@ -309,7 +309,7 @@ async def prepare_then_explain(ctx, args):
 | 共享预算耗尽、环境被撤销 | 向集合外传播 |
 | 外部取消 | 继续传播，并等已启动的任务完成取消和清理 |
 
-想保留普通异常的详情，就在分支里自己 `try`，返回一个包含错误类型和输入索引的字典。
+想保留普通异常的详情，就在分支里自己 `try`，返回一个包含错误类型和输入索引的字典，也可以直接返回捕获到的异常对象。返回的异常对象会原样留在对应位置，不会被抛出。
 
 ## 文件、候选和最终输出
 
@@ -329,5 +329,5 @@ Reconstruct 的 `register_task` 是一个例子：活的查询函数、执行器
 
 ## 延伸阅读
 
-- 源码依据：[opencollab/workflows.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/workflows.py) · [opencollab/application/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow.py) · [opencollab/application/workflow_agent_run.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_agent_run.py) · [opencollab/application/workflow_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/application/workflow_collections.py) · [tests/interfaces/test_sdk_workflow_nested_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/tests/interfaces/test_sdk_workflow_nested_collections.py) · [opencollab/sdk/result.py](https://github.com/RISE-X-Lab/OpenCollab/blob/0c47f74a27441888286a22012b23b658185f8b8f/opencollab/sdk/result.py)
+- 源码依据：[opencollab/workflows.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/workflows.py) · [opencollab/application/workflow.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow.py) · [opencollab/application/workflow_agent_run.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow_agent_run.py) · [opencollab/application/workflow_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/application/workflow_collections.py) · [tests/interfaces/test_sdk_workflow_nested_collections.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/tests/interfaces/test_sdk_workflow_nested_collections.py) · [opencollab/sdk/result.py](https://github.com/RISE-X-Lab/OpenCollab/blob/v0.9.6/opencollab/sdk/result.py)
 - 相关指南：[编写 Workflow](workflow-programming-model.md) · [组合与嵌套](workflow-composition-hierarchy.md) · [Workflow API 速查](workflow-public-api-map.md) · [预算、步数与并发](../operations/token-step-concurrency-limits.md)
