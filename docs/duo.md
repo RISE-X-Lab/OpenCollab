@@ -1,5 +1,7 @@
 # Duo
 
+The complete built-in implementation lives in [`builtin_workflows/duo/`](../opencollab/builtin_workflows/duo/). Start with `__init__.py` for the decorated workflow entry, then `_dual_coder.py` for candidate execution and `_prompts.py` for role instructions. Selection and evidence helpers stay in the same directory. The sibling `weave/` and `reconstruct/` packages contain their respective implementations.
+
 [Chinese guide](duo/README.zh-CN.md)
 
 Duo V8 produces two isolated solutions to a task, compares their evidence, and
@@ -33,7 +35,6 @@ can retain that default and supply their environment through the public SDK.
 import asyncio
 
 from opencollab import OpenCollab
-
 
 async def main():
     client = OpenCollab("/path/to/workspace")
@@ -153,7 +154,7 @@ empty-candidate handling and comparable public-test failure preference precede
 adjudication. Identical diffs select B.
 
 The current prompt text is kept together in
-[`_prompts.py`](../opencollab/builtin_workflows/_prompts.py). Its internal revision
+[`_prompts.py`](../opencollab/builtin_workflows/duo/_prompts.py). Its internal revision
 is 8 and is recorded as `prompt_revision` in the result. Callers use `duo`
 without a prompt-version suffix.
 

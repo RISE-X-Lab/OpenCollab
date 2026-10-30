@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from ._dual_coder import run_dual_coder
-from ._prompts import CONTRACT_PROMPT
 from .duo import duo
+from .duo._dual_coder import run_dual_coder
+from .duo._prompts import CONTRACT_PROMPT
 from .reconstruct import ReconstructionTask, reconstruct, register_task
 from .weave import (
     WeaveAdapter,

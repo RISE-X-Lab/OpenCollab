@@ -288,8 +288,8 @@ async def test_changed_public_candidate_diff_adopts_the_current_canonical_patch(
 
 
 async def test_duo_selects_and_adopts_a_physical_only_change(tmp_path):
-    from opencollab.builtin_workflows._candidate_records import _adopt
-    from opencollab.builtin_workflows._selection import _mechanical_choice
+    from opencollab.builtin_workflows.duo._candidate_records import _adopt
+    from opencollab.builtin_workflows.duo._selection import _mechanical_choice
 
     repo = _repository(tmp_path)
     (repo / ".gitattributes").write_text("*.sh text eol=crlf\n")

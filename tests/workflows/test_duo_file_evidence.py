@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from opencollab.builtin_workflows import _file_selection as new
-from opencollab.builtin_workflows import _selection as contract
 from opencollab.builtin_workflows import duo
-from opencollab.builtin_workflows._candidate_evidence_files import CandidateEvidenceFiles, ReadCandidateEvidence
+from opencollab.builtin_workflows.duo import _file_selection as new
+from opencollab.builtin_workflows.duo import _selection as contract
+from opencollab.builtin_workflows.duo._candidate_evidence_files import CandidateEvidenceFiles, ReadCandidateEvidence
 from opencollab.workflows import CandidateRun
 from tests.support.duo_test_support import Context, candidate, decision
 

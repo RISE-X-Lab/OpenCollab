@@ -1,5 +1,7 @@
 # Duo
 
+Duo 的完整内置实现位于 [`builtin_workflows/duo/`](../../opencollab/builtin_workflows/duo/) 目录。先读 `__init__.py` 中带装饰器的工作流入口，再读 `_dual_coder.py` 中的候选执行流程和 `_prompts.py` 中的角色提示词。选择规则与证据处理文件也在这个目录中。相邻的 `weave/` 和 `reconstruct/` 目录分别包含另外两个工作流的实现。
+
 [English guide](../duo.md)
 
 Duo V8 为同一任务生成两个隔离候选，比较证据后采用一个结果。通用角色提示覆盖源码修改、配置、数据和任务要求的其他产物。运行时提供候选环境与实际交付方式。
@@ -23,7 +25,6 @@ opencollab workflow run duo --workspace /path/to/workspace \
 import asyncio
 
 from opencollab import OpenCollab
-
 
 async def main():
     client = OpenCollab("/path/to/workspace")
@@ -68,7 +69,7 @@ Duo 先运行 A，再运行 B，随后完成机械选择、必要的裁决和采
 
 缺项、矛盾或缺乏路径依据的裁决最多补做一次会话，集中核实尚未解决的证据。分页证据会话可以多次调用文件读取工具，复查后仍无法使用或模型调用异常时默认选 B。已经明确观察到 B 缺少某项而 A 覆盖时，后续复查失败仍保留 A。空候选处理与可比较的公开测试失败优先规则先于裁决，相同 diff 选择 B。
 
-提示集中放在 [`_prompts.py`](../../opencollab/builtin_workflows/_prompts.py)。内部修订号为 8，结果中的 `prompt_revision` 记录该值，对外统一使用 `duo`。
+提示集中放在 [`_prompts.py`](../../opencollab/builtin_workflows/duo/_prompts.py)。内部修订号为 8，结果中的 `prompt_revision` 记录该值，对外统一使用 `duo`。
 
 `requirements_complete` 表示裁决者已经逐项审阅所有明确需求。候选尚未覆盖的需求仍记录为 `not_covered` 或 `unclear`，需求清单完整时该字段仍为 true，裁决者据此比较候选间的具体差异。
 

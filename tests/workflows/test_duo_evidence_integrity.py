@@ -5,10 +5,10 @@ import json
 
 import pytest
 
-from opencollab.builtin_workflows import _candidate_records as records
-from opencollab.builtin_workflows import _dual_coder as runner
-from opencollab.builtin_workflows import _selection as selection
 from opencollab.builtin_workflows import duo
+from opencollab.builtin_workflows.duo import _candidate_records as records
+from opencollab.builtin_workflows.duo import _dual_coder as runner
+from opencollab.builtin_workflows.duo import _selection as selection
 from opencollab.workflows import CandidateRun
 from tests.support.duo_test_support import Context, candidate, decision
 

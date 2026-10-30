@@ -17,7 +17,7 @@ from opencollab.sdk import BudgetDecision, BudgetSnapshot, RunControl, RunEvent
 from opencollab.tools import Tool
 from opencollab.workflows import WorkflowContext, workflow
 
-from ._weave_execution import _coding_tools, _verify_commands
+from ._execution import _coding_tools, _verify_commands
 
 
 def _positive(value: Any, name: str, *, integer: bool = False, zero: bool = False) -> None:
