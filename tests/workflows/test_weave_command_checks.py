@@ -10,7 +10,7 @@ import pytest
 
 from opencollab import OpenCollab
 from opencollab.builtin_workflows import WeaveAdapter
-from opencollab.builtin_workflows._weave_execution import _static_printer_supplies, _verification_mode
+from opencollab.builtin_workflows.weave._execution import _static_printer_supplies, _verification_mode
 from tests.workflows.test_weave_execution import FileModel
 
 

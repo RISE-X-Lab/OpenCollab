@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from opencollab.builtin_workflows import _file_selection, _prompts, _selection
+from opencollab.builtin_workflows.duo import _file_selection, _prompts, _selection
 from tests.support.duo_test_support import (
     Context,
     decision,

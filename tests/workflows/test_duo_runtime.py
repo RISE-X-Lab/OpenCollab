@@ -16,7 +16,7 @@ from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.bootstrap import _workflow_runtime_session as workflow_session
 from opencollab.bootstrap.single2_prompt import SINGLE2_SYSTEM_PROMPT
 from opencollab.bootstrap.workflow_runtime import run_workflow
-from opencollab.builtin_workflows import _dual_coder, _file_selection
+from opencollab.builtin_workflows.duo import _dual_coder, _file_selection
 
 
 def _git(path, *args):
