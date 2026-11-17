@@ -254,18 +254,22 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         """Charge a provider response that survived caller cancellation or timeout."""
         try:
             response = task.result()
-            _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
-            self._late_provider_usage += (total_tokens,)
-            self.state.add_used_tokens(total_tokens)
-            self._record_usage_event(response.usage, total_tokens, purpose="completion", late=True)
-            self._mark_budget_reserve_consumed(protected_call=protected_call)
-            if self.late_provider_usage_checkpoint is not None:
-                self.late_provider_usage_checkpoint()
+            self._account_completion_usage(response, protected_call=protected_call, late=True)
         except BaseException:
             pass
         finally:
             self._draining_provider_tasks.discard(task)
             self._finish_run_control_if_quiesced()
+
+    def _account_completion_usage(self, response: Any, *, protected_call: bool, late: bool) -> None:
+        _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
+        self.state.add_used_tokens(total_tokens)
+        self._record_usage_event(response.usage, total_tokens, purpose="completion", late=late)
+        self._mark_budget_reserve_consumed(protected_call=protected_call)
+        if late:
+            self._late_provider_usage += (total_tokens,)
+            if self.late_provider_usage_checkpoint is not None:
+                self.late_provider_usage_checkpoint()
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
@@ -699,11 +703,8 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self._stop_precheck("team budget exceeded: aggregate spend reached the global cap")
             return
         latency = time.monotonic() - start
-        input_tokens, total_tokens = _normalize_completion_usage(response.usage)
-        self.state.add_used_tokens(total_tokens)
-        self._record_usage_event(response.usage, total_tokens, purpose="completion")
+        input_tokens, _total_tokens = _normalize_completion_usage(response.usage)
         self._run_final_prompt = None
-        self._mark_budget_reserve_consumed()
         self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
         self.state.set_context_tokens(input_tokens)
 

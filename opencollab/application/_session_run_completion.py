@@ -777,6 +777,15 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             for parameter in parameters
         )
 
+    def _revalidate_request(
+        self, messages: list[dict], tools: list[dict] | None, *, thinking: bool = False,
+        thinking_params: dict[str, Any] | None = None,
+    ) -> int:
+        self._raise_if_run_cancelled()
+        return self._request_output_limit(
+            messages, tools, thinking=thinking, thinking_params=thinking_params,
+        )
+
     async def _invoke_summary(
         self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict],
         *, _summary_output_limit: Callable[[list[dict]], int] | None = None, **kwargs: Any,
@@ -799,6 +808,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         admitted = asyncio.Event() if getattr(self.llm, "supports_request_admission", False) else None
         if admitted is not None:
             kwargs["on_admitted"] = admitted.set
+        if getattr(self.llm, "supports_request_revalidation", False):
+            def revalidate() -> int:
+                limit = self._revalidate_request(
+                    messages, None, thinking=thinking, thinking_params=thinking_params,
+                )
+                return min(limit, _summary_output_limit(messages)) if _summary_output_limit is not None else limit
+            kwargs["before_request"] = revalidate
         abandoned = False
         if self.tracer:
             self.tracer.log_step(step_type="llm_call_started", payload={
@@ -870,17 +886,33 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         admitted = asyncio.Event() if getattr(self.llm, "supports_request_admission", False) else None
         if admitted is not None:
             kwargs["on_admitted"] = admitted.set
-        operation = _complete_with_error_usage(self, self.llm.complete, protected_call=protected_call, **kwargs)
+        if getattr(self.llm, "supports_request_revalidation", False):
+            kwargs["before_request"] = lambda: self._revalidate_request(
+                kwargs["messages"], kwargs.get("tools"), thinking=kwargs.get("thinking", False),
+                thinking_params=kwargs.get("thinking_params"),
+            )
+        async def complete_owned() -> CompletionResponse:
+            try:
+                response = await _complete_with_error_usage(
+                    self, self.llm.complete, protected_call=protected_call, **kwargs,
+                )
+                self._account_completion_usage(
+                    response, protected_call=protected_call,
+                    late=asyncio.current_task() in self._draining_provider_tasks,
+                )
+                return response
+            finally:
+                self._draining_provider_tasks.discard(asyncio.current_task())
+                self._finish_run_control_if_quiesced()
+
+        operation = complete_owned()
         try:
             response = await operation if self._per_call_timeout is None else await abandon_on_timeout(
                 operation,
                 self._per_call_timeout,
                 task_tracker=self._track_provider_task,
                 late_task_tracker=self._mark_provider_task_draining,
-                late_result_handler=lambda task: self._record_late_provider_result(
-                    task,
-                    protected_call=protected_call,
-                ),
+                late_result_handler=self._provider_task_done,
                 start_event=admitted,
             )
         except CallerTimeoutError as exc:

@@ -712,6 +712,10 @@ class WorkflowContext(
         lease = self._active_budget_lease.get()
         if lease is not None:
             lease.sessions.append(session)
+            runner = getattr(session, "runner", None)
+            if lease.reserved and runner is not None:
+                # Other leases keep their allocation when a sibling overspends.
+                runner.budget_reservations.append(lambda: max(0, -int(self.budget.remaining())))
 
     def _active_call_has_pending_cleanup(self) -> bool:
         lease = self._active_budget_lease.get()

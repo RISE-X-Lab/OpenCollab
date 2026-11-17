@@ -9,6 +9,7 @@ import os
 import threading
 import time
 import uuid
+from contextlib import AsyncExitStack
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -122,6 +123,7 @@ class LLMClient:
         self.request_pool = request_pool
         self.request_capacity = request_capacity
         self.supports_request_admission = request_pool is not None
+        self.supports_request_revalidation = request_pool is not None
         self.model = model
         self.provider = provider
         self.max_retries = max(0, max_retries)
@@ -290,6 +292,7 @@ class LLMClient:
         max_output_tokens: int | None = None,
         response_session_id: str | None = None,
         on_admitted: Callable[[], None] | None = None,
+        before_request: Callable[[], int] | None = None,
     ) -> LLMResponse:
         """Single-shot completion. Returns full response.
 
@@ -314,8 +317,15 @@ class LLMClient:
         )
         # Measure here so every provider path records the call timing.
         with recording() as first_token:
-            try:
-                async with request_slot(self.request_pool, self.request_capacity):
+            async with AsyncExitStack() as request_owner:
+                try:
+                    await request_owner.enter_async_context(request_slot(self.request_pool, self.request_capacity))
+                    if before_request is not None:
+                        current_limit = before_request()
+                        max_output_tokens = (
+                            current_limit if max_output_tokens is None
+                            else min(max_output_tokens, current_limit)
+                        )
                     if on_admitted is not None:
                         on_admitted()
                     if self._anthropic:
@@ -378,44 +388,44 @@ class LLMClient:
                             first_event_timeout=self.first_event_timeout,
                             stream_idle_timeout=self.stream_idle_timeout,
                         )
-                transport_timing = first_token.snapshot()
-                try:
-                    response.transport_timing = transport_timing
-                except (AttributeError, TypeError):
-                    # Custom provider responses may reject new attributes. The usage ledger
-                    # still records their timing.
-                    pass
-                await _record_api_usage_async(
-                    provider=self.provider,
-                    model=self.model,
-                    wire_protocol=self.wire_protocol,
-                    reasoning_effort=reasoning_effort,
-                    base_url=self.base_url,
-                    latency_s=time.monotonic() - start,
-                    status="success",
-                    response=response,
-                    transport_timing=transport_timing,
-                )
-                return response
-            except BaseException as exc:
-                if response is not None:
-                    exc.usage = response.usage
-                else:
+                    transport_timing = first_token.snapshot()
                     try:
-                        await _record_api_usage_async(
-                            provider=self.provider,
-                            model=self.model,
-                            wire_protocol=self.wire_protocol,
-                            reasoning_effort=reasoning_effort,
-                            base_url=self.base_url,
-                            latency_s=time.monotonic() - start,
-                            status="error",
-                            error=exc,
-                            transport_timing=first_token.snapshot(),
-                        )
-                    except asyncio.CancelledError as cancellation:
-                        usage = getattr(exc, "usage", None)
-                        if usage is not None:
-                            cancellation.usage = usage
-                        raise
-                raise
+                        response.transport_timing = transport_timing
+                    except (AttributeError, TypeError):
+                        # Custom provider responses may reject new attributes. The usage ledger
+                        # still records their timing.
+                        pass
+                    await _record_api_usage_async(
+                        provider=self.provider,
+                        model=self.model,
+                        wire_protocol=self.wire_protocol,
+                        reasoning_effort=reasoning_effort,
+                        base_url=self.base_url,
+                        latency_s=time.monotonic() - start,
+                        status="success",
+                        response=response,
+                        transport_timing=transport_timing,
+                    )
+                    return response
+                except BaseException as exc:
+                    if response is not None:
+                        exc.usage = response.usage
+                    else:
+                        try:
+                            await _record_api_usage_async(
+                                provider=self.provider,
+                                model=self.model,
+                                wire_protocol=self.wire_protocol,
+                                reasoning_effort=reasoning_effort,
+                                base_url=self.base_url,
+                                latency_s=time.monotonic() - start,
+                                status="error",
+                                error=exc,
+                                transport_timing=first_token.snapshot(),
+                            )
+                        except asyncio.CancelledError as cancellation:
+                            usage = getattr(exc, "usage", None)
+                            if usage is not None:
+                                cancellation.usage = usage
+                            raise
+                    raise
