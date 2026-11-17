@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -162,6 +163,73 @@ async def test_public_sdk_recovers_pruned_ancestors_and_modes(tmp_path, physical
         assert (repo / ".git/index").read_bytes() == index
         assert not list((repo / ".git").glob("candidate-recovery-*"))
     finally:
+        await environment.cleanup()
+
+
+@pytest.mark.parametrize("physical", [False, True])
+@pytest.mark.parametrize("change,sibling", [("rename", False), ("rename", True), ("readonly", True)])
+async def test_public_sdk_restores_changed_ancestor_permissions(tmp_path, monkeypatch, physical, change, sibling):
+    repo = _repository(tmp_path, physical=physical, cache=True)
+    (repo / "old/nested").mkdir(parents=True)
+    helper = repo / "old/nested/helper.py"
+    helper.write_text("VALUE = 1\n")
+    _git(repo, "add", "old/nested/helper.py")
+    (repo / "old").chmod(0o750)
+    (repo / "old/nested").chmod(0o500 if change == "readonly" else 0o710)
+    if sibling:
+        (repo / "old/sibling.txt").write_text("shared contents\n")
+    before = _contents(repo)
+    index = (repo / ".git/index").read_bytes()
+    environment = LocalEnvironment(str(repo))
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    log = tmp_path / "chmod.log"
+    chmod = shutil.which("chmod")
+    assert chmod is not None
+    (commands / "chmod").write_text(
+        f'#!/bin/sh\nprintf \'%s\\0\' "$@" >> {shlex.quote(str(log))}\n'
+        f'exec {shlex.quote(chmod)} "$@"\n'
+    )
+    (commands / "chmod").chmod(0o755)
+    execute = environment.exec_cmd
+
+    async def recorded(command, timeout=120.0, **kwargs):
+        if command.startswith("failed=0;"):
+            command = f"PATH={shlex.quote(str(commands) + os.pathsep + os.environ['PATH'])}; " + command
+        return await execute(command, timeout, **kwargs)
+
+    monkeypatch.setattr(environment, "exec_cmd", recorded)
+
+    async def edit(child, inputs):
+        folder = Path(child.workspace_root)
+        if change == "rename":
+            (folder / "old/nested/helper.py").rename(folder / "old/nested/renamed.py")
+        else:
+            (folder / "old/nested/helper.py").write_text("VALUE = 42\n")
+        _flatten(folder)
+        assert _run(folder) == "42\n"
+        return "tested"
+
+    async def flow(ctx, inputs):
+        candidate = await ctx.candidate_workflow(edit, {}, label="ancestor-permissions")
+        if change == "rename":
+            assert "rename from old/nested/helper.py" in candidate.effective_diff
+        with pytest.raises(RuntimeError, match="Directory not empty|Permission denied|Is a directory"):
+            await ctx.adopt_candidate(candidate)
+        assert _contents(repo) == before
+        assert not environment.revoked
+        return "recovered"
+
+    try:
+        result = await OpenCollab(repo, environment=environment).workflow(flow, trace=False)
+        assert result.ok, result.reason
+        assert (repo / ".git/index").read_bytes() == index
+        assert not list((repo / ".git").glob("candidate-recovery-*"))
+        chmod_paths = [Path(value.decode()) for value in log.read_bytes().split(b"\0")[2::3] if value]
+        assert repo / "old/nested" in chmod_paths
+        assert (repo / "old" in chmod_paths) is not sibling
+    finally:
+        (repo / "old/nested").chmod(0o700)
         await environment.cleanup()
 
 

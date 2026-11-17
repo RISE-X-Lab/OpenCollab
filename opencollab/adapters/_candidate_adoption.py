@@ -74,19 +74,30 @@ async def _adoption_transaction(
         restores = []
         recreate_directories = []
         restore_directory_modes = []
+        restore_parents = {posixpath.dirname(path) for path in roots}
         # Git prunes empty ancestors after deleting their last leaf. Recreate
         # those directories with write access until their saved leaves return.
         for index, (path, mode) in enumerate(directory_modes):
             source = shlex.quote(posixpath.join(workspace, path))
-            marker = shlex.quote(posixpath.join(backup, f"directory-{index}"))
-            copies.append(f"printf '%s\\0%s\\0' {source} {mode} > {marker}.mode || exit")
+            metadata_file = shlex.quote(posixpath.join(backup, f"directory-{index}.mode"))
+            copies.append(f"printf '%s\\0%s\\0' {source} {mode} > {metadata_file} || exit")
             recreate_directories.append(
                 f"if [ ! -e {source} ] && [ ! -L {source} ]; then "
-                f"if mkdir -m 700 -- {source} && : > {marker}; then :; else failed=1; fi; "
+                f"mkdir -m 700 -- {source} || failed=1; "
                 f"elif [ ! -d {source} ] || [ -L {source} ]; then failed=1; fi"
             )
+            if path in restore_parents:
+                recreate_directories.append(
+                    f"if [ -d {source} ] && [ ! -L {source} ] && "
+                    f"[ ! -w {source} ] && [ -O {source} ]; then "
+                    f"chmod -- u+w {source} || failed=1; fi"
+                )
             restore_directory_modes.append(
-                f"if [ -f {marker} ]; then chmod -- {mode} {source} || failed=1; fi"
+                f"if [ -d {source} ] && [ ! -L {source} ] && "
+                f"{{ current=$(stat -c %a -- {source} 2>/dev/null) || "
+                f"current=$(stat -f %Lp -- {source}); }}; then "
+                f'[ "$current" = {mode} ] || chmod -- {mode} {source} || failed=1; '
+                "else failed=1; fi"
             )
         for index, path in enumerate(roots):
             source = shlex.quote(posixpath.join(workspace, path))
