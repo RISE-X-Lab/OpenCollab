@@ -6,8 +6,9 @@ import asyncio
 import contextlib
 import hashlib
 import os
+import posixpath
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from filelock import FileLock, Timeout
@@ -29,9 +30,53 @@ def _host_lock_path(path: str, env: Any) -> str:
     digest = hashlib.sha256(identity.encode("utf-8", errors="surrogatepass")).hexdigest()
     return os.path.join(_host_lock_root(), f"{digest}.lock")
 
+def _write_lock_paths(paths: Sequence[str], env: Any) -> list[str]:
+    local = bool(getattr(env, "local_filesystem", False))
+    path_module = os.path if local else posixpath
+    workspace = path_module.abspath(getattr(env, "workspace", "") or ".")
+    if local:
+        workspace = os.path.realpath(workspace)
+    targets = set()
+    for path in paths:
+        target = path_module.normpath(path_module.join(workspace, path))
+        if local:
+            target = os.path.join(os.path.realpath(os.path.dirname(target)), os.path.basename(target))
+        targets.add(target)
+        parent = path_module.dirname(target)
+        while parent != workspace and parent.startswith(workspace.rstrip("/") + "/"):
+            targets.add(parent)
+            parent = path_module.dirname(parent)
+    return sorted(targets)
+
+
+@contextlib.asynccontextmanager
+async def host_write_locks(paths: Sequence[str], env: Any) -> AsyncIterator[Any]:
+    """Own edited paths and their ancestors through publication or recovery."""
+    if env is not None and not getattr(env, "local_filesystem", False):
+        grouped = getattr(env, "file_write_locks", None)
+        if callable(grouped):
+            async with grouped(paths) as target:
+                yield target
+            return
+        if getattr(env, "file_write_lock_scope", None) == "workspace":
+            async with _target_write_lock(paths[0], env) as target:
+                yield target
+            return
+    async with contextlib.AsyncExitStack() as locks:
+        target = None
+        for path in _write_lock_paths(paths, env):
+            target = await locks.enter_async_context(_target_write_lock(path, env))
+        yield target
+
+
 @contextlib.asynccontextmanager
 async def host_write_lock(path: str, env: Any) -> AsyncIterator[Any]:
-    """Hold the environment's file lock across the complete native edit."""
+    async with host_write_locks((path,), env) as target:
+        yield target
+
+
+@contextlib.asynccontextmanager
+async def _target_write_lock(path: str, env: Any) -> AsyncIterator[Any]:
     if env is not None and not getattr(env, "local_filesystem", False):
         environment_lock = getattr(env, "file_write_lock", None)
         if callable(environment_lock):

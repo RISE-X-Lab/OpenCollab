@@ -16,6 +16,8 @@ _ADOPTER = ContextVar("adopter", default="setup")
 
 
 class _OrderedEnvironment(LocalEnvironment):
+    file_write_lock_scope = "workspace"
+
     def __init__(self, root, *, remote):
         super().__init__(str(root))
         self.local_filesystem = not remote

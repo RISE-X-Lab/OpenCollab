@@ -7,7 +7,7 @@ import json
 import math
 import posixpath
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict
@@ -18,7 +18,7 @@ from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange
 from opencollab.adapters.llm import errors as llm_errors
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.types import LLMResponse, Usage, to_plain_data
-from opencollab.adapters.tools.base import host_write_lock
+from opencollab.adapters.tools.base import host_write_locks
 from opencollab.application._session_run_shared import _TeamBudgetStop, _TokenBudgetStop
 from opencollab.application._session_run_usage import _normalize_completion_usage
 from opencollab.application.async_timeout import await_owned_operation, consume_task_result
@@ -59,16 +59,16 @@ def _restore_error(value: dict[str, Any]) -> Exception:
 class _FileEdit:
     """Run native operations in the task holding their environment's edit lock."""
 
-    def __init__(self, environment: Any, path: str) -> None:
+    def __init__(self, environment: Any, paths: Sequence[str]) -> None:
         self.environment = environment
         self.ready = asyncio.get_running_loop().create_future()
         self.ready.add_done_callback(consume_task_result)
         self.calls: asyncio.Queue[tuple[str, dict[str, Any], asyncio.Future[Any]] | None] = asyncio.Queue()
-        self.task = asyncio.create_task(self._run(path))
+        self.task = asyncio.create_task(self._run(paths))
 
-    async def _run(self, path: str) -> None:
+    async def _run(self, paths: Sequence[str]) -> None:
         try:
-            async with host_write_lock(path, self.environment):
+            async with host_write_locks(paths, self.environment):
                 self.ready.set_result(None)
                 while (call := await self.calls.get()) is not None:
                     action, arguments, reply = call
@@ -255,10 +255,13 @@ class AuthoredWorkflowBridge:
         if isinstance(handle, bool) or not isinstance(handle, int) or handle not in self._environments:
             raise ValueError("unknown environment for this authored run")
         environment = self._environments[handle]
-        if action == "file_write_lock":
-            if set(arguments) != {"path"}:
-                raise ValueError("file edit lock needs a path")
-            edit = _FileEdit(environment, arguments["path"])
+        if action in {"file_write_lock", "file_write_locks"}:
+            if set(arguments) != ({"path"} if action == "file_write_lock" else {"paths"}):
+                raise ValueError("file edit lock needs paths")
+            paths = [arguments["path"]] if action == "file_write_lock" else arguments["paths"]
+            if not isinstance(paths, list) or not paths or any(not isinstance(path, str) for path in paths):
+                raise ValueError("file edit lock needs non-empty text paths")
+            edit = _FileEdit(environment, paths)
             self._edits[identity] = edit
             try:
                 await asyncio.shield(edit.ready)
@@ -437,7 +440,7 @@ class BridgeClient:
                 usage = getattr(exc, "usage", None)
             else:
                 usage = Usage(**value["usage"]) if action == "complete" and isinstance(value, dict) else None
-                if action == "file_write_lock":
+                if action in {"file_write_lock", "file_write_locks"}:
                     try:
                         await await_owned_operation(self.call("file_write_unlock", {"id": value}, environment))
                     except Exception as exc:
@@ -477,7 +480,12 @@ class BridgeEnvironment(Environment):
 
     @asynccontextmanager
     async def file_write_lock(self, path: str) -> AsyncIterator[None]:
-        identity = await self.client.call("file_write_lock", {"path": path}, self.handle)
+        async with self.file_write_locks((path,)):
+            yield None
+
+    @asynccontextmanager
+    async def file_write_locks(self, paths: Sequence[str]) -> AsyncIterator[None]:
+        identity = await self.client.call("file_write_locks", {"paths": list(paths)}, self.handle)
         token = self._edit.set(identity)
         try:
             yield None

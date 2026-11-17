@@ -57,6 +57,7 @@ class VMEnvironment(Environment):
     """
 
     process_isolated = True
+    file_write_lock_scope = "workspace"
 
     def __init__(self, connection: VMConnection, workspace: str, *, state_directory: str, run_id: str | None = None):
         super().__init__()

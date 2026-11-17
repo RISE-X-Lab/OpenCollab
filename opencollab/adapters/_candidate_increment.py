@@ -12,7 +12,7 @@ from opencollab.adapters._candidate_adoption import _adoption_transaction
 from opencollab.adapters._candidate_physical import _physical_git
 from opencollab.adapters._git_patch_bytes import _complete, _patch_temporary
 from opencollab.adapters.git_patch import _git_command_and_config_guard
-from opencollab.adapters.tools.base import host_write_lock
+from opencollab.adapters.tools.base import host_write_locks
 from opencollab.patches import patch_paths
 
 
@@ -37,7 +37,7 @@ async def _apply_increment(
         workspace if getattr(environment, "local_filesystem", False)
         else getattr(environment, "workspace", workspace)
     )
-    async with host_write_lock(posixpath.join(lock_root, ".candidate-adoption"), environment), _patch_temporary(
+    async with _patch_temporary(
         environment, workspace, patch, prefix=".candidate-adopt-", suffix=".patch",
         cleanup_best_effort=True, repository=repository,
     ) as candidate_file:
@@ -54,35 +54,39 @@ async def _apply_increment(
             for protected in preserved for path in candidate_paths
         ):
             raise ValueError("candidate patch overlaps a preserved path")
-        git = "git -c core.filemode=true"
-        guard = ""
-        if strict and repository:
-            git, guard = _git_command_and_config_guard()
-        async with AsyncExitStack() as resources:
-            command = f"cd -- {shlex.quote(workspace)} && {guard}{git}"
-            operation = "candidate adoption"
-            if physical_paths and repository:
-                if guard:
-                    _complete(await environment.exec_cmd(
-                        f"cd -- {shlex.quote(workspace)} && {guard}:", timeout=120,
-                    ), "physical candidate configuration inspection")
-                command, _ = await resources.enter_async_context(_physical_git(
-                    environment, workspace, physical_paths, strict=strict,
-                ))
-                operation = "physical candidate adoption"
-            # Let Git reject unsafe path aliases before a recursive backup can
-            # encounter repository metadata. Publication can still fail later.
-            _complete(await environment.exec_cmd(
-                f"{command} apply --check --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}",
-                timeout=120,
-            ), operation)
-            async with _adoption_transaction(
-                environment, workspace, sorted(candidate_paths), repository=repository,
-            ):
-                try:
-                    _complete(await environment.exec_cmd(
-                        f"{command} apply --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}",
-                        timeout=120,
-                    ), operation)
-                finally:
-                    await resources.aclose()
+        async with host_write_locks(
+            (posixpath.join(lock_root, ".candidate-adoption"),
+             *(posixpath.join(workspace, path) for path in sorted(candidate_paths))), environment,
+        ):
+            git = "git -c core.filemode=true"
+            guard = ""
+            if strict and repository:
+                git, guard = _git_command_and_config_guard()
+            async with AsyncExitStack() as resources:
+                command = f"cd -- {shlex.quote(workspace)} && {guard}{git}"
+                operation = "candidate adoption"
+                if physical_paths and repository:
+                    if guard:
+                        _complete(await environment.exec_cmd(
+                            f"cd -- {shlex.quote(workspace)} && {guard}:", timeout=120,
+                        ), "physical candidate configuration inspection")
+                    command, _ = await resources.enter_async_context(_physical_git(
+                        environment, workspace, physical_paths, strict=strict,
+                    ))
+                    operation = "physical candidate adoption"
+                # Let Git reject unsafe path aliases before a recursive backup can
+                # encounter repository metadata. Publication can still fail later.
+                _complete(await environment.exec_cmd(
+                    f"{command} apply --check --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}",
+                    timeout=120,
+                ), operation)
+                async with _adoption_transaction(
+                    environment, workspace, sorted(candidate_paths), repository=repository,
+                ):
+                    try:
+                        _complete(await environment.exec_cmd(
+                            f"{command} apply --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}",
+                            timeout=120,
+                        ), operation)
+                    finally:
+                        await resources.aclose()
