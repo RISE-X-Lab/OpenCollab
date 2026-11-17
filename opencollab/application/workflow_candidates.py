@@ -74,6 +74,9 @@ class CandidateCaptureError(RuntimeError):
 class CandidateWorkspaceTrackingError(RuntimeError):
     """The source worktree changed while a candidate was executing."""
 
+class CandidateAdoptionRecoveryError(RuntimeError):
+    """Candidate publication failed and the source still needs recovery."""
+
 def _candidate_worktree_location(lease: Any) -> str:
     """Include an optional location in candidate retention diagnostics."""
     workspace = getattr(lease, "candidate_workspace", None)

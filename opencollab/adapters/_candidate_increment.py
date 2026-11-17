@@ -5,9 +5,11 @@ from __future__ import annotations
 import posixpath
 import shlex
 from collections.abc import Sequence
+from contextlib import AsyncExitStack
 from typing import Any
 
-from opencollab.adapters._candidate_physical import _apply_physical
+from opencollab.adapters._candidate_adoption import _adoption_transaction
+from opencollab.adapters._candidate_physical import _physical_git
 from opencollab.adapters._git_patch_bytes import _complete, _patch_temporary
 from opencollab.adapters.git_patch import _git_command_and_config_guard
 from opencollab.patches import patch_paths
@@ -51,15 +53,31 @@ async def _apply_increment(
         guard = ""
         if strict and repository:
             git, guard = _git_command_and_config_guard()
-        if physical_paths and repository:
-            if guard:
-                _complete(await environment.exec_cmd(
-                    f"cd -- {shlex.quote(workspace)} && {guard}:", timeout=120,
-                ), "physical candidate configuration inspection")
-            await _apply_physical(environment, workspace, candidate_file, physical_paths, strict=strict)
-            return
-        _complete(await environment.exec_cmd(
-            f"cd -- {shlex.quote(workspace)} && {guard}"
-            f"{git} apply --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}",
-            timeout=120,
-        ), "candidate adoption")
+        async with AsyncExitStack() as resources:
+            command = f"cd -- {shlex.quote(workspace)} && {guard}{git}"
+            operation = "candidate adoption"
+            if physical_paths and repository:
+                if guard:
+                    _complete(await environment.exec_cmd(
+                        f"cd -- {shlex.quote(workspace)} && {guard}:", timeout=120,
+                    ), "physical candidate configuration inspection")
+                command, _ = await resources.enter_async_context(_physical_git(
+                    environment, workspace, physical_paths, strict=strict,
+                ))
+                operation = "physical candidate adoption"
+            # Let Git reject unsafe path aliases before a recursive backup can
+            # encounter repository metadata. Publication can still fail later.
+            _complete(await environment.exec_cmd(
+                f"{command} apply --check --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}",
+                timeout=120,
+            ), operation)
+            async with _adoption_transaction(
+                environment, workspace, sorted(candidate_paths), repository=repository,
+            ):
+                try:
+                    _complete(await environment.exec_cmd(
+                        f"{command} apply --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}",
+                        timeout=120,
+                    ), operation)
+                finally:
+                    await resources.aclose()
