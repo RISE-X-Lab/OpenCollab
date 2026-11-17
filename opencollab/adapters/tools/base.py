@@ -30,10 +30,12 @@ def _host_lock_path(path: str, env: Any) -> str:
     digest = hashlib.sha256(identity.encode("utf-8", errors="surrogatepass")).hexdigest()
     return os.path.join(_host_lock_root(), f"{digest}.lock")
 
-def _write_lock_paths(paths: Sequence[str], env: Any) -> list[str]:
+def _write_lock_paths(
+    paths: Sequence[str], env: Any, *, workspace: str | None = None,
+) -> list[str]:
     local = bool(getattr(env, "local_filesystem", False))
     path_module = os.path if local else posixpath
-    workspace = path_module.abspath(getattr(env, "workspace", "") or ".")
+    workspace = path_module.abspath(workspace or getattr(env, "workspace", "") or ".")
     if local:
         workspace = os.path.realpath(workspace)
     targets = set()

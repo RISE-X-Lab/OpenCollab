@@ -13,7 +13,7 @@ import shlex
 import stat
 import threading
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import NoReturn
 
@@ -30,6 +30,7 @@ from opencollab.adapters._env_process import (
     timed_out_result,
 )
 from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
+from opencollab.adapters.tools.base import _write_lock_paths
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.domain.docker import DockerOptions
@@ -692,6 +693,41 @@ class DockerEnvironment(Environment):
         return await self._write_file(path, content, observe_change=True)
 
     @contextlib.asynccontextmanager
+    async def file_write_locks(self, paths: Sequence[str]) -> AsyncIterator[None]:
+        self._ensure_active()
+        await self._bind_attached()
+        if self._container_id is None:
+            raise RuntimeError("Container not started. Call setup() first.")
+        targets = {
+            await self._resolve_write_target(self._validate_container_path(path))
+            for path in paths
+        }
+        physical_workspace = self._resolved_workspace or self.workspace
+        ancestors = set()
+        for path in paths:
+            parent = posixpath.dirname(path)
+            while parent not in ("", ".", "/", self.workspace, physical_workspace):
+                if posixpath.isabs(parent) and not any(
+                    _within_directory(root, posixpath.normpath(parent))
+                    for root in (self.workspace, physical_workspace)
+                ):
+                    break
+                if posixpath.basename(parent) not in (".", ".."):
+                    ancestors.add(parent)
+                parent = posixpath.dirname(parent)
+        targets.update({
+            await self._resolve_write_target(self._validate_container_path(path))
+            for path in ancestors
+        })
+        # Preserve alias nodes and add physical ancestors before taking any
+        # locks, so directory recovery and alias edits share one lock order.
+        ordered = _write_lock_paths(targets, self, workspace=physical_workspace)
+        async with contextlib.AsyncExitStack() as locks:
+            for target in ordered:
+                await locks.enter_async_context(self._resolved_file_write_lock(target))
+            yield None
+
+    @contextlib.asynccontextmanager
     async def file_write_lock(
         self,
         path: str,
@@ -701,12 +737,16 @@ class DockerEnvironment(Environment):
         """Hold the target lock across a native edit, including its final write."""
         self._ensure_active()
         await self._bind_attached()
-        container_id = self._container_id
-        if container_id is None:
+        if self._container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
         target = self._validate_container_path(path)
         target = await self._resolve_write_target(target, containment_root=containment_root)
-        key = f"{container_id}\0{target}"
+        async with self._resolved_file_write_lock(target):
+            yield target
+
+    @contextlib.asynccontextmanager
+    async def _resolved_file_write_lock(self, target: str) -> AsyncIterator[str]:
+        key = f"{self._container_id}\0{target}"
         task = asyncio.current_task()
         assert task is not None
         # Native tools already hold this lock when they call write_file. Only
