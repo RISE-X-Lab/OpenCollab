@@ -114,6 +114,7 @@ class AuthoredWorkflowBridge:
     def __init__(self, environment: Any, artifacts: str, pool: Any, llm: Any, runtime: Any,
                  *, allow_unisolated_shell: bool, budget: int | None = None,
                  remaining_budget: Callable[[], int | None] | None = None,
+                 on_usage: Callable[[int], None] | None = None,
                  team_budget_exhausted: Callable[[], bool] | None = None,
                  cancel_requested: Callable[[], bool] | None = None) -> None:
         relative = posixpath.relpath(artifacts, environment.workspace)
@@ -129,6 +130,7 @@ class AuthoredWorkflowBridge:
         self.tokens = 0
         self._budget = budget
         self._remaining_budget = remaining_budget
+        self._on_usage = on_usage
         self._team_budget_exhausted = team_budget_exhausted
         self._cancel_requested = cancel_requested
         self._tasks: dict[str, asyncio.Task] = {}
@@ -191,6 +193,8 @@ class AuthoredWorkflowBridge:
 
     def _account_native_usage(self, usage: Any) -> None:
         self.tokens += _normalize_completion_usage(usage)[1]
+        if self._on_usage is not None:
+            self._on_usage(self.tokens)
 
     async def poll(self) -> None:
         try:
@@ -299,10 +303,10 @@ class AuthoredWorkflowBridge:
                     response = await self._model().complete(**arguments)
                 except BaseException as exc:
                     if not native_accounting and getattr(exc, "usage", None) is not None:
-                        self.tokens += _normalize_completion_usage(exc.usage)[1]
+                        self._account_native_usage(exc.usage)
                     raise
                 if not native_accounting:
-                    self.tokens += _normalize_completion_usage(response.usage)[1]
+                    self._account_native_usage(response.usage)
                 return to_plain_data(response)
             finally:
                 if notifications:

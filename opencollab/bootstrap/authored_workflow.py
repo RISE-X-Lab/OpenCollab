@@ -55,6 +55,7 @@ class _Child:
     stop_requested: bool = False
     status: str = "running"
     tokens: int = 0
+    reported_tokens: int = 0
     result: dict[str, Any] | None = None
     cleanup_error: Exception | None = None
     bridge: AuthoredWorkflowBridge | None = None
@@ -302,6 +303,7 @@ class AuthoredWorkflowTool(Tool):
             environment, artifacts, pool, config, runtime,
             budget=budget,
             remaining_budget=lambda: self._remaining_child_budget(child),
+            on_usage=lambda tokens: self._account_usage(child, tokens, reported=False),
             team_budget_exhausted=parent.runner._team_budget_exhausted,
             cancel_requested=lambda: child.stop_requested or parent.runner._run_cancellation_requested(),
             allow_unisolated_shell=self._allow_unisolated_shell
@@ -329,15 +331,18 @@ class AuthoredWorkflowTool(Tool):
             return
         self._account_usage(child, usage["tokens"])
 
-    def _account_usage(self, child: _Child, tokens: Any) -> None:
-        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < child.tokens:
+    def _account_usage(self, child: _Child, tokens: Any, *, reported: bool = True) -> None:
+        minimum = child.reported_tokens if reported else child.tokens
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < minimum:
             raise ValueError("invalid child usage total")
-        delta = tokens - child.tokens
+        if reported:
+            child.reported_tokens = tokens
+        delta = max(child.tokens, tokens) - child.tokens
         if delta:
             parent = self._get_session()
             parent.state.add_used_tokens(delta)
             parent.enqueue_auto_save()
-            child.tokens = tokens
+            child.tokens += delta
 
     async def _execute(self, child: _Child, command: str, request_bytes: bytes) -> None:
         execution = None
@@ -390,7 +395,7 @@ class AuthoredWorkflowTool(Tool):
                 assert child.bridge is not None
                 await await_owned_operation(child.bridge.aclose(), propagate_cancellation=False)
                 await self._refresh_usage(child)
-                self._account_usage(child, max(child.tokens, child.bridge.tokens))
+                self._account_usage(child, max(child.tokens, child.bridge.tokens), reported=False)
             except Exception as exc:
                 status = "failed"
                 child.cleanup_error = exc
