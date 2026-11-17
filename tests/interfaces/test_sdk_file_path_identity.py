@@ -129,3 +129,10 @@ def test_workspace_policy_checks_directory_before_parent_traversal(tmp_path, com
     assert target.read_text() == "original\n"
     (tmp_path / "sub").mkdir()
     assert policy.check_path("sub/../new/value.txt") == str(tmp_path / "new/value.txt")
+
+
+def test_workspace_policy_root_resolves_symlink_before_parent(tmp_path):
+    (tmp_path / "actual/child").mkdir(parents=True)
+    (tmp_path / "alias").symlink_to("actual/child", target_is_directory=True)
+    policy = SandboxInterceptor(os.path.join(str(tmp_path), "alias/.."))
+    assert policy.check_path("module.py") == str(tmp_path / "actual/module.py")

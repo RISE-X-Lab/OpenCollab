@@ -91,7 +91,7 @@ def open_parent_beneath(
     """Open a target parent without resolving a component by pathname."""
     _require_anchor_path(root_fd, root_path)
     parents, name = _relative_components(path)
-    # A directory traversed before .. must exist even when creating a file.
+    # A directory followed by .. must exist and keep its parent descriptor open.
     existing_only: set[int] = set()
     parent_steps = 0
     for index in range(len(parents) - 1, -1, -1):
@@ -101,7 +101,6 @@ def open_parent_beneath(
             existing_only.add(index)
             parent_steps -= 1
     opened = [os.dup(root_fd)]
-    retain_parents = ".." in parents
     try:
         for index, component in enumerate(parents):
             if component == "..":
@@ -126,7 +125,7 @@ def open_parent_beneath(
                     _directory_open_flags(),
                     dir_fd=current_fd,
                 )
-            if not retain_parents:
+            if index not in existing_only:
                 os.close(opened.pop())
             opened.append(next_fd)
         return opened.pop(), name

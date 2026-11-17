@@ -89,6 +89,18 @@ async def test_local_parent_traversal_keeps_new_parent_creation_and_owned_remova
         await environment.cleanup()
 
 
+async def test_local_workspace_selection_resolves_symlink_before_parent(tmp_path):
+    (tmp_path / "actual/child").mkdir(parents=True)
+    (tmp_path / "alias").symlink_to("actual/child", target_is_directory=True)
+    (tmp_path / "actual/value.txt").write_text("selected\n")
+    (tmp_path / "value.txt").write_text("unrelated\n")
+    environment = local_environment(os.path.join(str(tmp_path), "alias/.."))
+    try:
+        assert await environment.read_file("value.txt") == "selected\n"
+    finally:
+        await environment.cleanup()
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS system-directory aliases")
 @pytest.mark.parametrize("alias_root", ["/tmp", "/var/tmp"])
 async def test_local_absolute_system_alias_preserves_parent_checks(alias_root):
@@ -112,15 +124,23 @@ async def test_local_absolute_system_alias_preserves_parent_checks(alias_root):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor limits")
-def test_deep_ordinary_local_paths_use_bounded_descriptors(tmp_path):
+@pytest.mark.parametrize("traversal", ["plain", "early-parent", "late-parent"])
+def test_deep_ordinary_local_paths_use_bounded_descriptors(tmp_path, traversal):
     relative = "/".join(["sub"] * 64 + ["value.txt"])
     target = tmp_path / relative
     target.parent.mkdir(parents=True)
     target.write_text("original\n")
+    if traversal == "early-parent":
+        (tmp_path / "cancel").mkdir()
+        relative = "cancel/../" + relative
+    elif traversal == "late-parent":
+        (target.parent / "cancel").mkdir()
+        relative = "/".join(["sub"] * 64 + ["cancel", "..", "value.txt"])
     code = (
-        "import asyncio, resource, sys\n"
+        "import asyncio, os, resource, sys\n"
         "from opencollab.environments import local_environment\n"
         "resource.setrlimit(resource.RLIMIT_NOFILE, (32, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))\n"
+        "before = len(os.listdir('/dev/fd'))\n"
         "async def run():\n"
         "    environment = local_environment(sys.argv[1])\n"
         "    try:\n"
@@ -129,6 +149,7 @@ def test_deep_ordinary_local_paths_use_bounded_descriptors(tmp_path):
         "    finally:\n"
         "        await environment.cleanup()\n"
         "asyncio.run(run())\n"
+        "assert len(os.listdir('/dev/fd')) == before\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code, str(tmp_path), relative], capture_output=True, text=True, timeout=10,
