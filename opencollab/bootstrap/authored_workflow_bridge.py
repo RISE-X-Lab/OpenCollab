@@ -12,16 +12,19 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange
 from opencollab.adapters.llm import errors as llm_errors
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.types import LLMResponse, Usage, to_plain_data
 from opencollab.adapters.tools.base import host_write_lock
+from opencollab.application._session_run_shared import _TeamBudgetStop, _TokenBudgetStop
 from opencollab.application._session_run_usage import _normalize_completion_usage
 from opencollab.application.async_timeout import await_owned_operation, consume_task_result
 from opencollab.application.exception_notes import add_exception_note
+from opencollab.application.run_control import _RunCancelled
+from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 
 _METADATA = {"context_window", "estimate_request_tokens", "estimate_context_tokens", "minimum_output_tokens"}
 _COMPLETION = {"messages", "tools", "temperature", "thinking", "thinking_params", "reasoning_effort",
@@ -37,6 +40,13 @@ def _write_json(path: Path, value: Any) -> None:
 
 def _restore_error(value: dict[str, Any]) -> Exception:
     name = value.pop("type")
+    if name in {"_RunCancelled", "_TeamBudgetStop"}:
+        return {"_RunCancelled": _RunCancelled, "_TeamBudgetStop": _TeamBudgetStop}[name]()
+    if name == "_TokenBudgetStop":
+        return _TokenBudgetStop(
+            reserved_input_tokens=value["reserved_input_tokens"], remaining_budget=value["remaining_budget"],
+            minimum_output_tokens=value["minimum_output_tokens"],
+        )
     cls = getattr(llm_errors, name, getattr(builtins, name, RuntimeError))
     if not isinstance(cls, type) or not issubclass(cls, Exception):
         cls = RuntimeError
@@ -102,7 +112,10 @@ class AuthoredWorkflowBridge:
     """Own only this authored run's strategy pools and admitted operations."""
 
     def __init__(self, environment: Any, artifacts: str, pool: Any, llm: Any, runtime: Any,
-                 *, allow_unisolated_shell: bool) -> None:
+                 *, allow_unisolated_shell: bool, budget: int | None = None,
+                 remaining_budget: Callable[[], int | None] | None = None,
+                 team_budget_exhausted: Callable[[], bool] | None = None,
+                 cancel_requested: Callable[[], bool] | None = None) -> None:
         relative = posixpath.relpath(artifacts, environment.workspace)
         if relative == ".." or relative.startswith("../") or posixpath.isabs(relative):
             raise ValueError("child mailbox must be inside the member workspace")
@@ -114,6 +127,10 @@ class AuthoredWorkflowBridge:
         self._environments = {0: environment}
         self._next_environment = 0
         self.tokens = 0
+        self._budget = budget
+        self._remaining_budget = remaining_budget
+        self._team_budget_exhausted = team_budget_exhausted
+        self._cancel_requested = cancel_requested
         self._tasks: dict[str, asyncio.Task] = {}
         self._handles: dict[str, int] = {}
         self._edits: dict[str, _FileEdit] = {}
@@ -141,6 +158,39 @@ class AuthoredWorkflowBridge:
                 "requires_thinking_prefix": None,
                 "supports_request_admission": self._config.get("request_pool") is not None,
                 "supports_response_session_identity": self._config.get("wire_protocol") == "responses"}
+
+    def _request_output_limit(self, arguments: dict[str, Any]) -> int:
+        if self._cancel_requested is not None and self._cancel_requested():
+            raise _RunCancelled
+        if self._team_budget_exhausted is not None and self._team_budget_exhausted():
+            raise _TeamBudgetStop
+        configured = arguments.get("max_output_tokens")
+        if configured is None:
+            configured = self._config.get("max_output_tokens", DEFAULT_MAX_TOKENS_PER_STEP)
+        remaining = None if self._budget is None else self._budget - self.tokens
+        if self._remaining_budget is not None:
+            parent_remaining = self._remaining_budget()
+            if parent_remaining is not None:
+                remaining = parent_remaining if remaining is None else min(remaining, parent_remaining)
+        if remaining is None:
+            return configured
+        model = self._model()
+        thinking = arguments.get("thinking", False)
+        thinking_params = arguments.get("thinking_params")
+        reserved = model.estimate_request_tokens(
+            arguments["messages"], arguments.get("tools"), thinking=thinking, thinking_params=thinking_params,
+        )
+        minimum = model.minimum_output_tokens(
+            max_output_tokens=configured, thinking=thinking, thinking_params=thinking_params,
+        )
+        if remaining - reserved < minimum:
+            raise _TokenBudgetStop(
+                reserved_input_tokens=reserved, remaining_budget=remaining, minimum_output_tokens=minimum,
+            )
+        return min(configured, remaining - reserved)
+
+    def _account_native_usage(self, usage: Any) -> None:
+        self.tokens += _normalize_completion_usage(usage)[1]
 
     async def poll(self) -> None:
         try:
@@ -183,7 +233,8 @@ class AuthoredWorkflowBridge:
             if not isinstance(exc, (Exception, asyncio.CancelledError)):
                 raise
             error = {"type": type(exc).__name__, "message": str(exc)}
-            for name in ("usage", "status_code", "code", "param", "body"):
+            for name in ("usage", "status_code", "code", "param", "body", "reserved_input_tokens",
+                         "remaining_budget", "minimum_output_tokens"):
                 value = getattr(exc, name, None)
                 if value is not None:
                     error[name] = to_plain_data(value)
@@ -233,6 +284,10 @@ class AuthoredWorkflowBridge:
             if set(arguments) - _COMPLETION:
                 raise ValueError("unknown completion controls")
             notifications = []
+            native_accounting = getattr(self._model(), "supports_request_revalidation", False)
+            if native_accounting:
+                arguments["before_request"] = lambda: self._request_output_limit(arguments)
+                arguments["on_usage"] = self._account_native_usage
             if getattr(self._model(), "supports_request_admission", False):
                 def admitted() -> None:
                     notifications.append(asyncio.create_task(self._environment.write_file(
@@ -243,10 +298,11 @@ class AuthoredWorkflowBridge:
                 try:
                     response = await self._model().complete(**arguments)
                 except BaseException as exc:
-                    if getattr(exc, "usage", None) is not None:
+                    if not native_accounting and getattr(exc, "usage", None) is not None:
                         self.tokens += _normalize_completion_usage(exc.usage)[1]
                     raise
-                self.tokens += _normalize_completion_usage(response.usage)[1]
+                if not native_accounting:
+                    self.tokens += _normalize_completion_usage(response.usage)[1]
                 return to_plain_data(response)
             finally:
                 if notifications:

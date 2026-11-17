@@ -212,8 +212,17 @@ class AuthoredWorkflowTool(Tool):
         return record
 
     def _reserved_tokens(self) -> int:
-        return sum(max(0, (item.budget or 0) - item.tokens)
+        # Retain native spend while the child's usage file catches up.
+        return sum(max(0, (item.budget or 0) - item.tokens,
+                       (item.bridge.tokens if item.bridge is not None else item.tokens) - item.tokens)
                    for item in self._children.values() if item.status == "running")
+
+    def _remaining_child_budget(self, child: _Child) -> int | None:
+        remaining = self._get_session().runner.remaining_budget_tokens
+        if remaining is None:
+            return None
+        spent = max(child.tokens, child.bridge.tokens if child.bridge is not None else 0)
+        return remaining + max(0, (child.budget or 0) - spent)
 
     async def _launch(self, params: dict[str, Any], runtime: ToolRuntime) -> _Child:
         parent = self._get_session()
@@ -291,6 +300,10 @@ class AuthoredWorkflowTool(Tool):
             await runtime.safety_policy.check_cmd_interactive(command, runtime.confirm_fn())
         child.bridge = AuthoredWorkflowBridge(
             environment, artifacts, pool, config, runtime,
+            budget=budget,
+            remaining_budget=lambda: self._remaining_child_budget(child),
+            team_budget_exhausted=parent.runner._team_budget_exhausted,
+            cancel_requested=lambda: child.stop_requested or parent.runner._run_cancellation_requested(),
             allow_unisolated_shell=self._allow_unisolated_shell
             and not getattr(shell, "require_process_isolation", False),
         )

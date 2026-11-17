@@ -123,7 +123,7 @@ class LLMClient:
         self.request_pool = request_pool
         self.request_capacity = request_capacity
         self.supports_request_admission = request_pool is not None
-        self.supports_request_revalidation = request_pool is not None
+        self.supports_request_revalidation = True
         self.model = model
         self.provider = provider
         self.max_retries = max(0, max_retries)
@@ -293,6 +293,7 @@ class LLMClient:
         response_session_id: str | None = None,
         on_admitted: Callable[[], None] | None = None,
         before_request: Callable[[], int] | None = None,
+        on_usage: Callable[[Any], None] | None = None,
     ) -> LLMResponse:
         """Single-shot completion. Returns full response.
 
@@ -310,6 +311,7 @@ class LLMClient:
         """
         start = time.monotonic()
         response = None
+        settled_usage = None
         retry_budget = (
             self.provider_retry_budget
             if self._retry_budget_explicit
@@ -388,6 +390,7 @@ class LLMClient:
                             first_event_timeout=self.first_event_timeout,
                             stream_idle_timeout=self.stream_idle_timeout,
                         )
+                    settled_usage = response.usage
                     transport_timing = first_token.snapshot()
                     try:
                         response.transport_timing = transport_timing
@@ -408,6 +411,7 @@ class LLMClient:
                     )
                     return response
                 except BaseException as exc:
+                    settled_usage = response.usage if response is not None else getattr(exc, "usage", None)
                     if response is not None:
                         exc.usage = response.usage
                     else:
@@ -429,3 +433,6 @@ class LLMClient:
                                 cancellation.usage = usage
                             raise
                     raise
+                finally:
+                    if on_usage is not None and settled_usage is not None:
+                        on_usage(settled_usage)
