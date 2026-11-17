@@ -797,6 +797,8 @@ class DockerEnvironment(Environment):
                 f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {path}"
             )
         async with self.file_write_lock(path, containment_root=containment_root) as target:
+            if containment_root == "/tmp":
+                self._temporary_files.add(path)
             return await self._write_file_atomic(target, payload, observe_change=observe_change)
 
     async def _resolve_write_target(
@@ -1029,7 +1031,6 @@ class DockerEnvironment(Environment):
         # Patch staging owns this path. It is outside the project on purpose;
         # workspace containment would reject it and drop the binary patch.
         await self._write_file(path, content, observe_change=False, containment_root="/tmp")
-        self._temporary_files.add(path)
         return path
 
     async def remove_file(self, path: str) -> None:
