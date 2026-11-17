@@ -117,13 +117,14 @@ def attempt_server(monkeypatch, tmp_path):
         thread.join()
 
 
-def _client(protocol, url, *, retries=1):
+def _client(protocol, url, *, retries=1, **kwargs):
     return LLMClient(
         provider="anthropic" if protocol == "anthropic" else "openai",
         model="claude-sonnet-4-6" if protocol == "anthropic" else "gpt-4o",
         wire_protocol="responses" if protocol == "responses" else "chat_completions",
         api_key="controlled-test", base_url=url,  # pragma: allowlist secret
         stream_chat=protocol == "chat", max_retries=retries,
+        **kwargs,
     )
 
 
@@ -256,6 +257,54 @@ async def test_callback_errors_stop_retry_and_retain_usage(tmp_path, attempt_ser
     assert final == [expected]
     assert admissions == [True]
     assert error.value.usage.total_tokens == expected
+    records = _records(tmp_path)
+    assert len(records) == 1
+    assert records[0]["usage"]["total_tokens"] == expected
+
+
+@pytest.mark.parametrize("callback", ["before_first", "admitted", "before_retry", "attempt", "final"])
+@pytest.mark.parametrize("timeout", [None, 600.0])
+@pytest.mark.parametrize("retry_budget", [0, 30])
+async def test_responses_preserves_callback_timeout_identity(
+    tmp_path, attempt_server, callback, timeout, retry_budget,
+):
+    url, requests = attempt_server("responses")
+    original = TimeoutError("owned caller deadline")
+    checks, attempts, finals = [], [], []
+
+    def before_request():
+        checks.append(True)
+        if callback == "before_first" or callback == "before_retry" and len(checks) == 2:
+            raise original
+        return 128
+
+    def on_admitted():
+        if callback == "admitted":
+            raise original
+
+    def on_attempt(usage):
+        attempts.append(usage.total_tokens)
+        if callback == "attempt":
+            raise original
+
+    def on_usage(usage):
+        finals.append(usage.total_tokens)
+        if callback == "final":
+            raise original
+
+    async with _client("responses", url, request_timeout=timeout, provider_error_time_budget=retry_budget) as client:
+        with pytest.raises(TimeoutError) as error:
+            await client.complete(
+                [{"role": "user", "content": "Reply ok."}], before_request=before_request,
+                on_admitted=on_admitted, on_attempt_usage=on_attempt, on_usage=on_usage,
+            )
+    assert error.value is original
+    count = 0 if callback in {"before_first", "admitted"} else 2 if callback == "final" else 1
+    expected = 0 if not count else 1500 + 4 * (count - 1)
+    assert len(requests) == count
+    assert attempts == ([1500] if count else [])
+    assert finals == ([expected] if count else [])
+    assert getattr(getattr(error.value, "usage", None), "total_tokens", 0) == expected
     records = _records(tmp_path)
     assert len(records) == 1
     assert records[0]["usage"]["total_tokens"] == expected

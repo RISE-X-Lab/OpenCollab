@@ -712,14 +712,25 @@ async def complete_responses(
     capabilities = model_capabilities(model)
     stream = stream and capabilities.supports_responses_streaming
     failed_usages: list[Usage | None] = []
+    callback_timeout: asyncio.TimeoutError | None = None
 
     def prepare_attempt() -> None:
-        if before_attempt is not None and (limit := before_attempt()) is not None:
-            kwargs["max_output_tokens"] = limit
+        nonlocal callback_timeout
+        try:
+            if before_attempt is not None and (limit := before_attempt()) is not None:
+                kwargs["max_output_tokens"] = limit
+        except asyncio.TimeoutError as exc:
+            callback_timeout = exc
+            raise
 
     def report_failure(_exc: BaseException) -> None:
-        if failed_usages and (usage := failed_usages[-1]) is not None and on_attempt_usage is not None:
-            on_attempt_usage(usage)
+        nonlocal callback_timeout
+        try:
+            if failed_usages and (usage := failed_usages[-1]) is not None and on_attempt_usage is not None:
+                on_attempt_usage(usage)
+        except asyncio.TimeoutError as exc:
+            callback_timeout = exc
+            raise
 
     async def request_once() -> LLMResponse:
         terminal = None
@@ -782,6 +793,8 @@ async def complete_responses(
             else:
                 response = await asyncio.wait_for(run(), timeout=round_timeout)
         except asyncio.TimeoutError as exc:
+            if exc is callback_timeout or round_timeout is None:
+                raise
             raise ResponsesProtocolError(f"Responses round deadline exceeded after {round_timeout:g}s") from exc
     except BaseException as exc:
         usage = _combine_responses_usage(failed_usages)
