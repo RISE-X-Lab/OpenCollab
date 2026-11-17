@@ -381,6 +381,19 @@ class SchedulerRunMixin:
         )
         self._write_manifest()
 
+    def _message_budget_cleanup_tasks(self) -> set[asyncio.Task]:
+        if not any(
+            inbox and aid not in self._cancelled_turn_inbox_holds
+            for aid, inbox in self._message_inbox.items()
+        ):
+            return set()
+        # Any member's deferred grant can hold the shared budget an inbox needs.
+        return {
+            task
+            for _aid, _grant, _baseline, tasks, _finished in self._pending_provider_budget_leases.values()
+            for task in tasks
+        }
+
     def _active_scheduler_tasks(self) -> set[asyncio.Task]:
         """Return live scheduler-owned producers, excluding the current waiter."""
         current = asyncio.current_task()
@@ -401,20 +414,42 @@ class SchedulerRunMixin:
                 *self._startup_tasks.values(),
                 *self._message_delivery_tasks.values(),
                 *message_cleanup,
+                *self._message_budget_cleanup_tasks(),
             )
             if not task.done() and task is not current
         }
 
     async def _wait_for_scheduler_progress(self, aid: int) -> None:
         """Block for a producer completion or report a state with no producer."""
-        await self._drain_ready_message_inboxes()
-        scb = self.table.get(aid)
-        if scb is not None and scb.state.phase.is_terminal() and self._quiescent():
-            return
-        producers = self._active_scheduler_tasks()
-        if not producers:
-            raise SchedulerStalledError(aid)
-        await asyncio.wait(producers, return_when=asyncio.FIRST_COMPLETED)
+        settled_budget_owners: set[asyncio.Task] = set()
+        while True:
+            budget_owners = self._message_budget_cleanup_tasks()
+            await self._drain_ready_message_inboxes()
+            scb = self.table.get(aid)
+            if scb is not None and scb.state.phase.is_terminal() and self._quiescent():
+                return
+            producers = self._active_scheduler_tasks()
+            if producers:
+                await asyncio.wait(producers, return_when=asyncio.FIRST_COMPLETED)
+                return
+            budget_owners.update(self._message_budget_cleanup_tasks())
+            callbacks = budget_owners - settled_budget_owners
+            if not callbacks:
+                raise SchedulerStalledError(aid)
+            # A done task can still hold its grant until the registered usage
+            # and reservation callbacks run. Follow them with an owned callback.
+            callback_tail = asyncio.get_running_loop().create_future()
+            remaining = set(callbacks)
+
+            def after_budget_callback(task: asyncio.Task) -> None:
+                remaining.discard(task)
+                if not remaining and not callback_tail.done():
+                    callback_tail.set_result(None)
+
+            for task in callbacks:
+                task.add_done_callback(after_budget_callback)
+            await callback_tail
+            settled_budget_owners.update(callbacks)
 
     def _quiescent(self) -> bool:
         """True when no session is mid-flight: none is awaiting events, none has
