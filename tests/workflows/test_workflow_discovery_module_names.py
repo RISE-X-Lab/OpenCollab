@@ -186,6 +186,15 @@ async def cleanup(ctx, args):
         await asyncio.wait_for(args["following_started"].wait(), 5)
         assert _import_state() != before
         args["release_following"].set()
+
+        async def wait_for_package_release():
+            while _import_state() != before:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_package_release(), 5)
+        assert args["answers"] == [42]
+        assert _import_state() == before
+        ctx._active_call_tasks.discard(caller)
         await asyncio.wait_for(ctx.wait_for_pending_cleanup(), 5)
         assert args["answers"] == [42]
         assert _import_state() == before
