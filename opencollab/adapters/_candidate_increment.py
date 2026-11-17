@@ -12,6 +12,7 @@ from opencollab.adapters._candidate_adoption import _adoption_transaction
 from opencollab.adapters._candidate_physical import _physical_git
 from opencollab.adapters._git_patch_bytes import _complete, _patch_temporary
 from opencollab.adapters.git_patch import _git_command_and_config_guard
+from opencollab.adapters.tools.base import host_write_lock
 from opencollab.patches import patch_paths
 
 
@@ -32,7 +33,11 @@ async def _apply_increment(
     if not isinstance(patch, str) or not patch.strip():
         raise ValueError("candidate patch must be non-empty")
     preserved = tuple(_safe_path(path) for path in preserve_paths)
-    async with _patch_temporary(
+    lock_root = (
+        workspace if getattr(environment, "local_filesystem", False)
+        else getattr(environment, "workspace", workspace)
+    )
+    async with host_write_lock(posixpath.join(lock_root, ".candidate-adoption"), environment), _patch_temporary(
         environment, workspace, patch, prefix=".candidate-adopt-", suffix=".patch",
         cleanup_best_effort=True, repository=repository,
     ) as candidate_file:
