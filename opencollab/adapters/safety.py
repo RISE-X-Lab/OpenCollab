@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import stat
 from typing import Awaitable, Callable
 
 # Commands that warrant human confirmation (not outright blocked)
@@ -98,9 +99,9 @@ class SandboxInterceptor:
     """
 
     def __init__(self, workspace_root: str, allowed_dirs: list[str] | None = None):
-        self.root = os.path.abspath(workspace_root)
+        self.root = os.path.realpath(workspace_root)
         # Additional allowed directories (e.g., /tmp for scratch)
-        self.allowed_roots = [self.root] + [os.path.abspath(d) for d in (allowed_dirs or [])]
+        self.allowed_roots = [self.root] + [os.path.realpath(d) for d in (allowed_dirs or [])]
 
     def check_path(self, target_path: str) -> str:
         """Resolve and validate a file path. Returns absolute safe path or raises.
@@ -109,9 +110,14 @@ class SandboxInterceptor:
         """
         # Resolve relative to workspace
         if not os.path.isabs(target_path):
-            resolved = os.path.abspath(os.path.join(self.root, target_path))
+            resolved = os.path.join(self.root, target_path)
         else:
-            resolved = os.path.abspath(target_path)
+            resolved = target_path
+        prefix = os.sep
+        for component in resolved.split(os.sep):
+            if component == ".." and not stat.S_ISDIR(os.stat(prefix).st_mode):
+                raise NotADirectoryError(prefix)
+            prefix = os.path.join(prefix, component)
         resolved = os.path.realpath(resolved)
 
         # Check against all allowed roots
