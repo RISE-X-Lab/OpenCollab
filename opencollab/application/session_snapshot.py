@@ -21,13 +21,23 @@ def _restore_anthropic_history(value: object, messages: list[dict]) -> dict | No
     count = value.get("source_count")
     view = value.get("messages")
     tools = value.get("tools")
+    source = value.get("source_messages")
     if (
-        isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= len(messages)
+        isinstance(count, bool) or not isinstance(count, int) or count < 0
         or not isinstance(view, list) or not all(isinstance(message, dict) for message in view)
         or (tools is not None and (not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools)))
     ):
         return None
-    return copy.deepcopy({"messages": view, "source_count": count, "tools": tools})
+    if source is None:
+        if count > len(messages):
+            return None
+        source = messages[:count]
+    elif (
+        not isinstance(source, list) or len(source) != count
+        or not all(isinstance(message, dict) for message in source)
+    ):
+        return None
+    return copy.deepcopy({"messages": view, "source_count": count, "tools": tools, "source_messages": source})
 
 def _restore_phase(raw: object) -> SessionPhase:
     value = str(raw)

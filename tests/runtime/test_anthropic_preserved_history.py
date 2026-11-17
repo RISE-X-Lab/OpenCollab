@@ -11,10 +11,13 @@ from opencollab import OpenCollab
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool
+from opencollab.application._anthropic_history import _anthropic_history_input, _remember_anthropic_history
+from opencollab.application.session_snapshot import _restore_anthropic_history
 from opencollab.application.shaping import AutoCompactShaper, PerToolResultBudgetShaper, ToolOutputClearShaper
 from opencollab.application.steering import READS_NUDGE_HARD
 from opencollab.bootstrap import build_session, load_session
 from opencollab.domain.agent import Agent
+from opencollab.domain.session import SessionState
 from tests.support.provider_sdk_http import http_response, install_sdk_transport
 
 _THINKING = {"thinking", "redacted_thinking"}
@@ -333,3 +336,112 @@ async def test_prefix_constraint_uses_native_transport_and_documented_models(mod
     async with LLMClient(model=model, provider=provider, api_key="controlled-test",  # pragma: allowlist secret
                          base_url="https://controlled.invalid/v1") as client:
         assert client.requires_thinking_prefix is expected
+
+
+@pytest.mark.parametrize("moment", ["live", "before-save", "after-load"])
+@pytest.mark.parametrize("edit", ["text", "nested", "replacement", "deletion", "tail-deletion", "system"])
+async def test_source_edits_reach_native_requests_and_retire_only_invalid_thinking(
+    monkeypatch, tmp_path, moment, edit,
+):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    peer = _BoundThinkingProvider(reads=0)
+    install_sdk_transport(monkeypatch, "anthropic", peer)
+    path = tmp_path / "session.json"
+
+    def apply_edit(session):
+        if edit == "text":
+            session.messages[3]["content"] = "Choose green"
+        elif edit == "nested":
+            session.messages[3]["content"][0]["text"] = "Choose green"
+        elif edit == "replacement":
+            session.messages[3] = {"role": "user", "content": "Choose green"}
+        elif edit == "deletion":
+            del session.messages[3]
+        elif edit == "tail-deletion":
+            del session.messages[3:]
+        else:
+            session.messages[0]["content"] = "Follow the revised instructions"
+
+    async with _client() as client:
+        session = build_session(agent=_agent(), llm=client, env=LocalEnvironment(str(tmp_path)),
+                                max_budget_tokens=100_000, max_steps=20)
+        try:
+            await session.add_user_message("Answer the first question")
+            assert await session.run_loop() == "done"
+            await session.add_user_message("Choose red")
+            session.messages[-1]["content"] = [{"type": "text", "text": "Choose red"}]
+            assert await session.run_loop() == "done"
+            if moment != "after-load":
+                apply_edit(session)
+            if moment != "live":
+                session.save(str(path))
+                await session.aclose()
+                await session.env.cleanup()
+                session = load_session(str(path), agent=_agent(), llm=client,
+                                       env=LocalEnvironment(str(tmp_path)), max_budget_tokens=100_000, max_steps=20)
+            if moment == "after-load":
+                apply_edit(session)
+            edited = copy.deepcopy(session.messages)
+            await session.add_user_message("Continue using the current instructions")
+            assert await session.run_loop() == "done"
+            assert session.messages[:len(edited)] == edited
+            await session.add_user_message("Continue once more")
+            assert await session.run_loop() == "done"
+        finally:
+            await session.aclose()
+            await session.env.cleanup()
+
+    assert len(peer.requests) == 4
+    body = peer.requests[2]
+    if edit == "system":
+        assert body["system"] == "Follow the revised instructions"
+        assert _signatures(body) == []
+    else:
+        assert _signatures(body) == ["signed-1", "redacted-1"]
+        assert "Choose red" not in json.dumps(body)
+        if edit not in {"deletion", "tail-deletion"}:
+            assert "Choose green" in json.dumps(body)
+    assert _signatures(peer.requests[-1]) == [*_signatures(body), "signed-3", "redacted-3"]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_restored_unchanged_prefix_preserves_projection_and_tracks_future_nested_edits(legacy):
+    state = SessionState(messages=[
+        {"role": "system", "content": "Identity"},
+        {"role": "user", "content": [{"type": "text", "text": "Old requirement"}]},
+        {"role": "assistant", "content": "Large old result"},
+    ])
+    view = [state.messages[0], {"role": "system", "compacted": True, "content": "Earlier context"}]
+    assert _remember_anthropic_history(state, view, None) == view
+    stored = copy.deepcopy(state.anthropic_history)
+    if legacy:
+        del stored["source_messages"]
+    state.anthropic_history = _restore_anthropic_history(stored, state.messages)
+    assert _anthropic_history_input(state) == view
+    state.append_message({"role": "user", "content": "New request"})
+    assert _anthropic_history_input(state) == [*view, state.messages[-1]]
+    assert "Large old result" not in json.dumps(_anthropic_history_input(state))
+    state.messages[1]["content"][0]["text"] = "Revised requirement"
+    assert _anthropic_history_input(state) == state.messages
+    assert state.anthropic_history["source_messages"][1]["content"][0]["text"] == "Old requirement"
+
+
+@pytest.mark.parametrize("source", ["invalid", [], [{}, {}], [False]])
+def test_restore_rejects_malformed_optional_source_prefix(source):
+    message = {"role": "user", "content": "Request"}
+    assert _restore_anthropic_history({
+        "messages": [message], "source_count": 1, "tools": None, "source_messages": source,
+    }, [message]) is None
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_legacy_native_history_restores_without_an_optional_source_prefix(count):
+    messages = [{"role": "user", "content": "First"}, {"role": "assistant", "content": "Answer"}]
+    view = [{"role": "system", "compacted": True, "content": "Earlier context"}]
+    restored = _restore_anthropic_history({"messages": view, "source_count": count, "tools": None}, messages)
+    assert restored == {"messages": view, "source_count": count, "tools": None, "source_messages": messages[:count]}
+    messages[0]["content"] = "Changed"
+    if count:
+        assert restored["source_messages"][0]["content"] == "First"

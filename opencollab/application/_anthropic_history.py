@@ -35,10 +35,13 @@ def _edited_anthropic_history(before: list[dict], after: list[dict]) -> list[dic
     return after
 
 def _anthropic_history_input(state: SessionState) -> list[dict]:
-    """Append fresh transcript messages to the last native provider view."""
+    """Reuse the native view until its original transcript prefix changes."""
     history = state.anthropic_history
     if history is None:
         return state.messages
+    source = history.get("source_messages")
+    if source is not None and state.messages[:len(source)] != source:
+        return _edited_anthropic_history(source, state.messages)
     return copy.deepcopy([*history["messages"], *state.messages[history["source_count"]:]])
 
 def _remember_anthropic_history(state: SessionState, messages: list[dict], tools: list[dict] | None) -> list[dict]:
@@ -51,6 +54,7 @@ def _remember_anthropic_history(state: SessionState, messages: list[dict], tools
             messages = _strip_anthropic_thinking(messages)
     state.anthropic_history = copy.deepcopy({
         "messages": messages, "source_count": len(state.messages), "tools": tools,
+        "source_messages": state.messages,
     })
     return messages
 
