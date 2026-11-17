@@ -38,7 +38,7 @@ async def _adoption_transaction(
     for path in sorted(set(inspected.split("\0")) - {""}):
         if not any(path.startswith(root + "/") for root in roots):
             roots.append(path)
-    ancestors = set()
+    ancestors = {"."}
     for path in roots:
         parent = posixpath.dirname(path)
         while parent:
@@ -74,7 +74,7 @@ async def _adoption_transaction(
         restores = []
         recreate_directories = []
         restore_directory_modes = []
-        restore_parents = {posixpath.dirname(path) for path in roots}
+        restore_parents = {posixpath.dirname(path) or "." for path in roots}
         # Git prunes empty ancestors after deleting their last leaf. Recreate
         # those directories with write access until their saved leaves return.
         for index, (path, mode) in enumerate(directory_modes):

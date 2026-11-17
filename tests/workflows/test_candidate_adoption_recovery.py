@@ -167,7 +167,9 @@ async def test_public_sdk_recovers_pruned_ancestors_and_modes(tmp_path, physical
 
 
 @pytest.mark.parametrize("physical", [False, True])
-@pytest.mark.parametrize("change,sibling", [("rename", False), ("rename", True), ("readonly", True)])
+@pytest.mark.parametrize("change,sibling", [
+    ("rename", False), ("rename", True), ("readonly", True), ("readonly-root", True),
+])
 async def test_public_sdk_restores_changed_ancestor_permissions(tmp_path, monkeypatch, physical, change, sibling):
     repo = _repository(tmp_path, physical=physical, cache=True)
     (repo / "old/nested").mkdir(parents=True)
@@ -178,6 +180,9 @@ async def test_public_sdk_restores_changed_ancestor_permissions(tmp_path, monkey
     (repo / "old/nested").chmod(0o500 if change == "readonly" else 0o710)
     if sibling:
         (repo / "old/sibling.txt").write_text("shared contents\n")
+    if change == "readonly-root":
+        repo.chmod(0o500)
+    root_mode = stat.S_IMODE(repo.stat().st_mode)
     before = _contents(repo)
     index = (repo / ".git/index").read_bytes()
     environment = LocalEnvironment(str(repo))
@@ -226,9 +231,12 @@ async def test_public_sdk_restores_changed_ancestor_permissions(tmp_path, monkey
         assert (repo / ".git/index").read_bytes() == index
         assert not list((repo / ".git").glob("candidate-recovery-*"))
         chmod_paths = [Path(value.decode()) for value in log.read_bytes().split(b"\0")[2::3] if value]
-        assert repo / "old/nested" in chmod_paths
+        assert stat.S_IMODE(repo.stat().st_mode) == root_mode
+        assert (repo / "old/nested" in chmod_paths) is (change != "readonly-root")
         assert (repo / "old" in chmod_paths) is not sibling
+        assert (repo in chmod_paths) is (change == "readonly-root")
     finally:
+        repo.chmod(0o700)
         (repo / "old/nested").chmod(0o700)
         await environment.cleanup()
 
