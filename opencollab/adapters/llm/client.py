@@ -318,19 +318,22 @@ class LLMClient:
         start = time.monotonic()
         response = None
         settled_usage = None
-        admitted = False
+        first_attempt = True
+        initial_limit: int | None = None
 
-        def prepare_attempt() -> int | None:
-            nonlocal admitted
+        def request_limit() -> int | None:
             limit = max_output_tokens
             if before_request is not None:
                 current_limit = before_request()
                 limit = current_limit if limit is None else min(limit, current_limit)
-            if not admitted:
-                admitted = True
-                if on_admitted is not None:
-                    on_admitted()
             return limit
+
+        def prepare_attempt() -> int | None:
+            nonlocal first_attempt
+            if first_attempt:
+                first_attempt = False
+                return initial_limit
+            return request_limit()
 
         retry_budget = (
             self.provider_retry_budget
@@ -342,6 +345,9 @@ class LLMClient:
             async with AsyncExitStack() as request_owner:
                 try:
                     await request_owner.enter_async_context(request_slot(self.request_pool, self.request_capacity))
+                    initial_limit = request_limit()
+                    if on_admitted is not None:
+                        on_admitted()
                     if self._anthropic:
                         response = await complete_anthropic(
                             self._anthropic,
@@ -354,7 +360,7 @@ class LLMClient:
                             thinking_params=thinking_params,
                             tool_choice=tool_choice,
                             top_p=top_p,
-                            max_output_tokens=max_output_tokens,
+                            max_output_tokens=initial_limit,
                             reasoning_effort=reasoning_effort,
                             provider_error_time_budget=retry_budget,
                             before_attempt=prepare_attempt,
@@ -372,7 +378,7 @@ class LLMClient:
                             thinking_params=thinking_params,
                             tool_choice=tool_choice,
                             top_p=top_p,
-                            max_output_tokens=max_output_tokens,
+                            max_output_tokens=initial_limit,
                             reasoning_effort=reasoning_effort,
                             prompt_cache_namespace=self._responses_prompt_cache_namespace,
                             response_session_id=response_session_id or uuid.uuid4().hex,
@@ -399,7 +405,7 @@ class LLMClient:
                             thinking_params=thinking_params,
                             tool_choice=tool_choice,
                             top_p=top_p,
-                            max_output_tokens=max_output_tokens,
+                            max_output_tokens=initial_limit,
                             reasoning_effort=reasoning_effort,
                             provider_error_time_budget=retry_budget,
                             before_attempt=prepare_attempt,
