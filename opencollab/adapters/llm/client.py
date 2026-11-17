@@ -390,7 +390,7 @@ class LLMClient:
                             first_event_timeout=self.first_event_timeout,
                             stream_idle_timeout=self.stream_idle_timeout,
                         )
-                    settled_usage = response.usage
+                    settled_usage = getattr(response, "usage", None)
                     transport_timing = first_token.snapshot()
                     try:
                         response.transport_timing = transport_timing
@@ -411,9 +411,9 @@ class LLMClient:
                     )
                     return response
                 except BaseException as exc:
-                    settled_usage = response.usage if response is not None else getattr(exc, "usage", None)
+                    settled_usage = getattr(response if response is not None else exc, "usage", None)
                     if response is not None:
-                        exc.usage = response.usage
+                        exc.usage = settled_usage
                     else:
                         try:
                             await _record_api_usage_async(
