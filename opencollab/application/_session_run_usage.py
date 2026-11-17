@@ -33,12 +33,27 @@ def _normalize_completion_usage(usage: Any) -> tuple[int, int]:
         context_tokens = _nonnegative_usage_int(context_tokens, "context_tokens")
     return input_tokens if context_tokens is None else context_tokens, max(reported_total, input_tokens + output_tokens)
 
+
+class _AttemptUsageAccounting:
+    def __init__(self, runner: Any, *, protected_call: bool) -> None:
+        self.runner = runner
+        self.protected_call = protected_call
+        self.tokens = 0
+
+    def record(self, usage: Any) -> None:
+        total = _normalize_completion_usage(usage)[1]
+        self.runner.state.add_used_tokens(total)
+        self.tokens += total
+        self.runner._mark_budget_reserve_consumed(protected_call=self.protected_call)
+
+
 async def _complete_with_error_usage(
     runner: Any,
     complete: Callable[..., Awaitable[Any]],
     *args: Any,
     protected_call: bool,
     usage_purpose: str = "completion",
+    attempt_usage: _AttemptUsageAccounting | None = None,
     **kwargs: Any,
 ) -> Any:
     """Charge reported error usage inside the provider owner exactly once."""
@@ -49,7 +64,7 @@ async def _complete_with_error_usage(
         usage = getattr(exc, "usage", None)
         if usage is not None:
             _input_tokens, total_tokens = _normalize_completion_usage(usage)
-            runner.state.add_used_tokens(total_tokens)
+            runner.state.add_used_tokens(total_tokens - (attempt_usage.tokens if attempt_usage is not None else 0))
             late = asyncio.current_task() in runner._draining_provider_tasks
             record_usage = getattr(runner, "_record_usage_event", None)
             if callable(record_usage):

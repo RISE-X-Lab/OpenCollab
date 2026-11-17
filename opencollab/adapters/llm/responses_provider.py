@@ -7,7 +7,7 @@ import hashlib
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from opencollab.adapters.llm._responses_instructions import _check_instructions_echo
 from opencollab.adapters.llm._responses_output import (
@@ -685,6 +685,8 @@ async def complete_responses(
     round_timeout: float | None = None,
     provider_error_time_budget: RetryTimeBudget | None = None,
     stream: bool = True,
+    before_attempt: Callable[[], int | None] | None = None,
+    on_attempt_usage: Callable[[Usage], None] | None = None,
 ) -> LLMResponse:
     """Run one locally replayable Responses request and require typed completion."""
     external_isolation = os.environ.get("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION") == "1"
@@ -710,6 +712,14 @@ async def complete_responses(
     capabilities = model_capabilities(model)
     stream = stream and capabilities.supports_responses_streaming
     failed_usages: list[Usage | None] = []
+
+    def prepare_attempt() -> None:
+        if before_attempt is not None and (limit := before_attempt()) is not None:
+            kwargs["max_output_tokens"] = limit
+
+    def report_failure(_exc: BaseException) -> None:
+        if failed_usages and (usage := failed_usages[-1]) is not None and on_attempt_usage is not None:
+            on_attempt_usage(usage)
 
     async def request_once() -> LLMResponse:
         terminal = None
@@ -740,7 +750,8 @@ async def complete_responses(
                 converted_tools,
             )
         except BaseException as exc:
-            failed_usages.append(_reported_responses_usage(terminal) or getattr(exc, "usage", None))
+            usage = _reported_responses_usage(terminal) or getattr(exc, "usage", None)
+            failed_usages.append(usage)
             raise
 
     if retry_budget is not None:
@@ -757,8 +768,12 @@ async def complete_responses(
         if retry_budget is not None:
             return await with_retry(
                 bounded_request_once, max_retries=retry_limit, retry_time_budget=retry_budget,
+                before_attempt=prepare_attempt,
+                on_failure=report_failure,
             )
-        return await with_retry(request_once, max_retries=retry_limit)
+        return await with_retry(
+            request_once, max_retries=retry_limit, before_attempt=prepare_attempt, on_failure=report_failure,
+        )
 
     try:
         try:

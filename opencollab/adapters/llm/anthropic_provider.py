@@ -10,8 +10,9 @@ import copy
 import inspect
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
+from opencollab.adapters.llm._attempt_usage import _combine_attempt_usage
 from opencollab.adapters.llm.first_token import NOT_STREAMED, begin_attempt
 from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
 from opencollab.adapters.llm.tool_contracts import (
@@ -385,6 +386,8 @@ async def complete_anthropic(
     max_output_tokens: int | None = None,
     reasoning_effort: str | None = None,
     provider_error_time_budget: RetryTimeBudget | None = None,
+    before_attempt: Callable[[], int | None] | None = None,
+    on_attempt_usage: Callable[[Usage], None] | None = None,
 ) -> LLMResponse:
     """Single-shot completion against the Anthropic API."""
     kwargs = _build_request_kwargs(
@@ -400,18 +403,44 @@ async def complete_anthropic(
         reasoning_effort,
     )
 
-    async def request_once() -> Any:
-        # Record the non-streamed attempt's start and unavailable first-token timing.
-        begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
-        create = client.messages.create
-        return await create(**_sdk_sampling_kwargs(create, kwargs))
+    failed_usages: list[Usage | None] = []
 
-    resp = await with_retry(
-        request_once,
-        max_retries=max_retries,
-        retry_time_budget=provider_error_time_budget,
-    )
-    return _parse_response(resp)
+    def prepare_attempt() -> None:
+        if before_attempt is not None and (limit := before_attempt()) is not None:
+            kwargs["max_tokens"] = limit
+
+    def report_failure(_exc: BaseException) -> None:
+        if failed_usages and (usage := failed_usages[-1]) is not None and on_attempt_usage is not None:
+            on_attempt_usage(usage)
+
+    async def request_once() -> LLMResponse:
+        resp = None
+        try:
+            begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
+            create = client.messages.create
+            resp = await create(**_sdk_sampling_kwargs(create, kwargs))
+            return _parse_response(resp)
+        except BaseException as exc:
+            usage = _parse_usage(resp.usage) if resp is not None else getattr(exc, "usage", None)
+            failed_usages.append(usage)
+            raise
+
+    try:
+        response = await with_retry(
+            request_once,
+            max_retries=max_retries,
+            retry_time_budget=provider_error_time_budget,
+            before_attempt=prepare_attempt,
+            on_failure=report_failure,
+        )
+    except BaseException as exc:
+        usage = _combine_attempt_usage(failed_usages)
+        if usage is not None:
+            exc.usage = usage
+        raise
+    if failed_usages:
+        response.usage = _combine_attempt_usage([*failed_usages, response.usage])
+    return response
 
 def _sdk_sampling_kwargs(create: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Preserve supported sampling on SDKs that moved it to extra_body."""

@@ -28,7 +28,11 @@ from opencollab.application._session_run_shared import (
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_trace import _SessionRunTraceMixin
-from opencollab.application._session_run_usage import _complete_with_error_usage, _normalize_completion_usage
+from opencollab.application._session_run_usage import (
+    _AttemptUsageAccounting,
+    _complete_with_error_usage,
+    _normalize_completion_usage,
+)
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import (
@@ -805,6 +809,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             kwargs["max_output_tokens"] = max_output_tokens
         start = time.monotonic()
         protected_call = self.state.wind_down_done
+        attempt_usage = _AttemptUsageAccounting(self, protected_call=protected_call)
+        if getattr(self.llm, "supports_attempt_usage", False):
+            kwargs["on_attempt_usage"] = attempt_usage.record
         admitted = asyncio.Event() if getattr(self.llm, "supports_request_admission", False) else None
         if admitted is not None:
             kwargs["on_admitted"] = admitted.set
@@ -825,7 +832,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
         def account_response(response: CompletionResponse) -> None:
             input_tokens, total_tokens = _normalize_completion_usage(response.usage)
-            self.state.add_used_tokens(total_tokens)
+            self.state.add_used_tokens(total_tokens - attempt_usage.tokens)
             self._record_usage_event(response.usage, total_tokens, purpose="summary", late=abandoned)
             self._mark_budget_reserve_consumed(protected_call=protected_call)
             self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
@@ -842,7 +849,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                     self._raise_if_run_cancelled()
                 return await _complete_with_error_usage(
                     self, complete, messages, protected_call=protected_call,
-                    usage_purpose="summary", on_response=account_response, **kwargs,
+                    usage_purpose="summary", on_response=account_response, attempt_usage=attempt_usage, **kwargs,
                 )
             finally:
                 self._draining_provider_tasks.discard(asyncio.current_task())
@@ -883,6 +890,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if self._run_control is not None:
             self._raise_if_run_cancelled()
         protected_call = self.state.wind_down_done
+        attempt_usage = _AttemptUsageAccounting(self, protected_call=protected_call)
+        if getattr(self.llm, "supports_attempt_usage", False):
+            kwargs["on_attempt_usage"] = attempt_usage.record
         admitted = asyncio.Event() if getattr(self.llm, "supports_request_admission", False) else None
         if admitted is not None:
             kwargs["on_admitted"] = admitted.set
@@ -898,9 +908,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             try:
                 response = await _complete_with_error_usage(
                     self, self.llm.complete, protected_call=protected_call, **kwargs,
+                    attempt_usage=attempt_usage,
                 )
                 late_accounted = asyncio.current_task() in self._draining_provider_tasks
-                self._account_completion_usage(response, protected_call=protected_call, late=late_accounted)
+                self._account_completion_usage(
+                    response, protected_call=protected_call, late=late_accounted,
+                    accounted_tokens=attempt_usage.tokens,
+                )
                 return response
             finally:
                 self._draining_provider_tasks.discard(asyncio.current_task())

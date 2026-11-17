@@ -124,6 +124,7 @@ class LLMClient:
         self.request_capacity = request_capacity
         self.supports_request_admission = request_pool is not None
         self.supports_request_revalidation = True
+        self.supports_attempt_usage = True
         self.model = model
         self.provider = provider
         self.max_retries = max(0, max_retries)
@@ -294,6 +295,7 @@ class LLMClient:
         on_admitted: Callable[[], None] | None = None,
         before_request: Callable[[], int] | None = None,
         on_usage: Callable[[Any], None] | None = None,
+        on_attempt_usage: Callable[[Any], None] | None = None,
     ) -> LLMResponse:
         """Single-shot completion. Returns full response.
 
@@ -308,10 +310,28 @@ class LLMClient:
 
         ``top_p`` is ``None`` by default (provider default); when set it is sent
         as the nucleus-sampling knob. Unset == byte-identical request as today.
+
+        ``before_request`` runs before each physical attempt. Failed attempts
+        report their known usage through ``on_attempt_usage`` before retry
+        backoff; ``on_usage`` receives the final aggregate once.
         """
         start = time.monotonic()
         response = None
         settled_usage = None
+        admitted = False
+
+        def prepare_attempt() -> int | None:
+            nonlocal admitted
+            limit = max_output_tokens
+            if before_request is not None:
+                current_limit = before_request()
+                limit = current_limit if limit is None else min(limit, current_limit)
+            if not admitted:
+                admitted = True
+                if on_admitted is not None:
+                    on_admitted()
+            return limit
+
         retry_budget = (
             self.provider_retry_budget
             if self._retry_budget_explicit
@@ -322,14 +342,6 @@ class LLMClient:
             async with AsyncExitStack() as request_owner:
                 try:
                     await request_owner.enter_async_context(request_slot(self.request_pool, self.request_capacity))
-                    if before_request is not None:
-                        current_limit = before_request()
-                        max_output_tokens = (
-                            current_limit if max_output_tokens is None
-                            else min(max_output_tokens, current_limit)
-                        )
-                    if on_admitted is not None:
-                        on_admitted()
                     if self._anthropic:
                         response = await complete_anthropic(
                             self._anthropic,
@@ -345,6 +357,8 @@ class LLMClient:
                             max_output_tokens=max_output_tokens,
                             reasoning_effort=reasoning_effort,
                             provider_error_time_budget=retry_budget,
+                            before_attempt=prepare_attempt,
+                            on_attempt_usage=on_attempt_usage,
                         )
                     elif self.wire_protocol == RESPONSES:
                         response = await complete_responses(
@@ -370,6 +384,8 @@ class LLMClient:
                             stream_idle_timeout=self.stream_idle_timeout,
                             round_timeout=self.request_timeout,
                             provider_error_time_budget=retry_budget,
+                            before_attempt=prepare_attempt,
+                            on_attempt_usage=on_attempt_usage,
                         )
                     else:
                         response = await complete_openai(
@@ -386,6 +402,8 @@ class LLMClient:
                             max_output_tokens=max_output_tokens,
                             reasoning_effort=reasoning_effort,
                             provider_error_time_budget=retry_budget,
+                            before_attempt=prepare_attempt,
+                            on_attempt_usage=on_attempt_usage,
                             stream=self.stream_chat,
                             first_event_timeout=self.first_event_timeout,
                             stream_idle_timeout=self.stream_idle_timeout,
@@ -435,4 +453,8 @@ class LLMClient:
                     raise
                 finally:
                     if on_usage is not None and settled_usage is not None:
-                        on_usage(settled_usage)
+                        try:
+                            on_usage(settled_usage)
+                        except BaseException as exc:
+                            exc.usage = settled_usage
+                            raise

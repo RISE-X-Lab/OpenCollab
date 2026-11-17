@@ -191,8 +191,8 @@ class AuthoredWorkflowBridge:
             )
         return min(configured, remaining - reserved)
 
-    def _account_native_usage(self, usage: Any) -> None:
-        self.tokens += _normalize_completion_usage(usage)[1]
+    def _account_native_usage(self, usage: Any, *, accounted_tokens: int = 0) -> None:
+        self.tokens += _normalize_completion_usage(usage)[1] - accounted_tokens
         if self._on_usage is not None:
             self._on_usage(self.tokens)
 
@@ -293,8 +293,20 @@ class AuthoredWorkflowBridge:
             notifications = []
             native_accounting = getattr(self._model(), "supports_request_revalidation", False)
             if native_accounting:
+                accounted_tokens = 0
+
+                def account_attempt(usage: Any) -> None:
+                    nonlocal accounted_tokens
+                    total = _normalize_completion_usage(usage)[1]
+                    accounted_tokens += total
+                    self._account_native_usage(usage)
+
                 arguments["before_request"] = lambda: self._request_output_limit(arguments)
-                arguments["on_usage"] = self._account_native_usage
+                arguments["on_usage"] = lambda usage: self._account_native_usage(
+                    usage, accounted_tokens=accounted_tokens,
+                )
+                if getattr(self._model(), "supports_attempt_usage", False):
+                    arguments["on_attempt_usage"] = account_attempt
             if getattr(self._model(), "supports_request_admission", False):
                 def admitted() -> None:
                     notifications.append(asyncio.create_task(self._environment.write_file(
