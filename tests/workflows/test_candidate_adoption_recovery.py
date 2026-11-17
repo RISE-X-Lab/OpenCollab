@@ -114,6 +114,57 @@ async def test_public_sdk_candidate_recovers_directory_replacement(tmp_path, phy
     assert _git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
 
 
+@pytest.mark.parametrize("physical", [False, True])
+@pytest.mark.parametrize("pruned", ["both", "nested", "none"])
+@pytest.mark.parametrize("cache", [False, True])
+async def test_public_sdk_recovers_pruned_ancestors_and_modes(tmp_path, physical, pruned, cache):
+    repo = _repository(tmp_path, physical=physical, cache=cache)
+    (repo / "old/nested").mkdir(parents=True)
+    (repo / "old/nested/helper.py").write_text("VALUE = 1\n")
+    _git(repo, "add", "old/nested/helper.py")
+    (repo / "old").chmod(0o750)
+    (repo / "old/nested").chmod(0o710)
+    (repo / "old/nested/helper.py").chmod(0o640)
+    if pruned != "both":
+        sibling = "old/sibling.txt" if pruned == "nested" else "old/nested/sibling.txt"
+        (repo / sibling).write_text("user sibling\n")
+    before = _contents(repo)
+    index = (repo / ".git/index").read_bytes()
+    environment = LocalEnvironment(str(repo))
+
+    async def edit(child, inputs):
+        folder = Path(child.workspace_root)
+        (folder / "old/nested/helper.py").unlink()
+        _flatten(folder)
+        assert _run(folder) == "42\n"
+        return "tested"
+
+    async def flow(ctx, inputs):
+        candidate = await ctx.candidate_workflow(edit, {}, label="pruned-parent")
+        if cache:
+            with pytest.raises(RuntimeError, match="Directory not empty|Is a directory"):
+                await ctx.adopt_candidate(candidate)
+            assert _contents(repo) == before
+        else:
+            await ctx.adopt_candidate(candidate)
+            assert not (repo / "old/nested/helper.py").exists()
+            assert (repo / "old").exists() is (pruned != "both")
+            assert (repo / "old/nested").exists() is (pruned == "none")
+        assert not environment.revoked
+        assert (await environment.exec_cmd("printf recovered")).stdout == "recovered"
+        return "recovered"
+
+    try:
+        result = await OpenCollab(repo, environment=environment).workflow(flow, trace=False)
+        assert result.ok, result.reason
+        assert result.output == "recovered"
+        assert _run(repo) == ("1\n" if cache else "42\n")
+        assert (repo / ".git/index").read_bytes() == index
+        assert not list((repo / ".git").glob("candidate-recovery-*"))
+    finally:
+        await environment.cleanup()
+
+
 async def test_git_write_failure_after_successful_check_restores_partial_application(tmp_path):
     repo = _repository(tmp_path)
     (repo / "z").mkdir(mode=0o555)

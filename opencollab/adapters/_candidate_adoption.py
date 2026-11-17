@@ -38,6 +38,27 @@ async def _adoption_transaction(
     for path in sorted(set(inspected.split("\0")) - {""}):
         if not any(path.startswith(root + "/") for root in roots):
             roots.append(path)
+    ancestors = set()
+    for path in roots:
+        parent = posixpath.dirname(path)
+        while parent:
+            ancestors.add(parent)
+            parent = posixpath.dirname(parent)
+    directory_modes: list[tuple[str, str]] = []
+    if ancestors:
+        metadata = _complete(await environment.exec_cmd(
+            f"cd -- {shlex.quote(workspace)} && "
+            f"for path in {shlex.join(sorted(ancestors, key=lambda path: (path.count('/'), path)))}; do "
+            'if [ -d "$path" ] && [ ! -L "$path" ]; then '
+            'mode=$(stat -c %a -- "$path" 2>/dev/null) || '
+            'mode=$(stat -f %Lp -- "$path") || exit; '
+            'printf "%s\\0%s\\0" "$path" "$mode"; fi; done',
+            timeout=120,
+        ), "candidate ancestor directory inspection").split("\0")
+        for path, mode in zip(metadata[::2], metadata[1::2]):
+            if not mode or len(mode) > 4 or any(digit not in "01234567" for digit in mode):
+                raise RuntimeError("candidate ancestor directory mode is invalid")
+            directory_modes.append((path, mode))
     storage = '"${TMPDIR:-/tmp}"'
     if repository:
         storage = shlex.quote(_complete(await environment.exec_cmd(
@@ -51,6 +72,22 @@ async def _adoption_transaction(
     try:
         copies = []
         restores = []
+        recreate_directories = []
+        restore_directory_modes = []
+        # Git prunes empty ancestors after deleting their last leaf. Recreate
+        # those directories with write access until their saved leaves return.
+        for index, (path, mode) in enumerate(directory_modes):
+            source = shlex.quote(posixpath.join(workspace, path))
+            marker = shlex.quote(posixpath.join(backup, f"directory-{index}"))
+            copies.append(f"printf '%s\\0%s\\0' {source} {mode} > {marker}.mode || exit")
+            recreate_directories.append(
+                f"if [ ! -e {source} ] && [ ! -L {source} ]; then "
+                f"if mkdir -m 700 -- {source} && : > {marker}; then :; else failed=1; fi; "
+                f"elif [ ! -d {source} ] || [ -L {source} ]; then failed=1; fi"
+            )
+            restore_directory_modes.append(
+                f"if [ -f {marker} ]; then chmod -- {mode} {source} || failed=1; fi"
+            )
         for index, path in enumerate(roots):
             source = shlex.quote(posixpath.join(workspace, path))
             saved = shlex.quote(posixpath.join(backup, str(index)))
@@ -74,7 +111,9 @@ async def _adoption_transaction(
         except BaseException as failure:
             try:
                 _complete(await await_owned_operation(environment.exec_cmd(
-                    "failed=0; " + "; ".join(restores) + '; [ "$failed" -eq 0 ]',
+                    "failed=0; " + "; ".join((
+                        *recreate_directories, *restores, *reversed(restore_directory_modes),
+                    )) + '; [ "$failed" -eq 0 ]',
                     timeout=900,
                 )), "candidate adoption recovery")
             except BaseException as recovery:
