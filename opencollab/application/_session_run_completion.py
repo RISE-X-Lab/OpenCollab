@@ -891,19 +891,26 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 kwargs["messages"], kwargs.get("tools"), thinking=kwargs.get("thinking", False),
                 thinking_params=kwargs.get("thinking_params"),
             )
+        late_accounted = False
+
         async def complete_owned() -> CompletionResponse:
+            nonlocal late_accounted
             try:
                 response = await _complete_with_error_usage(
                     self, self.llm.complete, protected_call=protected_call, **kwargs,
                 )
-                self._account_completion_usage(
-                    response, protected_call=protected_call,
-                    late=asyncio.current_task() in self._draining_provider_tasks,
-                )
+                late_accounted = asyncio.current_task() in self._draining_provider_tasks
+                self._account_completion_usage(response, protected_call=protected_call, late=late_accounted)
                 return response
             finally:
                 self._draining_provider_tasks.discard(asyncio.current_task())
                 self._finish_run_control_if_quiesced()
+
+        def record_abandoned(task: asyncio.Task[Any]) -> None:
+            if late_accounted:
+                self._provider_task_done(task)
+            else:
+                self._record_late_provider_result(task, protected_call=protected_call, usage_accounted=True)
 
         operation = complete_owned()
         try:
@@ -912,7 +919,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._per_call_timeout,
                 task_tracker=self._track_provider_task,
                 late_task_tracker=self._mark_provider_task_draining,
-                late_result_handler=self._provider_task_done,
+                late_result_handler=record_abandoned,
                 start_event=admitted,
             )
         except CallerTimeoutError as exc:
