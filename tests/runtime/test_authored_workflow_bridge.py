@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
@@ -13,21 +14,38 @@ from opencollab.adapters.llm.request_admission import request_slot
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.session_environments import SessionEnvironmentPool
 from opencollab.adapters.tools.fs import FileWriteTool
-from opencollab.application._session_run_shared import _TokenBudgetStop
+from opencollab.application._session_run_shared import _TeamBudgetStop, _TokenBudgetStop
 from opencollab.application.ports import (
     ContextTokenEstimatorPort,
     RequestOutputRequirementPort,
     RequestTokenEstimatorPort,
 )
+from opencollab.application.run_control import _RunCancelled
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.bootstrap.authored_workflow_bridge import (
     AuthoredWorkflowBridge,
     BridgeClient,
     BridgeEnvironment,
     BridgeLLM,
+    _restore_error,
 )
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
+
+
+@pytest.mark.parametrize("error", [
+    _TokenBudgetStop(reserved_input_tokens=1027, remaining_budget=500, minimum_output_tokens=1),
+    _TeamBudgetStop(),
+    _RunCancelled(),
+])
+def test_bridge_restores_usage_on_control_errors(error):
+    usage = Usage(1_498, 2, cache_read_tokens=19, raw_usage={"total_tokens": 1_500})
+    payload = {"type": type(error).__name__, "message": str(error), "usage": asdict(usage), **vars(error)}
+    restored = _restore_error(payload)
+
+    assert type(restored) is type(error)
+    assert str(restored) == str(error)
+    assert vars(restored) == {**vars(error), "usage": usage}
 
 
 @pytest.mark.parametrize("docker", [False, True])

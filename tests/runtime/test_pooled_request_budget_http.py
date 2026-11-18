@@ -289,3 +289,101 @@ async def test_admission_uses_current_session_limits_and_cancellation(
                 assert session.used_tokens == (20_000 if change == "exhausted" else 0)
         finally:
             await session.aclose()
+
+
+async def test_nested_team_workflow_charges_parent_before_other_native_admission(
+    tmp_path, monkeypatch, local_environment_factory,
+):
+    from opencollab.application.event_bus import EventBus
+    from opencollab.application.scheduler import Scheduler
+    from opencollab.application.tool_execution import ToolRuntime
+    from opencollab.application.workflow_registry import Registry, WorkflowSpec
+    from opencollab.bootstrap.context_builder import SpawnConfig
+    from opencollab.bootstrap.team_workflow import TeamWorkflowTool
+    from opencollab.domain.scheduler import SessionControlBlock
+
+    provider_started, release_provider, queued, ledger_started, release_ledger = (
+        asyncio.Event() for _ in range(5)
+    )
+    requests = []
+
+    async def reply(request):
+        requests.append(json.loads(request.content))
+        provider_started.set()
+        await release_provider.wait()
+        payload = completion_http_response(request, text="child answer").json()
+        payload["usage"].update(prompt_tokens=20_198, total_tokens=20_200)
+        return http_response(request, 200, json=payload)
+
+    async def flow(ctx, _args):
+        return await ctx.agent("child request", tools=[])
+
+    native_slot, record = transport.request_slot, transport._record_api_usage_async
+    entries = 0
+
+    @asynccontextmanager
+    async def observed_slot(*args):
+        nonlocal entries
+        entries += 1
+        if entries == 2:
+            queued.set()
+        async with native_slot(*args):
+            yield
+
+    async def delayed_record(**kwargs):
+        if kwargs["status"] == "success":
+            ledger_started.set()
+            await release_ledger.wait()
+        await record(**kwargs)
+
+    install_sdk_transport(monkeypatch, "openai", reply)
+    monkeypatch.setattr(transport, "request_slot", observed_slot)
+    monkeypatch.setattr(transport, "_record_api_usage_async", delayed_record)
+    scheduler = Scheduler(session_factory=None, worktree_pool=None, event_sink=EventBus(), max_budget_tokens=20_000)
+    registry = Registry()
+    registry.register(WorkflowSpec(name="registered", description="Return a result", fn=flow))
+    env = local_environment_factory(str(tmp_path))
+    async with LLMClient(
+        api_key="local-test", request_pool=str(tmp_path), request_capacity=1, max_retries=0,
+    ) as client:
+        parent, sibling = [
+            build_session(
+                env=env, llm=client, max_budget_tokens=30_000,
+                agent=Agent(name=name, system_prompt="system", max_tokens_per_step=128),
+                team_budget_exhausted=lambda: scheduler.budget_exhausted,
+            ) for name in ("parent", "sibling")
+        ]
+        for aid, session in enumerate((parent, sibling)):
+            scheduler.table.add(SessionControlBlock(
+                aid=aid, parent_aid=0 if aid else None, agent=session.agent, state=session.state,
+            ))
+        config = SpawnConfig(model="gpt-4o", provider="openai", api_key=None, base_url=None,
+                             llm_timeout=5, tracer=None, event_bus=EventBus(), permission_policy=None)
+        tool = TeamWorkflowTool(lambda: parent, registry, config, None)
+        active = asyncio.create_task(tool.execute_with_runtime(
+            {"name": "registered", "args": {}}, ToolRuntime(env, None, None),
+        ))
+        following = None
+        try:
+            await asyncio.wait_for(provider_started.wait(), 5)
+            await sibling.add_user_message("queued request")
+            following = asyncio.create_task(sibling.run_loop())
+            await asyncio.wait_for(queued.wait(), 5)
+            release_provider.set()
+            await asyncio.wait_for(ledger_started.wait(), 5)
+            assert parent.used_tokens == scheduler.used_tokens == 20_200
+            assert scheduler.budget_exhausted
+            assert await asyncio.wait_for(following, 5) == ""
+            assert "team budget exceeded" in sibling.state.terminal_reason
+            assert not active.done()
+            assert len(requests) == 1
+            release_ledger.set()
+            result = json.loads(await asyncio.wait_for(active, 5))
+            assert result["tokens"] == parent.used_tokens == 20_200
+            assert result["output"] == "child answer"
+        finally:
+            release_provider.set()
+            release_ledger.set()
+            await asyncio.gather(active, *([following] if following is not None else []), return_exceptions=True)
+            await sibling.aclose()
+            await parent.aclose()

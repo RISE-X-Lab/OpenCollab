@@ -185,6 +185,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self._late_provider_usage: tuple[int, ...] = ()
         # The session supplies its owned persistence queue after adopting this runner.
         self.late_provider_usage_checkpoint: Callable[[], object] | None = None
+        self._on_completion_tokens: Callable[[int], None] | None = None
 
     def reset_runtime_for_user_turn(self) -> None:
         """Restore agent capabilities narrowed by the previous turn."""
@@ -264,13 +265,18 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             self._draining_provider_tasks.discard(task)
             self._finish_run_control_if_quiesced()
 
+    def _charge_completion_tokens(self, tokens: int) -> None:
+        self.state.add_used_tokens(tokens)
+        if tokens and self._on_completion_tokens is not None:
+            self._on_completion_tokens(tokens)
+
     def _account_completion_usage(
         self, response: Any, *, protected_call: bool, late: bool, usage_accounted: bool = False,
         accounted_tokens: int = 0,
     ) -> None:
         _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
         if not usage_accounted:
-            self.state.add_used_tokens(total_tokens - accounted_tokens)
+            self._charge_completion_tokens(total_tokens - accounted_tokens)
             self._record_usage_event(response.usage, total_tokens, purpose="completion", late=late)
             self._mark_budget_reserve_consumed(protected_call=protected_call)
         if late:

@@ -34,16 +34,21 @@ def _normalize_completion_usage(usage: Any) -> tuple[int, int]:
     return input_tokens if context_tokens is None else context_tokens, max(reported_total, input_tokens + output_tokens)
 
 
-class _AttemptUsageAccounting:
+class _CompletionUsageAccounting:
     def __init__(self, runner: Any, *, protected_call: bool) -> None:
         self.runner = runner
         self.protected_call = protected_call
         self.tokens = 0
 
-    def record(self, usage: Any) -> None:
-        total = _normalize_completion_usage(usage)[1]
-        self.runner.state.add_used_tokens(total)
-        self.tokens += total
+    def record_attempt(self, usage: Any) -> None:
+        self._charge(_normalize_completion_usage(usage)[1])
+
+    def settle(self, usage: Any) -> None:
+        self._charge(_normalize_completion_usage(usage)[1] - self.tokens)
+
+    def _charge(self, tokens: int) -> None:
+        self.runner._charge_completion_tokens(tokens)
+        self.tokens += tokens
         self.runner._mark_budget_reserve_consumed(protected_call=self.protected_call)
 
 
@@ -51,9 +56,8 @@ async def _complete_with_error_usage(
     runner: Any,
     complete: Callable[..., Awaitable[Any]],
     *args: Any,
-    protected_call: bool,
+    usage_accounting: _CompletionUsageAccounting,
     usage_purpose: str = "completion",
-    attempt_usage: _AttemptUsageAccounting | None = None,
     **kwargs: Any,
 ) -> Any:
     """Charge reported error usage inside the provider owner exactly once."""
@@ -64,13 +68,12 @@ async def _complete_with_error_usage(
         usage = getattr(exc, "usage", None)
         if usage is not None:
             _input_tokens, total_tokens = _normalize_completion_usage(usage)
-            runner.state.add_used_tokens(total_tokens - (attempt_usage.tokens if attempt_usage is not None else 0))
+            usage_accounting.settle(usage)
             late = asyncio.current_task() in runner._draining_provider_tasks
             record_usage = getattr(runner, "_record_usage_event", None)
             if callable(record_usage):
                 record_usage(usage, total_tokens, purpose=usage_purpose,
                              late=late, error=exc)
-            runner._mark_budget_reserve_consumed(protected_call=protected_call)
             if late:
                 runner._late_provider_usage += (total_tokens,)
                 if runner.late_provider_usage_checkpoint is not None:

@@ -39,20 +39,25 @@ def _write_json(path: Path, value: Any) -> None:
 
 
 def _restore_error(value: dict[str, Any]) -> Exception:
-    name = value.pop("type")
-    if name in {"_RunCancelled", "_TeamBudgetStop"}:
-        return {"_RunCancelled": _RunCancelled, "_TeamBudgetStop": _TeamBudgetStop}[name]()
-    if name == "_TokenBudgetStop":
-        return _TokenBudgetStop(
+    error_type = value["type"]
+    error: Exception
+    if error_type == "_RunCancelled":
+        error = _RunCancelled()
+    elif error_type == "_TeamBudgetStop":
+        error = _TeamBudgetStop()
+    elif error_type == "_TokenBudgetStop":
+        error = _TokenBudgetStop(
             reserved_input_tokens=value["reserved_input_tokens"], remaining_budget=value["remaining_budget"],
             minimum_output_tokens=value["minimum_output_tokens"],
         )
-    cls = getattr(llm_errors, name, getattr(builtins, name, RuntimeError))
-    if not isinstance(cls, type) or not issubclass(cls, Exception):
-        cls = RuntimeError
-    error = cls(value.pop("message"))
+    else:
+        cls = getattr(llm_errors, error_type, getattr(builtins, error_type, RuntimeError))
+        if not isinstance(cls, type) or not issubclass(cls, Exception):
+            cls = RuntimeError
+        error = cls(value["message"])
     for name, item in value.items():
-        setattr(error, name, Usage(**item) if name == "usage" else item)
+        if name not in {"type", "message"}:
+            setattr(error, name, Usage(**item) if name == "usage" else item)
     return error
 
 
@@ -241,7 +246,9 @@ class AuthoredWorkflowBridge:
                          "remaining_budget", "minimum_output_tokens"):
                 value = getattr(exc, name, None)
                 if value is not None:
-                    error[name] = to_plain_data(value)
+                    error[name] = (
+                        asdict(value) if name == "usage" and isinstance(value, Usage) else to_plain_data(value)
+                    )
             reply = {"error": error}
         await await_owned_operation(self._environment.write_file(
             posixpath.join(self._directory, f"{identity}.json"), json.dumps(reply, ensure_ascii=False),

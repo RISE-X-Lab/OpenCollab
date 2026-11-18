@@ -125,6 +125,7 @@ class LLMClient:
         self.supports_request_admission = request_pool is not None
         self.supports_request_revalidation = True
         self.supports_attempt_usage = True
+        self.supports_usage_settlement = True
         self.model = model
         self.provider = provider
         self.max_retries = max(0, max_retries)
@@ -313,10 +314,12 @@ class LLMClient:
 
         ``before_request`` runs before each physical attempt. Failed attempts
         report their known usage through ``on_attempt_usage`` before retry
-        backoff; ``on_usage`` receives the final aggregate once.
+        backoff. ``on_usage`` receives the final aggregate before slot release.
         """
         start = time.monotonic()
         response = None
+        provider_error: BaseException | None = None
+        settlement_error: BaseException | None = None
         settled_usage = None
         first_attempt = True
         initial_limit: int | None = None
@@ -340,9 +343,9 @@ class LLMClient:
             if self._retry_budget_explicit
             else _scoped_native_retry_budget(self.provider_retry_budget)
         )
-        # Measure here so every provider path records the call timing.
-        with recording() as first_token:
+        try:
             async with AsyncExitStack() as request_owner:
+                first_token = request_owner.enter_context(recording())
                 try:
                     await request_owner.enter_async_context(request_slot(self.request_pool, self.request_capacity))
                     initial_limit = request_limit()
@@ -414,53 +417,43 @@ class LLMClient:
                             first_event_timeout=self.first_event_timeout,
                             stream_idle_timeout=self.stream_idle_timeout,
                         )
-                    settled_usage = getattr(response, "usage", None)
-                    transport_timing = first_token.snapshot()
-                    try:
-                        response.transport_timing = transport_timing
-                    except (AttributeError, TypeError):
-                        # Custom provider responses may reject new attributes. The usage ledger
-                        # still records their timing.
-                        pass
-                    await _record_api_usage_async(
-                        provider=self.provider,
-                        model=self.model,
-                        wire_protocol=self.wire_protocol,
-                        reasoning_effort=reasoning_effort,
-                        base_url=self.base_url,
-                        latency_s=time.monotonic() - start,
-                        status="success",
-                        response=response,
-                        transport_timing=transport_timing,
-                    )
-                    return response
                 except BaseException as exc:
-                    settled_usage = getattr(response if response is not None else exc, "usage", None)
-                    if response is not None:
-                        exc.usage = settled_usage
-                    else:
-                        try:
-                            await _record_api_usage_async(
-                                provider=self.provider,
-                                model=self.model,
-                                wire_protocol=self.wire_protocol,
-                                reasoning_effort=reasoning_effort,
-                                base_url=self.base_url,
-                                latency_s=time.monotonic() - start,
-                                status="error",
-                                error=exc,
-                                transport_timing=first_token.snapshot(),
-                            )
-                        except asyncio.CancelledError as cancellation:
-                            usage = getattr(exc, "usage", None)
-                            if usage is not None:
-                                cancellation.usage = usage
-                            raise
+                    provider_error = exc
                     raise
                 finally:
+                    settled_usage = getattr(response if response is not None else provider_error, "usage", None)
+                    transport_timing = first_token.snapshot()
+                    latency_s = time.monotonic() - start
+                    if response is not None:
+                        try:
+                            response.transport_timing = transport_timing
+                        except (AttributeError, TypeError):
+                            pass
                     if on_usage is not None and settled_usage is not None:
                         try:
                             on_usage(settled_usage)
                         except BaseException as exc:
                             exc.usage = settled_usage
-                            raise
+                            settlement_error = exc
+        finally:
+            try:
+                await _record_api_usage_async(
+                    provider=self.provider,
+                    model=self.model,
+                    wire_protocol=self.wire_protocol,
+                    reasoning_effort=reasoning_effort,
+                    base_url=self.base_url,
+                    latency_s=latency_s,
+                    status="success" if response is not None else "error",
+                    response=response,
+                    error=provider_error,
+                    transport_timing=transport_timing,
+                )
+            except BaseException as exc:
+                if settled_usage is not None:
+                    exc.usage = settled_usage
+                raise
+            finally:
+                if settlement_error is not None:
+                    raise settlement_error
+        return response

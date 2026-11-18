@@ -32,6 +32,7 @@ async def test_native_usage_is_reported_once_inside_the_slot(
 ):
     config, _field = configuration
     usages = []
+    released = asyncio.Event()
     install_sdk_transport(monkeypatch, config["provider"], completion_http_response)
     native_slot = transport.request_slot
 
@@ -42,8 +43,10 @@ async def test_native_usage_is_reported_once_inside_the_slot(
                 yield
             finally:
                 assert [usage.total_tokens for usage in usages] == [4]
+        released.set()
 
     async def record(**kwargs):
+        assert released.is_set()
         if outcome == "ledger_error":
             raise ValueError("controlled ledger failure")
         if outcome == "ledger_cancellation":

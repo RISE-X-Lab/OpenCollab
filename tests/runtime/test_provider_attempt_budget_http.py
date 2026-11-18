@@ -6,6 +6,7 @@ import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -334,20 +335,42 @@ async def test_workflow_observes_failure_spend_during_retry(tmp_path, monkeypatc
     assert [request["observed"] for request in requests] == [0, 1500]
 
 
-@pytest.mark.parametrize("budget, retries, count", [(2000, 1, 1), (20000, 1, 2), (None, 1, 2), (2000, 0, 1)])
+@pytest.mark.parametrize("budget, retries, count, stopped_by", [
+    (2000, 1, 1, "_TokenBudgetStop"),
+    (20000, 1, 1, "_TeamBudgetStop"),
+    (20000, 1, 1, "_RunCancelled"),
+    (20000, 1, 2, None),
+    (None, 1, 2, None),
+    (2000, 0, 1, None),
+])
 async def test_authored_subprocess_accounts_failure_before_retry(
-    tmp_path, monkeypatch, attempt_server, budget, retries, count,
+    tmp_path, monkeypatch, attempt_server, budget, retries, count, stopped_by,
 ):
     monkeypatch.setenv("PYTHONPATH", str(REPO_ROOT))
     hosts = []
     url, requests = attempt_server("chat", lambda: (hosts[0].used_tokens, hosts[1].bridge.tokens))
     (tmp_path / "authored.py").write_text(
+        'from opencollab import RunControl\n'
         'async def main(ctx, args):\n'
-        f'    return await ctx.agent({("context " * 300)!r}, tools=[], budget={budget!r})\n',
+        '    events = []\n'
+        '    def observe(event):\n'
+        '        if event.type == "usage":\n'
+        '            events.append([event.data["total_tokens"], event.data["error_type"],\n'
+    '                           event.data["cache_read_tokens"]])\n'
+        f'    goal = {"context " * 300!r}\n'
+        f'    await ctx.agent_run(goal, tools=[], budget={budget!r}, run_control=RunControl(on_event=observe))\n'
+        '    return {"workflow": ctx.tokens_spent(), "session": ctx.sessions[0].used_tokens, "events": events}\n',
         encoding="utf-8",
     )
     environment = LocalEnvironment(str(tmp_path))
     parent, tool, runtime = _manager(environment, budget=budget)
+    if stopped_by == "_TeamBudgetStop":
+        parent.runner._team_budget_exhausted = lambda: parent.used_tokens >= 1500
+    if stopped_by == "_RunCancelled":
+        def request_stop(_error):
+            hosts[1].stop_requested = True
+            return 0.0
+        monkeypatch.setattr(retry, "extract_retry_after_seconds", request_stop)
     for target in (tool._config, parent.agent):
         target.base_url = url
         target.api_key = "controlled-test"  # pragma: allowlist secret
@@ -364,7 +387,17 @@ async def test_authored_subprocess_accounts_failure_before_retry(
         await asyncio.wait_for(child.task, 20)
         assert child.result["status"] == "completed", child.result
         assert len(requests) == count
-        assert child.tokens == child.bridge.tokens == parent.used_tokens == 1500 + 4 * (count - 1)
+        expected = 1500 + 4 * (count - 1)
+        assert child.tokens == child.bridge.tokens == parent.used_tokens == expected
+        artifacts = Path(child.artifacts)
+        assert json.loads((artifacts / "usage.json").read_text()) == {"tokens": expected}
+        result = json.loads((artifacts / "result.json").read_text())
+        assert result["tokens"] == expected
+        output = result["output"]
+        assert output["workflow"] == output["session"] == expected
+        assert [event[0] for event in output["events"]] == [expected]
+        if stopped_by is not None:
+            assert output["events"] == [[expected, stopped_by, None]]
         if count == 2:
             assert requests[1]["observed"] == (1500, 1500)
         records = _records(tmp_path)
