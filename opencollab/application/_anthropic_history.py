@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable
 from typing import Any
 
 from opencollab.domain.session import SessionState
@@ -35,37 +34,26 @@ def _edited_anthropic_history(before: list[dict], after: list[dict]) -> list[dic
             return _strip_anthropic_thinking(after, index)
     return after
 
-def _anthropic_source_edit_start(state: SessionState) -> int | None:
+def _anthropic_source_changed(state: SessionState) -> bool:
     history = state.anthropic_history
     source = history.get("source_messages") if history is not None else None
-    if source is None or state.messages[:len(source)] == source:
-        return None
-    for index, (old, current) in enumerate(zip(source, state.messages)):
-        if old != current:
-            return index
-    return len(state.messages)
+    return source is not None and state.messages[:len(source)] != source
 
-def _anthropic_history_input(
-    state: SessionState, *, on_source_edit: Callable[[int], None] | None = None,
-) -> list[dict]:
+def _anthropic_history_input(state: SessionState) -> list[dict]:
     """Reuse the native view until its original transcript prefix changes."""
     history = state.anthropic_history
     if history is None:
         return state.messages
-    edit_start = _anthropic_source_edit_start(state)
-    if edit_start is not None:
-        if on_source_edit is not None:
-            on_source_edit(edit_start)
+    if _anthropic_source_changed(state):
         return _edited_anthropic_history(history["source_messages"], state.messages)
     return copy.deepcopy([*history["messages"], *state.messages[history["source_count"]:]])
 
 def _remember_anthropic_history(
     state: SessionState, messages: list[dict], tools: list[dict] | None,
-    *, on_source_edit: Callable[[int], None] | None = None,
 ) -> list[dict]:
     """Persist edits so removed blocks and compacted content stay removed."""
     history = state.anthropic_history
-    messages = _edited_anthropic_history(_anthropic_history_input(state, on_source_edit=on_source_edit), messages)
+    messages = _edited_anthropic_history(_anthropic_history_input(state), messages)
     if history is not None:
         messages = _edited_anthropic_history(history["messages"], messages)
         if history["tools"] != tools:
@@ -78,7 +66,6 @@ def _remember_anthropic_history(
 
 def _recover_anthropic_history(
     state: SessionState, messages: list[dict], tools: list[dict] | None, error: Exception,
-    *, on_source_edit: Callable[[int], None] | None = None,
 ) -> tuple[list[dict], int] | None:
     """Retire replayed thinking after an explicit provider prefix rejection."""
     status = getattr(error, "status_code", None)
@@ -101,4 +88,4 @@ def _recover_anthropic_history(
     )
     if not removed:
         return None
-    return _remember_anthropic_history(state, recovered, tools, on_source_edit=on_source_edit), removed
+    return _remember_anthropic_history(state, recovered, tools), removed

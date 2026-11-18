@@ -9,7 +9,6 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from opencollab.application._anthropic_history import _anthropic_source_edit_start
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
@@ -150,10 +149,10 @@ class Session:
         self._auto_save_sequence = 0
         self._auto_save_reserved_sequence = 0
         self._auto_save_message_count = 0
+        self._auto_save_messages: list[dict] | None = None
         self._auto_save_rewrite_from: int | None = 0
         self._auto_save_rewrite_revision = 0
         self._auto_save_lock = threading.Lock()
-        self.runner._on_anthropic_source_edit = self._mark_auto_save_rewrite
         self._auto_save_checkpoint_lock = threading.RLock()
         self._auto_save_pending_checkpoints: set[int] = set()
         self._auto_save_seen_result_hashes: set[str] = set()
@@ -755,6 +754,12 @@ class Session:
             len(stored_messages) if isinstance(stored_messages, list) else 0,
             len(self.state.messages),
         )
+        self._auto_save_messages = (
+            copy.deepcopy(stored_messages)
+            if isinstance(stored_messages, list) and self._auto_save_path
+            and isinstance(self.store, JournalSnapshotStorePort) and self._tracks_native_history()
+            else None
+        )
         self._auto_save_rewrite_from = None
         self._auto_save_seen_result_hashes = set(
             self.state.turn.seen_result_hashes
@@ -937,6 +942,7 @@ class Session:
             # skip its sequence and its completion cannot rewind our cursor.
             with self._auto_save_lock:
                 messages, meta = self._snapshot_for_save()
+                tracked_messages = messages if self._tracks_native_history() else None
                 sequence = self._reserve_auto_save_sequence()
                 rewrite_revision = self._auto_save_rewrite_revision
                 self._auto_save_pending_checkpoints.add(sequence)
@@ -949,6 +955,7 @@ class Session:
                     with self._auto_save_lock:
                         self._auto_save_sequence = sequence
                         self._auto_save_message_count = len(messages)
+                        self._auto_save_messages = tracked_messages
                         if self._auto_save_rewrite_revision == rewrite_revision:
                             self._auto_save_rewrite_from = None
                         self._auto_save_seen_result_hashes = set(meta["session_state"]["seen_result_hashes"])
@@ -1050,6 +1057,9 @@ class Session:
         ) + 1
         return self._auto_save_reserved_sequence
 
+    def _tracks_native_history(self) -> bool:
+        return self.state.anthropic_history is not None or self.runner._requires_thinking_prefix()
+
     def _prepare_journal_auto_save(self, path: str) -> Callable[[], None]:
         preceding_write_pending = self._auto_save_reserved_sequence > self._auto_save_sequence
         sequence = self._reserve_auto_save_sequence()
@@ -1065,10 +1075,19 @@ class Session:
         rewrite_revision = self._auto_save_rewrite_revision
         if self._auto_save_rewrite_from is not None:
             replace_from = min(replace_from, self._auto_save_rewrite_from)
-        edited_from = _anthropic_source_edit_start(self.state)
-        if edited_from is not None:
-            replace_from = min(replace_from, edited_from)
+        track_messages = self._tracks_native_history()
+        stored_messages = self._auto_save_messages or []
+        if track_messages:
+            # Native history references resolve against the last committed transcript.
+            replace_from = min(replace_from, len(stored_messages))
+            if replace_from:
+                current_messages = self.state.enriched_messages()
+                for index in range(replace_from):
+                    if current_messages[index] != stored_messages[index]:
+                        replace_from = index
+                        break
         messages, meta = self._snapshot_for_save(replace_from)
+        tracked_messages = [*stored_messages[:replace_from], *messages] if track_messages else None
         current_seen_hashes = set(self.state.turn.seen_result_hashes)
         seen_hashes_reset = preceding_write_pending or not self._auto_save_seen_result_hashes.issubset(
             current_seen_hashes
@@ -1078,12 +1097,11 @@ class Session:
             if seen_hashes_reset
             else current_seen_hashes - self._auto_save_seen_result_hashes
         )
-        checkpoint_due = sequence >= self._next_auto_save_checkpoint
-        checkpoint_messages = (
-            copy.deepcopy(self.state.enriched_messages())
-            if checkpoint_due
-            else None
-        )
+        checkpoint_messages = None
+        if sequence >= self._next_auto_save_checkpoint:
+            checkpoint_messages = tracked_messages
+            if checkpoint_messages is None:
+                checkpoint_messages = copy.deepcopy(self.state.enriched_messages())
 
         def persist() -> None:
             self.store.append_snapshot_delta(
@@ -1103,6 +1121,7 @@ class Session:
                 # cannot cause the durable delta to be skipped on the next save.
                 self._auto_save_sequence = sequence
                 self._auto_save_message_count = message_count
+                self._auto_save_messages = tracked_messages
                 if self._auto_save_rewrite_revision == rewrite_revision:
                     self._auto_save_rewrite_from = None
                 self._auto_save_seen_result_hashes = current_seen_hashes

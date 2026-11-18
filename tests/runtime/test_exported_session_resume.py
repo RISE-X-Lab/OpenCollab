@@ -207,7 +207,7 @@ class CurrentColorModel(FakeLLM):
 
 def autosave_tracking(session):
     return copy.deepcopy({name: getattr(session, name) for name in (
-        "_auto_save_sequence", "_auto_save_reserved_sequence", "_auto_save_message_count",
+        "_auto_save_sequence", "_auto_save_reserved_sequence", "_auto_save_message_count", "_auto_save_messages",
         "_auto_save_rewrite_from", "_auto_save_rewrite_revision", "_auto_save_pending_checkpoints",
         "_auto_save_seen_result_hashes", "_next_auto_save_checkpoint", "_loop_checkpoint_results",
         "_loop_checkpoint_prefix", "_loop_checkpoint_step",

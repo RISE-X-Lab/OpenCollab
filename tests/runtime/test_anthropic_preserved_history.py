@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import shutil
 
 import pytest
 
@@ -19,6 +20,7 @@ from opencollab.application.steering import READS_NUDGE_HARD
 from opencollab.bootstrap import build_session, load_session
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionState
+from tests.runtime.test_manual_autosave_ordering import PausedAppendStore
 from tests.support.provider_sdk_http import http_response, install_sdk_transport
 
 _THINKING = {"thinking", "redacted_thinking"}
@@ -511,6 +513,85 @@ async def test_first_tool_step_autosaves_an_edit_already_used_in_the_request(mon
             resume.set()
             if running is not None:
                 await asyncio.gather(running, return_exceptions=True)
+            if restored is not None:
+                await restored.aclose()
+            await session.aclose()
+            await environment.cleanup()
+
+
+@pytest.mark.parametrize(("first_save", "revert"), [
+    ("journal", True), ("manual", True), ("periodic", True), ("manual-after-freeze", True),
+    ("journal", False),
+])
+async def test_native_history_delta_uses_the_last_saved_transcript(monkeypatch, tmp_path, first_save, revert):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    peer = _BoundThinkingProvider(reads=0)
+    install_sdk_transport(monkeypatch, "anthropic", peer)
+    path = tmp_path / "session.json"
+    journal = path.with_suffix(".json.journal")
+    resumed_path = tmp_path / "resumed.json"
+    red, green = "Use the red option.", "Use the green option."
+    store = PausedAppendStore()
+    paused_append = first_save == "manual-after-freeze"
+
+    async with _client() as client:
+        environment = LocalEnvironment(str(tmp_path))
+        session = build_session(
+            agent=_agent(), llm=client, env=environment, store=store, auto_save_path=str(path),
+            seed_user_messages=[{"role": "user", "content": _blocks(red)}],
+        )
+        restored = None
+        try:
+            for index in range(3):
+                await session.add_user_message(f"Warmup {index}")
+                assert await session.run_loop() == "done"
+            until_checkpoint = session._next_auto_save_checkpoint - session._auto_save_sequence
+            if first_save == "periodic":
+                for _ in range(until_checkpoint - 1):
+                    await session.enqueue_auto_save()
+            elif until_checkpoint <= (3 if paused_append else 2):
+                for _ in range(until_checkpoint):
+                    await session.enqueue_auto_save()
+            if paused_append:
+                store.pause_next = True
+                session.enqueue_auto_save()
+                assert await asyncio.to_thread(store.started.wait, 1)
+
+            source = session.messages[1]["content"][0]
+            source["text"] = green
+            if first_save.startswith("manual"):
+                session.save(str(path))
+            else:
+                await session.enqueue_auto_save()
+            saved_edit = session.store.load_snapshot(str(path), session.agent.system_prompt)
+            assert saved_edit["messages"][1]["content"] == _blocks(green)
+            base_sequence = json.loads(path.read_text())["_autosave_sequence"]
+            assert (base_sequence == saved_edit["_autosave_sequence"]) is (first_save != "journal")
+
+            expected = red if revert else green
+            source["text"] = expected
+            await session.add_user_message("Continue with the current instructions.")
+            store.release.set()
+            await asyncio.gather(*session._auto_save_subscriber.pending_tasks)
+            delta = json.loads(journal.read_text().splitlines()[-1])
+            assert delta["replace_from"] == (1 if revert else len(session.messages) - 2)
+            native_view = delta["meta"]["session_state"]["anthropic_history"]
+            assert native_view["messages"][1] == 1
+            assert "source_messages" not in native_view
+
+            shutil.copyfile(path, resumed_path)
+            shutil.copyfile(journal, resumed_path.with_suffix(".json.journal"))
+            restored = load_session(str(resumed_path), agent=_agent(), llm=client, env=environment,
+                                    auto_save_path=str(resumed_path))
+            assert restored.messages == session.messages
+            assert restored.state.anthropic_history["messages"][1]["content"] == _blocks(expected)
+            assert await restored.run_loop() == "done"
+            assert await session.run_loop() == "done"
+            assert _plain_messages(peer.requests[-2]["messages"]) == _plain_messages(peer.requests[-1]["messages"])
+            assert expected in json.dumps(peer.requests[-1]["messages"])
+            assert not session.persistence_errors and not restored.persistence_errors
+        finally:
+            store.release.set()
             if restored is not None:
                 await restored.aclose()
             await session.aclose()

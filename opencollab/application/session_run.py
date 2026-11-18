@@ -186,7 +186,6 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         # The session supplies its owned persistence queue after adopting this runner.
         self.late_provider_usage_checkpoint: Callable[[], object] | None = None
         self._on_completion_tokens: Callable[[int], None] | None = None
-        self._on_anthropic_source_edit: Callable[[int], None] | None = None
 
     def reset_runtime_for_user_turn(self) -> None:
         """Restore agent capabilities narrowed by the previous turn."""

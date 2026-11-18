@@ -623,9 +623,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             params = None
         await self._prepare_request_budget(messages, tools, thinking=thinking, thinking_params=params)
         if self._requires_thinking_prefix():
-            messages = _remember_anthropic_history(
-                self.state, messages, tools, on_source_edit=self._on_anthropic_source_edit,
-            )
+            messages = _remember_anthropic_history(self.state, messages, tools)
         max_output_tokens = self._request_output_limit(
             messages, tools, thinking=thinking, thinking_params=params,
         )
@@ -645,9 +643,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             )
         except Exception as exc:
             recovery = (
-                _recover_anthropic_history(
-                    self.state, messages, tools, exc, on_source_edit=self._on_anthropic_source_edit,
-                )
+                _recover_anthropic_history(self.state, messages, tools, exc)
                 if self._requires_thinking_prefix() else None
             )
             if recovery is None:
@@ -655,9 +651,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             rejected_by = type(exc).__name__
         messages, removed = recovery
         await self._prepare_request_budget(messages, tools, thinking=thinking, thinking_params=params)
-        messages = _remember_anthropic_history(
-            self.state, messages, tools, on_source_edit=self._on_anthropic_source_edit,
-        )
+        messages = _remember_anthropic_history(self.state, messages, tools)
         max_output_tokens = self._request_output_limit(
             messages, tools, thinking=thinking, thinking_params=params,
         )
