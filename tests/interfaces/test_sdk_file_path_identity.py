@@ -3,16 +3,19 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters._env_docker import DockerEnvironment
+from opencollab.adapters._team_candidate_environment import _TeamCandidateEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.tools.base import host_write_lock
 from opencollab.adapters.tools.fs import FileWriteTool
 from opencollab.application.tool_execution import ToolRuntime
+from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
 from opencollab.environments import local_environment
 from opencollab.tools import builtin_tools
 from tests.support.docker_native_edits_support import RemoteDockerTransport
@@ -95,6 +98,28 @@ async def test_sdk_file_tools_match_shell_through_parent(tmp_path, absolute, too
         assert unrelated.read_text() == ("UNRELATED = 7\n" if tool == "file_read" else "VALUE = 1\n")
         shell = await environment.exec_cmd(f"cat {raw}")
         assert shell.stdout == target.read_text()
+    finally:
+        await environment.cleanup()
+
+
+async def test_wrapped_docker_workspace_resolves_parent_components_in_the_container(tmp_path):
+    (tmp_path / "sub").mkdir()
+    target = tmp_path / "module.py"
+    target.write_text("VALUE = 1\n")
+    transport = RemoteDockerTransport(tmp_path)
+    environment = DockerEnvironment(
+        workspace=transport.remote, container_id="a" * 64, exec_workdir=transport.remote,
+    )
+    transport.attach(environment)
+    wrapped = _TeamCandidateEnvironment(SimpleNamespace(environment=environment), transport.remote)
+    runtime = ToolRuntime(wrapped, build_workspace_safety_policy(wrapped), None)
+    try:
+        result = await FileWriteTool().execute_with_runtime({
+            "path": "sub/../module.py", "mode": "str_replace",
+            "old_str": "VALUE = 1", "new_str": "VALUE = 42",
+        }, runtime)
+        assert result.startswith("Replaced"), result
+        assert target.read_text() == "VALUE = 42\n"
     finally:
         await environment.cleanup()
 

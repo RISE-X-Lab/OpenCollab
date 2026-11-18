@@ -247,10 +247,16 @@ async def test_docker_edits_serialize_on_the_target_after_candidate_retargets_di
 
 
 @pytest.mark.parametrize("new_file", ["default.toml", "nested/default.toml"])
-async def test_sdk_docker_candidate_can_replace_a_file_with_a_directory(tmp_path, new_file):
+@pytest.mark.parametrize("symlink", [False, True])
+async def test_sdk_docker_candidate_can_replace_a_file_with_a_directory(tmp_path, new_file, symlink):
     repo = _repository(tmp_path)
-    (repo / "config").write_text("enabled = true\n")
-    _git(repo, "add", "config")
+    if symlink:
+        (repo / "config-source").write_text("enabled = true\n")
+        (repo / "config").symlink_to("config-source")
+        _git(repo, "add", "config", "config-source")
+    else:
+        (repo / "config").write_text("enabled = true\n")
+        _git(repo, "add", "config")
     _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "test: keep a flat config")
     index = (repo / ".git/index").read_bytes()
     environment, transport = _remote_environment(repo)
@@ -274,6 +280,56 @@ async def test_sdk_docker_candidate_can_replace_a_file_with_a_directory(tmp_path
         assert result.ok, result.reason
         assert result.output == "adopted"
         assert (repo / "config" / new_file).read_text() == "enabled = false\n"
+        if symlink:
+            assert (repo / "config-source").read_text() == "enabled = true\n"
         assert (repo / ".git/index").read_bytes() == index
+    finally:
+        await environment.cleanup()
+
+
+async def test_sdk_docker_candidate_uses_the_same_git_root_for_capture_and_adoption(tmp_path):
+    repo = _repository(tmp_path)
+    package = repo / "package"
+    package.mkdir()
+    (package / "module.py").write_text("VALUE = 1\n")
+    _git(repo, "add", "package")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "test: prepare a subdirectory workflow")
+    index = (repo / ".git/index").read_bytes()
+    transport = LocalDockerTransport(repo, pair_reads=False)
+    environment = docker_environment(package, transport)
+
+    async def edit(child, _):
+        (Path(child.workspace_root).parent / "other.py").write_text("VALUE = 2\n")
+
+    async def flow(ctx, _):
+        candidate = await ctx.candidate_workflow(edit, {}, label="update-neighbor")
+        assert "b/other.py" in candidate.effective_diff
+        await ctx.adopt_candidate(candidate)
+        return "adopted"
+
+    try:
+        result = await OpenCollab(package, environment=environment).workflow(
+            flow, candidate_workspace=_RemoteCandidates(environment, transport), trace=False, timeout=30,
+        )
+        assert result.ok, result.reason
+        assert (repo / "other.py").read_text() == "VALUE = 2\n"
+        assert (repo / ".git/index").read_bytes() == index
+        assert environment._resolved_workspace in {None, str(package)}
+    finally:
+        await environment.cleanup()
+
+
+async def test_docker_group_reuses_sibling_parent_resolution_in_each_pass(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    transport = LocalDockerTransport(tmp_path, pair_reads=False)
+    environment = docker_environment(tmp_path, transport)
+    try:
+        paths = tuple(str(source / f"module_{index}.py") for index in range(48))
+        async with environment.file_write_locks(paths):
+            resolutions = [row for row in transport.calls if "opencollab-file-parent" in row["command"]]
+            assert len(resolutions) == 4
+            await environment.write_file(paths[0], "VALUE = 1\n")
+        assert (source / "module_0.py").read_text() == "VALUE = 1\n"
     finally:
         await environment.cleanup()

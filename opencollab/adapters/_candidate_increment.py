@@ -10,6 +10,7 @@ from typing import Any
 
 from opencollab.adapters._candidate_adoption import _adoption_transaction
 from opencollab.adapters._candidate_physical import _physical_git
+from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._git_patch_bytes import _complete, _patch_temporary
 from opencollab.adapters.git_patch import _git_command_and_config_guard
 from opencollab.adapters.tools.base import host_write_locks
@@ -33,8 +34,10 @@ async def _apply_increment(
     if not isinstance(patch, str) or not patch.strip():
         raise ValueError("candidate patch must be non-empty")
     preserved = tuple(_safe_path(path) for path in preserve_paths)
+    delegate = getattr(environment, "_delegate", environment)
+    docker = isinstance(delegate, DockerEnvironment)
     lock_root = (
-        workspace if getattr(environment, "local_filesystem", False)
+        workspace if docker or getattr(environment, "local_filesystem", False)
         else getattr(environment, "workspace", workspace)
     )
     async with _patch_temporary(
@@ -54,10 +57,13 @@ async def _apply_increment(
             for protected in preserved for path in candidate_paths
         ):
             raise ValueError("candidate patch overlaps a preserved path")
-        async with host_write_locks(
-            (posixpath.join(lock_root, ".candidate-adoption"),
-             *(posixpath.join(workspace, path) for path in sorted(candidate_paths))), environment,
-        ):
+        targets = (posixpath.join(lock_root, ".candidate-adoption"),
+                   *(posixpath.join(workspace, path) for path in sorted(candidate_paths)))
+        locks = (
+            delegate.file_write_locks(targets, _repository_root=workspace)
+            if docker else host_write_locks(targets, environment)
+        )
+        async with locks:
             git = "git -c core.filemode=true"
             guard = ""
             if strict and repository:

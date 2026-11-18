@@ -693,41 +693,49 @@ class DockerEnvironment(Environment):
         return await self._write_file(path, content, observe_change=True)
 
     @contextlib.asynccontextmanager
-    async def file_write_locks(self, paths: Sequence[str]) -> AsyncIterator[None]:
+    async def file_write_locks(
+        self, paths: Sequence[str], *, _repository_root: str | None = None,
+    ) -> AsyncIterator[None]:
         self._ensure_active()
         await self._bind_attached()
         if self._container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
-        ordered = await self._grouped_write_targets(paths)
+        ordered = await self._grouped_write_targets(paths, repository_root=_repository_root)
         while True:
             async with contextlib.AsyncExitStack() as locks:
                 for target in ordered:
                     await locks.enter_async_context(self._resolved_file_write_lock(target))
                 # An earlier publisher may have changed a directory alias while
                 # we waited. Release the group before acquiring any new target.
-                current = await self._grouped_write_targets(paths)
+                current = await self._grouped_write_targets(paths, repository_root=_repository_root)
                 if current == ordered:
                     yield None
                     return
             ordered = current
 
-    async def _grouped_write_targets(self, paths: Sequence[str]) -> list[str]:
+    async def _grouped_write_targets(
+        self, paths: Sequence[str], *, repository_root: str | None = None,
+    ) -> list[str]:
         requested = {self._validate_container_path(path) for path in paths}
         if not requested:
             return []
         # The first path sorts before any of its descendants, so it can
         # establish the physical workspace using ordinary parent resolution.
+        parent_cache: dict[tuple[str, str, tuple[str, ...]], tuple[str, str]] = {}
         first = min(requested)
-        targets = {await self._resolve_write_target(first)}
-        physical_workspace = self._resolved_workspace or self.workspace
+        workspace = repository_root or self.workspace
+        targets = {await self._resolve_write_target(
+            first, parent_cache=parent_cache, repository_root=repository_root,
+        )}
+        physical_workspace = parent_cache[(workspace, posixpath.dirname(first), ())][0]
         ancestors_by_path: dict[str, tuple[str, ...]] = {}
         for path in sorted(requested):
             ancestors = []
             parent = posixpath.dirname(path)
-            while parent not in ("", ".", "/", self.workspace, physical_workspace):
+            while parent not in ("", ".", "/", workspace, physical_workspace):
                 if posixpath.isabs(parent) and not any(
                     _within_directory(root, posixpath.normpath(parent))
-                    for root in (self.workspace, physical_workspace)
+                    for root in (workspace, physical_workspace)
                 ):
                     break
                 if posixpath.basename(parent) not in (".", ".."):
@@ -743,6 +751,7 @@ class DockerEnvironment(Environment):
         targets.update({
             await self._resolve_write_target(
                 path, replaceable_parents=tuple(parent for parent in ancestors if parent in requested),
+                parent_cache=parent_cache, repository_root=repository_root,
             )
             for path, ancestors in resolve.items()
         })
@@ -828,19 +837,40 @@ class DockerEnvironment(Environment):
         *,
         containment_root: str | None = None,
         replaceable_parents: Sequence[str] = (),
+        parent_cache: dict[tuple[str, str, tuple[str, ...]], tuple[str, str]] | None = None,
+        repository_root: str | None = None,
     ) -> str:
-        # Resolve the parent through the file execution wrapper, including its
-        # cwd and command prefix. Keep the final component so atomic writes
-        # replace a file symlink rather than modifying its referent.
-        # A patch may name both a regular file and its future descendants.
         directory, filename = posixpath.split(target)
+        if containment_root not in (None, "/tmp"):
+            raise ValueError("container temporary files must stay under /tmp")
+        root = containment_root or repository_root or self.workspace
+        key = (root, directory, tuple(replaceable_parents))
+        parent = parent_cache.get(key) if parent_cache is not None else None
+        if parent is None:
+            parent = await self._resolve_write_parent(directory, root, replaceable_parents)
+            if parent_cache is not None:
+                parent_cache[key] = parent
+        resolved_root, resolved = parent
+        # Owned temporary files do not change the cached worktree root.
+        if containment_root is None and repository_root is None:
+            self._resolved_workspace = resolved_root
+        # Keep the final component for atomic replacement of file symlinks.
+        resolved_target = posixpath.normpath(posixpath.join(resolved, filename))
+        if not _within_directory(resolved_root, resolved_target):
+            boundary = "workspace" if containment_root is None else "temporary directory"
+            raise PermissionError(f"container file path escapes {boundary}: {target}")
+        return resolved_target
+
+    async def _resolve_write_parent(
+        self, directory: str, root: str, replaceable_parents: Sequence[str],
+    ) -> tuple[str, str]:
+        # A patch may replace an existing file or symlink with a directory.
         command = (
             'directory=$1; workspace=$2; shift 2; suffix=; '
             'while [ ! -d "$directory" ]; do '
             'case "${directory##*/}" in ..) exit 66;; esac; '
-            '[ ! -L "$directory" ] || exit 66; '
-            'if [ -e "$directory" ]; then '
-            '[ -f "$directory" ] || exit 66; '
+            'if [ -e "$directory" ] || [ -L "$directory" ]; then '
+            '[ -f "$directory" ] || [ -L "$directory" ] || exit 66; '
             'for parent do [ "$parent" != "$directory" ] || break; done; '
             '[ "$#" -gt 0 ] && [ "$parent" = "$directory" ] || exit 66; fi; '
             'suffix="/${directory##*/}$suffix"; directory=${directory%/*}; '
@@ -852,9 +882,6 @@ class DockerEnvironment(Environment):
         parent = directory or "."
         if not posixpath.isabs(parent):
             parent = "./" + parent
-        if containment_root not in (None, "/tmp"):
-            raise ValueError("container temporary files must stay under /tmp")
-        root = self.workspace if containment_root is None else containment_root
         arguments = [parent, root, *(
             path if posixpath.isabs(path) else "./" + path for path in replaceable_parents
         )]
@@ -873,16 +900,7 @@ class DockerEnvironment(Environment):
             or not posixpath.isabs(resolved)
         ):
             raise OSError("cannot resolve container file execution directory")
-        resolved_root = posixpath.normpath(resolved_root)
-        # Owned /tmp files must not replace the cached workspace root. A later
-        # workspace write would then treat the temporary directory as the project.
-        if containment_root is None:
-            self._resolved_workspace = resolved_root
-        resolved_target = posixpath.normpath(posixpath.join(resolved, filename))
-        if not _within_directory(resolved_root, resolved_target):
-            boundary = "workspace" if containment_root is None else "temporary directory"
-            raise PermissionError(f"container file path escapes {boundary}: {target}")
-        return resolved_target
+        return posixpath.normpath(resolved_root), resolved
 
     async def _physical_workspace(self) -> str:
         if self._resolved_workspace is not None:

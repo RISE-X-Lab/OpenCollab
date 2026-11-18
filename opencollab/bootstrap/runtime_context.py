@@ -61,4 +61,5 @@ def build_workspace_safety_policy(env: Environment) -> SafetyPolicyPort | None:
     """A sandbox interceptor scoped to ``env``'s workspace, or None without one."""
     if env is None or not getattr(env, "workspace", None):
         return None
-    return SandboxInterceptor(env.workspace, remote_filesystem=isinstance(env, (DockerEnvironment, VMEnvironment)))
+    backend = getattr(env, "_delegate", env)
+    return SandboxInterceptor(env.workspace, remote_filesystem=isinstance(backend, (DockerEnvironment, VMEnvironment)))
