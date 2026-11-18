@@ -6,7 +6,7 @@ import copy
 import math
 from typing import Any
 
-from opencollab.application._anthropic_history import _edited_anthropic_history
+from opencollab.application._anthropic_history import _anthropic_source_edit_start, _edited_anthropic_history
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
 
@@ -15,16 +15,6 @@ from opencollab.domain.session import SessionPhase, SessionState
 _LEGACY_TERMINAL_PHASES = frozenset(
     {"cancelled", "budget_exceeded", "step_limit_exceeded", "context_overflow"}
 )
-
-def _anthropic_source_edit_start(state: SessionState) -> int | None:
-    history = state.anthropic_history
-    source = history.get("source_messages") if history is not None else None
-    if source is None or state.messages[:len(source)] == source:
-        return None
-    for index, (old, current) in enumerate(zip(source, state.messages)):
-        if old != current:
-            return index
-    return len(state.messages)
 
 def _serialize_anthropic_history(state: SessionState) -> dict | None:
     history = state.anthropic_history

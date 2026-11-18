@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from opencollab.application._anthropic_history import _anthropic_source_edit_start
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
@@ -25,7 +26,6 @@ from opencollab.application.ports import (
 )
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.session_snapshot import (
-    _anthropic_source_edit_start,
     _restore_active_turn_start,
     _restore_anthropic_history,
     _restore_pending_row,
@@ -153,6 +153,7 @@ class Session:
         self._auto_save_rewrite_from: int | None = 0
         self._auto_save_rewrite_revision = 0
         self._auto_save_lock = threading.Lock()
+        self.runner._on_anthropic_source_edit = self._mark_auto_save_rewrite
         self._auto_save_checkpoint_lock = threading.RLock()
         self._auto_save_pending_checkpoints: set[int] = set()
         self._auto_save_seen_result_hashes: set[str] = set()
@@ -319,9 +320,7 @@ class Session:
     def messages(self, value: list[dict]) -> None:
         self.state.replace_messages(value)
         if hasattr(self, "_auto_save_rewrite_from"):
-            with self._auto_save_lock:
-                self._auto_save_rewrite_from = 0
-                self._auto_save_rewrite_revision += 1
+            self._mark_auto_save_rewrite(0)
 
     @property
     def used_tokens(self) -> int:
@@ -1038,6 +1037,12 @@ class Session:
 
         with self._auto_save_lock:
             return self._prepare_journal_auto_save(path)
+
+    def _mark_auto_save_rewrite(self, start: int) -> None:
+        with self._auto_save_lock:
+            previous = self._auto_save_rewrite_from
+            self._auto_save_rewrite_from = start if previous is None else min(previous, start)
+            self._auto_save_rewrite_revision += 1
 
     def _reserve_auto_save_sequence(self) -> int:
         self._auto_save_reserved_sequence = max(

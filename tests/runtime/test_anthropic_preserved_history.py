@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 
@@ -450,6 +451,70 @@ def test_restored_unchanged_prefix_preserves_projection_and_tracks_future_nested
     state.messages[1]["content"][0]["text"] = "Revised requirement"
     assert _anthropic_history_input(state) == state.messages
     assert state.anthropic_history["source_messages"][1]["content"][0]["text"] == "Old requirement"
+
+
+@pytest.mark.parametrize("checkpoint", [False, True], ids=["journal", "checkpoint"])
+async def test_first_tool_step_autosaves_an_edit_already_used_in_the_request(monkeypatch, tmp_path, checkpoint):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    peer = _BoundThinkingProvider(reads=0)
+    held_request, resume = asyncio.Event(), asyncio.Event()
+    hold_after_read = False
+
+    async def provider(request):
+        if hold_after_read and len(peer.requests) == peer.reads:
+            held_request.set()
+            await resume.wait()
+        return peer(request)
+
+    install_sdk_transport(monkeypatch, "anthropic", provider)
+    path = tmp_path / "session.json"
+
+    async with _client() as client:
+        environment = LocalEnvironment(str(tmp_path))
+        session = build_session(agent=_agent(), llm=client, env=environment,
+                                auto_save_path=str(path), max_budget_tokens=100_000, max_steps=20)
+        running = restored = None
+        try:
+            for index in range(3):
+                await session.add_user_message(f"Choose red for turn {index}")
+                assert await session.run_loop() == "done"
+            await session.add_user_message("Read the current evidence")
+            await asyncio.gather(*session._auto_save_subscriber.pending_tasks)
+            until_checkpoint = session._next_auto_save_checkpoint - session._auto_save_sequence
+            extra_saves = until_checkpoint - 1 if checkpoint else int(until_checkpoint == 1)
+            for _ in range(extra_saves):
+                await session.enqueue_auto_save()
+            saved = session.store.load_snapshot(str(path), session.agent.system_prompt)
+            assert saved["messages"][1]["content"] == "Choose red for turn 0"
+
+            session.messages[1]["content"] = "Choose green for turn 0"
+            peer.reads = len(peer.requests) + 1
+            hold_after_read = True
+            running = asyncio.create_task(session.run_loop())
+            await asyncio.wait_for(held_request.wait(), 5)
+            await asyncio.gather(*session._auto_save_subscriber.pending_tasks)
+            assert not running.done()
+            assert "Choose green for turn 0" in json.dumps(peer.requests[-1])
+            assert not session.persistence_errors
+
+            saved = session.store.load_snapshot(str(path), session.agent.system_prompt)
+            base = json.loads(path.read_text())
+            assert (base["_autosave_sequence"] == saved["_autosave_sequence"]) is checkpoint
+            restored = load_session(str(path), agent=_agent(), llm=client, env=environment)
+            assert restored.messages[1]["content"] == "Choose green for turn 0"
+            assert restored.state.anthropic_history["messages"][1]["content"] == "Choose green for turn 0"
+            assert sum(message["role"] == "tool" for message in restored.messages) == 1
+
+            resume.set()
+            assert await running == "done"
+        finally:
+            resume.set()
+            if running is not None:
+                await asyncio.gather(running, return_exceptions=True)
+            if restored is not None:
+                await restored.aclose()
+            await session.aclose()
+            await environment.cleanup()
 
 
 @pytest.mark.parametrize("source", ["invalid", [], [{}, {}], [False]])
