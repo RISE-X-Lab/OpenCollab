@@ -191,13 +191,7 @@ class SchedulerRunMixin:
                         break
                     await self._wait_for_scheduler_progress(aid)
                     continue
-                # The waiter joins the wait, never the liveness question: it
-                # never completes on its own, so counting it as pending work
-                # would keep a quiescent team's turn running until someone
-                # cancelled it.
-                if cancel_waiter is not None:
-                    pending.add(cancel_waiter)
-                await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                await self._wait_for_active_scheduler_tasks(pending, cancel_waiter)
         finally:
             if cancel_waiter is not None:
                 cancel_waiter.cancel()
@@ -244,9 +238,7 @@ class SchedulerRunMixin:
                 if not pending:
                     await self._wait_for_scheduler_progress(aid)
                     continue
-                if cancel_waiter is not None:
-                    pending.add(cancel_waiter)
-                await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                await self._wait_for_active_scheduler_tasks(pending, cancel_waiter)
         except asyncio.CancelledError:
             # The public caller performs bounded team cleanup after propagating
             # cancellation. A suspended recovery driver has already returned,
@@ -390,8 +382,8 @@ class SchedulerRunMixin:
         # Any member's deferred grant can hold the shared budget an inbox needs.
         return {
             task
-            for _aid, _grant, _baseline, tasks, _finished in self._pending_provider_budget_leases.values()
-            for task in tasks
+            for _aid, _grant, _baseline, tasks, finished in self._pending_provider_budget_leases.values()
+            for task in tasks - finished
         }
 
     def _active_scheduler_tasks(self) -> set[asyncio.Task]:
@@ -419,6 +411,18 @@ class SchedulerRunMixin:
             if not task.done() and task is not current
         }
 
+    async def _wait_for_active_scheduler_tasks(
+        self, pending: set[asyncio.Task], cancel_waiter: asyncio.Task | None = None,
+    ) -> None:
+        budget_owners = self._message_budget_cleanup_tasks()
+        budget_owners.discard(asyncio.current_task())
+        waiting = pending | budget_owners
+        if cancel_waiter is not None:
+            waiting.add(cancel_waiter)
+        done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+        if done & budget_owners:
+            await self._drain_ready_message_inboxes()
+
     async def _wait_for_scheduler_progress(self, aid: int) -> None:
         """Block for a producer completion or report a state with no producer."""
         settled_budget_owners: set[asyncio.Task] = set()
@@ -430,7 +434,7 @@ class SchedulerRunMixin:
                 return
             producers = self._active_scheduler_tasks()
             if producers:
-                await asyncio.wait(producers, return_when=asyncio.FIRST_COMPLETED)
+                await self._wait_for_active_scheduler_tasks(producers)
                 return
             budget_owners.update(self._message_budget_cleanup_tasks())
             callbacks = budget_owners - settled_budget_owners

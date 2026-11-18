@@ -156,6 +156,90 @@ async def test_accepted_inbox_waits_for_another_agents_budget_owner(
             await asyncio.gather(active, return_exceptions=True)
 
 
+async def test_inbox_runs_after_first_of_two_deferred_grants_releases(monkeypatch, tmp_path):
+    started = [asyncio.Event(), asyncio.Event()]
+    release = [asyncio.Event(), asyncio.Event()]
+    both_deferred = asyncio.Event()
+    delivered = asyncio.Event()
+    recipient_requests = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        text = next(m["content"] for m in reversed(body["messages"]) if m["role"] == "user")
+        if text in {"owner 0 operation", "owner 1 operation"}:
+            index = int(text.split()[1])
+            started[index].set()
+            try:
+                await release[index].wait()
+            except asyncio.CancelledError:
+                await release[index].wait()
+        if "accepted follow-up" in text:
+            recipient_requests.append(text)
+            delivered.set()
+        return completion_http_response(request, text="done", output_tokens=19_986 if text == "lead warmup" else 2)
+
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    install_sdk_transport(monkeypatch, "openai", handler)
+    async with LLMClient(
+        model="gpt-4o", provider="openai",
+        api_key="local-controlled",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", max_retries=0,
+    ) as client:
+        scheduler = Scheduler(
+            session_factory=_Factory(client, 1.0),
+            worktree_pool=WorktreePool(str(tmp_path), use_worktrees=False),
+            event_sink=EventBus(), max_budget_tokens=40_000,
+        )
+        lead = build_session(agent=Agent(name="lead", system_prompt="lead"), llm=client, max_budget_tokens=40_000)
+        scheduler.register_lead(lead)
+        assert await scheduler.run("lead warmup") == "done"
+        for aid, role in enumerate(("recipient", "owner-one", "owner-two"), 1):
+            assert await scheduler.spawn(0, role, f"{role} warmup") == aid
+            await scheduler._tasks[aid]
+        assert scheduler.used_tokens == 20_000
+
+        original_active = scheduler._active_scheduler_tasks
+
+        def observe():
+            tasks = original_active()
+            if len(scheduler._pending_provider_budget_leases) == 2:
+                both_deferred.set()
+            return tasks
+
+        monkeypatch.setattr(scheduler, "_active_scheduler_tasks", observe)
+        for aid in (2, 3):
+            scheduler._sessions[aid].runner._per_call_timeout = 0.5
+        work = [asyncio.create_task(scheduler.run_turn(aid, f"owner {aid - 2} operation")) for aid in (2, 3)]
+        try:
+            await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started)), 3)
+            assert scheduler.allocated_tokens == 40_000
+            assert await scheduler.send_message(0, 1, "work", "accepted follow-up") == "Message queued to aid 1."
+            await asyncio.wait_for(both_deferred.wait(), 3)
+            release[0].set()
+            await asyncio.wait_for(delivered.wait(), 3)
+
+            assert not scheduler._message_inbox[1]
+            assert {lease[0] for lease in scheduler._pending_provider_budget_leases.values()} == {3}
+            assert not work[1].done()
+            assert len(recipient_requests) == 1
+            second_owner, = next(iter(scheduler._pending_provider_budget_leases.values()))[3]
+            settled = asyncio.Event()
+            second_owner.add_done_callback(lambda _: settled.set())
+            release[1].set()
+            results = await asyncio.wait_for(asyncio.gather(*work, return_exceptions=True), 3)
+            assert all(isinstance(error, SchedulerTurnError) for error in results)
+            await asyncio.wait_for(settled.wait(), 3)
+            assert not scheduler._pending_provider_budget_leases
+            assert scheduler.allocated_tokens == scheduler.used_tokens
+        finally:
+            for event in release:
+                event.set()
+            await scheduler.cleanup()
+            await asyncio.gather(*work, return_exceptions=True)
+
+
 def _budget_callback_scheduler(tmp_path, owner):
     state = SessionState(messages=[])
     state.set_phase(SessionPhase.DONE)
