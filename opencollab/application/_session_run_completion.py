@@ -59,25 +59,30 @@ from opencollab.domain.tools import ToolProcessingResult, tool_name_collision_ke
 
 logger = logging.getLogger(__name__)
 
-def _completion_keyword_parameters(complete: Callable[..., Awaitable[Any]]) -> set[str] | None:
+def _completion_keyword_parameters(complete: Callable[..., Awaitable[Any]]) -> tuple[set[str] | None, bool]:
     keywords: set[str] = set()
+    outer_accepts_kwargs = False
 
     def has_fixed_keywords(target: Callable[..., Any]) -> bool:
+        nonlocal outer_accepts_kwargs
         parameters = inspect.signature(target, follow_wrapped=False).parameters.values()
         keywords.update(
             parameter.name for parameter in parameters
             if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         )
-        return not any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+        accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+        if target is complete:
+            outer_accepts_kwargs = accepts_kwargs
+        return not accepts_kwargs
 
     # Follow variadic decorators through to the first fixed signature.
     try:
         target = inspect.unwrap(complete, stop=has_fixed_keywords)
         if not hasattr(target, "__wrapped__") and not has_fixed_keywords(target):
-            return None
+            return None, outer_accepts_kwargs
     except (TypeError, ValueError):
         pass
-    return keywords
+    return keywords, outer_accepts_kwargs
 
 def _selector_names_tool_choice(selector: Any) -> bool:
     """Return whether a structured error selector targets ``tool_choice``."""
@@ -790,7 +795,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         usage_accounting: _CompletionUsageAccounting,
         revalidate: Callable[[], int],
     ) -> asyncio.Event | None:
-        keywords = _completion_keyword_parameters(complete)
+        keywords, outer_accepts_kwargs = _completion_keyword_parameters(complete)
 
         def accepts(name: str) -> bool:
             return keywords is None or name in keywords
@@ -801,7 +806,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             kwargs["on_attempt_usage"] = usage_accounting.record_attempt
         if getattr(self.llm, "supports_usage_settlement", False) and accepts("on_usage"):
             kwargs["on_usage"] = usage_accounting.settle
-        if getattr(self.llm, "supports_request_revalidation", False) and accepts("before_request"):
+        # A declared flag lets middleware consume the callback before forwarding to a fixed signature.
+        revalidation = "supports_request_revalidation"
+        if getattr(self.llm, revalidation, False) and (
+            accepts("before_request")
+            or (outer_accepts_kwargs and inspect.getattr_static(self.llm, revalidation, False) is True)
+        ):
             kwargs["before_request"] = revalidate
         if getattr(self.llm, "supports_request_admission", False) and accepts("on_admitted"):
             admitted = asyncio.Event()

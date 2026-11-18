@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from functools import wraps
 
@@ -10,6 +11,7 @@ import pytest
 from opencollab import OpenCollab, RunControl
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.application._session_run_shared import _TokenBudgetStop
 from opencollab.bootstrap import container
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
@@ -197,6 +199,69 @@ class _SettlementWrapper(_LegacyNativeClient):
         if on_usage is not None:
             on_usage(response.usage)
         return response
+
+
+class _RevalidatingWrapper(_LegacyNativeClient):
+    @wraps(_LegacyNativeClient.complete)
+    async def complete(self, *args, **kwargs):
+        self.arrived.set()
+        await self.release.wait()
+        before_request = kwargs.pop("before_request", None)
+        if before_request is not None:
+            kwargs["max_output_tokens"] = min(kwargs["max_output_tokens"], before_request())
+        return await super().complete(*args, **kwargs)
+
+
+class _ClassOptInWrapper(_RevalidatingWrapper):
+    supports_request_revalidation = True
+
+
+@pytest.mark.parametrize("purpose", ["completion", "summary"])
+@pytest.mark.parametrize("declare_on_class", [False, True], ids=["instance-opt-in", "class-opt-in"])
+async def test_decorated_client_revalidates_budget_before_sending(
+    tmp_path, monkeypatch, local_environment_factory, purpose, declare_on_class,
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request, text="<summary>Preserved context.</summary>")
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    client_class = _ClassOptInWrapper if declare_on_class else _RevalidatingWrapper
+    async with client_class(
+        api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", max_retries=0,
+    ) as client:
+        if not declare_on_class:
+            client.supports_request_revalidation = True
+        client.arrived, client.release = asyncio.Event(), asyncio.Event()
+        session = build_session(
+            agent=Agent(name="queued", system_prompt="system", max_tokens_per_step=128),
+            llm=client, env=local_environment_factory(str(tmp_path)), max_budget_tokens=20_000,
+        )
+        await session.add_user_message("Keep this context")
+        operation = (
+            session._context_summarizer.asummarize(session.messages)
+            if purpose == "summary" else session.run_loop()
+        )
+        task = asyncio.create_task(operation)
+        try:
+            await asyncio.wait_for(client.arrived.wait(), 5)
+            session.max_budget_tokens = 1
+            client.release.set()
+            if purpose == "summary":
+                with pytest.raises(_TokenBudgetStop):
+                    await asyncio.wait_for(task, 5)
+            else:
+                assert await asyncio.wait_for(task, 5) == ""
+                assert "budget exhausted before model call" in session.state.terminal_reason
+            assert requests == []
+            assert session.used_tokens == 0
+        finally:
+            client.release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            await session.aclose()
 
 
 @pytest.mark.parametrize("failed", [False, True])

@@ -70,12 +70,21 @@ async def _record_api_usage_async(**kwargs: Any) -> None:
     except Exception:
         return
 
+
+class _InheritedRequestRevalidation:
+    # A class or instance can shadow this default with an explicit boolean flag.
+    def __get__(self, instance: object, owner: type) -> bool:
+        return True
+
+
 class LLMClient:
     """Client for OpenAI-compatible endpoints and native Anthropic requests.
 
     Set ``provider="anthropic"`` for the Anthropic SDK path, which converts
     OpenAI-format history per request.
     """
+
+    supports_request_revalidation = _InheritedRequestRevalidation()
 
     def __init__(
         self,
@@ -123,7 +132,6 @@ class LLMClient:
         self.request_pool = request_pool
         self.request_capacity = request_capacity
         self.supports_request_admission = request_pool is not None
-        self.supports_request_revalidation = True
         self.supports_attempt_usage = True
         self.supports_usage_settlement = True
         self.model = model
