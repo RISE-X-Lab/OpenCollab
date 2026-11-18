@@ -107,12 +107,18 @@ async def _adoption_transaction(
         storage = shlex.quote(_complete(await environment.exec_cmd(
             f"git -C {shlex.quote(workspace)} rev-parse --absolute-git-dir", timeout=30,
         ), "candidate recovery storage").removesuffix("\n"))
-    backup = _complete(await environment.exec_cmd(
-        f'mktemp -d {storage}/candidate-recovery-XXXXXXXX', timeout=30,
-    ), "candidate recovery storage").removesuffix("\n")
-    backup_quoted = shlex.quote(backup)
+    backup = None
     keep_backup = False
+
+    async def allocate_backup() -> None:
+        nonlocal backup
+        backup = _complete(await environment.exec_cmd(
+            f'mktemp -d {storage}/candidate-recovery-XXXXXXXX', timeout=30,
+        ), "candidate recovery storage").removesuffix("\n")
+
     try:
+        await await_owned_operation(allocate_backup(), propagate_cancellation=True)
+        assert backup is not None
         copies = []
         restores = []
         recreate_directories = []
@@ -187,10 +193,10 @@ async def _adoption_transaction(
                     ) from recovery
                 raise
     finally:
-        if not keep_backup:
+        if backup is not None and not keep_backup:
             try:
                 await await_owned_operation(environment.exec_cmd(
-                    f"rm -rf -- {backup_quoted}", timeout=120,
+                    f"rm -rf -- {shlex.quote(backup)}", timeout=120,
                 ))
             except Exception:
                 pass
