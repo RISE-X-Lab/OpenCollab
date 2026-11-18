@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
+from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES
 from opencollab.adapters._git_patch_bytes import _complete, _patch_temporary
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.workflow_candidates import CandidateAdoptionRecoveryError
@@ -17,15 +18,32 @@ from opencollab.application.workflow_candidates import CandidateAdoptionRecovery
 async def _adoption_command(
     environment: Any, workspace: str, command: str, *, repository: bool,
 ) -> AsyncIterator[str]:
-    if len(command.encode("utf-8", errors="surrogateescape")) <= 32_768:
+    size = len(command.encode("utf-8", errors="surrogateescape"))
+    if size <= 32_768:
         yield command
         return
     resources = AsyncExitStack()
-    try:
-        script = await resources.enter_async_context(_patch_temporary(
-            environment, workspace, command + "\n", prefix=".candidate-command-", suffix=".sh",
+
+    async def stage(content: str) -> str:
+        return await resources.enter_async_context(_patch_temporary(
+            environment, workspace, content, prefix=".candidate-command-", suffix=".sh",
             cleanup_best_effort=True, repository=repository,
         ))
+
+    try:
+        content = command + "\n"
+        if size < ENV_FILE_WRITE_LIMIT_BYTES:
+            script = await stage(content)
+        else:
+            # Keep each transfer within the file and bridge limits. Assemble
+            # the complete script before it can change the workspace.
+            chunk_size = ENV_FILE_WRITE_LIMIT_BYTES // 8
+            script = await stage("")
+            for start in range(0, len(content), chunk_size):
+                fragment = await stage(content[start:start + chunk_size])
+                _complete(await environment.exec_cmd(
+                    f"cat -- {shlex.quote(fragment)} >> {shlex.quote(script)}", timeout=120,
+                ), "candidate command staging")
         yield f"sh {shlex.quote(script)}"
     finally:
         try:

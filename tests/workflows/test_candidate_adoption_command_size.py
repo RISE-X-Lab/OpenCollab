@@ -19,7 +19,9 @@ class _ArgumentBoundEnvironment(LocalEnvironment):
 
 @pytest.mark.parametrize("blocked", [False, True])
 async def test_bulk_candidate_adoption_keeps_recovery_below_argument_limits(tmp_path, blocked):
-    repo = tmp_path / "repo"
+    # Long absolute paths expand the recovery script past the temp-file limit
+    # even though the repository-relative patch fits under one megabyte.
+    repo = tmp_path.joinpath(*("nested-" + "workspace-" * 8,) * 5, "repo")
     (repo / "src").mkdir(parents=True)
     (repo / "settings").mkdir()
     names = [f"{number:04d}_" + "module_" * 10 + ".py" for number in range(900)]
