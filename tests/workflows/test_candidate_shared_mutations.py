@@ -9,26 +9,31 @@ import pytest
 from opencollab import OpenCollab
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.application.workflow_candidates import CandidateAdoptionRecoveryError
 from opencollab.tools import builtin_tools
 from tests.workflows.test_candidate_adoption_recovery import _flatten, _repository, _run
 from tests.workflows.test_workflow_candidate_workspace import _git
 
 
 class _PublicationBarrier(LocalEnvironment):
-    def __init__(self, workspace):
+    def __init__(self, workspace, *, after_write=False):
         super().__init__(str(workspace))
+        self.after_write = after_write
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
         self.publications = []
 
     async def exec_cmd(self, command, timeout=120, **kwargs):
         publication = " apply --binary " in command and ".candidate-adopt-" in command
-        if publication:
+        if publication and not self.after_write:
             self.entered.set()
             await self.release.wait()
         result = await super().exec_cmd(command, timeout, **kwargs)
         if publication:
             self.publications.append(result.returncode)
+            if self.after_write:
+                self.entered.set()
+                await self.release.wait()
         return result
 
 
@@ -42,7 +47,9 @@ class _WriterModel:
         if self.calls == 1:
             self.requested.set()
             arguments = {"path": self.path}
-            if self.tool == "file_write":
+            if self.tool == "bash":
+                arguments = {"command": f"printf '%s\\n' 'shared replacement' > {self.path}"}
+            elif self.tool == "file_write":
                 arguments.update(mode="create", content="VALUE = 100\n")
             else:
                 arguments.update(mode="line_replace", start_line=1, end_line=1, new_str="VALUE = 100")
@@ -51,7 +58,8 @@ class _WriterModel:
                     "name": self.tool, "arguments": json.dumps(arguments),
                 },
             }], usage=Usage(10, 5), finish_reason="tool_calls")
-        assert any("100" in str(message) for message in messages)
+        evidence = "Exit code: 0" if self.tool == "bash" else "100"
+        assert any(evidence in str(message) for message in messages)
         return LLMResponse(content="Shared edit complete", usage=Usage(10, 5), finish_reason="stop")
 
 
@@ -136,4 +144,70 @@ async def test_sdk_shared_agent_owns_mutations_through_candidate_publication(
         assert not environment.revoked
     finally:
         environment.release.set()
+        await environment.cleanup()
+
+
+@pytest.mark.parametrize("after_write,path", [
+    (True, "loader.py"), (True, "settings/ignored.cache"), (True, "settings/notes.txt"), (True, "separate.txt"),
+    (False, "settings/notes.txt"),
+])
+async def test_sdk_shared_bash_preserves_writes_around_git_publication_failure(tmp_path, after_write, path):
+    repo = _repository(tmp_path)
+    if after_write:
+        with (repo / ".gitignore").open("a") as ignore:
+            ignore.write("settings/ignored.cache\n")
+        (repo / "settings/ignored.cache").write_text("runtime cache\n")
+    loader = (repo / "loader.py").read_bytes()
+    index = (repo / ".git/index").read_bytes()
+    environment = _PublicationBarrier(repo, after_write=after_write)
+    overlap = path == "loader.py"
+
+    async def edit(child, _):
+        _flatten(Path(child.workspace_root))
+
+    async def flow(ctx, _):
+        candidate = await ctx.candidate_workflow(edit, {}, label="flatten")
+        publication = asyncio.create_task(ctx.adopt_candidate(candidate))
+        try:
+            await asyncio.wait_for(environment.entered.wait(), 10)
+            assert ((repo / "loader.py").read_bytes() != loader) is after_write
+            writer = await asyncio.wait_for(ctx.agent_run(
+                "Save this file in the shared workspace", tools=list(builtin_tools("bash", headless=False)),
+                isolation="shared", budget=2000, system_prompt="Use the requested Bash operation",
+            ), 10)
+            assert writer.status == "completed"
+            assert (repo / path).read_text() == "shared replacement\n"
+            environment.release.set()
+            error = CandidateAdoptionRecoveryError if overlap else RuntimeError
+            detail = "concurrent change at .*/loader.py" if overlap else "Directory not empty|Is a directory"
+            with pytest.raises(error, match=detail):
+                await publication
+        finally:
+            environment.release.set()
+            await asyncio.gather(publication, return_exceptions=True)
+
+    try:
+        result = await OpenCollab(repo, environment=environment, model="local-scripted").workflow(
+            flow, llm=_WriterModel("bash", path), trace=False, timeout=30, budget=5000,
+            concurrency=2, limit_mode="explicit", agent_profile="single2",
+        )
+        assert result.ok, result.reason
+        assert environment.publications == [128]
+        assert (repo / path).read_text() == "shared replacement\n"
+        assert (repo / "settings/defaults.py").read_text() == "VALUE = 1\n"
+        assert (repo / "draft.txt").read_text() == "untracked user draft\n"
+        assert (repo / ".git/index").read_bytes() == index
+        backups = list((repo / ".git").glob("candidate-recovery-*"))
+        if overlap:
+            backup, = backups
+            for record in backup.glob("*.path"):
+                if Path(record.read_text()).name == "loader.py":
+                    assert record.with_suffix("").read_bytes() == loader
+                    break
+            else:
+                pytest.fail("recovery did not retain the original loader")
+        else:
+            assert (repo / "loader.py").read_bytes() == loader
+            assert not backups
+    finally:
         await environment.cleanup()

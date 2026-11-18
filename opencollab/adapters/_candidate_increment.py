@@ -40,12 +40,14 @@ async def _apply_increment(
         workspace if docker or getattr(environment, "local_filesystem", False)
         else getattr(environment, "workspace", workspace)
     )
+    # Directory copies can sit below an unrelated Git worktree.
+    git_prefix = "git" if repository else "GIT_DIR=/dev/null git"
     async with _patch_temporary(
         environment, workspace, patch, prefix=".candidate-adopt-", suffix=".patch",
         cleanup_best_effort=True, repository=repository,
     ) as candidate_file:
         output = _complete(await environment.exec_cmd(
-            f"git -C {shlex.quote(workspace)} apply --numstat -z -- {shlex.quote(candidate_file)}",
+            f"{git_prefix} -C {shlex.quote(workspace)} apply --numstat -z -- {shlex.quote(candidate_file)}",
             timeout=30,
         ), "candidate path inspection")
         candidate_paths = {
@@ -64,7 +66,7 @@ async def _apply_increment(
             if docker else host_write_locks(targets, environment)
         )
         async with locks:
-            git = "git -c core.filemode=true"
+            git = f"{git_prefix} -c core.filemode=true"
             guard = ""
             if strict and repository:
                 git, guard = _git_command_and_config_guard()
@@ -86,8 +88,29 @@ async def _apply_increment(
                     f"{command} apply --check --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}",
                     timeout=120,
                 ), operation)
+
+                async def replay(staged: str, git_directory: str | None) -> None:
+                    async with AsyncExitStack() as metadata:
+                        replay_git = f"cd -- {shlex.quote(workspace)} && {guard}{git}"
+                        if physical_paths and repository:
+                            replay_git, git_directory = await metadata.enter_async_context(_physical_git(
+                                environment, workspace, physical_paths, strict=strict,
+                            ))
+                        if git_directory is not None:
+                            replay_git += (
+                                f" --git-dir={shlex.quote(git_directory)} --work-tree={shlex.quote(staged)}"
+                                f" -c safe.directory={shlex.quote(staged)}"
+                            )
+                        # A failed replay still records the files Git was able to write.
+                        result = await environment.exec_cmd(
+                            f"{replay_git} -C {shlex.quote(staged)} apply --whitespace=nowarn --binary"
+                            f" -- {shlex.quote(candidate_file)}", timeout=120,
+                        )
+                        _complete(result, "candidate recovery replay", allowed=(0, 1, 128))
+
                 async with _adoption_transaction(
                     environment, workspace, sorted(candidate_paths), repository=repository,
+                    replay=replay,
                 ):
                     try:
                         _complete(await environment.exec_cmd(

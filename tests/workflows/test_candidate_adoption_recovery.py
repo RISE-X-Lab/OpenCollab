@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters._candidate_increment import _apply_increment
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from opencollab.adapters.llm.types import LLMResponse, Usage
@@ -269,6 +270,42 @@ async def test_git_write_failure_after_successful_check_restores_partial_applica
         assert (await environment.exec_cmd("printf usable")).stdout == "usable"
     finally:
         (repo / "z").chmod(0o755)
+        await environment.cleanup()
+
+
+@pytest.mark.parametrize("inside_repository", [False, True])
+async def test_directory_copy_candidate_replays_partial_apply_outside_git(tmp_path, inside_repository):
+    if inside_repository:
+        _git(tmp_path, "init", "-q")
+    repo = tmp_path / "copy"
+    (repo / "settings").mkdir(parents=True)
+    (repo / "settings/retained.txt").write_text("keep\n")
+    (repo / "a.txt").write_text("original\n")
+    patch = (
+        "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+        "@@ -1 +1 @@\n-original\n+candidate\n"
+        "diff --git a/settings b/settings\nnew file mode 100644\n--- /dev/null\n+++ b/settings\n"
+        "@@ -0,0 +1 @@\n+candidate settings\n"
+    )
+    environment = LocalEnvironment(str(repo))
+    execute = environment.exec_cmd
+    intermediate = []
+
+    async def inspect(command, timeout=120.0, **kwargs):
+        result = await execute(command, timeout, **kwargs)
+        if " apply --binary " in command:
+            intermediate.append((repo / "a.txt").read_text())
+        return result
+
+    environment.exec_cmd = inspect
+    try:
+        with pytest.raises(RuntimeError, match="Directory not empty|Is a directory"):
+            await _apply_increment(environment, str(repo), patch, repository=False)
+        assert intermediate == ["candidate\n"]
+        assert (repo / "a.txt").read_text() == "original\n"
+        assert (repo / "settings/retained.txt").read_text() == "keep\n"
+        assert not environment.revoked
+    finally:
         await environment.cleanup()
 
 
