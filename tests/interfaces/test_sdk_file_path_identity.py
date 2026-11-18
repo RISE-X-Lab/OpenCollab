@@ -39,7 +39,7 @@ class _PathModel:
 
 
 @pytest.mark.parametrize("absolute", [False, True])
-@pytest.mark.parametrize("tool", ["file_read", "file_write", "apply_patch"])
+@pytest.mark.parametrize("tool", ["file_read", "file_write", "apply_patch", "grep"])
 @pytest.mark.parametrize(("backend", "parent"), [("local", "alias"), ("docker", "alias"), ("docker", "sub")])
 async def test_sdk_file_tools_match_shell_through_parent(tmp_path, absolute, tool, backend, parent):
     (tmp_path / "actual/child").mkdir(parents=True)
@@ -48,7 +48,8 @@ async def test_sdk_file_tools_match_shell_through_parent(tmp_path, absolute, too
     target = tmp_path / ("actual/module.py" if parent == "alias" else "module.py")
     unrelated = tmp_path / ("module.py" if parent == "alias" else "actual/module.py")
     target.write_text("VALUE = 1\n")
-    unrelated.write_text("UNRELATED = 7\n" if tool == "file_read" else "VALUE = 1\n")
+    reading = tool in {"file_read", "grep"}
+    unrelated.write_text("UNRELATED = 7\n" if reading else "VALUE = 1\n")
     if backend == "docker":
         transport = RemoteDockerTransport(tmp_path)
         environment = DockerEnvironment(
@@ -68,6 +69,8 @@ async def test_sdk_file_tools_match_shell_through_parent(tmp_path, absolute, too
             mode="line_replace", start_line=1, end_line=1,
             expected_str="VALUE = 1", new_str="VALUE = 42",
         )
+    elif tool == "grep":
+        arguments["pattern"] = "VALUE"
     model = _PathModel(tool, arguments)
     outputs = []
 
@@ -90,12 +93,12 @@ async def test_sdk_file_tools_match_shell_through_parent(tmp_path, absolute, too
         assert result.ok, result.reason
         assert result.output == "completed"
         assert len(outputs) == 1 and not outputs[0].startswith("Error")
-        if tool == "file_read":
-            assert "1\tVALUE = 1" in outputs[0]
+        if reading:
+            assert ("1\tVALUE = 1" if tool == "file_read" else "1:VALUE = 1") in outputs[0]
             assert "UNRELATED" not in outputs[0]
         else:
             assert target.read_text() == "VALUE = 42\n"
-        assert unrelated.read_text() == ("UNRELATED = 7\n" if tool == "file_read" else "VALUE = 1\n")
+        assert unrelated.read_text() == ("UNRELATED = 7\n" if reading else "VALUE = 1\n")
         shell = await environment.exec_cmd(f"cat {raw}")
         assert shell.stdout == target.read_text()
     finally:

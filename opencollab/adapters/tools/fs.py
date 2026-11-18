@@ -11,7 +11,7 @@ from opencollab.adapters._env_base import TextFileRange
 from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
 from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools._parameters import integer_parameter
-from opencollab.adapters.tools._paths import checked_path
+from opencollab.adapters.tools._paths import checked_path, checked_search_path
 from opencollab.adapters.tools.apply_patch_engine import (
     _MIXED_NEWLINES,
     _detect_newline_style,
@@ -428,14 +428,14 @@ class GrepTool(Tool):
         if env is None:
             return "Error: no execution environment available."
         try:
-            search_path = checked_path(runtime, search_path)
-        except PermissionError as exc:
-            return f"Error: {exc}"
-        try:
             max_results = int(raw_max_results)
         except (TypeError, ValueError):
             return "Error: max_results must be an integer."
         max_results = max(1, min(max_results, 500))
+        try:
+            search_path = await checked_search_path(runtime, search_path)
+        except OSError as exc:
+            return f"Error: {exc}"
 
         quoted_pattern = shlex.quote(pattern)
         quoted_search_path = shlex.quote(search_path)

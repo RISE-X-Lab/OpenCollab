@@ -29,7 +29,8 @@ from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 _METADATA = {"context_window", "estimate_request_tokens", "estimate_context_tokens", "minimum_output_tokens"}
 _COMPLETION = {"messages", "tools", "temperature", "thinking", "thinking_params", "reasoning_effort",
                "tool_choice", "top_p", "max_output_tokens", "response_session_id"}
-_ENVIRONMENT = {"exec_cmd", "read_file", "read_text_range", "write_file", "write_temp_file", "remove_file"}
+_ENVIRONMENT = {"exec_cmd", "read_file", "read_text_range", "write_file", "write_temp_file", "remove_file",
+                "resolve_search_path"}
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -341,6 +342,7 @@ class AuthoredWorkflowBridge:
             self._next_environment += 1
             self._environments[self._next_environment] = acquired
             return {"handle": self._next_environment, "workspace": acquired.workspace,
+                    "remote_filesystem": getattr(acquired, "remote_filesystem", False) is True,
                     "process_isolated": bool(getattr(acquired, "process_isolated", False))}
         if action == "release":
             if arguments or handle == 0:
@@ -491,6 +493,7 @@ class BridgeEnvironment(Environment):
         super().__init__()
         self.client, self.handle = client, options["handle"]
         self.workspace, self.process_isolated = options["workspace"], options["process_isolated"]
+        self.remote_filesystem = options.get("remote_filesystem") is True
         self._released = False
         self._edit: ContextVar[str | None] = ContextVar("authored_file_edit", default=None)
 
@@ -526,6 +529,9 @@ class BridgeEnvironment(Environment):
 
     async def read_file(self, path: str) -> str:
         return await self._call("read_file", {"path": path})
+
+    async def resolve_search_path(self, path: str) -> str:
+        return await self._call("resolve_search_path", {"path": path})
 
     async def read_text_range(self, path: str, **kwargs: Any) -> TextFileRange:
         return TextFileRange(**await self._call("read_text_range", {"path": path, **kwargs}))

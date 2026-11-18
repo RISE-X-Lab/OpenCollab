@@ -241,7 +241,7 @@ class AuthoredWorkflowTool(Tool):
         source = params.get("source")
         if not isinstance(source, str) or not source or "\x00" in source:
             raise ValueError("source must name a Python file in the workspace")
-        source = checked_path(runtime, source)
+        source = checked_path(runtime, source, native_file=True)
         await environment.read_file(source)
         budget = params.get("budget")
         if budget is not None and (isinstance(budget, bool) or not isinstance(budget, int) or budget < 1):

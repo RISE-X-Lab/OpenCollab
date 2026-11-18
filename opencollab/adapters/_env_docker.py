@@ -211,6 +211,7 @@ class DockerEnvironment(Environment):
     """
 
     process_isolated = True
+    remote_filesystem = True
 
     def __init__(
         self,
@@ -953,6 +954,16 @@ class DockerEnvironment(Environment):
         if not _within_directory(await self._physical_workspace(), referent):
             raise PermissionError(f"container file path escapes workspace: {path}")
         return referent
+
+    async def resolve_search_path(self, path: str) -> str:
+        if not isinstance(path, str) or not path or "\0" in path:
+            raise ValueError("container search path must be non-empty text without NUL bytes")
+        target = await self._symlink_referent(posixpath.join(self.workspace, path))
+        if target is None:
+            raise FileNotFoundError(f"cannot resolve container search path: {path}")
+        if not _within_directory(await self._physical_workspace(), target):
+            raise PermissionError(f"container search path escapes workspace: {path}")
+        return target
 
     @staticmethod
     def _validate_container_path(path: str) -> str:
