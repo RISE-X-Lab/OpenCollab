@@ -84,12 +84,18 @@ async def _apply_increment(
                     operation = "physical candidate adoption"
                 # Let Git reject unsafe path aliases before a recursive backup can
                 # encounter repository metadata. Publication can still fail later.
-                _complete(await environment.exec_cmd(
-                    f"{command} apply --check --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}",
-                    timeout=120,
-                ), operation)
+                check = f"{command} apply --check --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}"
+                configured_rules = repository and not strict and not physical_paths
+                if configured_rules:
+                    check += f' && ({git} config --path --get core.attributesFile || [ "$?" -eq 1 ])'
+                checked = _complete(await environment.exec_cmd(check, timeout=120), operation)
+                attributes_file = None
+                if configured_rules and (configured := checked.removesuffix("\n")):
+                    attributes_file = posixpath.join(workspace, configured)
 
-                async def replay(staged: str, git_directory: str | None) -> None:
+                async def replay(
+                    staged: str, git_directory: str | None, saved_attributes_file: str | None,
+                ) -> None:
                     async with AsyncExitStack() as metadata:
                         replay_git = f"cd -- {shlex.quote(workspace)} && {guard}{git}"
                         if physical_paths and repository:
@@ -101,16 +107,23 @@ async def _apply_increment(
                                 f" --git-dir={shlex.quote(git_directory)} --work-tree={shlex.quote(staged)}"
                                 f" -c safe.directory={shlex.quote(staged)}"
                             )
+                        if saved_attributes_file is not None:
+                            replay_git += f" -c core.attributesFile={shlex.quote(saved_attributes_file)}"
+                        replay_git += f" -C {shlex.quote(staged)}"
+                        _complete(await environment.exec_cmd(
+                            f"{replay_git} apply --whitespace=nowarn --check --binary"
+                            f" -- {shlex.quote(candidate_file)}", timeout=120,
+                        ), "candidate recovery replay check")
                         # A failed replay still records the files Git was able to write.
                         result = await environment.exec_cmd(
-                            f"{replay_git} -C {shlex.quote(staged)} apply --whitespace=nowarn --binary"
+                            f"{replay_git} apply --whitespace=nowarn --binary"
                             f" -- {shlex.quote(candidate_file)}", timeout=120,
                         )
-                        _complete(result, "candidate recovery replay", allowed=(0, 1, 128))
+                        _complete(result, "candidate recovery replay", allowed=(0, 128))
 
                 async with _adoption_transaction(
                     environment, workspace, sorted(candidate_paths), repository=repository,
-                    replay=replay,
+                    replay=replay, attributes_file=attributes_file,
                 ):
                     try:
                         _complete(await environment.exec_cmd(

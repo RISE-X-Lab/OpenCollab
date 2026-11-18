@@ -43,6 +43,21 @@ check_parents() {
     directory "$workspace" || conflict "$workspace"
 }
 
+check_candidate_descendants() {
+    prefix=${1#"$workspace_prefix"}; shift
+    for path; do
+        case "$path" in
+            "$prefix"/*)
+                target=$workspace_prefix$path
+                if check_parents "$target" 2>/dev/null && present "$target"; then
+                    conflict "$target"
+                    return
+                fi
+                ;;
+        esac
+    done
+}
+
 prepare_parent() {
     if [ "$1" != "$workspace" ]; then check_parents "$1" || return $?; fi
     if ! present "$1"; then
@@ -95,9 +110,15 @@ park_candidate_entry() {
 
 restore_entry() (
     old=$1 expected=$2 live=$3
+    if same_entry "$old" "$expected"; then
+        # An unchanged replay entry cannot explain a changed patch target.
+        if candidate_path "$live" && ! same_entry "$old" "$live"; then conflict "$live"; return; fi
+        if directory "$live"; then candidate_descendants "$live"; return; fi
+        return 0
+    fi
     if directory "$live"; then
         if ! directory "$old" && ! directory "$expected"; then
-            same_entry "$old" "$expected" || conflict "$live"
+            conflict "$live"
             return
         fi
         result=0
@@ -131,7 +152,7 @@ restore_entry() (
         fi
         return
     fi
-    if same_entry "$old" "$expected" || same_entry "$live" "$old"; then return 0; fi
+    if same_entry "$live" "$old"; then return 0; fi
     if same_entry "$live" "$expected"; then
         park_candidate_entry "$live" "$expected" || return $?
         restore_saved "$old" "$live"
@@ -183,7 +204,8 @@ async def _adoption_command(
 @asynccontextmanager
 async def _adoption_transaction(
     environment: Any, workspace: str, paths: Sequence[str], *, repository: bool,
-    replay: Callable[[str, str | None], Awaitable[None]],
+    replay: Callable[[str, str | None, str | None], Awaitable[None]],
+    attributes_file: str | None = None,
 ) -> AsyncIterator[None]:
     for path in paths:
         if (
@@ -258,6 +280,15 @@ async def _adoption_transaction(
         recreate_directories = []
         restore_directory_modes = []
         restore_parents = {posixpath.dirname(path) or "." for path in roots}
+        saved_attributes_file = None
+        if attributes_file is not None:
+            saved_attributes_file = posixpath.join(backup, "configured-attributes")
+            source_attributes = shlex.quote(attributes_file)
+            copies.append(
+                f"if [ -f {source_attributes} ] && [ -r {source_attributes} ]; then "
+                f"cat -- {source_attributes} > {shlex.quote(saved_attributes_file)} || exit; fi"
+            )
+        saved_roots = set(roots)
         # Git can prune empty ancestors. Make them writable until the saved files return.
         for index, (path, mode) in enumerate(directory_modes):
             source = shlex.quote(posixpath.normpath(posixpath.join(workspace, path)))
@@ -267,6 +298,21 @@ async def _adoption_transaction(
             metadata_file = shlex.quote(posixpath.join(backup, f"directory-{index}.mode"))
             temporary_mode = shlex.quote(posixpath.join(backup, f"directory-{index}.temporary"))
             copies.append(f"printf '%s\\0%s\\0' {source} {mode} > {metadata_file} || exit")
+            # Attribute files inside affected roots are already in the file snapshot.
+            attributes_path = posixpath.normpath(posixpath.join(path, ".gitattributes"))
+            if repository and attributes_path not in saved_roots:
+                source_attributes = shlex.quote(posixpath.join(workspace, attributes_path))
+                saved_attributes = shlex.quote(posixpath.join(backup, f"directory-{index}.attributes"))
+                staged_attributes = shlex.quote(posixpath.join(staged, attributes_path))
+                copies.append(
+                    f"if [ -f {source_attributes} ] && [ ! -L {source_attributes} ] "
+                    f"&& [ -r {source_attributes} ]; then "
+                    f"cat -- {source_attributes} > {saved_attributes} || exit; fi"
+                )
+                stage_copies.append(
+                    f"if [ -f {saved_attributes} ]; then "
+                    f"cat -- {saved_attributes} > {staged_attributes} || exit; fi"
+                )
             permission = "write" if path in restore_parents else "read"
             recreate_directories.append(
                 f"prepare_parent {source} {mode} {temporary_mode} {permission} {stage_path} || failed=$?"
@@ -292,10 +338,15 @@ async def _adoption_transaction(
         replay_script = 'present() { [ -e "$1" ] || [ -L "$1" ]; }; ' + "; ".join((
             *stage_copies, *reversed(stage_modes),
         ))
+        targets = [shlex.quote(path) for path in paths]
+        target_test = f'case "${{1#"$workspace_prefix"}}" in {"|".join(targets)}) return 0;; esac; ' if targets else ""
         recovery_script = (
             f"failed=0; workspace={shlex.quote(workspace)}; "
             f"recovery={shlex.quote(backup)}; "
             f"absent={shlex.quote(posixpath.join(backup, 'absent'))};\n"
+            'workspace_prefix="${workspace%/}/";\n'
+            f"candidate_path() {{ {target_test}return 1; }}\n"
+            f"candidate_descendants() {{ check_candidate_descendants \"$1\" {' '.join(targets)}; }}\n"
         ) + _RECOVER_PATHS + "; ".join((
             *recreate_directories, *restores, *reversed(restore_directory_modes),
         )) + '; exit "$failed"'
@@ -316,7 +367,7 @@ async def _adoption_transaction(
                         environment, workspace, replay_script, repository=repository,
                     ) as command:
                         _complete(await environment.exec_cmd(command, timeout=900), "candidate recovery replay copy")
-                    await replay(staged, git_directory)
+                    await replay(staged, git_directory, saved_attributes_file)
                     _complete(await environment.exec_cmd(recovery_command, timeout=900), "candidate adoption recovery")
 
                 try:

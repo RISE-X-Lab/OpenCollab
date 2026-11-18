@@ -14,10 +14,12 @@ import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters._candidate_increment import _apply_increment
+from opencollab.adapters._env_base import ExecResult
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.application.workflow_candidates import CandidateAdoptionRecoveryError
+from opencollab.workflows import CandidateRun
 from tests.workflows.test_workflow_candidate_workspace import _git
 
 
@@ -271,6 +273,152 @@ async def test_git_write_failure_after_successful_check_restores_partial_applica
         assert (await environment.exec_cmd("printf usable")).stdout == "usable"
     finally:
         (repo / "z").chmod(0o755)
+        await environment.cleanup()
+
+
+@pytest.mark.parametrize(("rules", "blocked"), [
+    ("tracked", True),
+    ("unstaged", True),
+    ("nested", True),
+    ("info", True),
+    ("configured", True),
+    ("tracked", False),
+])
+async def test_public_sdk_replays_effective_crlf_attributes(tmp_path, rules, blocked):
+    repo = tmp_path
+    _git(repo, "init", "-q")
+    _git(repo, "config", "core.autocrlf", "false")
+    (repo / "nested").mkdir()
+    target = repo / "nested/a.txt"
+    target.write_bytes(b"original\n")
+    attributes = {
+        "nested": repo / "nested/.gitattributes",
+        "info": repo / ".git/info/attributes",
+        "configured": repo / "local-attributes",
+    }.get(rules, repo / ".gitattributes")
+    if rules == "configured":
+        _git(repo, "config", "core.attributesFile", attributes.name)
+    if rules in {"tracked", "unstaged"}:
+        eol = "lf" if rules == "unstaged" else "crlf"
+        attributes.write_text(f"*.txt text eol={eol}\n")
+        _git(repo, "add", ".gitattributes")
+    _git(repo, "add", "nested/a.txt")
+    _git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+         "-c", "commit.gpgsign=false", "commit", "-qm", "test: prepare CRLF recovery")
+    if rules != "tracked":
+        attributes.write_text("*.txt text eol=crlf\n")
+    target.write_bytes(b"original\r\n")
+    patch = (
+        "diff --git a/nested/a.txt b/nested/a.txt\n--- a/nested/a.txt\n+++ b/nested/a.txt\n"
+        "@@ -1 +1 @@\n-original\n+candidate\n"
+    )
+    if blocked:
+        (repo / "settings").mkdir()
+        (repo / "settings/cache.txt").write_text("preserve cache\n")
+        patch += (
+            "diff --git a/settings b/settings\nnew file mode 100644\n--- /dev/null\n+++ b/settings\n"
+            "@@ -0,0 +1 @@\n+new settings\n"
+        )
+    index = (repo / ".git/index").read_bytes()
+    environment = LocalEnvironment(str(repo))
+    execute = environment.exec_cmd
+    publications = []
+    replays = []
+    change_rules = rules in {"nested", "configured"}
+
+    async def observe(command, timeout=120.0, **kwargs):
+        result = await execute(command, timeout, **kwargs)
+        if " apply --binary " in command:
+            publications.append((result.returncode, target.read_bytes()))
+            if change_rules:
+                attributes.write_text("*.txt text eol=lf\n")
+        if "candidate-recovery-" in command and " apply " in command:
+            replays.append(result.returncode)
+        return result
+
+    environment.exec_cmd = observe
+
+    async def flow(ctx, inputs):
+        candidate = CandidateRun("text update", "ready", patch, (), ())
+        await ctx.adopt_candidate(candidate)
+
+    try:
+        result = await OpenCollab(repo, environment=environment, model="offline").workflow(flow, trace=False)
+        assert publications == [(128 if blocked else 0, b"candidate\r\n")]
+        if blocked:
+            assert type(result.error) is RuntimeError
+            assert "Directory not empty" in result.reason
+            assert replays == [0, 128]
+            assert target.read_bytes() == b"original\r\n"
+            assert (repo / "settings/cache.txt").read_bytes() == b"preserve cache\n"
+        else:
+            assert result.ok, result.reason
+            assert target.read_bytes() == b"candidate\r\n"
+            assert replays == []
+        assert attributes.read_text() == f"*.txt text eol={'lf' if change_rules else 'crlf'}\n"
+        assert (repo / ".git/index").read_bytes() == index
+        assert not list((repo / ".git").glob("candidate-recovery-*"))
+        assert not environment.revoked
+    finally:
+        await environment.cleanup()
+
+
+@pytest.mark.parametrize(("replay_status", "target_kind"), [
+    (1, "existing"), (128, "existing"), (128, "new"), (128, "sibling"),
+])
+async def test_unverified_candidate_replay_preserves_live_entries(tmp_path, replay_status, target_kind):
+    repo = _repository(tmp_path)
+    if target_kind == "existing":
+        target = repo / "other.py"
+        patch = (
+            "diff --git a/other.py b/other.py\n--- a/other.py\n+++ b/other.py\n"
+            "@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 42\n"
+        )
+    else:
+        target = repo / "new/inner/file.py"
+        patch = (
+            "diff --git a/new/inner/file.py b/new/inner/file.py\nnew file mode 100644\n"
+            "--- /dev/null\n+++ b/new/inner/file.py\n@@ -0,0 +1 @@\n+VALUE = 42\n"
+        )
+    index = (repo / ".git/index").read_bytes()
+    environment = LocalEnvironment(str(repo))
+    execute = environment.exec_cmd
+
+    async def fault(command, timeout=120.0, **kwargs):
+        if " apply --whitespace=nowarn --binary " in command:
+            return ExecResult(replay_status, "", "replay interrupted before writing")
+        result = await execute(command, timeout, **kwargs)
+        if " apply --binary " in command:
+            assert result.returncode == 0, result.stderr
+            if target_kind == "sibling":
+                target.unlink()
+                target.with_name("notes.txt").write_text("unrelated notes\n")
+            raise OSError("publication receipt unavailable")
+        return result
+
+    environment.exec_cmd = fault
+    try:
+        if target_kind == "sibling":
+            with pytest.raises(OSError, match="publication receipt unavailable"):
+                await _apply_increment(environment, str(repo), patch)
+            assert target.with_name("notes.txt").read_text() == "unrelated notes\n"
+            assert not target.exists()
+            assert not list((repo / ".git").glob("candidate-recovery-*"))
+            assert not environment.revoked
+        else:
+            with pytest.raises(CandidateAdoptionRecoveryError, match="original files retained"):
+                await _apply_increment(environment, str(repo), patch)
+            assert target.read_text() == "VALUE = 42\n"
+            backup, = (repo / ".git").glob("candidate-recovery-*")
+            record, = backup.glob("*.path")
+            if target_kind == "existing":
+                assert record.with_suffix("").read_bytes() == b"VALUE = 1\n"
+            else:
+                assert Path(record.read_text()) == repo / "new"
+                assert not record.with_suffix("").exists()
+            assert environment.revoked
+        assert (repo / ".git/index").read_bytes() == index
+    finally:
         await environment.cleanup()
 
 
