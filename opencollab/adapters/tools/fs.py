@@ -90,7 +90,7 @@ class FileReadTool(Tool):
         if env is None:
             return "Error: no execution environment available."
 
-        path = checked_path(runtime, path)
+        path = checked_path(runtime, path, native_file=True)
 
         try:
             range_reader = getattr(env, "read_text_range", None)
@@ -250,7 +250,7 @@ class FileWriteTool(Tool):
         if mode == "create" and "content" not in params:
             return "Error: content is required for create mode."
 
-        path = checked_path(runtime, path)
+        path = checked_path(runtime, path, native_file=True)
 
         try:
             async with host_write_lock(path, env):

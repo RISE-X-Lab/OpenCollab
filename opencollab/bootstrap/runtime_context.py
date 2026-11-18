@@ -12,7 +12,7 @@ import os
 import uuid
 from dataclasses import dataclass
 
-from opencollab.adapters.env import Environment
+from opencollab.adapters.env import DockerEnvironment, Environment, VMEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.trace import Tracer
 from opencollab.application.ports import (
@@ -61,4 +61,4 @@ def build_workspace_safety_policy(env: Environment) -> SafetyPolicyPort | None:
     """A sandbox interceptor scoped to ``env``'s workspace, or None without one."""
     if env is None or not getattr(env, "workspace", None):
         return None
-    return SandboxInterceptor(env.workspace)
+    return SandboxInterceptor(env.workspace, remote_filesystem=isinstance(env, (DockerEnvironment, VMEnvironment)))

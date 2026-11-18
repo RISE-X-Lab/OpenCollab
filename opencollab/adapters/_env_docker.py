@@ -698,13 +698,31 @@ class DockerEnvironment(Environment):
         await self._bind_attached()
         if self._container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
-        targets = {
-            await self._resolve_write_target(self._validate_container_path(path))
-            for path in paths
-        }
+        ordered = await self._grouped_write_targets(paths)
+        while True:
+            async with contextlib.AsyncExitStack() as locks:
+                for target in ordered:
+                    await locks.enter_async_context(self._resolved_file_write_lock(target))
+                # An earlier publisher may have changed a directory alias while
+                # we waited. Release the group before acquiring any new target.
+                current = await self._grouped_write_targets(paths)
+                if current == ordered:
+                    yield None
+                    return
+            ordered = current
+
+    async def _grouped_write_targets(self, paths: Sequence[str]) -> list[str]:
+        requested = {self._validate_container_path(path) for path in paths}
+        if not requested:
+            return []
+        # The first path sorts before any of its descendants, so it can
+        # establish the physical workspace using ordinary parent resolution.
+        first = min(requested)
+        targets = {await self._resolve_write_target(first)}
         physical_workspace = self._resolved_workspace or self.workspace
-        ancestors = set()
-        for path in paths:
+        ancestors_by_path: dict[str, tuple[str, ...]] = {}
+        for path in sorted(requested):
+            ancestors = []
             parent = posixpath.dirname(path)
             while parent not in ("", ".", "/", self.workspace, physical_workspace):
                 if posixpath.isabs(parent) and not any(
@@ -713,19 +731,22 @@ class DockerEnvironment(Environment):
                 ):
                     break
                 if posixpath.basename(parent) not in (".", ".."):
-                    ancestors.add(parent)
+                    ancestors.append(parent)
                 parent = posixpath.dirname(parent)
+            ancestors_by_path[path] = tuple(ancestors)
+        resolve = dict(ancestors_by_path)
+        for ancestors in ancestors_by_path.values():
+            for index, ancestor in enumerate(ancestors):
+                if ancestor not in resolve:
+                    resolve[ancestor] = ancestors[index + 1:]
+        resolve.pop(first)
         targets.update({
-            await self._resolve_write_target(self._validate_container_path(path))
-            for path in ancestors
+            await self._resolve_write_target(
+                path, replaceable_parents=tuple(parent for parent in ancestors if parent in requested),
+            )
+            for path, ancestors in resolve.items()
         })
-        # Preserve alias nodes and add physical ancestors before taking any
-        # locks, so directory recovery and alias edits share one lock order.
-        ordered = _write_lock_paths(targets, self, workspace=physical_workspace)
-        async with contextlib.AsyncExitStack() as locks:
-            for target in ordered:
-                await locks.enter_async_context(self._resolved_file_write_lock(target))
-            yield None
+        return _write_lock_paths(targets, self, workspace=physical_workspace)
 
     @contextlib.asynccontextmanager
     async def file_write_lock(
@@ -806,15 +827,22 @@ class DockerEnvironment(Environment):
         target: str,
         *,
         containment_root: str | None = None,
+        replaceable_parents: Sequence[str] = (),
     ) -> str:
         # Resolve the parent through the file execution wrapper, including its
         # cwd and command prefix. Keep the final component so atomic writes
         # replace a file symlink rather than modifying its referent.
+        # A patch may name both a regular file and its future descendants.
         directory, filename = posixpath.split(target)
         command = (
-            'directory=$1; workspace=$2; suffix=; '
+            'directory=$1; workspace=$2; shift 2; suffix=; '
             'while [ ! -d "$directory" ]; do '
-            '[ ! -e "$directory" ] && [ ! -L "$directory" ] || exit 66; '
+            'case "${directory##*/}" in ..) exit 66;; esac; '
+            '[ ! -L "$directory" ] || exit 66; '
+            'if [ -e "$directory" ]; then '
+            '[ -f "$directory" ] || exit 66; '
+            'for parent do [ "$parent" != "$directory" ] || break; done; '
+            '[ "$#" -gt 0 ] && [ "$parent" = "$directory" ] || exit 66; fi; '
             'suffix="/${directory##*/}$suffix"; directory=${directory%/*}; '
             '[ -n "$directory" ] || directory=/; done; '
             'cd -P -- "$directory" || exit 66; '
@@ -827,10 +855,11 @@ class DockerEnvironment(Environment):
         if containment_root not in (None, "/tmp"):
             raise ValueError("container temporary files must stay under /tmp")
         root = self.workspace if containment_root is None else containment_root
+        arguments = [parent, root, *(
+            path if posixpath.isabs(path) else "./" + path for path in replaceable_parents
+        )]
         result = await self._exec(
-            "bash -c "
-            f"{shlex.quote(command)} opencollab-file-parent {shlex.quote(parent)} "
-            f"{shlex.quote(root)}",
+            f"bash -c {shlex.quote(command)} opencollab-file-parent {shlex.join(arguments)}",
             timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
             login=False,
         )

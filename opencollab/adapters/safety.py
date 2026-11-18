@@ -14,6 +14,7 @@ Ref:
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import shlex
 import stat
@@ -98,8 +99,11 @@ class SandboxInterceptor:
         await interceptor.check_cmd_interactive("rm -rf ./build", confirm_fn)  # asks user
     """
 
-    def __init__(self, workspace_root: str, allowed_dirs: list[str] | None = None):
+    def __init__(
+        self, workspace_root: str, allowed_dirs: list[str] | None = None, *, remote_filesystem: bool = False,
+    ):
         self.root = os.path.realpath(workspace_root)
+        self._remote_workspace = workspace_root if remote_filesystem and posixpath.isabs(workspace_root) else None
         # Additional allowed directories (e.g., /tmp for scratch)
         self.allowed_roots = [self.root] + [os.path.realpath(d) for d in (allowed_dirs or [])]
 
@@ -133,6 +137,17 @@ class SandboxInterceptor:
             f"Path escapes workspace: '{target_path}' resolved to '{resolved}' "
             f"(allowed roots: {self.allowed_roots})"
         )
+
+    def check_remote_file_path(self, target_path: str) -> str | None:
+        workspace = self._remote_workspace
+        if workspace is None:
+            return None
+        path = posixpath.join(workspace, target_path)
+        root = posixpath.normpath(workspace)
+        if posixpath.commonpath((root, posixpath.normpath(path))) != root:
+            raise PermissionError(f"Path escapes workspace: '{target_path}' (workspace: {workspace})")
+        # Native file operations validate the actual parent and symlink target.
+        return path
 
     def check_cmd(self, cmd: str) -> None:
         """Hard-block destructive commands. Raises PermissionError."""

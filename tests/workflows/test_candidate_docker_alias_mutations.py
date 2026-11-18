@@ -6,28 +6,18 @@ from pathlib import Path
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters import _env_docker as docker_module
+from opencollab.adapters._candidate_increment import _apply_increment
 from opencollab.adapters._env_docker import DockerEnvironment
-from opencollab.adapters._env_process import ProcessResult
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from opencollab.adapters.tools.base import host_write_locks
 from opencollab.adapters.tools.fs import FileWriteTool
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.tools import builtin_tools
-from tests.support.docker_native_edits_support import LocalDockerTransport
+from tests.support.docker_native_edits_support import LocalDockerTransport, RemoteDockerTransport, docker_environment
 from tests.workflows.test_candidate_adoption_recovery import _flatten, _repository, _run
 from tests.workflows.test_candidate_shared_mutations import _WriterModel
 from tests.workflows.test_workflow_candidate_workspace import _git
-
-
-class _RemoteNamespaceTransport(LocalDockerTransport):
-    remote = "/oc-native-alias-workspace"
-
-    async def __call__(self, *argv, **kwargs):
-        actual = str(self.workspace)
-        mapped = tuple(arg.replace(self.remote, actual) if isinstance(arg, str) else arg for arg in argv)
-        result = await super().__call__(*mapped, **kwargs)
-        return ProcessResult(result.returncode, result.stdout.replace(actual.encode(), self.remote.encode()),
-                             result.stderr.replace(actual.encode(), self.remote.encode()))
 
 
 class _RemoteCandidates(EnvCandidateWorkspace):
@@ -42,7 +32,7 @@ class _RemoteCandidates(EnvCandidateWorkspace):
 
 
 def _remote_environment(repo):
-    transport = _RemoteNamespaceTransport(repo, pair_reads=False)
+    transport = RemoteDockerTransport(repo)
     environment = DockerEnvironment(
         workspace=transport.remote, container_id="a" * 64, exec_workdir=transport.remote,
         command_prefix="export OC_NATIVE_EDIT_PROBE=wrapped",
@@ -139,34 +129,34 @@ async def test_sdk_remote_alias_mutations_survive_directory_recovery(tmp_path, m
         await environment.cleanup()
 
 
-async def test_remote_alias_group_prepares_locks_before_acquisition_and_releases_cancelled_waiter(
+async def test_remote_alias_group_resolves_before_and_after_ordered_acquisition_and_releases_cancelled_waiter(
     tmp_path, monkeypatch,
 ):
     (tmp_path / "settings").mkdir()
     (tmp_path / "settings/value.py").write_text("VALUE = 1\n")
     (tmp_path / "alias").symlink_to("settings", target_is_directory=True)
     environment, _ = _remote_environment(tmp_path)
-    from opencollab.adapters import _env_docker as docker_module
     resolve = environment._resolve_write_target
     resolving_task = asyncio.current_task()
     resolutions = []
+    expected = [environment.workspace + suffix for suffix in ("/alias", "/settings", "/settings/value.py")]
 
-    async def resolve_before_locks(target, **kwargs):
-        assert not any(owner is resolving_task for owner in docker_module._WRITE_LOCK_OWNERS.values())
-        result = await resolve(target, **kwargs)
-        resolutions.append(result)
-        return result
+    async def resolve_with_lock_check(target, **kwargs):
+        owned = [key.split("\0", 1)[1] for key, owner in docker_module._WRITE_LOCK_OWNERS.items()
+                 if owner is resolving_task]
+        assert owned in ([], expected)
+        resolutions.append(bool(owned))
+        return await resolve(target, **kwargs)
 
-    monkeypatch.setattr(environment, "_resolve_write_target", resolve_before_locks)
+    monkeypatch.setattr(environment, "_resolve_write_target", resolve_with_lock_check)
     waiting = None
     try:
         async with host_write_locks((environment.workspace + "/alias/value.py",), environment):
             owned = [key.split("\0", 1)[1] for key, owner in docker_module._WRITE_LOCK_OWNERS.items()
                      if owner is resolving_task]
-            assert owned == sorted(owned)
-            assert owned == [environment.workspace + suffix for suffix in (
-                "/alias", "/settings", "/settings/value.py",
-            )]
+            assert owned == expected
+        assert resolutions == sorted(resolutions)
+        assert set(resolutions) == {False, True}
         monkeypatch.setattr(environment, "_resolve_write_target", resolve)
         async with host_write_locks((environment.workspace + "/settings",), environment):
             waiting = asyncio.create_task(FileWriteTool().execute_with_runtime({
@@ -180,7 +170,6 @@ async def test_remote_alias_group_prepares_locks_before_acquisition_and_releases
             with pytest.raises(asyncio.CancelledError):
                 await waiting
             assert alias_key not in docker_module._WRITE_LOCK_OWNERS
-        assert resolutions
         output = await asyncio.wait_for(FileWriteTool().execute_with_runtime({
             "path": "alias/value.py", "mode": "create", "content": "VALUE = 100\n",
         }, ToolRuntime(environment, None, None)), 5)
@@ -190,4 +179,101 @@ async def test_remote_alias_group_prepares_locks_before_acquisition_and_releases
     finally:
         if waiting is not None:
             await asyncio.gather(waiting, return_exceptions=True)
+        await environment.cleanup()
+
+
+async def test_docker_edits_serialize_on_the_target_after_candidate_retargets_directory_alias(
+    tmp_path, monkeypatch,
+):
+    repo = _repository(tmp_path)
+    for directory in ("old", "new"):
+        (repo / directory).mkdir()
+        (repo / directory / "module.py").write_text("alpha = 1\nbeta = 1\n")
+    alias = repo / "alias"
+    alias.symlink_to("old", target_is_directory=True)
+    _git(repo, "add", "old", "new", "alias")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "test: keep two module directories")
+    alias.unlink()
+    alias.symlink_to("new", target_is_directory=True)
+    patch = _git(repo, "diff", "--binary", "--", "alias")
+    _git(repo, "restore", "--", "alias")
+
+    environment = docker_environment(repo, LocalDockerTransport(repo))
+    runtime = ToolRuntime(environment, None, None)
+    entered, release = asyncio.Event(), asyncio.Event()
+    execute, read = environment.exec_cmd, environment.read_file
+
+    async def pause_publication(cmd, *args, **kwargs):
+        if " apply --binary " in cmd and ".candidate-adopt-" in cmd:
+            entered.set()
+            await release.wait()
+        return await execute(cmd, *args, **kwargs)
+
+    async def read_under_target_lock(path):
+        target_key = environment.container_reference + "\0" + str(repo / "new/module.py")
+        assert docker_module._WRITE_LOCK_OWNERS.get(target_key) is asyncio.current_task()
+        return await read(path)
+
+    async def edit(path, name):
+        return await FileWriteTool().execute_with_runtime({
+            "path": path, "mode": "str_replace", "old_str": f"{name} = 1", "new_str": f"{name} = 2",
+        }, runtime)
+
+    async def wait_for_alias_editor():
+        alias_key = environment.container_reference + "\0" + str(alias)
+        while getattr(docker_module._WRITE_LOCKS.get(alias_key), "users", 0) < 2:
+            await asyncio.sleep(0.005)
+
+    monkeypatch.setattr(environment, "exec_cmd", pause_publication)
+    monkeypatch.setattr(environment, "read_file", read_under_target_lock)
+    publication = asyncio.create_task(_apply_increment(environment, str(repo), patch))
+    writers = []
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        writers.append(asyncio.create_task(edit("alias/module.py", "alpha")))
+        await asyncio.wait_for(wait_for_alias_editor(), 5)
+        assert not writers[0].done()
+        release.set()
+        await asyncio.wait_for(publication, 5)
+        writers.append(asyncio.create_task(edit("new/module.py", "beta")))
+        receipts = await asyncio.wait_for(asyncio.gather(*writers), 5)
+        assert all(receipt.startswith("Replaced") for receipt in receipts), receipts
+        assert (repo / "old/module.py").read_text() == "alpha = 1\nbeta = 1\n"
+        assert (repo / "new/module.py").read_text() == "alpha = 2\nbeta = 2\n"
+    finally:
+        release.set()
+        await asyncio.gather(publication, *writers, return_exceptions=True)
+        await environment.cleanup()
+
+
+@pytest.mark.parametrize("new_file", ["default.toml", "nested/default.toml"])
+async def test_sdk_docker_candidate_can_replace_a_file_with_a_directory(tmp_path, new_file):
+    repo = _repository(tmp_path)
+    (repo / "config").write_text("enabled = true\n")
+    _git(repo, "add", "config")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "test: keep a flat config")
+    index = (repo / ".git/index").read_bytes()
+    environment, transport = _remote_environment(repo)
+
+    async def edit(child, _):
+        config = Path(child.workspace_root) / "config"
+        config.unlink()
+        target = config / new_file
+        target.parent.mkdir(parents=True)
+        target.write_text("enabled = false\n")
+
+    async def flow(ctx, _):
+        candidate = await ctx.candidate_workflow(edit, {}, label="nested-config")
+        await ctx.adopt_candidate(candidate)
+        return "adopted"
+
+    try:
+        result = await OpenCollab(repo, environment=environment).workflow(
+            flow, candidate_workspace=_RemoteCandidates(environment, transport), trace=False, timeout=30,
+        )
+        assert result.ok, result.reason
+        assert result.output == "adopted"
+        assert (repo / "config" / new_file).read_text() == "enabled = false\n"
+        assert (repo / ".git/index").read_bytes() == index
+    finally:
         await environment.cleanup()

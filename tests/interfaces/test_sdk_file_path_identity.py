@@ -7,6 +7,7 @@ import os
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.tools.base import host_write_lock
@@ -14,6 +15,7 @@ from opencollab.adapters.tools.fs import FileWriteTool
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.environments import local_environment
 from opencollab.tools import builtin_tools
+from tests.support.docker_native_edits_support import RemoteDockerTransport
 
 
 class _PathModel:
@@ -35,15 +37,26 @@ class _PathModel:
 
 @pytest.mark.parametrize("absolute", [False, True])
 @pytest.mark.parametrize("tool", ["file_read", "file_write", "apply_patch"])
-async def test_sdk_file_tools_match_shell_through_symlink_parent(tmp_path, absolute, tool):
+@pytest.mark.parametrize(("backend", "parent"), [("local", "alias"), ("docker", "alias"), ("docker", "sub")])
+async def test_sdk_file_tools_match_shell_through_parent(tmp_path, absolute, tool, backend, parent):
     (tmp_path / "actual/child").mkdir(parents=True)
     (tmp_path / "alias").symlink_to("actual/child", target_is_directory=True)
-    target = tmp_path / "actual/module.py"
-    unrelated = tmp_path / "module.py"
+    (tmp_path / "sub").mkdir()
+    target = tmp_path / ("actual/module.py" if parent == "alias" else "module.py")
+    unrelated = tmp_path / ("module.py" if parent == "alias" else "actual/module.py")
     target.write_text("VALUE = 1\n")
     unrelated.write_text("UNRELATED = 7\n" if tool == "file_read" else "VALUE = 1\n")
-    raw = "alias/../module.py"
-    path = os.path.join(str(tmp_path), raw) if absolute else raw
+    if backend == "docker":
+        transport = RemoteDockerTransport(tmp_path)
+        environment = DockerEnvironment(
+            workspace=transport.remote, container_id="a" * 64, exec_workdir=transport.remote,
+        )
+        transport.attach(environment)
+        assert not os.path.exists(transport.remote)
+    else:
+        environment = local_environment(tmp_path)
+    raw = f"{parent}/../module.py"
+    path = os.path.join(environment.workspace, raw) if absolute else raw
     arguments = {"path": path}
     if tool == "file_write":
         arguments.update(mode="str_replace", old_str="VALUE = 1", new_str="VALUE = 42")
@@ -53,7 +66,6 @@ async def test_sdk_file_tools_match_shell_through_symlink_parent(tmp_path, absol
             expected_str="VALUE = 1", new_str="VALUE = 42",
         )
     model = _PathModel(tool, arguments)
-    environment = local_environment(tmp_path)
     outputs = []
 
     async def flow(ctx, _):
@@ -81,7 +93,7 @@ async def test_sdk_file_tools_match_shell_through_symlink_parent(tmp_path, absol
         else:
             assert target.read_text() == "VALUE = 42\n"
         assert unrelated.read_text() == ("UNRELATED = 7\n" if tool == "file_read" else "VALUE = 1\n")
-        shell = await environment.exec_cmd("cat alias/../module.py")
+        shell = await environment.exec_cmd(f"cat {raw}")
         assert shell.stdout == target.read_text()
     finally:
         await environment.cleanup()

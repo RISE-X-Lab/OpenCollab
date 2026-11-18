@@ -191,6 +191,21 @@ async def test_new_parent_directories_resolve_through_existing_alias(tmp_path):
 
     assert (directory / "new/nested/file.txt").read_text() == "created"
 
+@pytest.mark.parametrize("path", ["config/default.toml", "missing/../module.py", "config/../module.py"])
+async def test_docker_edit_requires_a_directory_before_parent_traversal_or_file_creation(tmp_path, path):
+    (tmp_path / "config").write_text("config")
+    (tmp_path / "module.py").write_text("original")
+    environment = docker_environment(tmp_path, LocalDockerTransport(tmp_path, pair_reads=False))
+    try:
+        with pytest.raises(OSError, match="execution directory"):
+            await FileWriteTool().execute_with_runtime({
+                "path": path, "mode": "create", "content": "changed",
+            }, ToolRuntime(environment, None, None))
+        assert (tmp_path / "config").read_text() == "config"
+        assert (tmp_path / "module.py").read_text() == "original"
+    finally:
+        await environment.cleanup()
+
 @pytest.mark.parametrize("result", [
     ExecResult(1, "", "directory unavailable"),
     ExecResult(0, "/unframed/path\n", ""),
