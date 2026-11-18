@@ -161,7 +161,10 @@ async def test_native_steering_prefix_survives_tool_rounds_and_new_user_turns(mo
         assert _signatures(peer.requests[2]) == ["signed-1", "redacted-1", "signed-2", "redacted-2"]
 
 @pytest.mark.parametrize("mode", ["clear", "summary", "first-trim"])
-async def test_compacted_native_view_survives_restore_and_disabling_the_shaper(monkeypatch, tmp_path, mode):
+@pytest.mark.parametrize("snapshot_format", ["current", "legacy", "source-copy"])
+async def test_compacted_native_view_survives_restore_and_disabling_the_shaper(
+    monkeypatch, tmp_path, mode, snapshot_format,
+):
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     peer = _BoundThinkingProvider(reads=4)
     install_sdk_transport(monkeypatch, "anthropic", peer)
@@ -182,10 +185,21 @@ async def test_compacted_native_view_survives_restore_and_disabling_the_shaper(m
             assert len([message for message in raw if message["role"] == "tool"]) == 4
             assert all("file evidence" in message["content"] for message in raw if message["role"] == "tool")
             before = copy.deepcopy(session.state.anthropic_history)
-            session.save(str(tmp_path / "session.json"))
+            path = tmp_path / "session.json"
+            session.save(str(path))
+            saved = json.loads(path.read_text())
+            native_view = saved["session_state"]["anthropic_history"]
+            assert "source_messages" not in native_view
+            assert native_view["messages"][0] == 0
+            if snapshot_format != "current":
+                legacy = dict(before)
+                if snapshot_format == "legacy":
+                    del legacy["source_messages"]
+                saved["session_state"]["anthropic_history"] = legacy
+                path.write_text(json.dumps(saved))
             await session.aclose()
             await session.env.cleanup()
-            session = load_session(str(tmp_path / "session.json"), agent=_agent(), llm=client,
+            session = load_session(str(path), agent=_agent(), llm=client,
                                    env=LocalEnvironment(str(tmp_path)), max_budget_tokens=100_000, max_steps=20)
             assert session.state.anthropic_history == before
             assert session.messages == raw
@@ -338,7 +352,7 @@ async def test_prefix_constraint_uses_native_transport_and_documented_models(mod
         assert client.requires_thinking_prefix is expected
 
 
-@pytest.mark.parametrize("moment", ["live", "before-save", "after-load"])
+@pytest.mark.parametrize("moment", ["live", "before-save", "before-autosave", "after-load"])
 @pytest.mark.parametrize("edit", ["text", "nested", "replacement", "deletion", "tail-deletion", "system"])
 async def test_source_edits_reach_native_requests_and_retire_only_invalid_thinking(
     monkeypatch, tmp_path, moment, edit,
@@ -366,21 +380,31 @@ async def test_source_edits_reach_native_requests_and_retire_only_invalid_thinki
 
     async with _client() as client:
         session = build_session(agent=_agent(), llm=client, env=LocalEnvironment(str(tmp_path)),
-                                max_budget_tokens=100_000, max_steps=20)
+                                max_budget_tokens=100_000, max_steps=20,
+                                auto_save_path=str(path) if moment == "before-autosave" else None)
         try:
             await session.add_user_message("Answer the first question")
             assert await session.run_loop() == "done"
             await session.add_user_message("Choose red")
             session.messages[-1]["content"] = [{"type": "text", "text": "Choose red"}]
             assert await session.run_loop() == "done"
+            if moment == "before-autosave":
+                session.save(str(path))
             if moment != "after-load":
                 apply_edit(session)
             if moment != "live":
-                session.save(str(path))
+                if moment == "before-autosave":
+                    edited = copy.deepcopy(session.messages)
+                    await session.enqueue_auto_save()
+                    assert not session.persistence_errors
+                else:
+                    session.save(str(path))
                 await session.aclose()
                 await session.env.cleanup()
                 session = load_session(str(path), agent=_agent(), llm=client,
                                        env=LocalEnvironment(str(tmp_path)), max_budget_tokens=100_000, max_steps=20)
+                if moment == "before-autosave":
+                    assert session.messages == edited
             if moment == "after-load":
                 apply_edit(session)
             edited = copy.deepcopy(session.messages)
@@ -434,6 +458,13 @@ def test_restore_rejects_malformed_optional_source_prefix(source):
     assert _restore_anthropic_history({
         "messages": [message], "source_count": 1, "tools": None, "source_messages": source,
     }, [message]) is None
+
+
+@pytest.mark.parametrize("reference", [True, -1, 1, "0"])
+def test_restore_rejects_invalid_native_message_references(reference):
+    assert _restore_anthropic_history({
+        "messages": [reference], "source_count": 1, "tools": None,
+    }, [{"role": "user", "content": "Request"}]) is None
 
 
 @pytest.mark.parametrize("count", [0, 2])

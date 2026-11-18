@@ -25,11 +25,13 @@ from opencollab.application.ports import (
 )
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.session_snapshot import (
+    _anthropic_source_edit_start,
     _restore_active_turn_start,
     _restore_anthropic_history,
     _restore_pending_row,
     _restore_phase,
     _restore_queued_external_user_turn,
+    _serialize_anthropic_history,
     _serialize_pending_row,
     _snapshot_int,
     _snapshot_nonnegative_float,
@@ -1004,7 +1006,7 @@ class Session:
                 "completed_turn_start_message_index": state.completed_turn_start_message_index,
                 "pending_step_latency": state.pending_step_latency,
                 "submitted_summary": state.submitted_summary,
-                "anthropic_history": state.anthropic_history,
+                "anthropic_history": _serialize_anthropic_history(state),
             },
         }
         if self.run_id is not None:
@@ -1058,6 +1060,9 @@ class Session:
         rewrite_revision = self._auto_save_rewrite_revision
         if self._auto_save_rewrite_from is not None:
             replace_from = min(replace_from, self._auto_save_rewrite_from)
+        edited_from = _anthropic_source_edit_start(self.state)
+        if edited_from is not None:
+            replace_from = min(replace_from, edited_from)
         messages, meta = self._snapshot_for_save(replace_from)
         current_seen_hashes = set(self.state.turn.seen_result_hashes)
         seen_hashes_reset = preceding_write_pending or not self._auto_save_seen_result_hashes.issubset(

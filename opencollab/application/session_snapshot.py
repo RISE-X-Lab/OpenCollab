@@ -6,14 +6,50 @@ import copy
 import math
 from typing import Any
 
+from opencollab.application._anthropic_history import _edited_anthropic_history
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
-from opencollab.domain.session import SessionPhase
+from opencollab.domain.session import SessionPhase, SessionState
 
 # Translate legacy terminals and the removed enqueue phase so old snapshots
 # retain their disposition instead of falling back to IDLE.
 _LEGACY_TERMINAL_PHASES = frozenset(
     {"cancelled", "budget_exceeded", "step_limit_exceeded", "context_overflow"}
 )
+
+def _anthropic_source_edit_start(state: SessionState) -> int | None:
+    history = state.anthropic_history
+    source = history.get("source_messages") if history is not None else None
+    if source is None or state.messages[:len(source)] == source:
+        return None
+    for index, (old, current) in enumerate(zip(source, state.messages)):
+        if old != current:
+            return index
+    return len(state.messages)
+
+def _serialize_anthropic_history(state: SessionState) -> dict | None:
+    history = state.anthropic_history
+    if history is None:
+        return None
+    source = state.messages
+    count = history["source_count"]
+    view = history["messages"]
+    if _anthropic_source_edit_start(state) is not None:
+        # Retire the stale projection before restore binds it to the new transcript.
+        view = _edited_anthropic_history(history["source_messages"], source)
+        view = _edited_anthropic_history(history["messages"], view)
+        count = len(source)
+
+    # Aligned and suffix-aligned entries can reuse the persisted transcript.
+    stored: list[dict | int] = []
+    suffix_offset = count - len(view)
+    for index, message in enumerate(view):
+        for source_index in (index, index + suffix_offset):
+            if 0 <= source_index < count and message == source[source_index]:
+                stored.append(source_index)
+                break
+        else:
+            stored.append(message)
+    return {"messages": stored, "source_count": count, "tools": history["tools"]}
 
 def _restore_anthropic_history(value: object, messages: list[dict]) -> dict | None:
     if not isinstance(value, dict):
@@ -24,7 +60,7 @@ def _restore_anthropic_history(value: object, messages: list[dict]) -> dict | No
     source = value.get("source_messages")
     if (
         isinstance(count, bool) or not isinstance(count, int) or count < 0
-        or not isinstance(view, list) or not all(isinstance(message, dict) for message in view)
+        or not isinstance(view, list)
         or (tools is not None and (not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools)))
     ):
         return None
@@ -37,7 +73,15 @@ def _restore_anthropic_history(value: object, messages: list[dict]) -> dict | No
         or not all(isinstance(message, dict) for message in source)
     ):
         return None
-    return copy.deepcopy({"messages": view, "source_count": count, "tools": tools, "source_messages": source})
+    restored_view = []
+    for message in view:
+        if isinstance(message, dict):
+            restored_view.append(message)
+        elif type(message) is int and 0 <= message < len(source):
+            restored_view.append(source[message])
+        else:
+            return None
+    return copy.deepcopy({"messages": restored_view, "source_count": count, "tools": tools, "source_messages": source})
 
 def _restore_phase(raw: object) -> SessionPhase:
     value = str(raw)
