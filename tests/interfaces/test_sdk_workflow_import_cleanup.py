@@ -220,3 +220,62 @@ async def test_candidate_child_context_retains_loaded_workflow_imports(tmp_path)
         if not running.done():
             running.cancel()
         await asyncio.gather(running, return_exceptions=True)
+
+
+async def test_named_workflow_keeps_imports_for_followup_dispatched_by_completion_callback(tmp_path):
+    directory = tmp_path / "workflows"
+    directory.mkdir()
+    (directory / "_cleanup.py").write_text("def close(events):\n    events['closed'] = True\n", encoding="utf-8")
+    (directory / "callback.py").write_text('''import asyncio
+from opencollab import workflow
+
+class CloseResource:
+    name = "resource"
+    description = "Close the resource managed by this workflow"
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self, events):
+        self.events = events
+
+    def to_openai_schema(self):
+        return {"type": "function", "function": {
+            "name": self.name, "description": self.description, "parameters": self.parameters,
+        }}
+
+    async def execute_with_runtime(self, args, runtime):
+        from ._cleanup import close
+        close(self.events)
+        return "closed"
+
+@workflow
+async def callback_cleanup(ctx, args):
+    events = args["events"]
+    def start_followup():
+        events["tasks"].append(asyncio.create_task(ctx.agent("finish", tools=[CloseResource(events)])))
+
+    first = asyncio.create_task(ctx.agent("start"))
+    first.add_done_callback(lambda _: asyncio.get_running_loop().call_soon(start_followup))
+    await first
+    return "returned"
+''', encoding="utf-8")
+
+    class Model(ResourceModel):
+        async def complete(self, messages, **kwargs):
+            if any(m["role"] == "user" and "finish" in str(m["content"]) for m in messages) and not any(
+                m["role"] == "tool" for m in messages
+            ):
+                return await super().complete(messages, **kwargs)
+            return LLMResponse(content="done", usage=Usage(input_tokens=5, output_tokens=5), finish_reason="end_turn")
+
+    events = {"closed": False, "tasks": []}
+    before = _import_state()
+    result = await OpenCollab(tmp_path, model="offline").workflow(
+        "callback_cleanup", {"events": events}, llm=Model(), trace=False, cleanup_timeout=2,
+    )
+    assert result.status == "completed", result.reason
+    assert result.output == "returned"
+    assert len(events["tasks"]) == 1
+    followup, = events["tasks"]
+    assert followup.result() == "done"
+    assert events["closed"]
+    assert _import_state() == before

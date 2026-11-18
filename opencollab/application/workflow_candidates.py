@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -495,6 +496,7 @@ class WorkflowCandidatesMixin:
             lease = await self._candidate_workspace.acquire(label)
             budget_lease = None
             child = None
+            imports = ExitStack()
             candidate: CandidateRun | None = None
             failure: BaseException | None = None
             preserve_lease = False
@@ -531,6 +533,7 @@ class WorkflowCandidatesMixin:
                 child._active_task_concurrency_permit = self._active_task_concurrency_permit
                 child._budget_escape_state = self._budget_escape_state
                 child.budget._parent_allocation = (self.budget, budget_lease)
+                child._workflow_imports = imports
                 try:
                     output = await workflow_fn(child, dict(args))
                 except Exception as exc:  # noqa: BLE001 - preserve candidate edits
@@ -627,6 +630,9 @@ class WorkflowCandidatesMixin:
                             getattr(child._factory, "has_pending_isolated_cleanup", False)
                         )
                 finally:
+                    if child is not None:
+                        child._workflow_imports = None
+                    imports.close()
                     if budget_lease is not None:
                         self.budget.release(budget_lease)
             return await self._finish_candidate_run(

@@ -160,7 +160,7 @@ class _WorkflowModuleOwner:
                 self.capture_modules()
                 _remove_workflow_package(self.package_name)
 
-    def release_after_cleanup(self, ctx: object) -> None:
+    def release_after_cleanup(self, ctx: object, *, finalized: bool = False) -> None:
         if not isinstance(ctx, WorkflowContext):
             self.release()
             return
@@ -168,6 +168,10 @@ class _WorkflowModuleOwner:
 
         def pending_tasks():
             return {task for task in getattr(ctx, "pending_cleanup_tasks", ()) if task is not caller}
+
+        if finalized and not pending_tasks():
+            self.release()
+            return
 
         loop = asyncio.get_running_loop()
         watched = set()
@@ -209,6 +213,10 @@ def _bind_runtime_package(spec: WorkflowSpec, owner: _WorkflowModuleOwner) -> Wo
     @wraps(original)
     async def run(ctx, args):
         owner.acquire()
+        imports = ctx._workflow_imports if isinstance(ctx, WorkflowContext) else None
+        if imports is not None:
+            imports.callback(owner.release_after_cleanup, ctx, finalized=True)
+            return await original(ctx, args)
         try:
             return await original(ctx, args)
         finally:

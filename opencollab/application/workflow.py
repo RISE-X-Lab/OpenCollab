@@ -31,6 +31,7 @@ import logging
 import math
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from copy import deepcopy
 from typing import Any
 
@@ -210,6 +211,7 @@ class WorkflowContext(
             _TaskConcurrencyPermit | None
         ] = contextvars.ContextVar("workflow_task_concurrency_permit", default=None)
         self._pending_cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self._workflow_imports: ExitStack | None = None
         self._active_call_tasks: set[asyncio.Task[Any]] = set()
         self._active_session_tasks: set[asyncio.Task[Any]] = set()
         self._agent_failures: list[dict[str, Any]] = []
