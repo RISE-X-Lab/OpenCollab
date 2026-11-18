@@ -407,7 +407,7 @@ async def complete_anthropic(
 
     def prepare_attempt() -> None:
         if before_attempt is not None and (limit := before_attempt()) is not None:
-            kwargs["max_tokens"] = limit
+            kwargs["max_tokens"] = int(limit or DEFAULT_MAX_OUTPUT_TOKENS)
 
     def report_failure(_exc: BaseException) -> None:
         if failed_usages and (usage := failed_usages[-1]) is not None and on_attempt_usage is not None:
