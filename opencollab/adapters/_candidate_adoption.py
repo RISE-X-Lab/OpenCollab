@@ -79,7 +79,18 @@ reset_parent_mode() {
 restore_saved() {
     if ! present "$1"; then return 0; fi
     if present "$2"; then conflict "$2"; return; fi
-    mv -- "$1" "$2"
+    mv -n -- "$1" "$2" || return 1
+    if present "$1"; then conflict "$2"; fi
+}
+
+park_candidate_entry() {
+    if ! present "$1"; then return 0; fi
+    parked=$(mktemp -d "$recovery/observed-XXXXXXXX") || return 1
+    printf '%s' "$1" > "$parked/path" && mv -- "$1" "$parked/entry" || return 1
+    if ! same_entry "$parked/entry" "$2"; then
+        restore_saved "$parked/entry" "$1" || return $?
+        conflict "$1"
+    fi
 }
 
 restore_entry() (
@@ -122,7 +133,7 @@ restore_entry() (
     fi
     if same_entry "$old" "$expected" || same_entry "$live" "$old"; then return 0; fi
     if same_entry "$live" "$expected"; then
-        if present "$live"; then rm -- "$live" || return 1; fi
+        park_candidate_entry "$live" "$expected" || return $?
         restore_saved "$old" "$live"
     else
         conflict "$live"
@@ -283,6 +294,7 @@ async def _adoption_transaction(
         ))
         recovery_script = (
             f"failed=0; workspace={shlex.quote(workspace)}; "
+            f"recovery={shlex.quote(backup)}; "
             f"absent={shlex.quote(posixpath.join(backup, 'absent'))};\n"
         ) + _RECOVER_PATHS + "; ".join((
             *recreate_directories, *restores, *reversed(restore_directory_modes),

@@ -362,6 +362,48 @@ async def test_recovery_preserves_saved_entries_when_copies_fail(tmp_path, repla
         await environment.cleanup()
 
 
+async def test_recovery_preserves_a_write_after_comparing_the_live_file(tmp_path):
+    repo = _repository(tmp_path)
+    target = repo / "other.py"
+    marker = tmp_path / "compared"
+    patch = (
+        "diff --git a/other.py b/other.py\n--- a/other.py\n+++ b/other.py\n"
+        "@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 42\n"
+    )
+    index = (repo / ".git/index").read_bytes()
+    environment = LocalEnvironment(str(repo))
+    execute = environment.exec_cmd
+
+    async def after_comparison(command, timeout=120.0, **kwargs):
+        if command.startswith("failed=0;"):
+            command = (
+                'cmp() { command cmp "$@" || return; '
+                f'if [ "$3" = {shlex.quote(str(target))} ] && [ ! -e {shlex.quote(str(marker))} ]; then '
+                f"printf 'VALUE = 100\\n' > {shlex.quote(str(target))} && touch {shlex.quote(str(marker))}; "
+                "fi; }; " + command
+            )
+        result = await execute(command, timeout, **kwargs)
+        if " apply --binary " in command and ".candidate-adopt-" in command:
+            assert result.returncode == 0, result.stderr
+            raise OSError("publication receipt unavailable")
+        return result
+
+    environment.exec_cmd = after_comparison
+    try:
+        with pytest.raises((OSError, CandidateAdoptionRecoveryError)) as failed:
+            await _apply_increment(environment, str(repo), patch)
+        assert marker.is_file()
+        assert target.read_text() == "VALUE = 100\n"
+        assert isinstance(failed.value, CandidateAdoptionRecoveryError)
+        assert "concurrent change at " + str(target) in str(failed.value)
+        backup, = (repo / ".git").glob("candidate-recovery-*")
+        record, = backup.glob("*.path")
+        assert record.with_suffix("").read_text() == "VALUE = 1\n"
+        assert (repo / ".git/index").read_bytes() == index
+    finally:
+        await environment.cleanup()
+
+
 @pytest.mark.parametrize("path", [".", ".gi\u200ct/config"])
 async def test_git_rejects_metadata_aliases_before_candidate_backup(tmp_path, path):
     repo = _repository(tmp_path)
