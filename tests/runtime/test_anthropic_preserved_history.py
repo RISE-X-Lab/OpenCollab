@@ -10,6 +10,7 @@ import shutil
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters import storage as storage_module
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool
@@ -594,6 +595,92 @@ async def test_native_history_delta_uses_the_last_saved_transcript(monkeypatch, 
             store.release.set()
             if restored is not None:
                 await restored.aclose()
+            await session.aclose()
+            await environment.cleanup()
+
+
+@pytest.mark.parametrize("previous_save", ["journal", "reopen-journal", "manual-covers-append"])
+async def test_autosave_native_view_after_large_transcript_replacement(monkeypatch, tmp_path, previous_save):
+    monkeypatch.setattr(storage_module, "MAX_SESSION_SNAPSHOT_BYTES", 256 * 1024)
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    archived = "A" * (140 * 1024)
+    path = tmp_path / "session.json"
+    journal = path.with_suffix(".json.journal")
+    held_request, resume = asyncio.Event(), asyncio.Event()
+    peer = _BoundThinkingProvider(reads=0, thinking=False)
+    store = PausedAppendStore()
+
+    class ArchiveShaper:
+        def shape(self, messages):
+            return [
+                {**message, "content": "[Archived context]"} if message.get("content") == archived else message
+                for message in messages
+            ]
+
+    async def provider(request):
+        response = peer(request)
+        if len(peer.requests) == 3:
+            held_request.set()
+            await resume.wait()
+        return response
+
+    install_sdk_transport(monkeypatch, "anthropic", provider)
+    model = "claude-sonnet-5-5"
+    async with _client(model) as client:
+        environment = LocalEnvironment(str(tmp_path))
+        options = {
+            "agent": _agent(thinking=False, model=model), "llm": client, "env": environment,
+            "auto_save_path": str(path), "shaper": ArchiveShaper(), "store": store,
+        }
+        session = build_session(**options)
+        running = None
+        try:
+            await session.add_user_message("Warm up the conversation")
+            assert await session.run_loop() == "done"
+            assert session.state.anthropic_history is not None
+            while session._next_auto_save_checkpoint - session._auto_save_sequence <= 3:
+                await session.enqueue_auto_save()
+            session.messages = [*session.messages, {"role": "user", "content": archived}]
+            store.pause_next = previous_save == "manual-covers-append"
+            await session.add_user_message("Read source.txt before answering")
+            if previous_save == "manual-covers-append":
+                assert await asyncio.to_thread(store.started.wait, 1)
+                session.save(str(path))
+                store.release.set()
+            await asyncio.gather(*session._auto_save_subscriber.pending_tasks)
+            before_bytes = journal.stat().st_size
+            before = session.store.load_snapshot(str(path), session.agent.system_prompt)
+            assert before_bytes > len(archived)
+            assert before["session_state"]["anthropic_history"] is None
+            assert before["messages"][-2]["content"] == archived
+
+            if previous_save == "reopen-journal":
+                await session.aclose()
+                session = load_session(str(path), **options)
+            peer.reads = 2
+            running = asyncio.create_task(session.run_loop())
+            await asyncio.wait_for(held_request.wait(), 5)
+            await asyncio.gather(*session._auto_save_subscriber.pending_tasks)
+            assert not running.done()
+            assert "file evidence" in json.dumps(peer.requests[-1]["messages"])
+            assert not session.persistence_errors
+
+            saved = session.store.load_snapshot(str(path), session.agent.system_prompt)
+            assert saved["_autosave_sequence"] > before["_autosave_sequence"]
+            assert any("file evidence" in message["content"] for message in saved["messages"]
+                       if message["role"] == "tool")
+            history = saved["session_state"]["anthropic_history"]
+            assert "source_messages" not in history
+            assert any(type(message) is int for message in history["messages"])
+            assert journal.stat().st_size < before_bytes + 8 * 1024
+
+            resume.set()
+            assert await running == "done"
+        finally:
+            resume.set()
+            store.release.set()
+            if running is not None:
+                await asyncio.gather(running, return_exceptions=True)
             await session.aclose()
             await environment.cleanup()
 

@@ -942,7 +942,8 @@ class Session:
             # skip its sequence and its completion cannot rewind our cursor.
             with self._auto_save_lock:
                 messages, meta = self._snapshot_for_save()
-                tracked_messages = messages if self.state.anthropic_history is not None else None
+                track_messages = self._auto_save_messages is not None or self.state.anthropic_history is not None
+                tracked_messages = messages if track_messages else None
                 sequence = self._reserve_auto_save_sequence()
                 rewrite_revision = self._auto_save_rewrite_revision
                 self._auto_save_pending_checkpoints.add(sequence)
@@ -1072,7 +1073,8 @@ class Session:
         rewrite_revision = self._auto_save_rewrite_revision
         if self._auto_save_rewrite_from is not None:
             replace_from = min(replace_from, self._auto_save_rewrite_from)
-        track_messages = self.state.anthropic_history is not None
+        has_native_history = self.state.anthropic_history is not None
+        track_messages = self._auto_save_messages is not None or has_native_history
         stored_messages = self._auto_save_messages or []
         if track_messages:
             # Native history references resolve against the last committed transcript.
@@ -1083,6 +1085,10 @@ class Session:
                     if current_messages[index] != stored_messages[index]:
                         replace_from = index
                         break
+        # A full native rewrite can exceed the journal's remaining capacity.
+        checkpoint_only = has_native_history and replace_from == 0 and (
+            preceding_write_pending or self._auto_save_message_count > 0
+        )
         messages, meta = self._snapshot_for_save(replace_from)
         tracked_messages = [*stored_messages[:replace_from], *messages] if track_messages else None
         current_seen_hashes = set(self.state.turn.seen_result_hashes)
@@ -1095,33 +1101,35 @@ class Session:
             else current_seen_hashes - self._auto_save_seen_result_hashes
         )
         checkpoint_messages = None
-        if sequence >= self._next_auto_save_checkpoint:
+        if checkpoint_only or sequence >= self._next_auto_save_checkpoint:
             checkpoint_messages = tracked_messages
             if checkpoint_messages is None:
                 checkpoint_messages = copy.deepcopy(self.state.enriched_messages())
 
+        def advance_cursor() -> None:
+            self._auto_save_sequence = sequence
+            self._auto_save_message_count = message_count
+            self._auto_save_messages = tracked_messages
+            if self._auto_save_rewrite_revision == rewrite_revision:
+                self._auto_save_rewrite_from = None
+            self._auto_save_seen_result_hashes = current_seen_hashes
+
         def persist() -> None:
-            self.store.append_snapshot_delta(
-                path,
-                sequence=sequence,
-                replace_from=replace_from,
-                messages=messages,
-                meta=meta,
-                seen_result_hashes_reset=seen_hashes_reset,
-                seen_result_hashes_added=seen_hashes_added,
-            )
-            with self._auto_save_lock:
-                if sequence <= self._auto_save_sequence:
-                    return
-                # The journal append is already fsync'd. Advance the absolute
-                # cursor before optional compaction so a failed base rewrite
-                # cannot cause the durable delta to be skipped on the next save.
-                self._auto_save_sequence = sequence
-                self._auto_save_message_count = message_count
-                self._auto_save_messages = tracked_messages
-                if self._auto_save_rewrite_revision == rewrite_revision:
-                    self._auto_save_rewrite_from = None
-                self._auto_save_seen_result_hashes = current_seen_hashes
+            if not checkpoint_only:
+                self.store.append_snapshot_delta(
+                    path,
+                    sequence=sequence,
+                    replace_from=replace_from,
+                    messages=messages,
+                    meta=meta,
+                    seen_result_hashes_reset=seen_hashes_reset,
+                    seen_result_hashes_added=seen_hashes_added,
+                )
+                with self._auto_save_lock:
+                    if sequence <= self._auto_save_sequence:
+                        return
+                    # The fsync'd append survives a failed base rewrite.
+                    advance_cursor()
             if checkpoint_messages is not None:
                 with self._auto_save_checkpoint_lock:
                     with self._auto_save_lock:
@@ -1134,6 +1142,8 @@ class Session:
                         sequence=sequence,
                     )
                     with self._auto_save_lock:
+                        if checkpoint_only:
+                            advance_cursor()
                         self._next_auto_save_checkpoint = 1 << sequence.bit_length()
 
         def persist_incrementally() -> None:

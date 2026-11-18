@@ -157,6 +157,19 @@ def test_store_replay_ignores_journal_records_covered_by_atomic_base(tmp_path) -
         "step 3",
     ]
 
+def test_invalid_checkpoint_messages_preserve_the_durable_journal(tmp_path) -> None:
+    path = str(tmp_path / "session.json")
+    store = SessionStore()
+    messages = [{"role": "user", "content": "last durable prompt"}]
+    store.append_snapshot_delta(path, sequence=1, replace_from=0, messages=messages, meta={})
+
+    with pytest.raises(ValueError, match="missing 'content'"):
+        store.checkpoint_snapshot(path, [{"role": "user"}], meta={}, sequence=2)
+
+    restored = store.load_snapshot(path, "fallback")
+    assert restored["_autosave_sequence"] == 1
+    assert restored["messages"] == messages
+
 def test_store_rejects_complete_invalid_journal_record(tmp_path) -> None:
     path = tmp_path / "session.json"
     store = SessionStore()

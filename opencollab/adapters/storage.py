@@ -501,6 +501,7 @@ class SessionStore:
             or sequence < 0
         ):
             raise ValueError("autosave sequence must be a non-negative integer")
+        self._validate_messages(messages)
         self._ensure_parent(path)
         obj = {
             **meta,
