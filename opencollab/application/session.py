@@ -757,7 +757,7 @@ class Session:
         self._auto_save_messages = (
             copy.deepcopy(stored_messages)
             if isinstance(stored_messages, list) and self._auto_save_path
-            and isinstance(self.store, JournalSnapshotStorePort) and self._tracks_native_history()
+            and isinstance(self.store, JournalSnapshotStorePort) and self.state.anthropic_history is not None
             else None
         )
         self._auto_save_rewrite_from = None
@@ -942,7 +942,7 @@ class Session:
             # skip its sequence and its completion cannot rewind our cursor.
             with self._auto_save_lock:
                 messages, meta = self._snapshot_for_save()
-                tracked_messages = messages if self._tracks_native_history() else None
+                tracked_messages = messages if self.state.anthropic_history is not None else None
                 sequence = self._reserve_auto_save_sequence()
                 rewrite_revision = self._auto_save_rewrite_revision
                 self._auto_save_pending_checkpoints.add(sequence)
@@ -1057,9 +1057,6 @@ class Session:
         ) + 1
         return self._auto_save_reserved_sequence
 
-    def _tracks_native_history(self) -> bool:
-        return self.state.anthropic_history is not None or self.runner._requires_thinking_prefix()
-
     def _prepare_journal_auto_save(self, path: str) -> Callable[[], None]:
         preceding_write_pending = self._auto_save_reserved_sequence > self._auto_save_sequence
         sequence = self._reserve_auto_save_sequence()
@@ -1075,7 +1072,7 @@ class Session:
         rewrite_revision = self._auto_save_rewrite_revision
         if self._auto_save_rewrite_from is not None:
             replace_from = min(replace_from, self._auto_save_rewrite_from)
-        track_messages = self._tracks_native_history()
+        track_messages = self.state.anthropic_history is not None
         stored_messages = self._auto_save_messages or []
         if track_messages:
             # Native history references resolve against the last committed transcript.

@@ -598,6 +598,29 @@ async def test_native_history_delta_uses_the_last_saved_transcript(monkeypatch, 
             await environment.cleanup()
 
 
+async def test_autosave_without_native_history_uses_only_session_state(tmp_path, monkeypatch):
+    path = tmp_path / "session.json"
+    environment = LocalEnvironment(str(tmp_path))
+    async with _client() as client:
+        session = build_session(agent=_agent(), llm=client, env=environment, auto_save_path=str(path))
+
+        def unavailable():
+            raise RuntimeError("model metadata unavailable during snapshot")
+
+        monkeypatch.setattr(session.runner, "_requires_thinking_prefix", unavailable)
+        try:
+            await session.add_user_message("Save this prompt before the first request.")
+            await session.enqueue_auto_save()
+            assert not session.persistence_errors
+            session.save(str(path))
+            snapshot = session.store.load_snapshot(str(path), session.agent.system_prompt)
+            assert snapshot["messages"][-1]["content"] == "Save this prompt before the first request."
+            assert snapshot["session_state"]["anthropic_history"] is None
+        finally:
+            await session.aclose()
+            await environment.cleanup()
+
+
 @pytest.mark.parametrize("source", ["invalid", [], [{}, {}], [False]])
 def test_restore_rejects_malformed_optional_source_prefix(source):
     message = {"role": "user", "content": "Request"}
