@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shlex
@@ -305,6 +306,58 @@ async def test_directory_copy_candidate_replays_partial_apply_outside_git(tmp_pa
         assert (repo / "a.txt").read_text() == "original\n"
         assert (repo / "settings/retained.txt").read_text() == "keep\n"
         assert not environment.revoked
+    finally:
+        await environment.cleanup()
+
+
+@pytest.mark.parametrize("replay_full", [False, True])
+async def test_recovery_preserves_saved_entries_when_copies_fail(tmp_path, replay_full):
+    repo = _repository(tmp_path)
+    target = repo / "other.py"
+    patch = (
+        "diff --git a/other.py b/other.py\n--- a/other.py\n+++ b/other.py\n"
+        "@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 42\n"
+    )
+    index = (repo / ".git/index").read_bytes()
+    environment = LocalEnvironment(str(repo))
+    execute = environment.exec_cmd
+    failures = []
+
+    async def fault(command, timeout=120.0, **kwargs):
+        if command.startswith("present()") and replay_full:
+            failures.append("replay")
+            raise OSError(errno.ENOSPC, "No space left on device")
+        if command.startswith("failed=0;"):
+            command = "cp() { echo 'restore copy: No space left on device' >&2; return 1; }; " + command
+        result = await execute(command, timeout, **kwargs)
+        if " apply --binary " in command and ".candidate-adopt-" in command:
+            assert result.returncode == 0, result.stderr
+            assert target.read_text() == "VALUE = 42\n"
+            if replay_full:
+                target.write_text("VALUE = 100\n")
+            failures.append("receipt")
+            raise OSError("publication receipt unavailable")
+        return result
+
+    environment.exec_cmd = fault
+    try:
+        if replay_full:
+            detail = "No space left on device.*original files retained"
+            with pytest.raises(CandidateAdoptionRecoveryError, match=detail):
+                await _apply_increment(environment, str(repo), patch)
+            backup, = (repo / ".git").glob("candidate-recovery-*")
+            record, = backup.glob("*.path")
+            assert record.with_suffix("").read_text() == "VALUE = 1\n"
+            assert target.read_text() == "VALUE = 100\n"
+            assert failures == ["receipt", "replay"]
+        else:
+            with pytest.raises(OSError, match="publication receipt unavailable"):
+                await _apply_increment(environment, str(repo), patch)
+            assert target.read_text() == "VALUE = 1\n"
+            assert not list((repo / ".git").glob("candidate-recovery-*"))
+            assert failures == ["receipt"]
+        assert environment.revoked is replay_full
+        assert (repo / ".git/index").read_bytes() == index
     finally:
         await environment.cleanup()
 

@@ -76,6 +76,12 @@ reset_parent_mode() {
     fi
 }
 
+restore_saved() {
+    if ! present "$1"; then return 0; fi
+    if present "$2"; then conflict "$2"; return; fi
+    mv -- "$1" "$2"
+}
+
 restore_entry() (
     old=$1 expected=$2 live=$3
     if directory "$live"; then
@@ -84,15 +90,6 @@ restore_entry() (
             return
         fi
         result=0
-        if directory "$old"; then
-            for child in "$old"/* "$old"/.[!.]* "$old"/..?*; do
-                present "$child" || continue
-                name=${child##*/}
-                after=$absent
-                if directory "$expected"; then after=$expected/$name; fi
-                restore_entry "$child" "$after" "$live/$name" || result=$?
-            done
-        fi
         if directory "$expected"; then
             for child in "$expected"/* "$expected"/.[!.]* "$expected"/..?*; do
                 present "$child" || continue
@@ -100,6 +97,15 @@ restore_entry() (
                 if ! directory "$old" || ! present "$old/$name"; then
                     restore_entry "$absent" "$child" "$live/$name" || result=$?
                 fi
+            done
+        fi
+        if directory "$old"; then
+            for child in "$old"/* "$old"/.[!.]* "$old"/..?*; do
+                present "$child" || continue
+                name=${child##*/}
+                after=$absent
+                if directory "$expected"; then after=$expected/$name; fi
+                restore_entry "$child" "$after" "$live/$name" || result=$?
             done
         fi
         [ "$result" -eq 0 ] || return "$result"
@@ -110,14 +116,14 @@ restore_entry() (
                 return
             done
             rmdir -- "$live" || return 1
-            if present "$old"; then cp -pPR -- "$old" "$live"; fi
+            restore_saved "$old" "$live"
         fi
         return
     fi
     if same_entry "$old" "$expected" || same_entry "$live" "$old"; then return 0; fi
     if same_entry "$live" "$expected"; then
         if present "$live"; then rm -- "$live" || return 1; fi
-        if present "$old"; then cp -pPR -- "$old" "$live"; fi
+        restore_saved "$old" "$live"
     else
         conflict "$live"
     fi
@@ -319,7 +325,7 @@ async def _adoption_transaction(
                 quoted = shlex.quote(backup)
                 await await_owned_operation(environment.exec_cmd(
                     f"rm -rf -- {quoted} || "
-                    f"(find {quoted} -type d ! -perm -u+w -exec chmod u+w -- {{}} + && rm -rf -- {quoted})",
+                    f"(find {quoted} -type d ! -perm -u+w -exec chmod -- u+w {{}} + && rm -rf -- {quoted})",
                     timeout=120,
                 ))
             except Exception:
