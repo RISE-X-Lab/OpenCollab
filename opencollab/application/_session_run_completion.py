@@ -59,6 +59,26 @@ from opencollab.domain.tools import ToolProcessingResult, tool_name_collision_ke
 
 logger = logging.getLogger(__name__)
 
+def _completion_keyword_parameters(complete: Callable[..., Awaitable[Any]]) -> set[str] | None:
+    keywords: set[str] = set()
+
+    def has_fixed_keywords(target: Callable[..., Any]) -> bool:
+        parameters = inspect.signature(target, follow_wrapped=False).parameters.values()
+        keywords.update(
+            parameter.name for parameter in parameters
+            if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        )
+        return not any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+
+    # Follow variadic decorators through to the first fixed signature.
+    try:
+        target = inspect.unwrap(complete, stop=has_fixed_keywords)
+        if not hasattr(target, "__wrapped__") and not has_fixed_keywords(target):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return keywords
+
 def _selector_names_tool_choice(selector: Any) -> bool:
     """Return whether a structured error selector targets ``tool_choice``."""
     values = selector if isinstance(selector, (list, tuple)) else [selector]
@@ -627,8 +647,6 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         max_output_tokens = self._request_output_limit(
             messages, tools, thinking=thinking, thinking_params=params,
         )
-        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
-            extra["max_output_tokens"] = max_output_tokens
         reasoning_effort = getattr(self.agent, "reasoning_effort", None)
         if reasoning_effort is not None:
             extra["reasoning_effort"] = reasoning_effort
@@ -639,6 +657,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 messages=messages,
                 tools=tools,
                 temperature=self.agent.temperature,
+                max_output_tokens=max_output_tokens,
                 **extra,
             )
         except Exception as exc:
@@ -655,8 +674,6 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         max_output_tokens = self._request_output_limit(
             messages, tools, thinking=thinking, thinking_params=params,
         )
-        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
-            extra["max_output_tokens"] = max_output_tokens
         payload = {
             "reason": "prefix_binding_mismatch", "removed_blocks": removed, "retry": 1,
             "error_type": rejected_by, "status_code": 400,
@@ -675,6 +692,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             messages=messages,
             tools=tools,
             temperature=self.agent.temperature,
+            max_output_tokens=max_output_tokens,
             **extra,
         )
 
@@ -763,23 +781,33 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             return None
         return min(finite) - int(self.state.used_tokens) - sum(reserve() for reserve in self.budget_reservations)
 
-    def _completion_accepts_output_limit(self) -> bool:
-        """Include the default limit when the injected completion accepts it."""
-        try:
-            parameters = inspect.signature(self.llm.complete).parameters.values()
-        except (TypeError, ValueError):
-            return False
-        return any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD
-            or (
-                parameter.name == "max_output_tokens"
-                and parameter.kind in {
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    inspect.Parameter.KEYWORD_ONLY,
-                }
-            )
-            for parameter in parameters
-        )
+    def _add_completion_controls(
+        self,
+        complete: Callable[..., Awaitable[CompletionResponse]],
+        kwargs: dict[str, Any],
+        *,
+        max_output_tokens: int,
+        usage_accounting: _CompletionUsageAccounting,
+        revalidate: Callable[[], int],
+    ) -> asyncio.Event | None:
+        keywords = _completion_keyword_parameters(complete)
+
+        def accepts(name: str) -> bool:
+            return keywords is None or name in keywords
+
+        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or accepts("max_output_tokens"):
+            kwargs["max_output_tokens"] = max_output_tokens
+        if getattr(self.llm, "supports_attempt_usage", False) and accepts("on_attempt_usage"):
+            kwargs["on_attempt_usage"] = usage_accounting.record_attempt
+        if getattr(self.llm, "supports_usage_settlement", False) and accepts("on_usage"):
+            kwargs["on_usage"] = usage_accounting.settle
+        if getattr(self.llm, "supports_request_revalidation", False) and accepts("before_request"):
+            kwargs["before_request"] = revalidate
+        if getattr(self.llm, "supports_request_admission", False) and accepts("on_admitted"):
+            admitted = asyncio.Event()
+            kwargs["on_admitted"] = admitted.set
+            return admitted
+        return None
 
     def _revalidate_request(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool = False,
@@ -805,25 +833,20 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         )
         if _summary_output_limit is not None:
             max_output_tokens = min(max_output_tokens, _summary_output_limit(messages))
-        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
-            kwargs["max_output_tokens"] = max_output_tokens
         start = time.monotonic()
         protected_call = self.state.wind_down_done
         usage_accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
-        if getattr(self.llm, "supports_attempt_usage", False):
-            kwargs["on_attempt_usage"] = usage_accounting.record_attempt
-        admitted = asyncio.Event() if getattr(self.llm, "supports_request_admission", False) else None
-        if admitted is not None:
-            kwargs["on_admitted"] = admitted.set
-        if getattr(self.llm, "supports_usage_settlement", False):
-            kwargs["on_usage"] = usage_accounting.settle
-        if getattr(self.llm, "supports_request_revalidation", False):
-            def revalidate() -> int:
-                limit = self._revalidate_request(
-                    messages, None, thinking=thinking, thinking_params=thinking_params,
-                )
-                return min(limit, _summary_output_limit(messages)) if _summary_output_limit is not None else limit
-            kwargs["before_request"] = revalidate
+
+        def revalidate() -> int:
+            limit = self._revalidate_request(
+                messages, None, thinking=thinking, thinking_params=thinking_params,
+            )
+            return min(limit, _summary_output_limit(messages)) if _summary_output_limit is not None else limit
+
+        admitted = self._add_completion_controls(
+            self.llm.complete, kwargs, max_output_tokens=max_output_tokens,
+            usage_accounting=usage_accounting, revalidate=revalidate,
+        )
         abandoned = False
         if self.tracer:
             self.tracer.log_step(step_type="llm_call_started", payload={
@@ -881,7 +904,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._mark_provider_task_draining(owner)
             raise
 
-    async def _invoke_llm(self, **kwargs: Any) -> CompletionResponse:
+    async def _invoke_llm(self, *, max_output_tokens: int, **kwargs: Any) -> CompletionResponse:
         """Bound one provider generation by ``_per_call_timeout``.
 
         ``None`` disables the ceiling. Expiry raises ``GenerationTimeoutError``
@@ -892,25 +915,21 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             self._raise_if_run_cancelled()
         protected_call = self.state.wind_down_done
         usage_accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
-        if getattr(self.llm, "supports_attempt_usage", False):
-            kwargs["on_attempt_usage"] = usage_accounting.record_attempt
-        admitted = asyncio.Event() if getattr(self.llm, "supports_request_admission", False) else None
-        if admitted is not None:
-            kwargs["on_admitted"] = admitted.set
-        if getattr(self.llm, "supports_usage_settlement", False):
-            kwargs["on_usage"] = usage_accounting.settle
-        if getattr(self.llm, "supports_request_revalidation", False):
-            kwargs["before_request"] = lambda: self._revalidate_request(
+        complete = self.llm.complete
+        admitted = self._add_completion_controls(
+            complete, kwargs, max_output_tokens=max_output_tokens, usage_accounting=usage_accounting,
+            revalidate=lambda: self._revalidate_request(
                 kwargs["messages"], kwargs.get("tools"), thinking=kwargs.get("thinking", False),
                 thinking_params=kwargs.get("thinking_params"),
-            )
+            ),
+        )
         late_accounted = False
 
         async def complete_owned() -> CompletionResponse:
             nonlocal late_accounted
             try:
                 response = await _complete_with_error_usage(
-                    self, self.llm.complete, usage_accounting=usage_accounting, **kwargs,
+                    self, complete, usage_accounting=usage_accounting, **kwargs,
                 )
                 late_accounted = asyncio.current_task() in self._draining_provider_tasks
                 self._account_completion_usage(

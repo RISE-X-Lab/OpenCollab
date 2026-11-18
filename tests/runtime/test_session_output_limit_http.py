@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import json
+from functools import wraps
 
 import pytest
 
-from opencollab import OpenCollab
+from opencollab import OpenCollab, RunControl
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.bootstrap import container
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
 from tests.support.environment_test_support import local_environment_factory as local_environment_factory
-from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport
+from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
 
 
 @pytest.fixture(autouse=True)
@@ -176,3 +177,90 @@ async def test_legacy_injected_client_summary_retains_the_original_signature(tmp
     assert await summarizer.asummarize([{"role": "user", "content": "Keep this context"}]) == (
         "Summary:\nPreserved context."
     )
+
+
+class _LegacyNativeClient(LLMClient):
+    @wraps(LLMClient.complete)
+    async def complete(self, messages, tools=None, temperature=0.0, *, max_output_tokens=None, on_admitted=None):
+        self.received_admission_callback = on_admitted is not None
+        return await super().complete(
+            messages, tools=tools, temperature=temperature,
+            max_output_tokens=max_output_tokens, on_admitted=on_admitted,
+        )
+
+
+class _SettlementWrapper(_LegacyNativeClient):
+    @wraps(_LegacyNativeClient.complete)
+    async def complete(self, *args, on_usage=None, **kwargs):
+        self.received_usage_callback = on_usage is not None
+        response = await super().complete(*args, **kwargs)
+        if on_usage is not None:
+            on_usage(response.usage)
+        return response
+
+
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("client_class", [_LegacyNativeClient, _SettlementWrapper])
+async def test_public_agent_charges_legacy_native_wrapper_usage_once(tmp_path, monkeypatch, failed, client_class):
+    requests = []
+    events = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        response = completion_http_response(request)
+        if failed:
+            return http_response(request, 200, json=response.json() | {"choices": []})
+        return response
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    pool = tmp_path / "pool"
+    pool.mkdir()
+    async with client_class(
+        api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", max_retries=0,
+        request_pool=str(pool), request_capacity=1,
+    ) as client:
+        result = await OpenCollab(tmp_path).agent(
+            "Return ok", llm=client, tools=(), budget=20_000, trace=False,
+            run_control=RunControl(on_event=events.append),
+        )
+
+    assert client.received_admission_callback is True
+    if client_class is _SettlementWrapper:
+        assert client.received_usage_callback is True
+    assert len(requests) == 1 and requests[0]["max_tokens"] == 8192
+    assert result.status == ("failed" if failed else "completed")
+    assert result.tokens == 4
+    usage = [event.data for event in events if event.type == "usage"]
+    assert [event["total_tokens"] for event in usage] == [4]
+    assert usage[0]["error_type"] == ("IndexError" if failed else None)
+
+
+async def test_summary_charges_legacy_native_wrapper_usage_once(tmp_path, monkeypatch, local_environment_factory):
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request, text="<summary>Preserved context.</summary>")
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    async with _LegacyNativeClient(
+        api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", max_retries=0,
+    ) as client:
+        agent = Agent(name="legacy", system_prompt="system")
+        session = build_session(
+            agent=agent, llm=client, env=local_environment_factory(str(tmp_path)), max_budget_tokens=None,
+        )
+        summarizer = container._build_summarizer(
+            agent, client, client, 600.0, None, completion_handler=session.runner._invoke_summary,
+        )
+        try:
+            assert await summarizer.asummarize([{"role": "user", "content": "Keep this context"}]) == (
+                "Summary:\nPreserved context."
+            )
+            assert session.used_tokens == 4
+        finally:
+            await session.aclose()
+
+    assert len(requests) == 1 and requests[0]["max_tokens"] == 8192
