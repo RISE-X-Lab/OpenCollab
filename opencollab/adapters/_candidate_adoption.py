@@ -29,7 +29,10 @@ same_entry() {
             [ "$left" = "$right" ]
     elif [ -f "$1" ]; then
         [ ! -L "$2" ] && [ -f "$2" ] || return 1
-        left=$(mode "$1") && right=$(mode "$2") && [ "$left" = "$right" ] || return 1
+        left=$(mode "$1") || return 1
+        right=${3:-}
+        if [ -z "$right" ]; then right=$(mode "$2") || return 1; fi
+        [ "$left" = "$right" ] || return 1
         if command -v cmp >/dev/null 2>&1; then
             cmp -s -- "$1" "$2"
         else
@@ -57,8 +60,62 @@ check_parents() {
 }
 '''
 
-_DEVICE = r'''
-device() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1"; }
+_FILESYSTEM = r'''
+filesystem() { stat -c '%d:%m' -- "$1" 2>/dev/null || stat -f %d -- "$1"; }
+'''
+
+_RECOVERY_STORES = _FILESYSTEM + r'''
+store_for() (
+    parent=${1%/*}
+    filesystem_id=$(filesystem "$parent") && primary_id=$(filesystem "$recovery") || exit
+    if present "$1"; then
+        entry_id=$(filesystem "$1") || exit
+        if [ "$entry_id" != "$filesystem_id" ]; then
+            printf 'cannot hold the mounted entry %s\n' "$1" >&2
+            exit 1
+        fi
+    fi
+    if [ "$filesystem_id" = "$primary_id" ]; then printf '%s' "$recovery"; exit; fi
+
+    # Prefer the mount root so Git can remove empty directories below it.
+    anchor=
+    while directory "$parent"; do
+        [ -w "$parent" ] && anchor=$parent
+        [ "$parent" != "$workspace" ] && [ "$parent" != / ] || break
+        parent=${parent%/*}
+        parent_id=$(filesystem "${parent:-/}") || exit
+        [ "$parent_id" = "$filesystem_id" ] || break
+    done
+    if [ -z "$anchor" ]; then
+        printf 'no writable recovery directory on the filesystem of %s\n' "$1" >&2
+        exit 1
+    fi
+    for location in "$recovery"/volumes/*; do
+        [ -f "$location" ] || continue
+        local_store=$(cat -- "$location" && printf .) || exit
+        local_store=${local_store%.}
+        [ "${local_store%/*}" = "$anchor" ] || continue
+        directory "$local_store" && [ "$(filesystem "$local_store")" = "$filesystem_id" ] || exit 1
+        printf '%s' "$local_store"
+        exit
+    done
+    mkdir -p -m 700 -- "$recovery/volumes" || exit
+    location=$(mktemp "$recovery/volumes/volume-XXXXXXXX") || exit
+    local_store=$(mktemp -d "$anchor/.candidate-recovery-XXXXXXXX") || exit
+    printf '%s' "$local_store" > "$location" || { rmdir -- "$local_store"; exit 1; }
+    printf '%s' "$local_store"
+)
+
+each_store() {
+    for storage_record in "$recovery"/volumes/*; do
+        [ -f "$storage_record" ] || continue
+        storage_path=$(cat -- "$storage_record" && printf .) || return 1
+        storage_path=${storage_path%.}
+        [ -n "$storage_path" ] || continue
+        "$@" "$storage_path" || return $?
+    done
+    "$@" "$recovery"
+}
 '''
 
 _LINK_ORIGINALS = """\
@@ -73,16 +130,18 @@ for record in Path(sys.argv[1]).glob("[0-9]*.path"):
         sys.exit(1)
 """
 
-_HOLD_ORIGINALS = _COMPARE_ENTRIES + _CHECK_PARENTS + _DEVICE + r'''
+_HOLD_ORIGINALS = _COMPARE_ENTRIES + _CHECK_PARENTS + _RECOVERY_STORES + r'''
 hold_original() {
     if [ "$1" -ef "$2" ] || ln -P -- "$1" "$2" 2>/dev/null; then return 0; fi
-    source_device=$(device "$1") && recovery_device=$(device "$recovery") || return 1
-    if [ "$source_device" != "$recovery_device" ]; then
-        printf 'cannot preserve %s across filesystems\n' "$1" >&2
-        return 1
+    store=$(store_for "$1") || return 1
+    if [ "$store" != "$recovery" ]; then
+        mkdir -p -m 700 -- "$store/original-inodes" || return 1
+        held="$store/original-inodes/${2##*/}"
+        printf '%s' "$1" > "$held.path" && rm -- "$2.path" || return 1
+        if ln -P -- "$1" "$held" 2>/dev/null; then return 0; fi
     fi
-    mkdir -p -m 700 -- "$recovery/replacements" &&
-        cp -pP -- "$1" "$recovery/replacements/${2##*/}" || return 1
+    mkdir -p -m 700 -- "$store/replacements" &&
+        cp -pP -- "$1" "$store/replacements/${2##*/}" || return 1
     needs_activation=1
 }
 
@@ -119,71 +178,82 @@ restore_saved() {
 }
 '''
 
-_ACTIVATE_ORIGINALS = _COMPARE_ENTRIES + _CHECK_PARENTS + _RESTORE_SAVED + r'''
-for replacement in "$recovery"/replacements/*; do
-    [ -f "$replacement" ] || continue
-    entry=$recovery/original-inodes/${replacement##*/}
-    live=$(cat -- "$entry.path" && printf .) || exit
-    live=${live%.}
-    check_parents "$live" && same_entry "$replacement" "$live" || { conflict "$live"; exit; }
-    restore_saved "$live" "$entry" || exit
-    if ! same_entry "$replacement" "$entry"; then
-        restore_saved "$entry" "$live" || exit
-        conflict "$live"
-        exit
-    fi
-    restore_saved "$replacement" "$live" || exit
-done
+_ACTIVATE_ORIGINALS = _COMPARE_ENTRIES + _CHECK_PARENTS + _RESTORE_SAVED + _RECOVERY_STORES + r'''
+activate_store() {
+    for replacement in "$1"/replacements/*; do
+        [ -f "$replacement" ] || continue
+        entry=$1/original-inodes/${replacement##*/}
+        live=$(cat -- "$entry.path" && printf .) || return 1
+        live=${live%.}
+        check_parents "$live" && same_entry "$replacement" "$live" || { conflict "$live"; return; }
+        restore_saved "$live" "$entry" || return $?
+        if ! same_entry "$replacement" "$entry"; then
+            restore_saved "$entry" "$live" || return $?
+            conflict "$live"
+            return
+        fi
+        restore_saved "$replacement" "$live" || return $?
+    done
+}
+each_store activate_store
 '''
 
-_UNDO_INCOMPLETE_ACTIVATION = _COMPARE_ENTRIES + _CHECK_PARENTS + _RESTORE_SAVED + r'''
-for replacement in "$recovery"/replacements/*; do
-    entry=$recovery/original-inodes/${replacement##*/}
-    [ -f "$replacement" ] && [ -f "$entry" ] || continue
-    live=$(cat -- "$entry.path" && printf .) || exit
-    live=${live%.}
-    check_parents "$live" && restore_saved "$entry" "$live" || exit
-done
+_UNDO_INCOMPLETE_ACTIVATION = _COMPARE_ENTRIES + _CHECK_PARENTS + _RESTORE_SAVED + _RECOVERY_STORES + r'''
+undo_store() {
+    for replacement in "$1"/replacements/*; do
+        entry=$1/original-inodes/${replacement##*/}
+        [ -f "$replacement" ] && [ -f "$entry" ] || continue
+        live=$(cat -- "$entry.path" && printf .) || return 1
+        live=${live%.}
+        check_parents "$live" && restore_saved "$entry" "$live" || return $?
+    done
+}
+each_store undo_store || exit
 '''
 
 _DETACHED_FILES = r'''
 detached=0
-for record in "$recovery"/original-inodes/*.path; do
-    [ -f "$record" ] || continue
-    path=$(cat -- "$record" && printf .) || exit
-    path=${path%.}
-    entry=${record%.path}
-    if ! present "$entry"; then
-        rm -- "$record" || exit
-    elif check_parents "$path" 2>/dev/null && [ ! -L "$path" ] && [ "$path" -ef "$entry" ]; then
-        rm -- "$record" "$entry" || exit
-    else
-        detached=1
-    fi
-done
-for parked in "$recovery"/observed-*/entry; do
-    if [ -f "$parked" ] && [ ! -L "$parked" ]; then printf 'parked\n'; break; fi
-done
+parked=0
+collect_detached() {
+    for record in "$1"/original-inodes/*.path; do
+        [ -f "$record" ] || continue
+        path=$(cat -- "$record" && printf .) || return 1
+        path=${path%.}
+        entry=${record%.path}
+        if ! present "$entry"; then
+            rm -- "$record" || return 1
+        elif check_parents "$path" 2>/dev/null && [ ! -L "$path" ] && [ "$path" -ef "$entry" ]; then
+            rm -- "$record" "$entry" || return 1
+        else
+            detached=1
+        fi
+    done
+    for entry in "$1"/observed-*/entry; do
+        if [ -f "$entry" ] && [ ! -L "$entry" ]; then parked=1; break; fi
+    done
+}
+each_store collect_detached || exit
+if [ "$parked" -eq 1 ]; then printf 'parked\n'; fi
 if [ "$detached" -eq 1 ]; then printf 'original-detached\n'; fi
 '''
 
-_RECOVERY_PARENT = _DEVICE + r'''
+_RECOVERY_PARENT = _FILESYSTEM + r'''
 recovery_parent() {
-    worktree_device=$(device .) && storage_device=$(device "$1/") || return 1
+    worktree_device=$(filesystem .) && storage_device=$(filesystem "$1/") || return 1
     if [ "$worktree_device" = "$storage_device" ]; then
         printf '%s\n' "$1"
         return
     fi
-    cd -P -- .. && parent_device=$(device .) || return 1
+    cd -P -- .. && parent_device=$(filesystem .) || return 1
     if [ "$worktree_device" != "$parent_device" ]; then
-        printf 'no recovery directory outside the worktree on its filesystem\n' >&2
-        return 1
+        printf '%s\n' "$1"
+        return
     fi
     pwd -P
 }
 '''
 
-_RECOVER_PATHS = _COMPARE_ENTRIES + _CHECK_PARENTS + _DEVICE + _RESTORE_SAVED + r'''
+_RECOVER_PATHS = _COMPARE_ENTRIES + _CHECK_PARENTS + _RESTORE_SAVED + _RECOVERY_STORES + r'''
 
 check_candidate_descendants() {
     prefix=${1#"$workspace_prefix"}; shift
@@ -235,19 +305,31 @@ reset_parent_mode() {
 
 park_candidate_entry() {
     if ! present "$1"; then return 0; fi
-    if [ -f "$1" ] && [ ! -L "$1" ]; then
-        source_device=$(device "$1") && recovery_device=$(device "$recovery") || return 1
-        if [ "$source_device" != "$recovery_device" ]; then
-            printf 'cannot park %s across filesystems\n' "$1" >&2
-            return 2
-        fi
-    fi
-    parked=$(mktemp -d "$recovery/observed-XXXXXXXX") || return 1
+    parked=$(mktemp -d "$3/observed-XXXXXXXX") || return 1
+    if [ -n "$4" ]; then printf '%s\n' "$4" > "$parked/mode" || return 1; fi
     printf '%s' "$1" > "$parked/path" && mv -- "$1" "$parked/entry" || return 1
-    if ! same_entry "$parked/entry" "$2"; then
+    if ! same_entry "$parked/entry" "$2" "$4"; then
         restore_saved "$parked/entry" "$1" || return $?
         conflict "$1"
     fi
+}
+
+project_file_mode() (
+    source=$(mktemp "$recovery/mode-XXXXXXXX") || exit
+    expected_mode=$(mode "$1") && chmod -- "$expected_mode" "$source" || exit
+    sample=$(mktemp -d "$2/mode-XXXXXXXX") || exit
+    cp -pP -- "$source" "$sample/entry" && actual_mode=$(mode "$sample/entry") || exit
+    rm -- "$source" && rm -rf -- "$sample" || exit
+    printf '%s' "$actual_mode"
+)
+
+restore_preimage() {
+    if ! present "$1"; then return 0; fi
+    store=${3:-}
+    if [ -z "$store" ]; then store=$(store_for "$2") || return 1; fi
+    if [ "$store" = "$recovery" ]; then restore_saved "$1" "$2"; return; fi
+    install=$(mktemp -d "$store/restore-XXXXXXXX") || return 1
+    cp -pPR -- "$1" "$install/entry" && restore_saved "$install/entry" "$2"
 }
 
 restore_entry() (
@@ -290,27 +372,42 @@ restore_entry() (
                 return
             done
             rmdir -- "$live" || return 1
-            restore_saved "$old" "$live"
+            restore_preimage "$old" "$live"
         fi
         return
     fi
     if same_entry "$live" "$old"; then return 0; fi
+    projected=
     if same_entry "$live" "$expected"; then
-        park_candidate_entry "$live" "$expected" || return $?
-        restore_saved "$old" "$live"
+        store=$(store_for "$live") || return 1
     else
-        conflict "$live"
+        if [ ! -f "$live" ] || [ -L "$live" ] || [ ! -f "$expected" ] || [ -L "$expected" ]; then
+            conflict "$live"
+            return
+        fi
+        store=$(store_for "$live") || return 1
+        if [ "$store" = "$recovery" ]; then conflict "$live"; return; fi
+        # A replay on the Git filesystem can represent modes unavailable on the live mount.
+        projected=$(project_file_mode "$expected" "$store") || return 1
+        same_entry "$live" "$expected" "$projected" || { conflict "$live"; return; }
     fi
+    park_candidate_entry "$live" "$expected" "$store" "$projected" || return $?
+    restore_preimage "$old" "$live" "$store"
 )
 '''
 
 _RECHECK_PARKED = _COMPARE_ENTRIES + r'''
-for parked in "$recovery"/observed-*; do
-    [ -d "$parked" ] || continue
-    path=$(cat -- "$parked/path" && printf .) || exit
-    path=${path%.}
-    same_entry "$parked/entry" "$staged/${path#"$workspace_prefix"}" || { conflict "$path"; exit; }
-done
+verify_parked() {
+    for parked in "$1"/observed-*; do
+        [ -d "$parked" ] || continue
+        path=$(cat -- "$parked/path" && printf .) || return 1
+        path=${path%.}
+        projected=
+        if [ -f "$parked/mode" ]; then read -r projected < "$parked/mode" || return 1; fi
+        same_entry "$parked/entry" "$staged/${path#"$workspace_prefix"}" "$projected" || { conflict "$path"; return; }
+    done
+}
+each_store verify_parked || exit
 '''
 
 
@@ -431,24 +528,27 @@ recovery_parent "${common%??}"
         ), "candidate recovery storage").removesuffix("\n")
 
     async def remove_backup(path: str, *, retain_detached: bool = False) -> None:
-        quoted = shlex.quote(path)
         remove_entry = (
             'remove_entry() { rm -rf -- "$1" || '
             '(find "$1" -type d ! -perm -u+w -exec chmod -- u+w {} + && rm -rf -- "$1"); }\n'
         )
+        removal = (
+            f"recovery={shlex.quote(path)}; staged={shlex.quote(posixpath.join(path, 'replay'))}; "
+            f"workspace_prefix={shlex.quote(workspace.rstrip('/') + '/')};\n"
+            + _RECOVERY_STORES
+        )
         if retain_detached:
-            removal = (
-                f"recovery={quoted}; staged={shlex.quote(posixpath.join(path, 'replay'))}; "
-                f"workspace_prefix={shlex.quote(workspace.rstrip('/') + '/')};\n"
-                + _RECHECK_PARKED + remove_entry + r'''
-for entry in "$recovery"/*; do
-    case "${entry##*/}" in original-inodes|observed-*) continue;; esac
-    remove_entry "$entry" || exit
-done
+            removal += remove_entry + _RECHECK_PARKED + r'''
+prune_store() {
+    for entry in "$1"/*; do
+        case "${entry##*/}" in original-inodes|observed-*|volumes) continue;; esac
+        remove_entry "$entry" || return $?
+    done
+}
+each_store prune_store
 '''
-            )
         else:
-            removal = remove_entry + f"remove_entry {quoted}"
+            removal = remove_entry + removal + "each_store remove_entry"
         result = await environment.exec_cmd(removal, timeout=120)
         if retain_detached:
             _complete(result, "candidate recovery cleanup")
@@ -533,8 +633,7 @@ done
         snapshot_script = (
             workspace_vars + f"linker={shlex.quote(linker)};\n"
             + (f"link_script={shlex.quote(_LINK_ORIGINALS)};\n" if linker else "")
-            + _HOLD_ORIGINALS + f"hold_originals {' '.join(targets)} || exit; "
-            + "; ".join(copies)
+            + _HOLD_ORIGINALS + "; ".join((*copies, f"hold_originals {' '.join(targets)} || exit"))
         )
         target_test = f'case "${{1#"$workspace_prefix"}}" in {"|".join(targets)}) return 0;; esac; ' if targets else ""
         recovery_script = (
@@ -554,7 +653,10 @@ done
                 environment, workspace, recovery_script, repository=repository,
             ))
             snapshot = _complete(
-                await environment.exec_cmd(snapshot_command, timeout=900), "candidate recovery snapshot",
+                await await_owned_operation(
+                    environment.exec_cmd(snapshot_command, timeout=900), propagate_cancellation=True,
+                ),
+                "candidate recovery snapshot",
             )
             publication_started = False
             try:
