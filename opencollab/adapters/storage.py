@@ -20,6 +20,7 @@ from opencollab.adapters.safe_files import (
     write_regular_bytes_atomic,
     write_regular_file_atomic,
 )
+from opencollab.application.ports import SnapshotCapacityError
 
 MAX_SESSION_SNAPSHOT_BYTES = 64 * 1024 * 1024
 _JSON_WRITE_CHUNK_CHARS = 64 * 1024
@@ -127,7 +128,7 @@ class _BoundedUTF8Writer:
             payload = text[offset : offset + _JSON_WRITE_CHUNK_CHARS].encode("utf-8")
             next_size = self._bytes_written + len(payload)
             if next_size > MAX_SESSION_SNAPSHOT_BYTES:
-                raise ValueError(
+                raise SnapshotCapacityError(
                     "session snapshot exceeds "
                     f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
                     f"{self._path}"
@@ -183,7 +184,7 @@ class SessionStore:
             )
 
     def _load_snapshot_unlocked(
-        self, path: str, system_prompt: str, *, read_journal: bool = True,
+        self, path: str, fallback_system_prompt: str | None, *, read_journal: bool = True,
     ) -> dict[str, Any]:
         """Load a locked snapshot or a standalone read-only export."""
         try:
@@ -282,7 +283,8 @@ class SessionStore:
                 raise ValueError(
                     "Invalid session snapshot: expected at least one message"
                 )
-            messages = [{"role": "system", "content": system_prompt}]
+            if fallback_system_prompt is not None:
+                messages = [{"role": "system", "content": fallback_system_prompt}]
         snapshot["messages"] = messages
         return snapshot
 
@@ -446,6 +448,63 @@ class SessionStore:
         seen_result_hashes_added: list[str] | None = None,
     ) -> None:
         """Durably append one absolute, idempotent autosave delta."""
+        record = self._snapshot_delta_record(
+            sequence=sequence,
+            replace_from=replace_from,
+            messages=messages,
+            meta=meta,
+            seen_result_hashes_reset=seen_result_hashes_reset,
+            seen_result_hashes_added=seen_result_hashes_added,
+        )
+        self._append_journal_record(path, record)
+
+    def append_snapshot_replacement(
+        self,
+        path: str,
+        messages: list[dict[str, Any]],
+        *,
+        meta: dict[str, Any],
+        sequence: int,
+    ) -> bool:
+        state = meta.get("session_state")
+        seen_result_hashes = state.get("seen_result_hashes", []) if isinstance(state, dict) else []
+        record = self._snapshot_delta_record(
+            sequence=sequence,
+            replace_from=0,
+            messages=messages,
+            meta=meta,
+            seen_result_hashes_reset=True,
+            seen_result_hashes_added=seen_result_hashes,
+        )
+        with _journal_operation_lock(path):
+            try:
+                persisted = self._load_snapshot_unlocked(path, fallback_system_prompt=None)
+            except FileNotFoundError:
+                pass
+            else:
+                if sequence <= self._snapshot_sequence(persisted):
+                    return False
+                stored_messages = persisted["messages"]
+                replace_from = min(len(stored_messages), len(messages))
+                for index in range(replace_from):
+                    if stored_messages[index] != messages[index]:
+                        replace_from = index
+                        break
+                record["replace_from"] = replace_from
+                record["messages"] = messages[replace_from:]
+            self._append_journal_record_unlocked(path, record)
+        return True
+
+    def _snapshot_delta_record(
+        self,
+        *,
+        sequence: int,
+        replace_from: int,
+        messages: list[dict[str, Any]],
+        meta: dict[str, Any],
+        seen_result_hashes_reset: bool,
+        seen_result_hashes_added: list[str] | None,
+    ) -> dict[str, Any]:
         if (
             isinstance(sequence, bool)
             or not isinstance(sequence, int)
@@ -474,7 +533,7 @@ class SessionStore:
             journal_state = dict(raw_state)
             journal_state.pop("seen_result_hashes", None)
             journal_meta["session_state"] = journal_state
-        record = {
+        return {
             "journal_version": _AUTOSAVE_JOURNAL_VERSION,
             "sequence": sequence,
             "replace_from": replace_from,
@@ -484,7 +543,6 @@ class SessionStore:
             "seen_result_hashes_reset": seen_result_hashes_reset,
             "seen_result_hashes_added": seen_added,
         }
-        self._append_journal_record(path, record)
 
     def checkpoint_snapshot(
         self,
@@ -565,47 +623,50 @@ class SessionStore:
 
     def _append_journal_record(self, path: str, record: dict[str, Any]) -> None:
         with _journal_operation_lock(path):
-            journal_path = self._journal_path(path)
-            payload = self._encode_journal_record(record)
-            payload_size = len(payload.encode("utf-8"))
-            if payload_size > MAX_SESSION_SNAPSHOT_BYTES:
-                raise ValueError(
-                    "autosave journal record exceeds "
-                    f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
-                    f"{journal_path}"
+            self._append_journal_record_unlocked(path, record)
+
+    def _append_journal_record_unlocked(self, path: str, record: dict[str, Any]) -> None:
+        journal_path = self._journal_path(path)
+        payload = self._encode_journal_record(record)
+        payload_size = len(payload.encode("utf-8"))
+        if payload_size > MAX_SESSION_SNAPSHOT_BYTES:
+            raise ValueError(
+                "autosave journal record exceeds "
+                f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
+                f"{journal_path}"
+            )
+        append_start: int | None = None
+        try:
+            with open_regular_text_append(journal_path, readable=True) as handle:
+                current_size = os.fstat(handle.fileno()).st_size
+                complete_size = self._complete_journal_size(
+                    handle.fileno(),
+                    current_size,
                 )
-            append_start: int | None = None
-            try:
-                with open_regular_text_append(journal_path, readable=True) as handle:
-                    current_size = os.fstat(handle.fileno()).st_size
-                    complete_size = self._complete_journal_size(
-                        handle.fileno(),
-                        current_size,
+                if complete_size < current_size:
+                    os.ftruncate(handle.fileno(), complete_size)
+                    current_size = complete_size
+                if current_size + payload_size > MAX_SESSION_SNAPSHOT_BYTES:
+                    raise ValueError(
+                        "autosave journal exceeds "
+                        f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
+                        f"{journal_path}"
                     )
-                    if complete_size < current_size:
-                        os.ftruncate(handle.fileno(), complete_size)
-                        current_size = complete_size
-                    if current_size + payload_size > MAX_SESSION_SNAPSHOT_BYTES:
-                        raise ValueError(
-                            "autosave journal exceeds "
-                            f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
-                            f"{journal_path}"
-                        )
-                    append_start = current_size
-                    write_locked_text(handle, payload)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-            except BaseException as append_error:
-                if append_start is not None:
-                    try:
-                        # Close the append handle before truncating so a buffered
-                        # close cannot write the failed record back afterward.
-                        with open_regular_text_append(journal_path, readable=True) as handle:
-                            os.ftruncate(handle.fileno(), append_start)
-                            os.fsync(handle.fileno())
-                    except BaseException as rollback_error:
-                        raise append_error from rollback_error
-                raise
+                append_start = current_size
+                write_locked_text(handle, payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException as append_error:
+            if append_start is not None:
+                try:
+                    # Close the append handle before truncating so a buffered
+                    # close cannot write the failed record back afterward.
+                    with open_regular_text_append(journal_path, readable=True) as handle:
+                        os.ftruncate(handle.fileno(), append_start)
+                        os.fsync(handle.fileno())
+                except BaseException as rollback_error:
+                    raise append_error from rollback_error
+            raise
 
     @staticmethod
     def _complete_journal_size(fd: int, size: int) -> int:

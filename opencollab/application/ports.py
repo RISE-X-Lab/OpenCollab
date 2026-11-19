@@ -614,6 +614,22 @@ class JournalSnapshotStorePort(Protocol):
     ) -> None:
         ...
 
+class SnapshotCapacityError(ValueError):
+    """An encoded snapshot exceeds the store's write limit."""
+
+@runtime_checkable
+class SnapshotReplacementStorePort(Protocol):
+    def append_snapshot_replacement(
+        self,
+        path: str,
+        messages: list[dict[str, Any]],
+        *,
+        meta: dict[str, Any],
+        sequence: int,
+    ) -> bool:
+        """Return whether the replacement was appended at a new durable cursor."""
+        ...
+
 class TracePort(Protocol):
     """Trajectory recorder surface."""
 

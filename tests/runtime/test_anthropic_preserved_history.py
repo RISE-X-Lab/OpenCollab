@@ -685,6 +685,113 @@ async def test_autosave_native_view_after_large_transcript_replacement(monkeypat
             await environment.cleanup()
 
 
+@pytest.mark.parametrize("failure", ["capacity", "before-publish", "after-publish"])
+async def test_native_rewrite_recovers_tool_result_when_checkpoint_fails(monkeypatch, tmp_path, failure):
+    limit = 128 * 1024
+    monkeypatch.setattr(storage_module, "MAX_SESSION_SNAPSHOT_BYTES", limit)
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    size = (limit - 14_000) // 2 if failure == "capacity" else 1_000
+    archive = _blocks("é" * size) + _blocks("x") * 256
+    path = tmp_path / "fallback.json"
+    journal = path.with_suffix(".json.journal")
+    held_request, resume = asyncio.Event(), asyncio.Event()
+    peer = _BoundThinkingProvider(reads=0, thinking=False)
+
+    class ArchiveShaper:
+        def shape(self, messages):
+            return [
+                {**message, "content": "[Archived context]"} if message.get("content") == archive else message
+                for message in messages
+            ]
+
+    async def provider(request):
+        response = peer(request)
+        if len(peer.requests) == 3:
+            held_request.set()
+            await resume.wait()
+        return response
+
+    install_sdk_transport(monkeypatch, "anthropic", provider)
+    model = "claude-sonnet-5-5"
+    environment = LocalEnvironment(str(tmp_path))
+    async with _client(model) as client:
+        agent = _agent(thinking=False, model=model)
+        session = build_session(agent=agent, llm=client, env=environment,
+                                auto_save_path=str(path), shaper=ArchiveShaper())
+        running = restored = None
+        try:
+            await session.add_user_message("Warm up the conversation")
+            assert await session.run_loop() == "done"
+            await session.add_user_message("Read source.txt before answering")
+            await asyncio.gather(*session.pending_cleanup_tasks)
+            session.save(str(path))
+            base = path.read_bytes()
+            sequence = json.loads(base)["_autosave_sequence"] + 1
+            session.messages = [*session.messages, {"role": "user", "content": archive}]
+            assert session.state.anthropic_history is None
+
+            checkpoint_error = OSError(f"controlled checkpoint failure {failure}")
+            original_write = session.store._atomic_json_write
+            original_compact = storage_module.write_regular_bytes_atomic
+
+            def write_snapshot(target, document):
+                if failure == "before-publish" and document["_autosave_sequence"] == sequence:
+                    raise checkpoint_error
+                original_write(target, document)
+
+            def compact_journal(target, payload, **options):
+                if failure == "after-publish":
+                    raise checkpoint_error
+                original_compact(target, payload, **options)
+
+            peer.reads = 2
+            with monkeypatch.context() as fault:
+                fault.setattr(session.store, "_atomic_json_write", write_snapshot)
+                fault.setattr(storage_module, "write_regular_bytes_atomic", compact_journal)
+                running = asyncio.create_task(session.run_loop())
+                await asyncio.wait_for(held_request.wait(), 5)
+                await asyncio.gather(*session._auto_save_subscriber.pending_tasks)
+
+                assert not running.done()
+                saved = session.store.load_snapshot(str(path), agent.system_prompt)
+                assert saved["_autosave_sequence"] == sequence
+                assert any(message["content"] == archive for message in saved["messages"])
+                restored = load_session(str(path), agent=agent, llm=client, env=environment)
+                assert restored.state.anthropic_history is not None
+                assert [row["content"] for row in restored.messages if row["role"] == "tool"] == [
+                    row["content"] for row in session.messages if row["role"] == "tool"
+                ]
+                assert sum(row["role"] == "tool" for row in restored.messages) == 1
+                if failure == "after-publish":
+                    assert session.persistence_errors == (checkpoint_error,)
+                    assert json.loads(path.read_bytes())["_autosave_sequence"] == sequence
+                    assert journal.read_bytes() == b""
+                else:
+                    assert not session.persistence_errors
+                    record = json.loads(journal.read_bytes())
+                    assert record["sequence"] == sequence
+                    assert record["replace_from"] > 0
+                    assert path.read_bytes() == base
+                    if failure == "capacity":
+                        assert len(journal.read_bytes()) < limit
+                        assert len(json.dumps(saved, ensure_ascii=False, indent=2).encode("utf-8")) > limit
+
+            resume.set()
+            if failure == "capacity":
+                with pytest.raises(ValueError, match="session snapshot exceeds"):
+                    await running
+            else:
+                assert await running == "done"
+        finally:
+            resume.set()
+            if running is not None:
+                await asyncio.gather(running, return_exceptions=True)
+            if restored is not None:
+                await restored.aclose()
+            await session.aclose()
+            await environment.cleanup()
+
+
 async def test_autosave_without_native_history_uses_only_session_state(tmp_path, monkeypatch):
     path = tmp_path / "session.json"
     environment = LocalEnvironment(str(tmp_path))

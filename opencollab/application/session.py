@@ -20,6 +20,8 @@ from opencollab.application.ports import (
     PermissionPort,
     SafetyPolicyPort,
     SessionStorePort,
+    SnapshotCapacityError,
+    SnapshotReplacementStorePort,
     SnapshotStorePort,
     TracePort,
 )
@@ -1086,7 +1088,7 @@ class Session:
                         replace_from = index
                         break
         # A full native rewrite can exceed the journal's remaining capacity.
-        checkpoint_only = has_native_history and replace_from == 0 and (
+        checkpoint_first = has_native_history and replace_from == 0 and (
             preceding_write_pending or self._auto_save_message_count > 0
         )
         messages, meta = self._snapshot_for_save(replace_from)
@@ -1101,7 +1103,7 @@ class Session:
             else current_seen_hashes - self._auto_save_seen_result_hashes
         )
         checkpoint_messages = None
-        if checkpoint_only or sequence >= self._next_auto_save_checkpoint:
+        if checkpoint_first or sequence >= self._next_auto_save_checkpoint:
             checkpoint_messages = tracked_messages
             if checkpoint_messages is None:
                 checkpoint_messages = copy.deepcopy(self.state.enriched_messages())
@@ -1115,7 +1117,7 @@ class Session:
             self._auto_save_seen_result_hashes = current_seen_hashes
 
         def persist() -> None:
-            if not checkpoint_only:
+            if not checkpoint_first:
                 self.store.append_snapshot_delta(
                     path,
                     sequence=sequence,
@@ -1135,14 +1137,32 @@ class Session:
                     with self._auto_save_lock:
                         if sequence < self._auto_save_sequence:
                             return
-                    self.store.checkpoint_snapshot(
-                        path,
-                        checkpoint_messages,
-                        meta=meta,
-                        sequence=sequence,
-                    )
+                    try:
+                        self.store.checkpoint_snapshot(
+                            path,
+                            checkpoint_messages,
+                            meta=meta,
+                            sequence=sequence,
+                        )
+                    except (OSError, SnapshotCapacityError) as checkpoint_error:
+                        if not checkpoint_first or not isinstance(self.store, SnapshotReplacementStorePort):
+                            raise
+                        try:
+                            saved = self.store.append_snapshot_replacement(
+                                path,
+                                checkpoint_messages,
+                                meta=meta,
+                                sequence=sequence,
+                            )
+                        except Exception as journal_error:
+                            raise checkpoint_error from journal_error
+                        if not saved:
+                            raise
+                        with self._auto_save_lock:
+                            advance_cursor()
+                        return
                     with self._auto_save_lock:
-                        if checkpoint_only:
+                        if checkpoint_first:
                             advance_cursor()
                         self._next_auto_save_checkpoint = 1 << sequence.bit_length()
 
