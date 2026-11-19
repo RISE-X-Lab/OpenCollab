@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import posixpath
 import shlex
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
@@ -60,7 +61,31 @@ _DEVICE = r'''
 device() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1"; }
 '''
 
+_LINK_ORIGINALS = """\
+import os
+import sys
+from pathlib import Path
+
+for record in Path(sys.argv[1]).glob("[0-9]*.path"):
+    try:
+        os.link(record.read_bytes(), record.with_suffix(""), follow_symlinks=False)
+    except OSError:
+        sys.exit(1)
+"""
+
 _HOLD_ORIGINALS = _COMPARE_ENTRIES + _CHECK_PARENTS + _DEVICE + r'''
+hold_original() {
+    if [ "$1" -ef "$2" ] || ln -P -- "$1" "$2" 2>/dev/null; then return 0; fi
+    source_device=$(device "$1") && recovery_device=$(device "$recovery") || return 1
+    if [ "$source_device" != "$recovery_device" ]; then
+        printf 'cannot preserve %s across filesystems\n' "$1" >&2
+        return 1
+    fi
+    mkdir -p -m 700 -- "$recovery/replacements" &&
+        cp -pP -- "$1" "$recovery/replacements/${2##*/}" || return 1
+    needs_activation=1
+}
+
 hold_originals() {
     index=0
     needs_activation=0
@@ -69,20 +94,18 @@ hold_originals() {
         source=$workspace_prefix$path
         if check_parents "$source" 2>/dev/null && [ -f "$source" ] && [ ! -L "$source" ]; then
             entry=$recovery/original-inodes/$index
-            if ! ln -P -- "$source" "$entry" 2>/dev/null; then
-                source_device=$(device "$source") && recovery_device=$(device "$recovery") || return 1
-                if [ "$source_device" != "$recovery_device" ]; then
-                    printf 'cannot preserve %s across filesystems\n' "$source" >&2
-                    return 1
-                fi
-                mkdir -p -m 700 -- "$recovery/replacements" &&
-                    cp -pP -- "$source" "$recovery/replacements/$index" || return 1
-                needs_activation=1
-            fi
             printf '%s' "$source" > "$entry.path" || return 1
+            if [ -z "$linker" ]; then hold_original "$source" "$entry" || return 1; fi
             index=$((index + 1))
         fi
     done
+    if [ -n "$linker" ] && ! "$linker" -I -S -c "$link_script" "$recovery/original-inodes"; then
+        for record in "$recovery"/original-inodes/*.path; do
+            [ -f "$record" ] || continue
+            source=$(cat -- "$record" && printf .) || return 1
+            hold_original "${source%.}" "${record%.path}" || return 1
+        done
+    fi
     if [ "$needs_activation" -eq 1 ]; then printf 'activate-originals\n'; fi
 }
 '''
@@ -505,8 +528,12 @@ done
             f"workspace={shlex.quote(workspace)}; recovery={shlex.quote(backup)};\n"
             'workspace_prefix="${workspace%/}/";\n'
         )
+        # Batch local links to avoid launching a process for every file.
+        linker = sys.executable if len(paths) >= 64 and getattr(environment, "local_filesystem", False) else ""
         snapshot_script = (
-            workspace_vars + _HOLD_ORIGINALS + f"hold_originals {' '.join(targets)} || exit; "
+            workspace_vars + f"linker={shlex.quote(linker)};\n"
+            + (f"link_script={shlex.quote(_LINK_ORIGINALS)};\n" if linker else "")
+            + _HOLD_ORIGINALS + f"hold_originals {' '.join(targets)} || exit; "
             + "; ".join(copies)
         )
         target_test = f'case "${{1#"$workspace_prefix"}}" in {"|".join(targets)}) return 0;; esac; ' if targets else ""

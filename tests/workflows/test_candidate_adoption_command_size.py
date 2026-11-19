@@ -38,6 +38,8 @@ async def test_bulk_candidate_adoption_keeps_recovery_below_argument_limits(tmp_
     if blocked:
         (repo / "settings/session.cache").write_text("runtime cache\n")
     index = (repo / ".git/index").read_bytes()
+    first_module = repo / "src" / names[0]
+    original_inode = first_module.stat().st_ino
     environment = _ArgumentBoundEnvironment(str(repo))
 
     async def edit(child, inputs):
@@ -71,6 +73,11 @@ async def test_bulk_candidate_adoption_keeps_recovery_below_argument_limits(tmp_
             originals, _ = _detached_files(repo / ".git")
             assert originals[repo / "settings/value.txt"] == b"original settings\n"
             assert all(originals[repo / "src" / name] == b"VALUE = 1\n" for name in names)
+            record, = (
+                path for path in (repo / ".git").glob("candidate-recovery-*/original-inodes/*.path")
+                if Path(path.read_text()) == first_module
+            )
+            assert record.with_suffix("").stat().st_ino == original_inode
         else:
             assert (repo / "settings").read_text() == "new settings\n"
             assert not list((repo / ".git").glob("candidate-recovery-*"))
