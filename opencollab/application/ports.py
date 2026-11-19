@@ -470,6 +470,15 @@ class CompletionResponse(Protocol):
         """
         ...
 
+class _NativeRequestRevalidation:
+    def __get__(self, instance: object, owner: type) -> bool:
+        return True
+
+
+# Native clients support the callback through their completion signature.
+_NATIVE_REQUEST_REVALIDATION = _NativeRequestRevalidation()
+
+
 class LLMPort(Protocol):
     """LLM client surface used by the session run loop and compaction."""
 

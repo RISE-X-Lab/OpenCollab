@@ -36,6 +36,7 @@ from opencollab.application._session_run_usage import (
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import (
+    _NATIVE_REQUEST_REVALIDATION,
     CompletionResponse,
     ContextTokenEstimatorPort,
     RequestOutputRequirementPort,
@@ -806,11 +807,16 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             kwargs["on_attempt_usage"] = usage_accounting.record_attempt
         if getattr(self.llm, "supports_usage_settlement", False) and accepts("on_usage"):
             kwargs["on_usage"] = usage_accounting.settle
-        # A declared flag lets middleware consume the callback before forwarding to a fixed signature.
-        revalidation = "supports_request_revalidation"
-        if getattr(self.llm, revalidation, False) and (
+        revalidation = getattr(self.llm, "supports_request_revalidation", False)
+        # Explicit middleware opt-ins can consume the callback before forwarding.
+        if revalidation and (
             accepts("before_request")
-            or (outer_accepts_kwargs and inspect.getattr_static(self.llm, revalidation, False) is True)
+            or (
+                outer_accepts_kwargs and revalidation is True
+                and inspect.getattr_static(
+                    self.llm, "supports_request_revalidation", _NATIVE_REQUEST_REVALIDATION,
+                ) is not _NATIVE_REQUEST_REVALIDATION
+            )
         ):
             kwargs["before_request"] = revalidate
         if getattr(self.llm, "supports_request_admission", False) and accepts("on_admitted"):

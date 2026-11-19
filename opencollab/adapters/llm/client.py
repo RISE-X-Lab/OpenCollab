@@ -40,6 +40,7 @@ from opencollab.adapters.llm.retry import RetryTimeBudget, _scoped_native_retry_
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
 from opencollab.application.async_timeout import await_owned_operation
+from opencollab.application.ports import _NATIVE_REQUEST_REVALIDATION
 from opencollab.domain.token_estimation import estimate_request_tokens
 
 # Native data-residency endpoints share the OpenAI model parameter rules.
@@ -71,12 +72,6 @@ async def _record_api_usage_async(**kwargs: Any) -> None:
         return
 
 
-class _InheritedRequestRevalidation:
-    # A class or instance can shadow this default with an explicit boolean flag.
-    def __get__(self, instance: object, owner: type) -> bool:
-        return True
-
-
 class LLMClient:
     """Client for OpenAI-compatible endpoints and native Anthropic requests.
 
@@ -84,7 +79,7 @@ class LLMClient:
     OpenAI-format history per request.
     """
 
-    supports_request_revalidation = _InheritedRequestRevalidation()
+    supports_request_revalidation = _NATIVE_REQUEST_REVALIDATION
 
     def __init__(
         self,

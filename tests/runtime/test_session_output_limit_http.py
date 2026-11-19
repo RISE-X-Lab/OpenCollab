@@ -202,10 +202,14 @@ class _SettlementWrapper(_LegacyNativeClient):
 
 
 class _RevalidatingWrapper(_LegacyNativeClient):
+    wait_for_prompt = None
+
     @wraps(_LegacyNativeClient.complete)
     async def complete(self, *args, **kwargs):
-        self.arrived.set()
-        await self.release.wait()
+        messages = args[0] if args else kwargs["messages"]
+        if self.wait_for_prompt is None or messages[-1]["content"] == self.wait_for_prompt:
+            self.arrived.set()
+            await self.release.wait()
         before_request = kwargs.pop("before_request", None)
         if before_request is not None:
             kwargs["max_output_tokens"] = min(kwargs["max_output_tokens"], before_request())
@@ -216,10 +220,24 @@ class _ClassOptInWrapper(_RevalidatingWrapper):
     supports_request_revalidation = True
 
 
+class _SlotOptInWrapper(_RevalidatingWrapper):
+    __slots__ = ("supports_request_revalidation",)
+
+
+class _PropertyOptInWrapper(_RevalidatingWrapper):
+    @property
+    def supports_request_revalidation(self):
+        return True
+
+
 @pytest.mark.parametrize("purpose", ["completion", "summary"])
-@pytest.mark.parametrize("declare_on_class", [False, True], ids=["instance-opt-in", "class-opt-in"])
+@pytest.mark.parametrize(
+    "client_class",
+    [_RevalidatingWrapper, _ClassOptInWrapper, _SlotOptInWrapper, _PropertyOptInWrapper],
+    ids=["instance", "class", "slot", "property"],
+)
 async def test_decorated_client_revalidates_budget_before_sending(
-    tmp_path, monkeypatch, local_environment_factory, purpose, declare_on_class,
+    tmp_path, monkeypatch, local_environment_factory, purpose, client_class,
 ):
     requests = []
 
@@ -228,12 +246,11 @@ async def test_decorated_client_revalidates_budget_before_sending(
         return completion_http_response(request, text="<summary>Preserved context.</summary>")
 
     install_sdk_transport(monkeypatch, "openai", handler)
-    client_class = _ClassOptInWrapper if declare_on_class else _RevalidatingWrapper
     async with client_class(
         api_key="controlled-test",  # pragma: allowlist secret
         base_url="https://controlled.invalid/v1", max_retries=0,
     ) as client:
-        if not declare_on_class:
+        if client_class in {_RevalidatingWrapper, _SlotOptInWrapper}:
             client.supports_request_revalidation = True
         client.arrived, client.release = asyncio.Event(), asyncio.Event()
         session = build_session(
@@ -264,8 +281,72 @@ async def test_decorated_client_revalidates_budget_before_sending(
             await session.aclose()
 
 
+async def test_decorated_slot_client_revalidates_shared_workflow_spend(tmp_path, monkeypatch):
+    requests = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        prompt = body["messages"][-1]["content"]
+        requests.append((prompt, body["max_tokens"]))
+        response = completion_http_response(request)
+        if prompt == "spender":
+            usage = {"prompt_tokens": 1997, "completion_tokens": 2, "total_tokens": 1999}
+            return http_response(request, 200, json=response.json() | {"usage": usage})
+        return response
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    async with _SlotOptInWrapper(
+        api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", max_retries=0,
+    ) as client:
+        client.supports_request_revalidation = True
+        client.wait_for_prompt = "waiter"
+        client.arrived, client.release = asyncio.Event(), asyncio.Event()
+
+        async def flow(ctx, _inputs):
+            waiter = asyncio.create_task(ctx.agent_run("waiter", tools=[], system_prompt="System.", budget=1000))
+            try:
+                await asyncio.wait_for(client.arrived.wait(), 5)
+                spender = await ctx.agent_run("spender", tools=[], system_prompt="System.", budget=1000)
+                assert spender.tokens == ctx.tokens_spent() == 1999
+                client.release.set()
+                return await asyncio.wait_for(waiter, 5)
+            finally:
+                client.release.set()
+                await asyncio.gather(waiter, return_exceptions=True)
+
+        result = await OpenCollab(tmp_path, config={"max_output_tokens": 128}).workflow(
+            flow, llm=client, budget=2000, trace=False, limit_mode="explicit", concurrency=2,
+        )
+
+    assert result.status == "completed"
+    assert result.output.status == "stopped"
+    assert "budget exhausted before model call" in result.output.reason
+    assert result.output.tokens == 0
+    assert result.tokens == 1999
+    assert requests == [("spender", 128)]
+
+
+class _ForwardingWrapper(_LegacyNativeClient):
+    @wraps(_LegacyNativeClient.complete)
+    async def complete(self, *args, **kwargs):
+        return await super().complete(*args, **kwargs)
+
+
+class _ForwardingProxy:
+    def __init__(self, client):
+        self.client = client
+
+    def __getattr__(self, name):
+        return getattr(self.client, name)
+
+    @wraps(_ForwardingWrapper.complete)
+    async def complete(self, *args, **kwargs):
+        return await self.client.complete(*args, **kwargs)
+
+
 @pytest.mark.parametrize("failed", [False, True])
-@pytest.mark.parametrize("client_class", [_LegacyNativeClient, _SettlementWrapper])
+@pytest.mark.parametrize("client_class", [_LegacyNativeClient, _SettlementWrapper, _ForwardingWrapper])
 async def test_public_agent_charges_legacy_native_wrapper_usage_once(tmp_path, monkeypatch, failed, client_class):
     requests = []
     events = []
@@ -285,8 +366,9 @@ async def test_public_agent_charges_legacy_native_wrapper_usage_once(tmp_path, m
         base_url="https://controlled.invalid/v1", max_retries=0,
         request_pool=str(pool), request_capacity=1,
     ) as client:
+        llm = _ForwardingProxy(client) if client_class is _ForwardingWrapper else client
         result = await OpenCollab(tmp_path).agent(
-            "Return ok", llm=client, tools=(), budget=20_000, trace=False,
+            "Return ok", llm=llm, tools=(), budget=20_000, trace=False,
             run_control=RunControl(on_event=events.append),
         )
 
