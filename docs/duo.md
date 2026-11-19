@@ -207,10 +207,12 @@ user edits and the source index. A conflicting patch leaves the current source i
 If a partially applied patch is rolled back, OpenCollab retains detached files that
 another process may still be writing to. The error or warning gives the
 `candidate-recovery-*` directory, typically in the common Git directory.
-Its `volumes/` records, when present, name additional recovery directories
-on affected mounts. The adjacent `path` or `.path` record identifies each
-file's original location. Close the writers and recover their data before
-removing the recovery directories or worktree.
+When shared Git metadata is read-only, OpenCollab prefers a writable location
+on the same filesystem outside the worktree so the files survive worktree removal.
+When present, `volumes/` records list additional recovery directories on affected
+mounts. The adjacent `path` or `.path` record identifies each file's original
+location. Close the writers and recover their data before removing the recovery
+directories or worktree.
 Changes to ignore rules preserve files copied from the source and files added to
 the candidate index or commits. Newly created ignored files join delivery when
 explicitly added with `git add --force`.

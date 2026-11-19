@@ -238,18 +238,44 @@ if [ "$detached" -eq 1 ]; then printf 'original-detached\n'; fi
 '''
 
 _RECOVERY_PARENT = _FILESYSTEM + r'''
+writable_directory() { [ -d "$1" ] && [ -w "$1" ] && [ -x "$1" ]; }
+
 recovery_parent() {
     worktree_device=$(filesystem .) && storage_device=$(filesystem "$1/") || return 1
-    if [ "$worktree_device" = "$storage_device" ]; then
+    if [ "$worktree_device" = "$storage_device" ] && writable_directory "$1"; then
         printf '%s\n' "$1"
         return
     fi
-    cd -P -- .. && parent_device=$(filesystem .) || return 1
-    if [ "$worktree_device" != "$parent_device" ]; then
-        printf '%s\n' "$1"
-        return
+    workspace=$(pwd -P && printf .) || return 1
+    workspace=${workspace%??}
+    parent=$workspace
+    while [ "$parent" != / ]; do
+        parent=${parent%/*}
+        parent=${parent:-/}
+        parent_device=$(filesystem "$parent") || return 1
+        [ "$worktree_device" = "$parent_device" ] || break
+        if writable_directory "$parent"; then
+            printf '%s\n' "$parent"
+            return
+        fi
+    done
+    if [ -n "${2:-}" ]; then
+        temporary=$(cd -P -- "${TMPDIR:-/tmp}" >/dev/null 2>&1 && pwd -P && printf .) || temporary=
+        temporary=${temporary%??}
+        case "$temporary/" in
+            "${workspace%/}/"*|"${2%/}/"*) ;;
+            *)
+                if writable_directory "$temporary" && [ "$(filesystem "$temporary")" = "$worktree_device" ]; then
+                    printf '%s\n' "$temporary"
+                    return
+                fi ;;
+        esac
     fi
-    pwd -P
+    if writable_directory "$1"; then
+        printf '%s\n' "$1"
+    else
+        printf '%s\n' "${2:-$1}"
+    fi
 }
 '''
 
@@ -504,19 +530,18 @@ async def _adoption_transaction(
     git_directory = None
     directory_script = f"cd -- {shlex.quote(workspace)} || exit\n" + _RECOVERY_PARENT
     if repository:
-        # Git removes private metadata with a linked worktree. A worktree on
-        # another volume needs a recovery directory beside it on that volume.
+        # Git removes private metadata with the linked worktree.
         directory_script += r'''
-git rev-parse --absolute-git-dir && printf '\0' || exit
+private=$(git rev-parse --absolute-git-dir && printf .) || exit
+printf '%s\0' "${private%??}" || exit
 common=$(git rev-parse --git-common-dir && printf .) || exit
-recovery_parent "${common%??}"
+recovery_parent "${common%??}" "${private%??}"
 '''
     else:
         directory_script += 'recovery_parent "${TMPDIR:-/tmp}"'
     recovery_parent = _complete(await environment.exec_cmd(directory_script, timeout=30), "candidate recovery storage")
     if repository:
         git_directory, recovery_parent = recovery_parent.split("\0")
-        git_directory = git_directory.removesuffix("\n")
     storage = shlex.quote(posixpath.join(workspace, recovery_parent.removesuffix("\n")))
     backup = None
     keep_backup = False

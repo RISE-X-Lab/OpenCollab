@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import stat
 import sys
 import tempfile
 from dataclasses import replace
@@ -48,6 +49,46 @@ def _delete_original(candidate):
     ))
 
 
+async def test_candidate_adopts_with_readonly_common_git_directory(tmp_path):
+    source, candidate = _partial_publication(tmp_path)
+    repo = tmp_path / "linked"
+    _git(source, "worktree", "add", "--detach", str(repo))
+    (repo / "user-note.txt").write_text("staged user note\n")
+    _git(repo, "add", "--", "user-note.txt")
+    index = Path(_git(repo, "rev-parse", "--absolute-git-dir").removesuffix("\n")) / "index"
+    index_before = index.read_bytes()
+    common = source / ".git"
+    common_mode = stat.S_IMODE(common.stat().st_mode)
+    target = repo / "record.txt"
+    environment = LocalEnvironment(str(repo))
+
+    async def flow(ctx, _):
+        await ctx.adopt_candidate(candidate)
+
+    try:
+        common.chmod(0o555)
+        if os.access(common, os.W_OK):
+            pytest.skip("requires an account subject to directory permissions")
+        assert os.access(index.parent, os.W_OK) and os.access(repo, os.W_OK)
+        with target.open("rb") as original:
+            result = await OpenCollab(repo, environment=environment, model="offline").workflow(
+                flow, trace=False, timeout=30,
+            )
+            assert result.ok, result.reason
+            assert target.read_bytes() == b"candidate\n"
+            assert (repo / "settings").read_bytes() == b"replacement settings\n"
+            assert index.read_bytes() == index_before
+            assert original.read() == b"original\n"
+            assert os.fstat(original.fileno()).st_nlink == 0
+        assert stat.S_IMODE(common.stat().st_mode) == 0o555
+        for storage in (common, index.parent, tmp_path, repo):
+            assert not list(storage.glob("*candidate-recovery-*"))
+        assert not list(index.parent.glob("opencollab-candidate-*"))
+    finally:
+        common.chmod(common_mode)
+        await environment.cleanup()
+
+
 @pytest.fixture
 def worktree_parent(tmp_path, request):
     if not request.param:
@@ -62,14 +103,16 @@ def worktree_parent(tmp_path, request):
         yield Path(path)
 
 
-@pytest.mark.parametrize("opened_before_apply,linked,worktree_parent,hard_links", [
-    pytest.param(True, False, False, True, id="original-inode"),
-    pytest.param(False, True, False, True, id="candidate-inode-after-worktree-removal"),
-    pytest.param(False, True, True, True, id="separate-worktree-filesystem"),
-    pytest.param(True, True, False, False, id="original-inode-without-hard-links"),
+@pytest.mark.parametrize("opened_before_apply,linked,worktree_parent,hard_links,readonly_common", [
+    pytest.param(True, False, False, True, False, id="original-inode"),
+    pytest.param(False, True, False, True, False, id="candidate-inode-after-worktree-removal"),
+    pytest.param(False, True, True, True, False, id="separate-worktree-filesystem"),
+    pytest.param(True, True, False, False, False, id="original-inode-without-hard-links"),
+    pytest.param(True, True, False, True, True, id="readonly-common-original-inode"),
+    pytest.param(False, True, False, True, True, id="readonly-common-candidate-inode"),
 ], indirect=["worktree_parent"])
 async def test_candidate_rollback_retains_inode_for_external_writer(
-    tmp_path, monkeypatch, caplog, opened_before_apply, linked, worktree_parent, hard_links,
+    tmp_path, monkeypatch, caplog, opened_before_apply, linked, worktree_parent, hard_links, readonly_common,
 ):
     source, candidate = _partial_publication(tmp_path)
     repo = source
@@ -87,6 +130,8 @@ async def test_candidate_rollback_retains_inode_for_external_writer(
     appended = b"external write after rollback\n"
     index = Path(_git(repo, "rev-parse", "--absolute-git-dir").removesuffix("\n")) / "index"
     index_before = index.read_bytes()
+    common = source / ".git"
+    common_mode = stat.S_IMODE(common.stat().st_mode)
     environment = LocalEnvironment(str(repo))
     execute = environment.exec_cmd
     writer = None
@@ -126,6 +171,11 @@ async def test_candidate_rollback_retains_inode_for_external_writer(
         await ctx.adopt_candidate(candidate)
 
     try:
+        if readonly_common:
+            common.chmod(0o555)
+            if os.access(common, os.W_OK):
+                pytest.skip("requires an account subject to directory permissions")
+            assert os.access(index.parent, os.W_OK) and os.access(repo, os.W_OK)
         if opened_before_apply:
             await start_writer(original)
         result = await OpenCollab(repo, environment=environment, model="offline").workflow(
@@ -150,7 +200,7 @@ async def test_candidate_rollback_retains_inode_for_external_writer(
         assert stdout == b"written\n"
         assert (source / "record.txt").read_bytes() == original
 
-        storage = source / ".git" if worktree_parent == tmp_path else worktree_parent
+        storage = common if worktree_parent == tmp_path and not readonly_common else worktree_parent
         backups = list(storage.glob("candidate-recovery-*"))
         assert backups, "candidate rollback left no recovery storage for the open descriptor"
         backup, = backups
@@ -168,6 +218,8 @@ async def test_candidate_rollback_retains_inode_for_external_writer(
         assert any(str(backup) in message for message in caplog.messages)
         assert any(str(backup) in note for note in getattr(result.error, "__notes__", ()))
     finally:
+        if readonly_common:
+            common.chmod(common_mode)
         if writer is not None and writer.returncode is None:
             writer.kill()
             await writer.communicate()
