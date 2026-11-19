@@ -175,7 +175,7 @@ def test_journal_replacement_uses_the_durable_prefix_and_requires_a_new_sequence
     journal = path.with_suffix(".json.journal")
     store = SessionStore()
     base = [{"role": "system", "content": "prompt"}]
-    archive = {"role": "user", "content": "€" * 1024}
+    archive = {"role": "user", "content": "\u20ac" * 1024}
     replacement = [*base, archive, {"role": "assistant", "content": "latest"}]
     store.checkpoint_snapshot(str(path), base, meta={}, sequence=1)
     store.append_snapshot_delta(
@@ -190,7 +190,7 @@ def test_journal_replacement_uses_the_durable_prefix_and_requires_a_new_sequence
         assert not store.append_snapshot_replacement(str(path), replacement, meta=meta, sequence=sequence)
         assert journal.read_bytes() == before
 
-    edited_archive = {"role": "user", "content": "雪" * 1024}
+    edited_archive = {"role": "user", "content": "\u96ea" * 1024}
     with pytest.raises(ValueError, match="autosave journal exceeds"):
         store.append_snapshot_replacement(str(path), [*base, edited_archive], meta=meta, sequence=3)
     assert journal.read_bytes() == before

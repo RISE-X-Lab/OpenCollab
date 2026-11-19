@@ -691,7 +691,7 @@ async def test_native_rewrite_recovers_tool_result_when_checkpoint_fails(monkeyp
     monkeypatch.setattr(storage_module, "MAX_SESSION_SNAPSHOT_BYTES", limit)
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     size = (limit - 14_000) // 2 if failure in {"capacity", "format"} else 1_000
-    archive = _blocks("é" * size) + _blocks("x") * 256
+    archive = _blocks("\u00e9" * size) + _blocks("x") * 256
     path = tmp_path / "fallback.json"
     journal = path.with_suffix(".json.journal")
     held_request, resume = asyncio.Event(), asyncio.Event()
