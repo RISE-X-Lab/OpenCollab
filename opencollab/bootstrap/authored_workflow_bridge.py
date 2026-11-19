@@ -8,13 +8,13 @@ import math
 import posixpath
 import time
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
-from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange
+from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange, _track_shell_command
 from opencollab.adapters.llm import errors as llm_errors
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.types import LLMResponse, Usage, to_plain_data
@@ -371,13 +371,14 @@ class AuthoredWorkflowBridge:
             if "input_bytes" in arguments:
                 arguments["input_bytes"] = base64.b64decode(arguments["input_bytes"], validate=True)
         edit_id = request.get("edit")
-        if edit_id is None:
-            result = await getattr(environment, action)(**arguments)
-        else:
-            edit = self._edits.get(edit_id)
-            if edit is None or edit.environment is not environment:
-                raise ValueError("unknown file edit lock for this environment")
-            result = await edit.call(action, arguments)
+        with _track_shell_command(environment) if action == "exec_cmd" else nullcontext():
+            if edit_id is None:
+                result = await getattr(environment, action)(**arguments)
+            else:
+                edit = self._edits.get(edit_id)
+                if edit is None or edit.environment is not environment:
+                    raise ValueError("unknown file edit lock for this environment")
+                result = await edit.call(action, arguments)
         if isinstance(result, (ExecResult, TextFileRange)):
             result = asdict(result)
             if result.get("stdout_bytes") is not None:

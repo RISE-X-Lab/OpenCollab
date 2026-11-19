@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args
 
 from opencollab.adapters._docker_snapshot import _copy_artifact_to_host
+from opencollab.adapters._env_base import ExecResult, _track_shell_command
 from opencollab.adapters._env_process import ProcessCleanupError
 from opencollab.adapters.session_environments import SessionEnvironmentPool
 from opencollab.adapters.tools._paths import checked_path
@@ -345,13 +346,15 @@ class AuthoredWorkflowTool(Tool):
             child.tokens += delta
 
     async def _execute(self, child: _Child, command: str, request_bytes: bytes) -> None:
+        async def run() -> ExecResult:
+            with _track_shell_command(child.environment):
+                return await child.environment.exec_cmd(command, timeout=math.inf, input_bytes=request_bytes)
+
         execution = None
         logs: dict[str, Any] = {}
         status = "running"
         try:
-            execution = asyncio.create_task(child.environment.exec_cmd(
-                command, timeout=math.inf, input_bytes=request_bytes,
-            ))
+            execution = asyncio.create_task(run())
             child.execution = execution
             if child.stop_requested:
                 execution.cancel()

@@ -88,6 +88,25 @@ def _flatten(folder):
     (folder / "draft.txt").write_text("candidate draft\n")
 
 
+def _partial_publication(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "record.txt").write_text("original\n")
+    _git(repo, "add", "record.txt")
+    _git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+         "-c", "commit.gpgsign=false", "commit", "-qm", "test: prepare partial publication")
+    (repo / "settings").mkdir()
+    (repo / "settings/notes.txt").write_text("existing settings\n")
+    patch = (
+        "diff --git a/record.txt b/record.txt\n--- a/record.txt\n+++ b/record.txt\n"
+        "@@ -1 +1 @@\n-original\n+candidate\n"
+        "diff --git a/settings b/settings\nnew file mode 100644\n--- /dev/null\n+++ b/settings\n"
+        "@@ -0,0 +1 @@\n+replacement settings\n"
+    )
+    return repo, CandidateRun("record update", None, patch, (), ())
+
+
 @pytest.mark.parametrize("physical", [False, True])
 @pytest.mark.parametrize("cache", [False, True])
 async def test_public_sdk_candidate_recovers_directory_replacement(tmp_path, physical, cache):
@@ -550,6 +569,67 @@ async def test_recovery_preserves_a_write_after_comparing_the_live_file(tmp_path
         assert (repo / ".git/index").read_bytes() == index
     finally:
         await environment.cleanup()
+
+
+@pytest.mark.parametrize("linked", [False, True])
+async def test_recovery_compares_parked_bytes_before_removing_the_backup(tmp_path, linked):
+    source, candidate = _partial_publication(tmp_path)
+    repo = source
+    if linked:
+        repo = tmp_path / "linked"
+        _git(source, "worktree", "add", "--detach", str(repo))
+        (repo / "settings").mkdir()
+        (repo / "settings/notes.txt").write_text("existing settings\n")
+    target = repo / "record.txt"
+    original = target.read_bytes()
+    index = Path(_git(repo, "rev-parse", "--absolute-git-dir").removesuffix("\n")) / "index"
+    index_before = index.read_bytes()
+    environment = LocalEnvironment(str(repo))
+    execute = environment.exec_cmd
+    writer = None
+    appended = b"# independent write\n"
+    published = None
+
+    async def observe(command, timeout=120.0, **kwargs):
+        nonlocal writer, published
+        if command.startswith("recovery="):
+            assert writer is not None
+            assert target.read_bytes() == original
+            writer.write(appended)
+            writer.flush()
+            os.fsync(writer.fileno())
+            writer.close()
+        result = await execute(command, timeout, **kwargs)
+        if " apply --binary " in command and ".candidate-adopt-" in command:
+            assert result.returncode == 128, result.stderr
+            published = target.read_bytes()
+            assert published != original
+            writer = target.open("ab")
+        return result
+
+    environment.exec_cmd = observe
+
+    async def flow(ctx, _):
+        await ctx.adopt_candidate(candidate)
+
+    try:
+        result = await OpenCollab(repo, environment=environment, model="offline").workflow(flow, trace=False)
+        assert isinstance(result.error, CandidateAdoptionRecoveryError)
+        assert f"concurrent change at {target}" in result.reason
+        backup, = (source / ".git").glob("candidate-recovery-*")
+        assert str(backup) in result.reason
+        record, = (record for record in backup.glob("observed-*/path") if record.read_text() == str(target))
+        assert record.with_name("entry").read_bytes() == published + appended
+        assert target.read_bytes() == original
+        assert index.read_bytes() == index_before
+    finally:
+        if writer is not None:
+            writer.close()
+        await environment.cleanup()
+    if linked:
+        _git(source, "worktree", "remove", "--force", str(repo))
+        assert not index.exists()
+        assert record.with_name("entry").read_bytes() == published + appended
 
 
 @pytest.mark.parametrize("path", [".", ".gi\u200ct/config"])

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,7 +13,7 @@ from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.application.workflow_candidates import CandidateAdoptionRecoveryError
 from opencollab.tools import builtin_tools
-from tests.workflows.test_candidate_adoption_recovery import _flatten, _repository, _run
+from tests.workflows.test_candidate_adoption_recovery import _flatten, _partial_publication, _repository, _run
 from tests.workflows.test_workflow_candidate_workspace import _git
 
 
@@ -38,8 +40,9 @@ class _PublicationBarrier(LocalEnvironment):
 
 
 class _WriterModel:
-    def __init__(self, tool, path):
+    def __init__(self, tool, path, *, command=None):
         self.tool, self.path, self.calls = tool, path, 0
+        self.command = command
         self.requested = asyncio.Event()
 
     async def complete(self, messages, tools=None, **kwargs):
@@ -48,7 +51,7 @@ class _WriterModel:
             self.requested.set()
             arguments = {"path": self.path}
             if self.tool == "bash":
-                arguments = {"command": f"printf '%s\\n' 'shared replacement' > {self.path}"}
+                arguments = {"command": self.command or f"printf '%s\\n' 'shared replacement' > {self.path}"}
             elif self.tool == "file_write":
                 arguments.update(mode="create", content="VALUE = 100\n")
             else:
@@ -209,5 +212,108 @@ async def test_sdk_shared_bash_preserves_writes_around_git_publication_failure(t
         else:
             assert (repo / "loader.py").read_bytes() == loader
             assert not backups
+    finally:
+        await environment.cleanup()
+
+
+class _ParkingBarrier(_PublicationBarrier):
+    def __init__(self, workspace):
+        super().__init__(workspace, after_write=True)
+        self.parking = asyncio.Event()
+        self.allow_parking = asyncio.Event()
+        self.parked = asyncio.Event()
+        self.return_recovery = asyncio.Event()
+
+    async def exec_cmd(self, command, timeout=120, **kwargs):
+        recovery = command.startswith("failed=0;")
+        if recovery:
+            self.parking.set()
+            await self.allow_parking.wait()
+        result = await super().exec_cmd(command, timeout, **kwargs)
+        if recovery:
+            self.parked.set()
+            await self.return_recovery.wait()
+        return result
+
+
+@pytest.mark.parametrize("finished_inside_recovery", [False, True])
+async def test_sdk_shared_bash_retains_writes_through_an_open_file(tmp_path, finished_inside_recovery):
+    repo, candidate = _partial_publication(tmp_path)
+    target = repo / "record.txt"
+    original = target.read_bytes()
+    index = (repo / ".git/index").read_bytes()
+    environment = _ParkingBarrier(repo)
+    ready = repo / "writer.ready"
+    release = repo / "writer.release"
+    appended = b"# shared shell bytes\n"
+    command = shlex.join((sys.executable, "-c", f"""
+import os
+import time
+from pathlib import Path
+
+with Path({target.name!r}).open("ab") as stream:
+    Path({ready.name!r}).touch()
+    deadline = time.monotonic() + 10
+    while not Path({release.name!r}).exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("waiting for recovery")
+        time.sleep(0.01)
+    stream.write({appended!r})
+    stream.flush()
+    os.fsync(stream.fileno())
+"""))
+
+    async def wait_for_writer():
+        while not ready.exists():
+            await asyncio.sleep(0.01)
+
+    async def flow(ctx, _):
+        publication = asyncio.create_task(ctx.adopt_candidate(candidate))
+        writer = None
+        try:
+            await asyncio.wait_for(environment.entered.wait(), 10)
+            published = target.read_bytes()
+            assert published != original
+            if finished_inside_recovery:
+                environment.release.set()
+                await asyncio.wait_for(environment.parking.wait(), 10)
+            writer = asyncio.create_task(ctx.agent_run(
+                "Save the shared Bash result", tools=list(builtin_tools("bash", headless=False)),
+                isolation="shared", budget=2000, system_prompt="Run the shell command",
+            ))
+            await asyncio.wait_for(wait_for_writer(), 10)
+            environment.release.set()
+            environment.allow_parking.set()
+            await asyncio.wait_for(environment.parked.wait(), 10)
+            if finished_inside_recovery:
+                release.touch()
+                assert (await asyncio.wait_for(writer, 10)).status == "completed"
+            environment.return_recovery.set()
+            with pytest.raises(CandidateAdoptionRecoveryError, match="concurrent shell command.*retained"):
+                await asyncio.wait_for(asyncio.shield(publication), 10)
+            release.touch()
+            assert (await asyncio.wait_for(writer, 10)).status == "completed"
+            return published
+        finally:
+            environment.release.set()
+            environment.allow_parking.set()
+            environment.return_recovery.set()
+            release.touch()
+            await asyncio.gather(publication, *([writer] if writer else []), return_exceptions=True)
+
+    try:
+        result = await OpenCollab(repo, environment=environment, model="local-scripted").workflow(
+            flow, llm=_WriterModel("bash", target.name, command=command), trace=False, timeout=40,
+            budget=5000, concurrency=2, limit_mode="explicit", agent_profile="single2",
+        )
+        assert result.ok, result.reason
+        assert environment.publications == [128]
+        assert target.read_bytes() == original
+        assert (repo / "settings/notes.txt").read_text() == "existing settings\n"
+        assert (repo / ".git/index").read_bytes() == index
+        retained, = (repo / ".git").glob("candidate-recovery-*")
+        record, = (record for record in retained.glob("observed-*/path") if record.read_text() == str(target))
+        assert record.with_name("entry").read_bytes() == result.output + appended
+        assert not environment.revoked
     finally:
         await environment.cleanup()

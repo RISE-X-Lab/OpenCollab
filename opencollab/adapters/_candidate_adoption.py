@@ -13,9 +13,8 @@ from opencollab.adapters._git_patch_bytes import _complete, _patch_temporary
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.workflow_candidates import CandidateAdoptionRecoveryError
 
-_RECOVER_PATHS = r'''
+_COMPARE_ENTRIES = r'''
 present() { [ -e "$1" ] || [ -L "$1" ]; }
-directory() { [ -d "$1" ] && [ ! -L "$1" ]; }
 mode() { stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1"; }
 
 same_entry() {
@@ -32,6 +31,11 @@ same_entry() {
 }
 
 conflict() { printf 'concurrent change at %s\n' "$1" >&2; return 2; }
+'''
+
+_RECOVER_PATHS = _COMPARE_ENTRIES + r'''
+directory() { [ -d "$1" ] && [ ! -L "$1" ]; }
+device() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1"; }
 
 check_parents() {
     if [ "$1" = "$workspace" ]; then directory "$workspace" || conflict "$workspace"; return; fi
@@ -100,6 +104,13 @@ restore_saved() {
 
 park_candidate_entry() {
     if ! present "$1"; then return 0; fi
+    if [ -f "$1" ] && [ ! -L "$1" ]; then
+        source_device=$(device "$1") && recovery_device=$(device "$recovery") || return 1
+        if [ "$source_device" != "$recovery_device" ]; then
+            printf 'cannot park %s across filesystems\n' "$1" >&2
+            return 2
+        fi
+    fi
     parked=$(mktemp -d "$recovery/observed-XXXXXXXX") || return 1
     printf '%s' "$1" > "$parked/path" && mv -- "$1" "$parked/entry" || return 1
     if ! same_entry "$parked/entry" "$2"; then
@@ -160,6 +171,15 @@ restore_entry() (
         conflict "$live"
     fi
 )
+'''
+
+_RECHECK_PARKED = _COMPARE_ENTRIES + r'''
+for parked in "$recovery"/observed-*; do
+    [ -d "$parked" ] || continue
+    path=$(cat -- "$parked/path" && printf .) || exit
+    path=${path%.}
+    same_entry "$parked/entry" "$staged/${path#"$workspace_prefix"}" || { conflict "$path"; exit; }
+done
 '''
 
 
@@ -256,10 +276,13 @@ async def _adoption_transaction(
     git_directory = None
     storage = '"${TMPDIR:-/tmp}"'
     if repository:
-        git_directory = _complete(await environment.exec_cmd(
-            f"git -C {shlex.quote(workspace)} rev-parse --absolute-git-dir", timeout=30,
-        ), "candidate recovery storage").removesuffix("\n")
-        storage = shlex.quote(git_directory)
+        git = f"git -C {shlex.quote(workspace)}"
+        layout = _complete(await environment.exec_cmd(
+            f"{git} rev-parse --absolute-git-dir && printf '\\0' && {git} rev-parse --git-common-dir", timeout=30,
+        ), "candidate recovery storage")
+        git_directory, common_directory = (path.removesuffix("\n") for path in layout.split("\0"))
+        # Git removes the private metadata along with a linked worktree.
+        storage = shlex.quote(posixpath.join(workspace, common_directory))
     backup = None
     keep_backup = False
 
@@ -268,6 +291,22 @@ async def _adoption_transaction(
         backup = _complete(await environment.exec_cmd(
             f'mktemp -d {storage}/candidate-recovery-XXXXXXXX', timeout=30,
         ), "candidate recovery storage").removesuffix("\n")
+
+    async def remove_backup(path: str, *, verify: bool = False) -> None:
+        quoted = shlex.quote(path)
+        removal = (
+            f"rm -rf -- {quoted} || "
+            f"(find {quoted} -type d ! -perm -u+w -exec chmod -- u+w {{}} + && rm -rf -- {quoted})"
+        )
+        if verify:
+            removal = (
+                f"recovery={quoted}; staged={shlex.quote(posixpath.join(path, 'replay'))}; "
+                f"workspace_prefix={shlex.quote(workspace.rstrip('/') + '/')};\n"
+                + _RECHECK_PARKED + removal
+            )
+        result = await environment.exec_cmd(removal, timeout=120)
+        if verify:
+            _complete(result, "candidate recovery cleanup")
 
     try:
         await await_owned_operation(allocate_backup(), propagate_cancellation=True)
@@ -349,7 +388,12 @@ async def _adoption_transaction(
             f"candidate_descendants() {{ check_candidate_descendants \"$1\" {' '.join(targets)}; }}\n"
         ) + _RECOVER_PATHS + "; ".join((
             *recreate_directories, *restores, *reversed(restore_directory_modes),
-        )) + '; exit "$failed"'
+        )) + r''';
+if [ "$failed" -ne 0 ]; then exit "$failed"; fi
+for parked in "$recovery"/observed-*/entry; do
+    if [ -f "$parked" ] && [ ! -L "$parked" ]; then printf 'parked\n'; break; fi
+done
+'''
         async with AsyncExitStack() as commands:
             snapshot_command = await commands.enter_async_context(_adoption_command(
                 environment, workspace, "; ".join(copies), repository=repository,
@@ -362,16 +406,26 @@ async def _adoption_transaction(
             try:
                 yield
             except BaseException as failure:
-                async def recover() -> None:
+                async def recover() -> tuple[bool, bool]:
                     async with _adoption_command(
                         environment, workspace, replay_script, repository=repository,
                     ) as command:
                         _complete(await environment.exec_cmd(command, timeout=900), "candidate recovery replay copy")
                     await replay(staged, git_directory, saved_attributes_file)
-                    _complete(await environment.exec_cmd(recovery_command, timeout=900), "candidate adoption recovery")
+
+                    shell_commands = getattr(environment, "_shell_commands", None)
+                    active = shell_commands.active if shell_commands is not None else 0
+                    last_started = shell_commands.last_started if shell_commands is not None else None
+                    receipt = _complete(await environment.exec_cmd(
+                        recovery_command, timeout=900,
+                    ), "candidate adoption recovery")
+                    shell_overlapped = shell_commands is not None and (
+                        active > 0 or last_started is not shell_commands.last_started
+                    )
+                    return "parked" in receipt.splitlines(), shell_overlapped
 
                 try:
-                    await await_owned_operation(recover())
+                    parked, shell_overlapped = await await_owned_operation(recover())
                 except BaseException as recovery:
                     keep_backup = True
                     revoke = getattr(environment, "revoke", None)
@@ -381,15 +435,27 @@ async def _adoption_transaction(
                         f"candidate adoption failed ({failure}); recovery failed ({recovery}); "
                         f"original files retained in {backup}"
                     ) from recovery
+                if parked:
+                    keep_backup = True
+                    if shell_overlapped:
+                        # A command can still own a detached inode after its original path is restored.
+                        raise CandidateAdoptionRecoveryError(
+                            f"candidate adoption failed ({failure}); a concurrent shell command may have written "
+                            f"to parked files retained in {backup}"
+                        ) from failure
+                    assert backup is not None
+                    try:
+                        await await_owned_operation(remove_backup(backup, verify=True))
+                    except BaseException as cleanup:
+                        raise CandidateAdoptionRecoveryError(
+                            f"candidate adoption failed ({failure}); cleanup failed ({cleanup}); "
+                            f"recovery location {backup}"
+                        ) from cleanup
+                    backup = None
                 raise
     finally:
         if backup is not None and not keep_backup:
             try:
-                quoted = shlex.quote(backup)
-                await await_owned_operation(environment.exec_cmd(
-                    f"rm -rf -- {quoted} || "
-                    f"(find {quoted} -type d ! -perm -u+w -exec chmod -- u+w {{}} + && rm -rf -- {quoted})",
-                    timeout=120,
-                ))
+                await await_owned_operation(remove_backup(backup))
             except Exception:
                 pass

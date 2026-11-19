@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import shlex
+import sys
 from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
 
+from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from opencollab.adapters.env import DockerEnvironment, LocalEnvironment
+from opencollab.adapters.hooks import ShellHookRunner
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.errors import TransientProviderError
 from opencollab.adapters.llm.request_admission import request_slot
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.session_environments import SessionEnvironmentPool
+from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileWriteTool
 from opencollab.application._session_run_shared import _TeamBudgetStop, _TokenBudgetStop
 from opencollab.application.ports import (
@@ -22,6 +28,7 @@ from opencollab.application.ports import (
 )
 from opencollab.application.run_control import _RunCancelled
 from opencollab.application.tool_execution import ToolRuntime
+from opencollab.application.workflow_candidates import CandidateAdoptionRecoveryError
 from opencollab.bootstrap.authored_workflow_bridge import (
     AuthoredWorkflowBridge,
     BridgeClient,
@@ -31,6 +38,9 @@ from opencollab.bootstrap.authored_workflow_bridge import (
 )
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
+from opencollab.domain.hooks import HookSpec
+from tests.interfaces.test_member_authored_workflow import _launch, _manager
+from tests.workflows.test_workflow_candidate_workspace import _git
 
 
 @pytest.mark.parametrize("error", [
@@ -46,6 +56,124 @@ def test_bridge_restores_usage_on_control_errors(error):
     assert type(restored) is type(error)
     assert str(restored) == str(error)
     assert vars(restored) == {**vars(error), "usage": usage}
+
+
+@pytest.mark.parametrize("writer_kind", ["bridge", "authored-process", "tool-hook"])
+async def test_managed_commands_keep_parked_candidate_bytes(tmp_path, monkeypatch, writer_kind):
+    monkeypatch.chdir(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _git(workspace, "init", "-q")
+    (workspace / "record.txt").write_text("original\n")
+    _git(workspace, "add", "record.txt")
+    _git(workspace, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+         "-c", "commit.gpgsign=false", "commit", "-qm", "test: prepare bridged writer")
+    (workspace / "settings").mkdir()
+    (workspace / "settings/notes.txt").write_text("Existing settings\n")
+    patch = (
+        "diff --git a/record.txt b/record.txt\n--- a/record.txt\n+++ b/record.txt\n"
+        "@@ -1 +1 @@\n-original\n+candidate\n"
+        "diff --git a/settings b/settings\nnew file mode 100644\n--- /dev/null\n+++ b/settings\n"
+        "@@ -0,0 +1 @@\n+replacement\n"
+    )
+    (workspace / "authored.py").write_text(
+        "import asyncio, os\n"
+        "from pathlib import Path\n"
+        "async def main(ctx, args):\n"
+        "    with open('record.txt', 'a') as stream:\n"
+        "        Path('writer.ready').touch()\n"
+        "        while not Path('writer.release').is_file(): await asyncio.sleep(0.01)\n"
+        "        stream.write('authored append\\n')\n"
+        "        stream.flush()\n"
+        "        os.fsync(stream.fileno())\n"
+        "    Path('writer.flushed').touch()\n"
+        "    return 'saved'\n"
+        "if __name__ == '__main__': asyncio.run(main(None, {}))\n"
+    )
+    index = (workspace / ".git/index").read_bytes()
+    host = LocalEnvironment(str(workspace))
+    mailbox = LocalEnvironment(str(tmp_path))
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    bridge = AuthoredWorkflowBridge(
+        mailbox, str(artifacts), SessionEnvironmentPool(str(tmp_path), isolation="shared", base_environment=mailbox),
+        {}, ToolRuntime(mailbox, None, None), allow_unisolated_shell=True,
+    )
+    bridge._environments[1] = host
+    proxy = BridgeEnvironment(BridgeClient(artifacts, bridge.options()), {
+        "handle": 1, "workspace": str(workspace), "process_isolated": False,
+    })
+    parent, manager, runtime = _manager(host) if writer_kind == "authored-process" else (None, None, None)
+    published, permit_recovery, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    native_exec = host.exec_cmd
+
+    async def pause_failed_apply(cmd, *args, **kwargs):
+        result = await native_exec(cmd, *args, **kwargs)
+        if " apply --binary " in cmd and ".candidate-adopt-" in cmd:
+            assert result.returncode == 128
+            published.set()
+            await permit_recovery.wait()
+        return result
+
+    monkeypatch.setattr(host, "exec_cmd", pause_failed_apply)
+
+    async def serve():
+        while not stop.is_set():
+            await bridge.poll()
+            await asyncio.sleep(0.005)
+
+    async def writer_ready():
+        while not (workspace / "writer.ready").is_file():
+            if writer.done():
+                writer.result()
+                raise AssertionError("writer finished before opening the file")
+            await asyncio.sleep(0.005)
+
+    async def run_writer():
+        command = shlex.join((sys.executable, "authored.py"))
+        if writer_kind == "bridge":
+            outcome = await BashTool(require_process_isolation=False).execute_with_runtime(
+                {"command": command}, ToolRuntime(proxy, None, None),
+            )
+            assert "Exit code: 0" in outcome
+        elif writer_kind == "authored-process":
+            started = await _launch(manager, runtime, isolation="shared")
+            outcome = json.loads(await manager.execute_with_runtime({"action": "wait", "id": started["id"]}, runtime))
+            assert outcome["status"] == "completed"
+            assert outcome["result"]["output"] == "saved"
+        else:
+            hook = HookSpec(event="PreToolUse", action_type="command", command=command)
+            runner = ShellHookRunner((hook,), scheduler=SimpleNamespace(agent_environment=lambda _: host))
+            await runner.fire("PreToolUse", {"hook_event_name": "PreToolUse", "aid": 0, "tool": "bash"})
+            assert (workspace / "writer.flushed").is_file()
+
+    server = asyncio.create_task(serve())
+    publication = asyncio.create_task(EnvCandidateWorkspace(host).adopt(patch))
+    writer = None
+    try:
+        await asyncio.wait_for(published.wait(), 10)
+        writer = asyncio.create_task(run_writer())
+        await asyncio.wait_for(writer_ready(), 10)
+        permit_recovery.set()
+        with pytest.raises(CandidateAdoptionRecoveryError, match="parked files retained"):
+            await asyncio.wait_for(publication, 10)
+        (workspace / "writer.release").touch()
+        await asyncio.wait_for(writer, 10)
+        saved, = (workspace / ".git").glob("candidate-recovery-*/observed-*/entry")
+        assert saved.read_text() == "candidate\nauthored append\n"
+        assert (workspace / "record.txt").read_text() == "original\n"
+        assert (workspace / ".git/index").read_bytes() == index
+    finally:
+        permit_recovery.set()
+        (workspace / "writer.release").touch()
+        await asyncio.gather(publication, *([writer] if writer else []), return_exceptions=True)
+        stop.set()
+        await server
+        await bridge.aclose()
+        if parent is not None:
+            await parent.aclose()
+        await mailbox.cleanup()
+        await host.cleanup()
 
 
 @pytest.mark.parametrize("docker", [False, True])
