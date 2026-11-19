@@ -599,7 +599,10 @@ class SessionStore:
                         "refusing checkpoint sequence "
                         f"{sequence}; it conflicts with persisted journal state"
                     )
-            self._atomic_json_write(path, obj)
+            try:
+                self._atomic_json_write(path, obj)
+            except SnapshotCapacityError:
+                self._atomic_json_write(path, obj, indent=None)
             write_regular_bytes_atomic(
                 self._journal_path(path),
                 b"",
@@ -804,11 +807,14 @@ class SessionStore:
         ).decode("utf-8")
 
     @staticmethod
-    def _atomic_json_write(path: str, value: Any) -> None:
+    def _atomic_json_write(path: str, value: Any, *, indent: int | None = 2) -> None:
         """Durably replace one JSON file without exposing a partial snapshot."""
         def serialize(handle: BinaryIO) -> None:
             writer = _BoundedUTF8Writer(handle, path=path)
-            json.dump(value, writer, ensure_ascii=False, indent=2)
+            if indent is None:
+                json.dump(value, writer, ensure_ascii=False, separators=(",", ":"))
+            else:
+                json.dump(value, writer, ensure_ascii=False, indent=indent)
 
         write_regular_file_atomic(
             path,

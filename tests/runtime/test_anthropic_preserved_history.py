@@ -685,12 +685,12 @@ async def test_autosave_native_view_after_large_transcript_replacement(monkeypat
             await environment.cleanup()
 
 
-@pytest.mark.parametrize("failure", ["capacity", "before-publish", "after-publish"])
+@pytest.mark.parametrize("failure", ["capacity", "format", "before-publish", "after-publish"])
 async def test_native_rewrite_recovers_tool_result_when_checkpoint_fails(monkeypatch, tmp_path, failure):
     limit = 128 * 1024
     monkeypatch.setattr(storage_module, "MAX_SESSION_SNAPSHOT_BYTES", limit)
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
-    size = (limit - 14_000) // 2 if failure == "capacity" else 1_000
+    size = (limit - 14_000) // 2 if failure in {"capacity", "format"} else 1_000
     archive = _blocks("é" * size) + _blocks("x") * 256
     path = tmp_path / "fallback.json"
     journal = path.with_suffix(".json.journal")
@@ -720,6 +720,10 @@ async def test_native_rewrite_recovers_tool_result_when_checkpoint_fails(monkeyp
                                 auto_save_path=str(path), shaper=ArchiveShaper())
         running = restored = None
         try:
+            if failure == "capacity":
+                session.messages = [*session.messages, {
+                    "role": "user", "content": _blocks("[Archived prefix] " + "p" * 20_000),
+                }]
             await session.add_user_message("Warm up the conversation")
             assert await session.run_loop() == "done"
             await session.add_user_message("Read source.txt before answering")
@@ -734,10 +738,10 @@ async def test_native_rewrite_recovers_tool_result_when_checkpoint_fails(monkeyp
             original_write = session.store._atomic_json_write
             original_compact = storage_module.write_regular_bytes_atomic
 
-            def write_snapshot(target, document):
+            def write_snapshot(target, document, **options):
                 if failure == "before-publish" and document["_autosave_sequence"] == sequence:
                     raise checkpoint_error
-                original_write(target, document)
+                original_write(target, document, **options)
 
             def compact_journal(target, payload, **options):
                 if failure == "after-publish":
@@ -766,6 +770,12 @@ async def test_native_rewrite_recovers_tool_result_when_checkpoint_fails(monkeyp
                     assert session.persistence_errors == (checkpoint_error,)
                     assert json.loads(path.read_bytes())["_autosave_sequence"] == sequence
                     assert journal.read_bytes() == b""
+                elif failure == "format":
+                    assert not session.persistence_errors
+                    assert len(json.dumps(saved, ensure_ascii=False, indent=2).encode("utf-8")) > limit
+                    assert path.stat().st_size < limit
+                    assert json.loads(path.read_bytes())["_autosave_sequence"] == sequence
+                    assert journal.read_bytes() == b""
                 else:
                     assert not session.persistence_errors
                     record = json.loads(journal.read_bytes())
@@ -774,7 +784,7 @@ async def test_native_rewrite_recovers_tool_result_when_checkpoint_fails(monkeyp
                     assert path.read_bytes() == base
                     if failure == "capacity":
                         assert len(journal.read_bytes()) < limit
-                        assert len(json.dumps(saved, ensure_ascii=False, indent=2).encode("utf-8")) > limit
+                        assert len(json.dumps(saved, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > limit
 
             resume.set()
             if failure == "capacity":
