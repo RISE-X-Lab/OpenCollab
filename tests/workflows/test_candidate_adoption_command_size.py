@@ -7,6 +7,7 @@ import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters._env_local import LocalEnvironment
+from tests.workflows.test_candidate_adoption_recovery import _detached_files
 from tests.workflows.test_workflow_candidate_workspace import _git
 
 
@@ -67,10 +68,13 @@ async def test_bulk_candidate_adoption_keeps_recovery_below_argument_limits(tmp_
         if blocked:
             assert (repo / "settings/value.txt").read_text() == "original settings\n"
             assert (repo / "settings/session.cache").read_text() == "runtime cache\n"
+            originals, _ = _detached_files(repo / ".git")
+            assert originals[repo / "settings/value.txt"] == b"original settings\n"
+            assert all(originals[repo / "src" / name] == b"VALUE = 1\n" for name in names)
         else:
             assert (repo / "settings").read_text() == "new settings\n"
+            assert not list((repo / ".git").glob("candidate-recovery-*"))
         assert (repo / ".git/index").read_bytes() == index
-        assert not list((repo / ".git").glob("candidate-recovery-*"))
         assert not list((repo / ".git").rglob(".candidate-command-*.sh"))
     finally:
         await environment.cleanup()

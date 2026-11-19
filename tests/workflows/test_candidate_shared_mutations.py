@@ -13,7 +13,13 @@ from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.application.workflow_candidates import CandidateAdoptionRecoveryError
 from opencollab.tools import builtin_tools
-from tests.workflows.test_candidate_adoption_recovery import _flatten, _partial_publication, _repository, _run
+from tests.workflows.test_candidate_adoption_recovery import (
+    _detached_files,
+    _flatten,
+    _partial_publication,
+    _repository,
+    _run,
+)
 from tests.workflows.test_workflow_candidate_workspace import _git
 
 
@@ -66,6 +72,24 @@ class _WriterModel:
         return LLMResponse(content="Shared edit complete", usage=Usage(10, 5), finish_reason="stop")
 
 
+def _assert_flatten_recovery(repo: Path, loader: bytes) -> None:
+    assert (repo / "loader.py").read_bytes() == loader
+    assert (repo / "draft.txt").read_bytes() == b"untracked user draft\n"
+    assert _detached_files(repo / ".git") == (
+        {
+            repo / "loader.py": loader,
+            repo / "draft.txt": b"untracked user draft\n",
+            repo / "settings/defaults.py": b"VALUE = 1\n",
+        },
+        {
+            repo / "loader.py": (
+                b'from pathlib import Path\ndef value():\n    return int(Path("settings").read_text())\n'
+            ),
+            repo / "draft.txt": b"candidate draft\n",
+        },
+    )
+
+
 @pytest.mark.parametrize("tool", ["file_write", "apply_patch"])
 @pytest.mark.parametrize("relation,failure", [
     ("target", False), ("target", True), ("descendant", True),
@@ -85,6 +109,7 @@ async def test_sdk_shared_agent_owns_mutations_through_candidate_publication(
     environment = _PublicationBarrier(repo)
     path = "other.py" if relation == "unrelated" else "settings/defaults.py"
     model = _WriterModel(tool, path)
+    loader = (repo / "loader.py").read_bytes()
     index = (repo / ".git/index").read_bytes()
 
     async def edit(child, _):
@@ -143,7 +168,17 @@ async def test_sdk_shared_agent_owns_mutations_through_candidate_publication(
         assert result.output == "retained"
         assert _run(repo) == ("100\n" if relation != "unrelated" else "1\n" if failure else "42\n")
         assert (repo / ".git/index").read_bytes() == index
-        assert not list((repo / ".git").glob("candidate-recovery-*"))
+        if not failure:
+            assert not list((repo / ".git").glob("candidate-recovery-*"))
+        elif relation == "descendant":
+            _assert_flatten_recovery(repo, loader)
+        else:
+            blocked = repo / "blocked/entry.py"
+            assert blocked.read_bytes() == b"VALUE = 1\n"
+            assert _detached_files(repo / ".git") == (
+                {blocked: b"VALUE = 1\n", repo / "settings/defaults.py": b"VALUE = 1\n"},
+                {},
+            )
         assert not environment.revoked
     finally:
         environment.release.set()
@@ -200,9 +235,8 @@ async def test_sdk_shared_bash_preserves_writes_around_git_publication_failure(t
         assert (repo / "settings/defaults.py").read_text() == "VALUE = 1\n"
         assert (repo / "draft.txt").read_text() == "untracked user draft\n"
         assert (repo / ".git/index").read_bytes() == index
-        backups = list((repo / ".git").glob("candidate-recovery-*"))
         if overlap:
-            backup, = backups
+            backup, = (repo / ".git").glob("candidate-recovery-*")
             for record in backup.glob("*.path"):
                 if Path(record.read_text()).name == "loader.py":
                     assert record.with_suffix("").read_bytes() == loader
@@ -210,8 +244,7 @@ async def test_sdk_shared_bash_preserves_writes_around_git_publication_failure(t
             else:
                 pytest.fail("recovery did not retain the original loader")
         else:
-            assert (repo / "loader.py").read_bytes() == loader
-            assert not backups
+            _assert_flatten_recovery(repo, loader)
     finally:
         await environment.cleanup()
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import posixpath
 import shlex
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
@@ -11,7 +12,10 @@ from typing import Any
 from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES
 from opencollab.adapters._git_patch_bytes import _complete, _patch_temporary
 from opencollab.application.async_timeout import await_owned_operation
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.workflow_candidates import CandidateAdoptionRecoveryError
+
+logger = logging.getLogger(__name__)
 
 _COMPARE_ENTRIES = r'''
 present() { [ -e "$1" ] || [ -L "$1" ]; }
@@ -33,9 +37,8 @@ same_entry() {
 conflict() { printf 'concurrent change at %s\n' "$1" >&2; return 2; }
 '''
 
-_RECOVER_PATHS = _COMPARE_ENTRIES + r'''
+_CHECK_PARENTS = r'''
 directory() { [ -d "$1" ] && [ ! -L "$1" ]; }
-device() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1"; }
 
 check_parents() {
     if [ "$1" = "$workspace" ]; then directory "$workspace" || conflict "$workspace"; return; fi
@@ -46,6 +49,44 @@ check_parents() {
     done
     directory "$workspace" || conflict "$workspace"
 }
+'''
+
+_HOLD_ORIGINALS = _COMPARE_ENTRIES + _CHECK_PARENTS + r'''
+hold_originals() {
+    index=0
+    mkdir -m 700 -- "$recovery/original-inodes" || return 1
+    for path; do
+        source=$workspace_prefix$path
+        if check_parents "$source" 2>/dev/null && [ -f "$source" ] && [ ! -L "$source" ]; then
+            entry=$recovery/original-inodes/$index
+            ln -P -- "$source" "$entry" && printf '%s' "$source" > "$entry.path" || return 1
+            index=$((index + 1))
+        fi
+    done
+}
+'''
+
+_DEVICE = r'''
+device() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1"; }
+'''
+
+_RECOVERY_PARENT = _DEVICE + r'''
+recovery_parent() {
+    worktree_device=$(device .) && storage_device=$(device "$1/") || return 1
+    if [ "$worktree_device" = "$storage_device" ]; then
+        printf '%s\n' "$1"
+        return
+    fi
+    cd -P -- .. && parent_device=$(device .) || return 1
+    if [ "$worktree_device" != "$parent_device" ]; then
+        printf 'no recovery directory outside the worktree on its filesystem\n' >&2
+        return 1
+    fi
+    pwd -P
+}
+'''
+
+_RECOVER_PATHS = _COMPARE_ENTRIES + _CHECK_PARENTS + _DEVICE + r'''
 
 check_candidate_descendants() {
     prefix=${1#"$workspace_prefix"}; shift
@@ -274,15 +315,22 @@ async def _adoption_transaction(
                 raise RuntimeError("candidate ancestor directory mode is invalid")
             directory_modes.append((path, mode))
     git_directory = None
-    storage = '"${TMPDIR:-/tmp}"'
+    directory_script = f"cd -- {shlex.quote(workspace)} || exit\n" + _RECOVERY_PARENT
     if repository:
-        git = f"git -C {shlex.quote(workspace)}"
-        layout = _complete(await environment.exec_cmd(
-            f"{git} rev-parse --absolute-git-dir && printf '\\0' && {git} rev-parse --git-common-dir", timeout=30,
-        ), "candidate recovery storage")
-        git_directory, common_directory = (path.removesuffix("\n") for path in layout.split("\0"))
-        # Git removes the private metadata along with a linked worktree.
-        storage = shlex.quote(posixpath.join(workspace, common_directory))
+        # Git removes private metadata with a linked worktree. A worktree on
+        # another volume needs a recovery directory beside it on that volume.
+        directory_script += r'''
+git rev-parse --absolute-git-dir && printf '\0' || exit
+common=$(git rev-parse --git-common-dir && printf .) || exit
+recovery_parent "${common%??}"
+'''
+    else:
+        directory_script += 'recovery_parent "${TMPDIR:-/tmp}"'
+    recovery_parent = _complete(await environment.exec_cmd(directory_script, timeout=30), "candidate recovery storage")
+    if repository:
+        git_directory, recovery_parent = recovery_parent.split("\0")
+        git_directory = git_directory.removesuffix("\n")
+    storage = shlex.quote(posixpath.join(workspace, recovery_parent.removesuffix("\n")))
     backup = None
     keep_backup = False
 
@@ -292,20 +340,27 @@ async def _adoption_transaction(
             f'mktemp -d {storage}/candidate-recovery-XXXXXXXX', timeout=30,
         ), "candidate recovery storage").removesuffix("\n")
 
-    async def remove_backup(path: str, *, verify: bool = False) -> None:
+    async def remove_backup(path: str, *, retain_detached: bool = False) -> None:
         quoted = shlex.quote(path)
-        removal = (
-            f"rm -rf -- {quoted} || "
-            f"(find {quoted} -type d ! -perm -u+w -exec chmod -- u+w {{}} + && rm -rf -- {quoted})"
+        remove_entry = (
+            'remove_entry() { rm -rf -- "$1" || '
+            '(find "$1" -type d ! -perm -u+w -exec chmod -- u+w {} + && rm -rf -- "$1"); }\n'
         )
-        if verify:
+        if retain_detached:
             removal = (
                 f"recovery={quoted}; staged={shlex.quote(posixpath.join(path, 'replay'))}; "
                 f"workspace_prefix={shlex.quote(workspace.rstrip('/') + '/')};\n"
-                + _RECHECK_PARKED + removal
+                + _RECHECK_PARKED + remove_entry + r'''
+for entry in "$recovery"/*; do
+    case "${entry##*/}" in original-inodes|observed-*) continue;; esac
+    remove_entry "$entry" || exit
+done
+'''
             )
+        else:
+            removal = remove_entry + f"remove_entry {quoted}"
         result = await environment.exec_cmd(removal, timeout=120)
-        if verify:
+        if retain_detached:
             _complete(result, "candidate recovery cleanup")
 
     try:
@@ -378,25 +433,49 @@ async def _adoption_transaction(
             *stage_copies, *reversed(stage_modes),
         ))
         targets = [shlex.quote(path) for path in paths]
+        # Git can unlink the original before installing the candidate.
+        workspace_vars = (
+            f"workspace={shlex.quote(workspace)}; recovery={shlex.quote(backup)};\n"
+            'workspace_prefix="${workspace%/}/";\n'
+        )
+        snapshot_script = (
+            workspace_vars + _HOLD_ORIGINALS + f"hold_originals {' '.join(targets)} || exit; "
+            + "; ".join(copies)
+        )
         target_test = f'case "${{1#"$workspace_prefix"}}" in {"|".join(targets)}) return 0;; esac; ' if targets else ""
         recovery_script = (
-            f"failed=0; workspace={shlex.quote(workspace)}; "
-            f"recovery={shlex.quote(backup)}; "
+            f"failed=0; {workspace_vars}"
             f"absent={shlex.quote(posixpath.join(backup, 'absent'))};\n"
-            'workspace_prefix="${workspace%/}/";\n'
             f"candidate_path() {{ {target_test}return 1; }}\n"
             f"candidate_descendants() {{ check_candidate_descendants \"$1\" {' '.join(targets)}; }}\n"
         ) + _RECOVER_PATHS + "; ".join((
             *recreate_directories, *restores, *reversed(restore_directory_modes),
         )) + r''';
 if [ "$failed" -ne 0 ]; then exit "$failed"; fi
+detached=0
+for record in "$recovery"/original-inodes/*.path; do
+    [ -f "$record" ] || continue
+    path=$(cat -- "$record" && printf .) || exit
+    path=${path%.}
+    entry=${record%.path}
+    if check_parents "$path" 2>/dev/null && [ ! -L "$path" ] && [ "$path" -ef "$entry" ]; then
+        rm -- "$record" "$entry" || exit
+    else
+        detached=1
+    fi
+done
 for parked in "$recovery"/observed-*/entry; do
     if [ -f "$parked" ] && [ ! -L "$parked" ]; then printf 'parked\n'; break; fi
 done
+if [ "$detached" -eq 1 ]; then
+    printf 'original-detached\n'
+else
+    rmdir -- "$recovery/original-inodes" || exit
+fi
 '''
         async with AsyncExitStack() as commands:
             snapshot_command = await commands.enter_async_context(_adoption_command(
-                environment, workspace, "; ".join(copies), repository=repository,
+                environment, workspace, snapshot_script, repository=repository,
             ))
             # Store long recovery commands before publishing any source changes.
             recovery_command = await commands.enter_async_context(_adoption_command(
@@ -422,10 +501,12 @@ done
                     shell_overlapped = shell_commands is not None and (
                         active > 0 or last_started is not shell_commands.last_started
                     )
-                    return "parked" in receipt.splitlines(), shell_overlapped
+                    entries = receipt.splitlines()
+                    parked = "parked" in entries
+                    return parked or "original-detached" in entries, parked and shell_overlapped
 
                 try:
-                    parked, shell_overlapped = await await_owned_operation(recover())
+                    detached, parked_during_shell = await await_owned_operation(recover())
                 except BaseException as recovery:
                     keep_backup = True
                     revoke = getattr(environment, "revoke", None)
@@ -435,9 +516,9 @@ done
                         f"candidate adoption failed ({failure}); recovery failed ({recovery}); "
                         f"original files retained in {backup}"
                     ) from recovery
-                if parked:
+                if detached:
                     keep_backup = True
-                    if shell_overlapped:
+                    if parked_during_shell:
                         # A command can still own a detached inode after its original path is restored.
                         raise CandidateAdoptionRecoveryError(
                             f"candidate adoption failed ({failure}); a concurrent shell command may have written "
@@ -445,13 +526,15 @@ done
                         ) from failure
                     assert backup is not None
                     try:
-                        await await_owned_operation(remove_backup(backup, verify=True))
+                        await await_owned_operation(remove_backup(backup, retain_detached=True))
                     except BaseException as cleanup:
                         raise CandidateAdoptionRecoveryError(
                             f"candidate adoption failed ({failure}); cleanup failed ({cleanup}); "
                             f"recovery location {backup}"
                         ) from cleanup
-                    backup = None
+                    detail = f"Detached candidate files retained in {backup}"
+                    add_exception_note(failure, detail)
+                    logger.warning("%s", detail)
                 raise
     finally:
         if backup is not None and not keep_backup:

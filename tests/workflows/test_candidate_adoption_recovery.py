@@ -43,6 +43,21 @@ def _contents(root):
     return result
 
 
+def _detached_files(storage: Path) -> tuple[dict[Path, bytes], dict[Path, bytes]]:
+    backup, = storage.glob("candidate-recovery-*")
+    assert not (backup / "replay").exists()
+    originals = {
+        Path(record.read_text()): record.with_suffix("").read_bytes()
+        for record in backup.glob("original-inodes/*.path")
+    }
+    parked = {
+        Path(record.read_text()): record.with_name("entry").read_bytes()
+        for record in backup.glob("observed-*/path")
+        if not record.with_name("entry").is_symlink()
+    }
+    return originals, parked
+
+
 def _repository(tmp_path, *, physical=False, cache=False):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -134,7 +149,12 @@ async def test_public_sdk_candidate_recovers_directory_replacement(tmp_path, phy
     assert result.ok, result.reason
     assert _run(repo) == ("1\n" if cache else "42\n")
     assert (repo / ".git/index").read_bytes() == index
-    assert not list((repo / ".git").glob("candidate-recovery-*"))
+    if cache:
+        originals, parked = _detached_files(repo / ".git")
+        assert originals[repo / "settings/defaults.py"] == before["settings/defaults.py"][2]
+        assert parked[repo / "draft.txt"] == b"candidate draft\n"
+    else:
+        assert not list((repo / ".git").glob("candidate-recovery-*"))
     assert _git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
 
 
@@ -184,7 +204,11 @@ async def test_public_sdk_recovers_pruned_ancestors_and_modes(tmp_path, physical
         assert result.output == "recovered"
         assert _run(repo) == ("1\n" if cache else "42\n")
         assert (repo / ".git/index").read_bytes() == index
-        assert not list((repo / ".git").glob("candidate-recovery-*"))
+        if cache:
+            originals, _ = _detached_files(repo / ".git")
+            assert originals[repo / "old/nested/helper.py"] == before["old/nested/helper.py"][2]
+        else:
+            assert not list((repo / ".git").glob("candidate-recovery-*"))
     finally:
         await environment.cleanup()
 
@@ -252,7 +276,8 @@ async def test_public_sdk_restores_changed_ancestor_permissions(tmp_path, monkey
         result = await OpenCollab(repo, environment=environment).workflow(flow, trace=False)
         assert result.ok, result.reason
         assert (repo / ".git/index").read_bytes() == index
-        assert not list((repo / ".git").glob("candidate-recovery-*"))
+        originals, _ = _detached_files(repo / ".git")
+        assert originals[repo / "settings/defaults.py"] == before["settings/defaults.py"][2]
         chmod_paths = [Path(value.decode()) for value in log.read_bytes().split(b"\0")[2::3] if value]
         assert stat.S_IMODE(repo.stat().st_mode) == root_mode
         assert (repo / "old/nested" in chmod_paths) is (change != "readonly-root")
@@ -287,7 +312,9 @@ async def test_git_write_failure_after_successful_check_restores_partial_applica
             await EnvCandidateWorkspace(environment).adopt(patch)
         assert _contents(repo) == before
         assert (repo / ".git/index").read_bytes() == index
-        assert not list((repo / ".git").glob("candidate-recovery-*"))
+        originals, parked = _detached_files(repo / ".git")
+        assert originals[repo / "other.py"] == b"VALUE = 1\n"
+        assert parked[repo / "other.py"] == b"VALUE = 42\n"
         assert not environment.revoked
         assert (await environment.exec_cmd("printf usable")).stdout == "usable"
     finally:
@@ -370,13 +397,16 @@ async def test_public_sdk_replays_effective_crlf_attributes(tmp_path, rules, blo
             assert replays == [0, 128]
             assert target.read_bytes() == b"original\r\n"
             assert (repo / "settings/cache.txt").read_bytes() == b"preserve cache\n"
+            originals, parked = _detached_files(repo / ".git")
+            assert originals[target] == b"original\r\n"
+            assert parked[target] == b"candidate\r\n"
         else:
             assert result.ok, result.reason
             assert target.read_bytes() == b"candidate\r\n"
             assert replays == []
+            assert not list((repo / ".git").glob("candidate-recovery-*"))
         assert attributes.read_text() == f"*.txt text eol={'lf' if change_rules else 'crlf'}\n"
         assert (repo / ".git/index").read_bytes() == index
-        assert not list((repo / ".git").glob("candidate-recovery-*"))
         assert not environment.revoked
     finally:
         await environment.cleanup()
@@ -442,7 +472,8 @@ async def test_unverified_candidate_replay_preserves_live_entries(tmp_path, repl
 
 
 @pytest.mark.parametrize("inside_repository", [False, True])
-async def test_directory_copy_candidate_replays_partial_apply_outside_git(tmp_path, inside_repository):
+async def test_directory_copy_candidate_replays_partial_apply_outside_git(tmp_path, monkeypatch, inside_repository):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
     if inside_repository:
         _git(tmp_path, "init", "-q")
     repo = tmp_path / "copy"
@@ -472,6 +503,9 @@ async def test_directory_copy_candidate_replays_partial_apply_outside_git(tmp_pa
         assert intermediate == ["candidate\n"]
         assert (repo / "a.txt").read_text() == "original\n"
         assert (repo / "settings/retained.txt").read_text() == "keep\n"
+        originals, parked = _detached_files(tmp_path)
+        assert originals[repo / "a.txt"] == b"original\n"
+        assert parked[repo / "a.txt"] == b"candidate\n"
         assert not environment.revoked
     finally:
         await environment.cleanup()
@@ -521,7 +555,9 @@ async def test_recovery_preserves_saved_entries_when_copies_fail(tmp_path, repla
             with pytest.raises(OSError, match="publication receipt unavailable"):
                 await _apply_increment(environment, str(repo), patch)
             assert target.read_text() == "VALUE = 1\n"
-            assert not list((repo / ".git").glob("candidate-recovery-*"))
+            originals, parked = _detached_files(repo / ".git")
+            assert originals[target] == b"VALUE = 1\n"
+            assert parked[target] == b"VALUE = 42\n"
             assert failures == ["receipt"]
         assert environment.revoked is replay_full
         assert (repo / ".git/index").read_bytes() == index
@@ -572,7 +608,7 @@ async def test_recovery_preserves_a_write_after_comparing_the_live_file(tmp_path
 
 
 @pytest.mark.parametrize("linked", [False, True])
-async def test_recovery_compares_parked_bytes_before_removing_the_backup(tmp_path, linked):
+async def test_recovery_compares_parked_bytes_before_pruning_replay_files(tmp_path, linked):
     source, candidate = _partial_publication(tmp_path)
     repo = source
     if linked:

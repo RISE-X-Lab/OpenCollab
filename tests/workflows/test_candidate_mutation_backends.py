@@ -12,7 +12,7 @@ from opencollab.adapters.tools.fs import FileWriteTool
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.bootstrap.authored_workflow_bridge import AuthoredWorkflowBridge, BridgeClient, BridgeEnvironment
 from tests.support.docker_native_edits_support import LocalDockerTransport, docker_environment
-from tests.workflows.test_candidate_adoption_recovery import _flatten, _repository, _run
+from tests.workflows.test_candidate_adoption_recovery import _detached_files, _flatten, _repository, _run
 from tests.workflows.test_workflow_candidate_workspace import _git
 
 
@@ -111,6 +111,7 @@ async def test_candidate_and_bridge_share_native_mutation_ownership(
 async def test_cancelled_publication_recovers_before_releasing_shared_writer(tmp_path, monkeypatch):
     repo = _repository(tmp_path)
     target = repo / "settings/defaults.py"
+    index = (repo / ".git/index").read_bytes()
     target.write_text("VALUE = 42\n")
     patch = _git(repo, "diff", "--binary", "--", "settings/defaults.py")
     target.write_text("VALUE = 1\n")
@@ -143,7 +144,10 @@ async def test_cancelled_publication_recovers_before_releasing_shared_writer(tmp
             await publication
         assert "Created/wrote" in await asyncio.wait_for(writer, 10)
         assert _run(repo) == "100\n"
-        assert not list((repo / ".git").glob("candidate-recovery-*"))
+        assert (repo / ".git/index").read_bytes() == index
+        assert _detached_files(repo / ".git") == (
+            {target: b"VALUE = 1\n"}, {target: b"VALUE = 42\n"},
+        )
     finally:
         if not publication.done():
             publication.cancel()
