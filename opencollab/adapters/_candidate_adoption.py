@@ -28,7 +28,12 @@ same_entry() {
             [ "$left" = "$right" ]
     elif [ -f "$1" ]; then
         [ ! -L "$2" ] && [ -f "$2" ] || return 1
-        left=$(mode "$1") && right=$(mode "$2") && [ "$left" = "$right" ] && cmp -s -- "$1" "$2"
+        left=$(mode "$1") && right=$(mode "$2") && [ "$left" = "$right" ] || return 1
+        if command -v cmp >/dev/null 2>&1; then
+            cmp -s -- "$1" "$2"
+        else
+            git diff --no-index --quiet --no-ext-diff --no-textconv -- "$1" "$2"
+        fi
     else
         ! present "$1" && ! present "$2"
     fi
@@ -51,23 +56,92 @@ check_parents() {
 }
 '''
 
-_HOLD_ORIGINALS = _COMPARE_ENTRIES + _CHECK_PARENTS + r'''
+_DEVICE = r'''
+device() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1"; }
+'''
+
+_HOLD_ORIGINALS = _COMPARE_ENTRIES + _CHECK_PARENTS + _DEVICE + r'''
 hold_originals() {
     index=0
+    needs_activation=0
     mkdir -m 700 -- "$recovery/original-inodes" || return 1
     for path; do
         source=$workspace_prefix$path
         if check_parents "$source" 2>/dev/null && [ -f "$source" ] && [ ! -L "$source" ]; then
             entry=$recovery/original-inodes/$index
-            ln -P -- "$source" "$entry" && printf '%s' "$source" > "$entry.path" || return 1
+            if ! ln -P -- "$source" "$entry" 2>/dev/null; then
+                source_device=$(device "$source") && recovery_device=$(device "$recovery") || return 1
+                if [ "$source_device" != "$recovery_device" ]; then
+                    printf 'cannot preserve %s across filesystems\n' "$source" >&2
+                    return 1
+                fi
+                mkdir -p -m 700 -- "$recovery/replacements" &&
+                    cp -pP -- "$source" "$recovery/replacements/$index" || return 1
+                needs_activation=1
+            fi
+            printf '%s' "$source" > "$entry.path" || return 1
             index=$((index + 1))
         fi
     done
+    if [ "$needs_activation" -eq 1 ]; then printf 'activate-originals\n'; fi
 }
 '''
 
-_DEVICE = r'''
-device() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1"; }
+_RESTORE_SAVED = r'''
+restore_saved() {
+    if ! present "$1"; then return 0; fi
+    if present "$2"; then conflict "$2"; return; fi
+    mv -n -- "$1" "$2" || return 1
+    if present "$1"; then conflict "$2"; fi
+}
+'''
+
+_ACTIVATE_ORIGINALS = _COMPARE_ENTRIES + _CHECK_PARENTS + _RESTORE_SAVED + r'''
+for replacement in "$recovery"/replacements/*; do
+    [ -f "$replacement" ] || continue
+    entry=$recovery/original-inodes/${replacement##*/}
+    live=$(cat -- "$entry.path" && printf .) || exit
+    live=${live%.}
+    check_parents "$live" && same_entry "$replacement" "$live" || { conflict "$live"; exit; }
+    restore_saved "$live" "$entry" || exit
+    if ! same_entry "$replacement" "$entry"; then
+        restore_saved "$entry" "$live" || exit
+        conflict "$live"
+        exit
+    fi
+    restore_saved "$replacement" "$live" || exit
+done
+'''
+
+_UNDO_INCOMPLETE_ACTIVATION = _COMPARE_ENTRIES + _CHECK_PARENTS + _RESTORE_SAVED + r'''
+for replacement in "$recovery"/replacements/*; do
+    entry=$recovery/original-inodes/${replacement##*/}
+    [ -f "$replacement" ] && [ -f "$entry" ] || continue
+    live=$(cat -- "$entry.path" && printf .) || exit
+    live=${live%.}
+    check_parents "$live" && restore_saved "$entry" "$live" || exit
+done
+'''
+
+_DETACHED_FILES = r'''
+detached=0
+for record in "$recovery"/original-inodes/*.path; do
+    [ -f "$record" ] || continue
+    path=$(cat -- "$record" && printf .) || exit
+    path=${path%.}
+    entry=${record%.path}
+    if ! present "$entry"; then
+        rm -- "$record" || exit
+    elif check_parents "$path" 2>/dev/null && [ ! -L "$path" ] && [ "$path" -ef "$entry" ]; then
+        rm -- "$record" "$entry" || exit
+    else
+        detached=1
+    fi
+done
+for parked in "$recovery"/observed-*/entry; do
+    if [ -f "$parked" ] && [ ! -L "$parked" ]; then printf 'parked\n'; break; fi
+done
+if [ "$detached" -eq 1 ]; then printf 'original-detached\n'; fi
 '''
 
 _RECOVERY_PARENT = _DEVICE + r'''
@@ -86,7 +160,7 @@ recovery_parent() {
 }
 '''
 
-_RECOVER_PATHS = _COMPARE_ENTRIES + _CHECK_PARENTS + _DEVICE + r'''
+_RECOVER_PATHS = _COMPARE_ENTRIES + _CHECK_PARENTS + _DEVICE + _RESTORE_SAVED + r'''
 
 check_candidate_descendants() {
     prefix=${1#"$workspace_prefix"}; shift
@@ -134,13 +208,6 @@ reset_parent_mode() {
             chmod -- "$observed" "$1"
         fi
     fi
-}
-
-restore_saved() {
-    if ! present "$1"; then return 0; fi
-    if present "$2"; then conflict "$2"; return; fi
-    mv -n -- "$1" "$2" || return 1
-    if present "$1"; then conflict "$2"; fi
 }
 
 park_candidate_entry() {
@@ -450,29 +517,7 @@ done
             f"candidate_descendants() {{ check_candidate_descendants \"$1\" {' '.join(targets)}; }}\n"
         ) + _RECOVER_PATHS + "; ".join((
             *recreate_directories, *restores, *reversed(restore_directory_modes),
-        )) + r''';
-if [ "$failed" -ne 0 ]; then exit "$failed"; fi
-detached=0
-for record in "$recovery"/original-inodes/*.path; do
-    [ -f "$record" ] || continue
-    path=$(cat -- "$record" && printf .) || exit
-    path=${path%.}
-    entry=${record%.path}
-    if check_parents "$path" 2>/dev/null && [ ! -L "$path" ] && [ "$path" -ef "$entry" ]; then
-        rm -- "$record" "$entry" || exit
-    else
-        detached=1
-    fi
-done
-for parked in "$recovery"/observed-*/entry; do
-    if [ -f "$parked" ] && [ ! -L "$parked" ]; then printf 'parked\n'; break; fi
-done
-if [ "$detached" -eq 1 ]; then
-    printf 'original-detached\n'
-else
-    rmdir -- "$recovery/original-inodes" || exit
-fi
-'''
+        )) + ';\nif [ "$failed" -ne 0 ]; then exit "$failed"; fi\n' + _DETACHED_FILES
         async with AsyncExitStack() as commands:
             snapshot_command = await commands.enter_async_context(_adoption_command(
                 environment, workspace, snapshot_script, repository=repository,
@@ -481,22 +526,37 @@ fi
             recovery_command = await commands.enter_async_context(_adoption_command(
                 environment, workspace, recovery_script, repository=repository,
             ))
-            _complete(await environment.exec_cmd(snapshot_command, timeout=900), "candidate recovery snapshot")
+            snapshot = _complete(
+                await environment.exec_cmd(snapshot_command, timeout=900), "candidate recovery snapshot",
+            )
+            publication_started = False
             try:
+                if "activate-originals" in snapshot.splitlines():
+                    # Filesystems without hard links keep the original by
+                    # moving it aside and giving Git an equivalent working copy.
+                    _complete(await environment.exec_cmd(
+                        workspace_vars + _ACTIVATE_ORIGINALS, timeout=900,
+                    ), "candidate recovery preparation")
+                publication_started = True
                 yield
             except BaseException as failure:
                 async def recover() -> tuple[bool, bool]:
-                    async with _adoption_command(
-                        environment, workspace, replay_script, repository=repository,
-                    ) as command:
-                        _complete(await environment.exec_cmd(command, timeout=900), "candidate recovery replay copy")
-                    await replay(staged, git_directory, saved_attributes_file)
+                    command = recovery_command
+                    if publication_started:
+                        async with _adoption_command(
+                            environment, workspace, replay_script, repository=repository,
+                        ) as copy_command:
+                            _complete(await environment.exec_cmd(copy_command, timeout=900),
+                                      "candidate recovery replay copy")
+                        await replay(staged, git_directory, saved_attributes_file)
+                    else:
+                        command = workspace_vars + _UNDO_INCOMPLETE_ACTIVATION + _DETACHED_FILES
 
                     shell_commands = getattr(environment, "_shell_commands", None)
                     active = shell_commands.active if shell_commands is not None else 0
                     last_started = shell_commands.last_started if shell_commands is not None else None
                     receipt = _complete(await environment.exec_cmd(
-                        recovery_command, timeout=900,
+                        command, timeout=900,
                     ), "candidate adoption recovery")
                     shell_overlapped = shell_commands is not None and (
                         active > 0 or last_started is not shell_commands.last_started

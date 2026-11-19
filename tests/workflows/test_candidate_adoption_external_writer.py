@@ -39,6 +39,15 @@ def _identity(path: Path) -> tuple[int, int]:
     return status.st_dev, status.st_ino
 
 
+def _delete_original(candidate):
+    _, replacement = candidate.diff.split("diff --git a/settings", 1)
+    return replace(candidate, diff=(
+        "diff --git a/record.txt b/record.txt\ndeleted file mode 100644\n"
+        "--- a/record.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-original\n"
+        "diff --git a/settings" + replacement
+    ))
+
+
 @pytest.fixture
 def worktree_parent(tmp_path, request):
     if not request.param:
@@ -53,13 +62,14 @@ def worktree_parent(tmp_path, request):
         yield Path(path)
 
 
-@pytest.mark.parametrize("opened_before_apply,linked,worktree_parent", [
-    pytest.param(True, False, False, id="original-inode"),
-    pytest.param(False, True, False, id="candidate-inode-after-worktree-removal"),
-    pytest.param(False, True, True, id="separate-worktree-filesystem"),
+@pytest.mark.parametrize("opened_before_apply,linked,worktree_parent,hard_links", [
+    pytest.param(True, False, False, True, id="original-inode"),
+    pytest.param(False, True, False, True, id="candidate-inode-after-worktree-removal"),
+    pytest.param(False, True, True, True, id="separate-worktree-filesystem"),
+    pytest.param(True, True, False, False, id="original-inode-without-hard-links"),
 ], indirect=["worktree_parent"])
 async def test_candidate_rollback_retains_inode_for_external_writer(
-    tmp_path, monkeypatch, caplog, opened_before_apply, linked, worktree_parent,
+    tmp_path, monkeypatch, caplog, opened_before_apply, linked, worktree_parent, hard_links,
 ):
     source, candidate = _partial_publication(tmp_path)
     repo = source
@@ -98,10 +108,10 @@ async def test_candidate_rollback_retains_inode_for_external_writer(
         assert ready.split() == [str(value).encode() for value in writer_inode]
 
     async def observe(command, timeout=120.0, **kwargs):
+        if not hard_links and "hold_originals()" in command:
+            command = "ln() { return 1; }; " + command
         if " apply --binary " not in command or ".candidate-adopt-" not in command:
             return await execute(command, timeout, **kwargs)
-        if opened_before_apply:
-            await start_writer(original)
         outcome = await execute(command, timeout, **kwargs)
         assert outcome.returncode == 128, outcome.stderr
         assert target.read_bytes() == published
@@ -116,6 +126,8 @@ async def test_candidate_rollback_retains_inode_for_external_writer(
         await ctx.adopt_candidate(candidate)
 
     try:
+        if opened_before_apply:
+            await start_writer(original)
         result = await OpenCollab(repo, environment=environment, model="offline").workflow(
             flow, trace=False, timeout=30,
         )
@@ -162,14 +174,69 @@ async def test_candidate_rollback_retains_inode_for_external_writer(
         await environment.cleanup()
 
 
+@pytest.mark.parametrize("external_delete", [False, True], ids=["interrupted-move", "external-delete"])
+async def test_failed_preparation_recovers_only_owned_moves(tmp_path, monkeypatch, external_delete):
+    repo, candidate = _partial_publication(tmp_path)
+    if external_delete:
+        candidate = _delete_original(candidate)
+    target = repo / "record.txt"
+    identity = _identity(target)
+    index = repo / ".git/index"
+    index_before = index.read_bytes()
+    environment = LocalEnvironment(str(repo))
+    execute = environment.exec_cmd
+    reached_activation = False
+    published = False
+
+    async def interrupt(command, timeout=120.0, **kwargs):
+        nonlocal reached_activation, published
+        if "hold_originals()" in command:
+            command = "ln() { return 1; }; " + command
+        if 'restore_saved "$replacement" "$live"' in command:
+            reached_activation = True
+            if external_delete:
+                writer = await asyncio.create_subprocess_exec(
+                    sys.executable, "-c", "import os, sys; os.unlink(sys.argv[1])", str(target),
+                )
+                assert await asyncio.wait_for(writer.wait(), 10) == 0
+            else:
+                command = r'''
+mv() {
+    case "$3" in
+        */replacements/*) printf 'replacement move interrupted\n' >&2; return 1;;
+        *) command mv "$@";;
+    esac
+}
+''' + command
+        if " apply --binary " in command and ".candidate-adopt-" in command:
+            published = True
+        return await execute(command, timeout, **kwargs)
+
+    monkeypatch.setattr(environment, "exec_cmd", interrupt)
+
+    async def flow(ctx, _):
+        await ctx.adopt_candidate(candidate)
+
+    try:
+        result = await OpenCollab(repo, environment=environment, model="offline").workflow(flow, trace=False)
+        assert reached_activation and not published
+        assert type(result.error) is RuntimeError
+        if external_delete:
+            assert "concurrent change" in result.reason
+            assert not target.exists()
+        else:
+            assert "replacement move interrupted" in result.reason
+            assert _identity(target) == identity
+            assert target.read_bytes() == b"original\n"
+        assert index.read_bytes() == index_before
+        assert not list((repo / ".git").glob("candidate-recovery-*"))
+    finally:
+        await environment.cleanup()
+
+
 async def test_detached_original_only_preserves_publication_error_during_shell_execution(tmp_path, monkeypatch):
     repo, candidate = _partial_publication(tmp_path)
-    _, replacement = candidate.diff.split("diff --git a/settings", 1)
-    candidate = replace(candidate, diff=(
-        "diff --git a/record.txt b/record.txt\ndeleted file mode 100644\n"
-        "--- a/record.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-original\n"
-        "diff --git a/settings" + replacement
-    ))
+    candidate = _delete_original(candidate)
     target = repo / "record.txt"
     original_inode = _identity(target)
     index = repo / ".git/index"

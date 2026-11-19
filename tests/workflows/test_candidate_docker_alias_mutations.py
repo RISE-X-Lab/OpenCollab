@@ -16,7 +16,7 @@ from opencollab.application.tool_execution import ToolRuntime
 from opencollab.tools import builtin_tools
 from tests.support.docker_native_edits_support import LocalDockerTransport, RemoteDockerTransport, docker_environment
 from tests.workflows.test_candidate_adoption_recovery import _flatten, _repository, _run
-from tests.workflows.test_candidate_shared_mutations import _WriterModel
+from tests.workflows.test_candidate_shared_mutations import _assert_flatten_recovery, _WriterModel
 from tests.workflows.test_workflow_candidate_workspace import _git
 
 
@@ -52,6 +52,7 @@ async def test_sdk_remote_alias_mutations_survive_directory_recovery(tmp_path, m
     _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "test: retain workspace directory alias")
     for cached in ("settings/runtime.cache", "unrelated.cache"):
         (repo / cached).write_text("VALUE = 1\n")
+    loader = (repo / "loader.py").read_bytes()
     index = (repo / ".git/index").read_bytes()
     environment, transport = _remote_environment(repo)
     entered, release = asyncio.Event(), asyncio.Event()
@@ -121,7 +122,7 @@ async def test_sdk_remote_alias_mutations_survive_directory_recovery(tmp_path, m
         assert result.output == "retained"
         assert _run(repo) == "1\n"
         assert (repo / ".git/index").read_bytes() == index
-        assert not list((repo / ".git").glob("candidate-recovery-*"))
+        _assert_flatten_recovery(repo, loader)
         assert not environment._temporary_files
         assert not environment.revoked
     finally:
