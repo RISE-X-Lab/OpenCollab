@@ -15,7 +15,8 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Python 3.12 runs the DOM regressions after the Python suite.
+    timeout-minutes: ${{ matrix.python-version == '3.12' && 45 || 40 }}
     strategy:
       fail-fast: false
       matrix:
