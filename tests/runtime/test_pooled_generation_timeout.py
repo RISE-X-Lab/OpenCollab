@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from copy import deepcopy
 from functools import wraps
 
 import pytest
@@ -61,6 +62,17 @@ class _AdmissionProxy:
 
     def __getattr__(self, name):
         return getattr(self.client, name)
+
+
+class _VariadicLegacyRoute(LLMClient):
+    async def complete(self, *args, **kwargs):
+        return await self.delegate(*args, **kwargs)
+
+
+class _MetadataLegacyRoute(_VariadicLegacyRoute):
+    @wraps(LLMClient.complete)
+    async def complete(self, *args, **kwargs):
+        return await super().complete(*args, **kwargs)
 
 
 @pytest.fixture(
@@ -253,7 +265,140 @@ async def test_inherited_admission_allows_middleware_preparation_before_pool(
 
 
 @pytest.mark.parametrize("summary", [False, True])
-@pytest.mark.parametrize("bypass", ["returns", "hangs", "other-client", "nonpool"])
+@pytest.mark.parametrize("route", ["same-pool", "different-pool", "unpooled"])
+async def test_routed_native_completion_keeps_the_generation_deadline(
+    tmp_path, monkeypatch, local_environment_factory, summary, route,
+):
+    entered = asyncio.Event()
+
+    async def complete(*_args, **_kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(transport, "complete_openai", complete)
+    origin_pool = str(tmp_path)
+    (tmp_path / "recipient").mkdir()
+    recipient_pool = {
+        "same-pool": origin_pool,
+        "different-pool": str(tmp_path / "recipient"),
+        "unpooled": None,
+    }[route]
+    recipient_capacity = None if recipient_pool is None else 1
+    config = dict(api_key="local", context_window=40_000)
+    async with (
+        _DelegatingPooledClient(**config, request_pool=origin_pool, request_capacity=1) as client,
+        LLMClient(**config, request_pool=recipient_pool, request_capacity=recipient_capacity) as recipient,
+    ):
+        async def delegate(messages, *args, **kwargs):
+            return await recipient.complete(deepcopy(messages), *args, **kwargs)
+
+        client.delegate = delegate
+        session = build_session(
+            agent=Agent(name="routed", system_prompt="system"), llm=client,
+            env=local_environment_factory(str(tmp_path)), llm_timeout=0.08,
+        )
+        session.messages = history(summary)
+        try:
+            async with request_slot(recipient_pool, recipient_capacity):
+                owner = asyncio.create_task(session.run_loop())
+                if recipient_pool is not None:
+                    await asyncio.sleep(0.13)
+                    assert not owner.done() and not entered.is_set()
+            await asyncio.wait_for(entered.wait(), 1)
+            with pytest.raises(GenerationTimeoutError):
+                await asyncio.wait_for(owner, 1)
+        finally:
+            await session.aclose()
+
+
+@pytest.mark.parametrize("summary", [False, True])
+@pytest.mark.parametrize("stall", [False, True])
+async def test_routed_rewrite_preserves_deadline_and_separate_preflight_usage(
+    tmp_path, monkeypatch, local_environment_factory, summary, stall,
+):
+    ready = asyncio.Event()
+    entered = asyncio.Event()
+    calls = []
+
+    async def complete(_client, _model, messages, *_args, **_kwargs):
+        if messages[-1]["content"] == "Preflight":
+            return LLMResponse(content="ok", usage=Usage(2, 2))
+        calls.append(True)
+        entered.set()
+        if stall:
+            await asyncio.Event().wait()
+        content = "<summary>Earlier context.</summary>" if summary and len(calls) == 1 else "answer"
+        return LLMResponse(content=content, usage=Usage(7, 3))
+
+    monkeypatch.setattr(transport, "complete_openai", complete)
+    destination = tmp_path / "target"
+    destination.mkdir()
+    config = dict(api_key="local", context_window=40_000, request_capacity=1)
+    async with (
+        _VariadicLegacyRoute(**config, request_pool=str(tmp_path)) as client,
+        LLMClient(**config, request_pool=str(destination)) as recipient,
+    ):
+        async def delegate(messages, *args, **kwargs):
+            await LLMClient.complete(client, [{"role": "user", "content": "Preflight"}])
+            ready.set()
+            rewritten = [*messages, {"role": "system", "content": "Routed request"}]
+            return await recipient.complete(rewritten, *args, **kwargs)
+
+        client.delegate = delegate
+        session = build_session(
+            agent=Agent(name="routed", system_prompt="system"), llm=client,
+            env=local_environment_factory(str(tmp_path)), llm_timeout=0.09,
+        )
+        session.messages = history(summary)
+        try:
+            async with request_slot(str(destination), 1):
+                owner = asyncio.create_task(session.run_loop())
+                await asyncio.wait_for(ready.wait(), 1)
+                await asyncio.sleep(0.15)
+                assert not owner.done() and not entered.is_set()
+                assert session.used_tokens == 0
+            await asyncio.wait_for(entered.wait(), 1)
+            if stall:
+                with pytest.raises(GenerationTimeoutError):
+                    await asyncio.wait_for(owner, 1)
+            else:
+                assert await asyncio.wait_for(owner, 2) == "answer"
+                assert len(calls) == (2 if summary else 1)
+                assert session.used_tokens == 10 * len(calls)
+        finally:
+            await session.aclose()
+
+
+@pytest.mark.parametrize("summary", [False, True])
+@pytest.mark.parametrize("client_class", [_VariadicLegacyRoute, _MetadataLegacyRoute])
+async def test_routed_legacy_completion_uses_response_usage(
+    tmp_path, local_environment_factory, summary, client_class,
+):
+    calls = []
+
+    async def complete(messages, tools=None, temperature=0.0, *, max_output_tokens=None):
+        calls.append(messages)
+        content = "<summary>Earlier context.</summary>" if summary and len(calls) == 1 else "answer"
+        return LLMResponse(content=content, usage=Usage(7, 3))
+
+    config = dict(api_key="local", context_window=40_000)
+    async with client_class(**config) as client:
+        client.delegate = complete
+        session = build_session(
+            agent=Agent(name="routed", system_prompt="system"), llm=client,
+            env=local_environment_factory(str(tmp_path)), llm_timeout=1,
+        )
+        session.messages = history(summary)
+        try:
+            assert await session.run_loop() == "answer"
+            assert len(calls) == (2 if summary else 1)
+            assert session.used_tokens == 10 * len(calls)
+        finally:
+            await session.aclose()
+
+
+@pytest.mark.parametrize("summary", [False, True])
+@pytest.mark.parametrize("bypass", ["returns", "hangs", "unrelated", "nonpool"])
 async def test_inherited_admission_waiting_preserves_completion_and_caller_deadline(
     tmp_path, monkeypatch, local_environment_factory, summary, bypass,
 ):
@@ -269,8 +414,8 @@ async def test_inherited_admission_waiting_preserves_completion_and_caller_deadl
         if bypass == "returns":
             content = "<summary>Earlier context.</summary>" if summary and len(calls) == 1 else "answer"
             return LLMResponse(content=content, usage=Usage(7, 3))
-        if bypass == "other-client":
-            return await other.complete(messages, tools, temperature, max_output_tokens=max_output_tokens)
+        if bypass == "unrelated":
+            return await other.complete([{"role": "user", "content": "Unrelated request"}])
         await asyncio.Event().wait()
 
     monkeypatch.setattr(transport, "complete_openai", complete)
@@ -297,7 +442,7 @@ async def test_inherited_admission_waiting_preserves_completion_and_caller_deadl
                 assert calls == [True]
                 assert session.used_tokens == 0
                 await asyncio.gather(*session.pending_cleanup_tasks, return_exceptions=True)
-            assert provider_calls == ([True] if bypass == "other-client" else [])
+            assert provider_calls == ([True] if bypass == "unrelated" else [])
         finally:
             await session.aclose()
 

@@ -471,7 +471,7 @@ class CompletionResponse(Protocol):
         """
         ...
 
-class _NativeRequestRevalidation:
+class _NativeCompletionCapability:
     def __get__(self, instance: object, owner: type) -> bool:
         return True
 
@@ -482,9 +482,13 @@ class _NativeRequestAdmission:
 
 
 # Native clients support these callbacks through their completion signature.
-_NATIVE_REQUEST_REVALIDATION = _NativeRequestRevalidation()
+_NATIVE_COMPLETION_CAPABILITY = _NativeCompletionCapability()
 _NATIVE_REQUEST_ADMISSION = _NativeRequestAdmission()
-_native_admission: ContextVar[tuple[object, Callable[[], None]] | None] = ContextVar("native_admission", default=None)
+_native_completion_controls: ContextVar[
+    tuple[object, list[dict[str, Any]], Callable[[], None] | None, dict[str, Callable[..., Any]]] | None
+] = ContextVar(
+    "native_completion_controls", default=None,
+)
 
 
 class LLMPort(Protocol):

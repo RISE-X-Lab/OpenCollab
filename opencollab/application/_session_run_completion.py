@@ -36,14 +36,14 @@ from opencollab.application._session_run_usage import (
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import (
+    _NATIVE_COMPLETION_CAPABILITY,
     _NATIVE_REQUEST_ADMISSION,
-    _NATIVE_REQUEST_REVALIDATION,
     CompletionResponse,
     ContextTokenEstimatorPort,
     RequestOutputRequirementPort,
     RequestTokenEstimatorPort,
     ThinkingPrefixPort,
-    _native_admission,
+    _native_completion_controls,
 )
 from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.shaping.pipeline import context_token_estimator
@@ -62,39 +62,50 @@ from opencollab.domain.tools import ToolProcessingResult, tool_name_collision_ke
 
 logger = logging.getLogger(__name__)
 
-async def _observe_native_admission(
-    operation: Awaitable[CompletionResponse], owner: object, admitted: asyncio.Event,
+async def _with_native_completion_controls(
+    operation: Awaitable[CompletionResponse],
+    owner: object | None,
+    messages: list[dict[str, Any]],
+    admission_callback: Callable[[], None] | None,
+    controls: dict[str, Callable[..., Any]],
 ) -> CompletionResponse:
-    token = _native_admission.set((owner, admitted.set))
+    scope = (owner, messages, admission_callback, controls) if owner is not None and controls else None
+    token = _native_completion_controls.set(scope)
     try:
         return await operation
     finally:
-        _native_admission.reset(token)
+        controls.clear()
+        _native_completion_controls.reset(token)
 
-def _completion_keyword_parameters(complete: Callable[..., Awaitable[Any]]) -> tuple[set[str] | None, bool]:
+def _completion_keyword_parameters(
+    complete: Callable[..., Awaitable[Any]],
+) -> tuple[set[str] | None, bool, set[str]]:
     keywords: set[str] = set()
     outer_accepts_kwargs = False
+    outer_keywords: set[str] = set()
 
     def has_fixed_keywords(target: Callable[..., Any]) -> bool:
         nonlocal outer_accepts_kwargs
         parameters = inspect.signature(target, follow_wrapped=False).parameters.values()
-        keywords.update(
+        names = {
             parameter.name for parameter in parameters
             if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-        )
+        }
+        keywords.update(names)
         accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
         if target is complete:
             outer_accepts_kwargs = accepts_kwargs
+            outer_keywords.update(names)
         return not accepts_kwargs
 
     # Follow variadic decorators through to the first fixed signature.
     try:
         target = inspect.unwrap(complete, stop=has_fixed_keywords)
         if not hasattr(target, "__wrapped__") and not has_fixed_keywords(target):
-            return None, outer_accepts_kwargs
+            return None, outer_accepts_kwargs, outer_keywords
     except (TypeError, ValueError):
         pass
-    return keywords, outer_accepts_kwargs
+    return keywords, outer_accepts_kwargs, outer_keywords
 
 def _selector_names_tool_choice(selector: Any) -> bool:
     """Return whether a structured error selector targets ``tool_choice``."""
@@ -806,50 +817,58 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         max_output_tokens: int,
         usage_accounting: _CompletionUsageAccounting,
         revalidate: Callable[[], int],
-    ) -> tuple[asyncio.Event | None, object | None]:
-        keywords, outer_accepts_kwargs = _completion_keyword_parameters(complete)
+    ) -> tuple[asyncio.Event | None, object | None, dict[str, Callable[..., Any]]]:
+        keywords, outer_accepts_kwargs, outer_keywords = _completion_keyword_parameters(complete)
+        owner = getattr(complete, "__self__", None)
+        scoped: dict[str, Callable[..., Any]] = {}
 
         def accepts(name: str) -> bool:
             return keywords is None or name in keywords
 
-        def accepts_control(
-            name: str, capability: str, native_support: object, *, follow_delegate: bool = False,
+        def add_control(
+            name: str,
+            capability: str,
+            callback: Callable[..., Any],
+            *,
+            native_support: object = _NATIVE_COMPLETION_CAPABILITY,
+            allow_scope: bool = True,
         ) -> bool:
             supported = getattr(self.llm, capability, False)
-            if not supported or accepts(name):
-                return bool(supported)
-            if not outer_accepts_kwargs or (not follow_delegate and supported is not True):
+            if not supported:
                 return False
-            # Explicit middleware opt-ins can consume the callback before forwarding.
-            fallback = native_support
-            if follow_delegate:
-                # A transparent proxy can return a method owned by a native client.
-                fallback = inspect.getattr_static(getattr(complete, "__self__", None), capability, None)
-            return inspect.getattr_static(self.llm, capability, fallback) is not native_support
+            if name in outer_keywords or (name == "on_admitted" and accepts(name)):
+                kwargs[name] = callback
+                return True
+            # A native marker also appears on subclasses whose wrappers forward
+            # only legacy parameters. Supply their controls at native dispatch.
+            inherited = inspect.getattr_static(owner, capability, None)
+            declared = inspect.getattr_static(self.llm, capability, inherited)
+            if declared is native_support:
+                if allow_scope and inherited is native_support:
+                    scoped[name] = callback
+                    return True
+                return False
+            if declared is None and native_support is _NATIVE_COMPLETION_CAPABILITY:
+                if keywords is None or name not in keywords:
+                    return False
+            # Explicit middleware opt-ins can consume controls before forwarding.
+            if accepts(name) or (outer_accepts_kwargs and (supported is True or name == "on_admitted")):
+                kwargs[name] = callback
+                return True
+            return False
 
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or accepts("max_output_tokens"):
             kwargs["max_output_tokens"] = max_output_tokens
-        if getattr(self.llm, "supports_attempt_usage", False) and accepts("on_attempt_usage"):
-            kwargs["on_attempt_usage"] = usage_accounting.record_attempt
-        if getattr(self.llm, "supports_usage_settlement", False) and accepts("on_usage"):
-            kwargs["on_usage"] = usage_accounting.settle
-        if accepts_control("before_request", "supports_request_revalidation", _NATIVE_REQUEST_REVALIDATION):
-            kwargs["before_request"] = revalidate
-        if accepts_control(
-            "on_admitted", "supports_request_admission", _NATIVE_REQUEST_ADMISSION, follow_delegate=True,
-        ):
-            admitted = asyncio.Event()
-            kwargs["on_admitted"] = admitted.set
-            return admitted, None
-        owner = getattr(complete, "__self__", None)
-        # A variadic wrapper can reach the native pool through a legacy signature.
-        if (
-            self._per_call_timeout is not None and outer_accepts_kwargs
-            and getattr(self.llm, "supports_request_admission", False)
-            and inspect.getattr_static(owner, "supports_request_admission", None) is _NATIVE_REQUEST_ADMISSION
-        ):
-            return asyncio.Event(), owner
-        return None, None
+        add_control("on_attempt_usage", "supports_attempt_usage", usage_accounting.record_attempt)
+        add_control("on_usage", "supports_usage_settlement", usage_accounting.settle)
+        add_control("before_request", "supports_request_revalidation", revalidate)
+        admitted = asyncio.Event()
+        has_admission = add_control(
+            "on_admitted", "supports_request_admission", admitted.set,
+            native_support=_NATIVE_REQUEST_ADMISSION,
+            allow_scope=self._per_call_timeout is not None and outer_accepts_kwargs,
+        )
+        return admitted if has_admission else None, owner, scoped
 
     def _revalidate_request(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool = False,
@@ -885,7 +904,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             )
             return min(limit, _summary_output_limit(messages)) if _summary_output_limit is not None else limit
 
-        admitted, native_owner = self._add_completion_controls(
+        admitted, native_owner, scoped = self._add_completion_controls(
             self.llm.complete, kwargs, max_output_tokens=max_output_tokens,
             usage_accounting=usage_accounting, revalidate=revalidate,
         )
@@ -922,8 +941,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._finish_run_control_if_quiesced()
 
         operation = complete_owned()
-        if native_owner is not None and admitted is not None:
-            operation = _observe_native_admission(operation, native_owner, admitted)
+        if scoped or _native_completion_controls.get() is not None:
+            operation = _with_native_completion_controls(
+                operation, native_owner, messages, kwargs.get("on_admitted"), scoped,
+            )
         owner = asyncio.create_task(operation)
         self._track_provider_task(owner)
         try:
@@ -961,7 +982,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         protected_call = self.state.wind_down_done
         usage_accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
         complete = self.llm.complete
-        admitted, native_owner = self._add_completion_controls(
+        admitted, native_owner, scoped = self._add_completion_controls(
             complete, kwargs, max_output_tokens=max_output_tokens, usage_accounting=usage_accounting,
             revalidate=lambda: self._revalidate_request(
                 kwargs["messages"], kwargs.get("tools"), thinking=kwargs.get("thinking", False),
@@ -993,8 +1014,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._record_late_provider_result(task, protected_call=protected_call, usage_accounted=True)
 
         operation = complete_owned()
-        if native_owner is not None and admitted is not None:
-            operation = _observe_native_admission(operation, native_owner, admitted)
+        if scoped or _native_completion_controls.get() is not None:
+            operation = _with_native_completion_controls(
+                operation, native_owner, kwargs["messages"], kwargs.get("on_admitted"), scoped,
+            )
         try:
             response = await operation if self._per_call_timeout is None else await abandon_on_timeout(
                 operation,

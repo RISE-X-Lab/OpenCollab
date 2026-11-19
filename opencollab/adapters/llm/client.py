@@ -40,7 +40,11 @@ from opencollab.adapters.llm.retry import RetryTimeBudget, _scoped_native_retry_
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
 from opencollab.application.async_timeout import await_owned_operation
-from opencollab.application.ports import _NATIVE_REQUEST_ADMISSION, _NATIVE_REQUEST_REVALIDATION, _native_admission
+from opencollab.application.ports import (
+    _NATIVE_COMPLETION_CAPABILITY,
+    _NATIVE_REQUEST_ADMISSION,
+    _native_completion_controls,
+)
 from opencollab.domain.token_estimation import estimate_request_tokens
 
 # Native data-residency endpoints share the OpenAI model parameter rules.
@@ -79,8 +83,10 @@ class LLMClient:
     OpenAI-format history per request.
     """
 
-    supports_request_revalidation = _NATIVE_REQUEST_REVALIDATION
+    supports_request_revalidation = _NATIVE_COMPLETION_CAPABILITY
     supports_request_admission = _NATIVE_REQUEST_ADMISSION
+    supports_attempt_usage = _NATIVE_COMPLETION_CAPABILITY
+    supports_usage_settlement = _NATIVE_COMPLETION_CAPABILITY
 
     def __init__(
         self,
@@ -127,8 +133,6 @@ class LLMClient:
             raise ValueError("request_pool must be an absolute local directory path")
         self.request_pool = request_pool
         self.request_capacity = request_capacity
-        self.supports_attempt_usage = True
-        self.supports_usage_settlement = True
         self.model = model
         self.provider = provider
         self.max_retries = max(0, max_retries)
@@ -319,6 +323,24 @@ class LLMClient:
         report their known usage through ``on_attempt_usage`` before retry
         backoff. ``on_usage`` receives the final aggregate before slot release.
         """
+        scope = _native_completion_controls.get()
+        if scope is not None:
+            owner, submitted, admission_callback, controls = scope
+            # An explicitly forwarded admission callback still identifies a rewritten request.
+            forwarded = admission_callback is not None and on_admitted is admission_callback
+            if controls and (forwarded or submitted == messages):
+                if on_admitted is None:
+                    on_admitted = controls.get("on_admitted")
+                if before_request is None:
+                    before_request = controls.get("before_request")
+                if on_attempt_usage is None:
+                    on_attempt_usage = controls.get("on_attempt_usage")
+                if on_usage is None:
+                    on_usage = controls.get("on_usage")
+                controls.clear()
+            elif owner is self and on_admitted is None:
+                on_admitted = controls.pop("on_admitted", None)
+
         start = time.monotonic()
         response = None
         provider_error: BaseException | None = None
@@ -352,9 +374,6 @@ class LLMClient:
                 try:
                     await request_owner.enter_async_context(request_slot(self.request_pool, self.request_capacity))
                     initial_limit = request_limit()
-                    admission = _native_admission.get() if self.request_pool is not None else None
-                    if admission is not None and admission[0] is self:
-                        admission[1]()
                     if on_admitted is not None:
                         on_admitted()
                     if self._anthropic:
