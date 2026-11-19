@@ -864,6 +864,100 @@ async def test_native_rewrite_recovers_tool_result_when_checkpoint_fails(monkeyp
             await environment.cleanup()
 
 
+@pytest.mark.parametrize(
+    ("base_sequence", "failed_write", "expected_writes"),
+    [
+        (4, "checkpoint", ["append"]),
+        (7, None, ["append", "checkpoint"]),
+        (7, "checkpoint", ["append", "checkpoint"]),
+        (7, "append", ["append"]),
+    ],
+    ids=["between-checkpoints", "periodic-checkpoint", "checkpoint-error", "append-error"],
+)
+async def test_legacy_journal_persists_native_rewrites_before_checkpoint(
+    monkeypatch, tmp_path, base_sequence, failed_write, expected_writes,
+):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    path = str(tmp_path / "session.json")
+    backend = storage_module.SessionStore()
+    writes = []
+    sequence = base_sequence + 1
+    write_error = OSError(f"controlled {failed_write} failure")
+
+    class LegacyJournalStore:
+        save = backend.save
+        load_messages = backend.load_messages
+        load_snapshot = backend.load_snapshot
+        save_manifest = backend.save_manifest
+        has_snapshot = backend.has_snapshot
+
+        def append_snapshot_delta(self, path, **delta):
+            if delta["sequence"] == sequence:
+                writes.append("append")
+                assert delta["replace_from"] == 0
+                if failed_write == "append":
+                    raise write_error
+            backend.append_snapshot_delta(path, **delta)
+
+        def checkpoint_snapshot(self, path, messages, *, meta, sequence):
+            if sequence == base_sequence + 1:
+                writes.append("checkpoint")
+                if failed_write == "checkpoint":
+                    raise write_error
+            backend.checkpoint_snapshot(path, messages, meta=meta, sequence=sequence)
+
+    held_request, resume = asyncio.Event(), asyncio.Event()
+    peer = _BoundThinkingProvider(reads=1, thinking=False)
+
+    async def provider(request):
+        response = peer(request)
+        if len(peer.requests) == 2:
+            held_request.set()
+            await resume.wait()
+        return response
+
+    install_sdk_transport(monkeypatch, "anthropic", provider)
+    model = "claude-sonnet-5-5"
+    environment = LocalEnvironment(str(tmp_path))
+    store = LegacyJournalStore()
+    async with _client(model) as client:
+        options = {"agent": _agent(thinking=False, model=model), "llm": client, "env": environment, "store": store}
+        session = build_session(auto_save_path=path, **options)
+        running = restored = None
+        try:
+            for _ in range(base_sequence):
+                session.save(path)
+            session.messages = [*session.messages, {"role": "user", "content": "Read source.txt before answering"}]
+            running = asyncio.create_task(session.run_loop())
+            await asyncio.wait_for(held_request.wait(), 5)
+            await asyncio.gather(*session._auto_save_subscriber.pending_tasks)
+
+            restored = load_session(path, **options)
+            saved = store.load_snapshot(path, session.agent.system_prompt)
+            if failed_write == "append":
+                assert saved["_autosave_sequence"] == base_sequence
+                assert restored.state.anthropic_history is None
+                assert len(restored.messages) == 1
+            else:
+                assert saved["_autosave_sequence"] == sequence
+                assert restored.state.anthropic_history is not None
+                assert restored.messages == session.messages
+                assert sum(row["role"] == "tool" for row in restored.messages) == 1
+            assert writes == expected_writes
+            assert session.persistence_errors == ((write_error,) if failed_write in expected_writes else ())
+
+            resume.set()
+            assert await running == "done"
+        finally:
+            resume.set()
+            if running is not None:
+                await asyncio.gather(running, return_exceptions=True)
+            if restored is not None:
+                await restored.aclose()
+            await session.aclose()
+            await environment.cleanup()
+
+
 async def test_autosave_without_native_history_uses_only_session_state(tmp_path, monkeypatch):
     path = tmp_path / "session.json"
     environment = LocalEnvironment(str(tmp_path))

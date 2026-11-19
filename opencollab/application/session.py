@@ -1088,9 +1088,13 @@ class Session:
                         replace_from = index
                         break
         # A full native rewrite can exceed the journal's remaining capacity.
-        checkpoint_first = has_native_history and replace_from == 0 and (
-            preceding_write_pending or self._auto_save_message_count > 0
-        )
+        replacement_store = None
+        if (
+            has_native_history and replace_from == 0
+            and (preceding_write_pending or self._auto_save_message_count > 0)
+            and isinstance(self.store, SnapshotReplacementStorePort)
+        ):
+            replacement_store = self.store
         messages, meta = self._snapshot_for_save(replace_from)
         tracked_messages = [*stored_messages[:replace_from], *messages] if track_messages else None
         current_seen_hashes = set(self.state.turn.seen_result_hashes)
@@ -1103,7 +1107,7 @@ class Session:
             else current_seen_hashes - self._auto_save_seen_result_hashes
         )
         checkpoint_messages = None
-        if checkpoint_first or sequence >= self._next_auto_save_checkpoint:
+        if replacement_store is not None or sequence >= self._next_auto_save_checkpoint:
             checkpoint_messages = tracked_messages
             if checkpoint_messages is None:
                 checkpoint_messages = copy.deepcopy(self.state.enriched_messages())
@@ -1117,7 +1121,7 @@ class Session:
             self._auto_save_seen_result_hashes = current_seen_hashes
 
         def persist() -> None:
-            if not checkpoint_first:
+            if replacement_store is None:
                 self.store.append_snapshot_delta(
                     path,
                     sequence=sequence,
@@ -1145,10 +1149,10 @@ class Session:
                             sequence=sequence,
                         )
                     except (OSError, SnapshotCapacityError) as checkpoint_error:
-                        if not checkpoint_first or not isinstance(self.store, SnapshotReplacementStorePort):
+                        if replacement_store is None:
                             raise
                         try:
-                            saved = self.store.append_snapshot_replacement(
+                            saved = replacement_store.append_snapshot_replacement(
                                 path,
                                 checkpoint_messages,
                                 meta=meta,
@@ -1162,7 +1166,7 @@ class Session:
                             advance_cursor()
                         return
                     with self._auto_save_lock:
-                        if checkpoint_first:
+                        if replacement_store is not None:
                             advance_cursor()
                         self._next_auto_save_checkpoint = 1 << sequence.bit_length()
 
