@@ -42,7 +42,7 @@ from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import Agent
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
-from opencollab.domain.session import SessionPhase, SessionState
+from opencollab.domain.session import SessionPhase, SessionState, same_snapshot_value
 from opencollab.domain.tool_loops import LoopState
 
 if TYPE_CHECKING:
@@ -1084,7 +1084,7 @@ class Session:
             if replace_from:
                 current_messages = self.state.enriched_messages()
                 for index in range(replace_from):
-                    if current_messages[index] != stored_messages[index]:
+                    if not same_snapshot_value(current_messages[index], stored_messages[index]):
                         replace_from = index
                         break
         # A full native rewrite can exceed the journal's remaining capacity.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -11,6 +12,23 @@ from opencollab.domain.pending import PendingEventTable
 from opencollab.domain.tool_loops import LoopState
 
 MAX_SCOUT_LEDGER_CARDS = 256
+
+
+def same_snapshot_value(left: Any, right: Any) -> bool:
+    """Compare snapshot values without equating JSON booleans and numbers."""
+    if left is right:
+        return True
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            same_snapshot_value(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same_snapshot_value(a, b) for a, b in zip(left, right))
+    if isinstance(left, float) and left == right == 0:
+        return math.copysign(1, left) == math.copysign(1, right)
+    return left == right
 
 
 def _now_iso() -> str:

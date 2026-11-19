@@ -21,6 +21,7 @@ from opencollab.adapters.safe_files import (
     write_regular_file_atomic,
 )
 from opencollab.application.ports import SnapshotCapacityError
+from opencollab.domain.session import same_snapshot_value
 
 MAX_SESSION_SNAPSHOT_BYTES = 64 * 1024 * 1024
 _JSON_WRITE_CHUNK_CHARS = 64 * 1024
@@ -487,7 +488,7 @@ class SessionStore:
                 stored_messages = persisted["messages"]
                 replace_from = min(len(stored_messages), len(messages))
                 for index in range(replace_from):
-                    if stored_messages[index] != messages[index]:
+                    if not same_snapshot_value(stored_messages[index], messages[index]):
                         replace_from = index
                         break
                 record["replace_from"] = replace_from
@@ -763,7 +764,7 @@ class SessionStore:
             normalized["session_state"] = state
             return normalized
 
-        return normalize(persisted) == normalize(candidate)
+        return same_snapshot_value(normalize(persisted), normalize(candidate))
 
     @staticmethod
     def _snapshot_sequence(snapshot: dict[str, Any]) -> int:

@@ -8,7 +8,7 @@ from typing import Any
 
 from opencollab.application._anthropic_history import _anthropic_source_changed, _edited_anthropic_history
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
-from opencollab.domain.session import SessionPhase, SessionState
+from opencollab.domain.session import SessionPhase, SessionState, same_snapshot_value
 
 # Translate legacy terminals and the removed enqueue phase so old snapshots
 # retain their disposition instead of falling back to IDLE.
@@ -34,7 +34,7 @@ def _serialize_anthropic_history(state: SessionState) -> dict | None:
     suffix_offset = count - len(view)
     for index, message in enumerate(view):
         for source_index in (index, index + suffix_offset):
-            if 0 <= source_index < count and message == source[source_index]:
+            if 0 <= source_index < count and same_snapshot_value(message, source[source_index]):
                 stored.append(source_index)
                 break
         else:

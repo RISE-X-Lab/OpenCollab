@@ -52,10 +52,11 @@ def _signatures(body):
 class _BoundThinkingProvider:
     """Compare the documented prefixes through the real Anthropic SDK wire."""
 
-    def __init__(self, reads=2, *, thinking=True, correction=False):
+    def __init__(self, reads=2, *, thinking=True, correction=False, read_input=None):
         self.reads = reads
         self.thinking = thinking
         self.correction = correction
+        self.read_input = read_input or {}
         self.requests = []
         self.origins = {}
         self.retired = set()
@@ -96,7 +97,7 @@ class _BoundThinkingProvider:
             ]
         if number <= self.reads:
             content.append({"type": "tool_use", "id": f"read-{number}", "name": "file_read",
-                            "input": {"path": "source.txt"}})
+                            "input": {"path": "source.txt", **self.read_input}})
         elif self.correction and [tool["name"] for tool in body.get("tools", [])] == ["structured_output"]:
             content.append({"type": "tool_use", "id": "capture", "name": "structured_output", "input": {"answer": 42}})
         else:
@@ -220,6 +221,67 @@ async def test_compacted_native_view_survives_restore_and_disabling_the_shaper(
     else:
         assert peer.retired
     assert _signatures(peer.requests[-1])[-2:] == ["signed-5", "redacted-5"]
+
+
+@pytest.mark.parametrize("mode", ["projected", "journal"])
+async def test_native_snapshot_preserves_typed_tool_input(monkeypatch, tmp_path, mode):
+    peer = _BoundThinkingProvider(reads=1, read_input={"marker": 1})
+    install_sdk_transport(monkeypatch, "anthropic", peer)
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+
+    def read_input(blocks):
+        return next(block["input"] for block in blocks if block["type"] == "tool_use")
+
+    def native_input(message):
+        return read_input(message["provider_state"]["anthropic_content"])
+
+    def sent_input(request):
+        return read_input([block for message in request["messages"] for block in _blocks(message["content"])])
+
+    class TypedProjection:
+        def shape(self, messages):
+            projected = copy.deepcopy(messages)
+            if len(projected) > 2:
+                native_input(projected[2])["marker"] = True
+            return projected
+
+    path = tmp_path / "typed.json"
+    environment = LocalEnvironment(str(tmp_path))
+    async with _client() as client:
+        session = build_session(
+            agent=_agent(), llm=client, env=environment,
+            shaper=TypedProjection() if mode == "projected" else None,
+            auto_save_path=str(path) if mode == "journal" else None,
+        )
+        restored = None
+        try:
+            await session.add_user_message("Read the file")
+            assert await session.run_loop() == "done"
+            session.save(str(path))
+            if mode == "projected":
+                assert sent_input(peer.requests[-1])["marker"] is True
+                assert type(native_input(session.messages[2])["marker"]) is int
+            else:
+                if session._auto_save_sequence + 1 == session._next_auto_save_checkpoint:
+                    await session.enqueue_auto_save()
+                native_input(session.messages[2])["marker"] = True
+                await session.enqueue_auto_save()
+                journal = path.with_suffix(".json.journal")
+                delta = json.loads(journal.read_text().splitlines()[-1])
+                assert delta["replace_from"] == 2
+                assert native_input(delta["messages"][0])["marker"] is True
+
+            restored = load_session(str(path), agent=_agent(), llm=client, env=environment)
+            await restored.add_user_message("Continue with the recorded tool use")
+            assert await restored.run_loop() == "done"
+            assert sent_input(peer.requests[-1])["marker"] is True
+            assert "signed-1" not in _signatures(peer.requests[-1])
+        finally:
+            if restored is not None:
+                await restored.aclose()
+            await session.aclose()
+            await environment.cleanup()
+
 
 async def test_appended_system_and_changed_tools_retire_old_native_thinking(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")

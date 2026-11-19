@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from opencollab.domain.session import SessionState
+from opencollab.domain.session import SessionState, same_snapshot_value
 
 _THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
 
@@ -25,19 +25,19 @@ def _strip_anthropic_thinking(messages: list[dict[str, Any]], start: int = 0) ->
 
 def _edited_anthropic_history(before: list[dict], after: list[dict]) -> list[dict]:
     """Drop thinking bound to a changed prefix, keeping the valid older run."""
-    if [message for message in before if message.get("role") == "system" and not message.get("compacted")] != [
-        message for message in after if message.get("role") == "system" and not message.get("compacted")
-    ]:
+    before_system = [message for message in before if message.get("role") == "system" and not message.get("compacted")]
+    after_system = [message for message in after if message.get("role") == "system" and not message.get("compacted")]
+    if not same_snapshot_value(before_system, after_system):
         return _strip_anthropic_thinking(after)
     for index, (old, new) in enumerate(zip(before, after)):
-        if old != new:
+        if not same_snapshot_value(old, new):
             return _strip_anthropic_thinking(after, index)
     return after
 
 def _anthropic_source_changed(state: SessionState) -> bool:
     history = state.anthropic_history
     source = history.get("source_messages") if history is not None else None
-    return source is not None and state.messages[:len(source)] != source
+    return source is not None and not same_snapshot_value(state.messages[:len(source)], source)
 
 def _anthropic_history_input(state: SessionState) -> list[dict]:
     """Reuse the native view until its original transcript prefix changes."""
@@ -56,7 +56,7 @@ def _remember_anthropic_history(
     messages = _edited_anthropic_history(_anthropic_history_input(state), messages)
     if history is not None:
         messages = _edited_anthropic_history(history["messages"], messages)
-        if history["tools"] != tools:
+        if not same_snapshot_value(history["tools"], tools):
             messages = _strip_anthropic_thinking(messages)
     state.anthropic_history = copy.deepcopy({
         "messages": messages, "source_count": len(state.messages), "tools": tools,
