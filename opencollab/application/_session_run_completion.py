@@ -36,12 +36,14 @@ from opencollab.application._session_run_usage import (
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import (
+    _NATIVE_REQUEST_ADMISSION,
     _NATIVE_REQUEST_REVALIDATION,
     CompletionResponse,
     ContextTokenEstimatorPort,
     RequestOutputRequirementPort,
     RequestTokenEstimatorPort,
     ThinkingPrefixPort,
+    _native_admission,
 )
 from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.shaping.pipeline import context_token_estimator
@@ -59,6 +61,15 @@ from opencollab.domain.token_estimation import estimate_request_message_tokens, 
 from opencollab.domain.tools import ToolProcessingResult, tool_name_collision_key
 
 logger = logging.getLogger(__name__)
+
+async def _observe_native_admission(
+    operation: Awaitable[CompletionResponse], owner: object, admitted: asyncio.Event,
+) -> CompletionResponse:
+    token = _native_admission.set((owner, admitted.set))
+    try:
+        return await operation
+    finally:
+        _native_admission.reset(token)
 
 def _completion_keyword_parameters(complete: Callable[..., Awaitable[Any]]) -> tuple[set[str] | None, bool]:
     keywords: set[str] = set()
@@ -795,11 +806,26 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         max_output_tokens: int,
         usage_accounting: _CompletionUsageAccounting,
         revalidate: Callable[[], int],
-    ) -> asyncio.Event | None:
+    ) -> tuple[asyncio.Event | None, object | None]:
         keywords, outer_accepts_kwargs = _completion_keyword_parameters(complete)
 
         def accepts(name: str) -> bool:
             return keywords is None or name in keywords
+
+        def accepts_control(
+            name: str, capability: str, native_support: object, *, follow_delegate: bool = False,
+        ) -> bool:
+            supported = getattr(self.llm, capability, False)
+            if not supported or accepts(name):
+                return bool(supported)
+            if not outer_accepts_kwargs or (not follow_delegate and supported is not True):
+                return False
+            # Explicit middleware opt-ins can consume the callback before forwarding.
+            fallback = native_support
+            if follow_delegate:
+                # A transparent proxy can return a method owned by a native client.
+                fallback = inspect.getattr_static(getattr(complete, "__self__", None), capability, None)
+            return inspect.getattr_static(self.llm, capability, fallback) is not native_support
 
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or accepts("max_output_tokens"):
             kwargs["max_output_tokens"] = max_output_tokens
@@ -807,23 +833,23 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             kwargs["on_attempt_usage"] = usage_accounting.record_attempt
         if getattr(self.llm, "supports_usage_settlement", False) and accepts("on_usage"):
             kwargs["on_usage"] = usage_accounting.settle
-        revalidation = getattr(self.llm, "supports_request_revalidation", False)
-        # Explicit middleware opt-ins can consume the callback before forwarding.
-        if revalidation and (
-            accepts("before_request")
-            or (
-                outer_accepts_kwargs and revalidation is True
-                and inspect.getattr_static(
-                    self.llm, "supports_request_revalidation", _NATIVE_REQUEST_REVALIDATION,
-                ) is not _NATIVE_REQUEST_REVALIDATION
-            )
-        ):
+        if accepts_control("before_request", "supports_request_revalidation", _NATIVE_REQUEST_REVALIDATION):
             kwargs["before_request"] = revalidate
-        if getattr(self.llm, "supports_request_admission", False) and accepts("on_admitted"):
+        if accepts_control(
+            "on_admitted", "supports_request_admission", _NATIVE_REQUEST_ADMISSION, follow_delegate=True,
+        ):
             admitted = asyncio.Event()
             kwargs["on_admitted"] = admitted.set
-            return admitted
-        return None
+            return admitted, None
+        owner = getattr(complete, "__self__", None)
+        # A variadic wrapper can reach the native pool through a legacy signature.
+        if (
+            self._per_call_timeout is not None and outer_accepts_kwargs
+            and getattr(self.llm, "supports_request_admission", False)
+            and inspect.getattr_static(owner, "supports_request_admission", None) is _NATIVE_REQUEST_ADMISSION
+        ):
+            return asyncio.Event(), owner
+        return None, None
 
     def _revalidate_request(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool = False,
@@ -859,7 +885,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             )
             return min(limit, _summary_output_limit(messages)) if _summary_output_limit is not None else limit
 
-        admitted = self._add_completion_controls(
+        admitted, native_owner = self._add_completion_controls(
             self.llm.complete, kwargs, max_output_tokens=max_output_tokens,
             usage_accounting=usage_accounting, revalidate=revalidate,
         )
@@ -895,7 +921,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._draining_provider_tasks.discard(asyncio.current_task())
                 self._finish_run_control_if_quiesced()
 
-        owner = asyncio.create_task(complete_owned())
+        operation = complete_owned()
+        if native_owner is not None and admitted is not None:
+            operation = _observe_native_admission(operation, native_owner, admitted)
+        owner = asyncio.create_task(operation)
         self._track_provider_task(owner)
         try:
             if self._per_call_timeout is None:
@@ -932,7 +961,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         protected_call = self.state.wind_down_done
         usage_accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
         complete = self.llm.complete
-        admitted = self._add_completion_controls(
+        admitted, native_owner = self._add_completion_controls(
             complete, kwargs, max_output_tokens=max_output_tokens, usage_accounting=usage_accounting,
             revalidate=lambda: self._revalidate_request(
                 kwargs["messages"], kwargs.get("tools"), thinking=kwargs.get("thinking", False),
@@ -964,6 +993,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._record_late_provider_result(task, protected_call=protected_call, usage_accounted=True)
 
         operation = complete_owned()
+        if native_owner is not None and admitted is not None:
+            operation = _observe_native_admission(operation, native_owner, admitted)
         try:
             response = await operation if self._per_call_timeout is None else await abandon_on_timeout(
                 operation,

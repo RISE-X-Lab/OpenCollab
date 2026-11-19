@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from opencollab.domain.hooks import HookOutcome
@@ -475,8 +476,15 @@ class _NativeRequestRevalidation:
         return True
 
 
-# Native clients support the callback through their completion signature.
+class _NativeRequestAdmission:
+    def __get__(self, instance: Any, owner: type) -> bool:
+        return instance is not None and instance.request_pool is not None
+
+
+# Native clients support these callbacks through their completion signature.
 _NATIVE_REQUEST_REVALIDATION = _NativeRequestRevalidation()
+_NATIVE_REQUEST_ADMISSION = _NativeRequestAdmission()
+_native_admission: ContextVar[tuple[object, Callable[[], None]] | None] = ContextVar("native_admission", default=None)
 
 
 class LLMPort(Protocol):

@@ -40,7 +40,7 @@ from opencollab.adapters.llm.retry import RetryTimeBudget, _scoped_native_retry_
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
 from opencollab.application.async_timeout import await_owned_operation
-from opencollab.application.ports import _NATIVE_REQUEST_REVALIDATION
+from opencollab.application.ports import _NATIVE_REQUEST_ADMISSION, _NATIVE_REQUEST_REVALIDATION, _native_admission
 from opencollab.domain.token_estimation import estimate_request_tokens
 
 # Native data-residency endpoints share the OpenAI model parameter rules.
@@ -80,6 +80,7 @@ class LLMClient:
     """
 
     supports_request_revalidation = _NATIVE_REQUEST_REVALIDATION
+    supports_request_admission = _NATIVE_REQUEST_ADMISSION
 
     def __init__(
         self,
@@ -126,7 +127,6 @@ class LLMClient:
             raise ValueError("request_pool must be an absolute local directory path")
         self.request_pool = request_pool
         self.request_capacity = request_capacity
-        self.supports_request_admission = request_pool is not None
         self.supports_attempt_usage = True
         self.supports_usage_settlement = True
         self.model = model
@@ -352,6 +352,9 @@ class LLMClient:
                 try:
                     await request_owner.enter_async_context(request_slot(self.request_pool, self.request_capacity))
                     initial_limit = request_limit()
+                    admission = _native_admission.get() if self.request_pool is not None else None
+                    if admission is not None and admission[0] is self:
+                        admission[1]()
                     if on_admitted is not None:
                         on_admitted()
                     if self._anthropic:
