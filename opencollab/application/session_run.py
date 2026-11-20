@@ -30,7 +30,7 @@ from opencollab.application._session_run_shared import (
     _TeamBudgetStop,
     _TokenBudgetStop,
 )
-from opencollab.application._session_run_usage import _normalize_completion_usage
+from opencollab.application._session_run_usage import _CompletionUsageAccounting, _normalize_completion_usage
 from opencollab.application.context_pressure import ContextPressure
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
@@ -250,6 +250,23 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self.state.add_used_tokens(tokens)
         if tokens and self._on_completion_tokens is not None:
             self._on_completion_tokens(tokens)
+
+    def _record_late_provider_result(
+        self, task: asyncio.Future[Any], *, protected_call: bool = False,
+        accounting: _CompletionUsageAccounting | None = None,
+    ) -> None:
+        try:
+            response = task.result()
+            if accounting is None:
+                accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
+                accounting.finish(response.usage, purpose="completion", late=True)
+            else:
+                accounting.record_late()
+        except BaseException:
+            pass
+        finally:
+            self._draining_provider_tasks.discard(task)
+            self._finish_run_control_if_quiesced()
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
