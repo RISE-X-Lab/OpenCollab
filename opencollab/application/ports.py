@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
+from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from opencollab.domain.hooks import HookOutcome
@@ -484,9 +486,44 @@ class _NativeRequestAdmission:
 # Native clients support these callbacks through their completion signature.
 _NATIVE_COMPLETION_CAPABILITY = _NativeCompletionCapability()
 _NATIVE_REQUEST_ADMISSION = _NativeRequestAdmission()
-_native_completion_controls: ContextVar[
-    tuple[object, list[dict[str, Any]], Callable[[], None] | None, dict[str, Callable[..., Any]]] | None
-] = ContextVar(
+
+
+@dataclass
+class _NativeCompletionControls:
+    admission_callback: Callable[[], None] | None
+    callbacks: dict[str, Callable[..., Any]]
+    legacy_request_key: object = field(default_factory=object, init=False)
+
+    def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if self.admission_callback is not None:
+            return messages
+        return [_LegacyCompletionMessage(message, self.legacy_request_key) for message in messages]
+
+    def matches(self, messages: list[dict[str, Any]], on_admitted: Callable[[], None] | None) -> bool:
+        if self.admission_callback is not None:
+            return on_admitted is self.admission_callback
+        return any(
+            isinstance(message, _LegacyCompletionMessage) and message.request_key is self.legacy_request_key
+            for message in messages
+        )
+
+
+class _LegacyCompletionMessage(dict[str, Any]):
+    __slots__ = ("request_key",)
+
+    def __init__(self, message: dict[str, Any], request_key: object) -> None:
+        super().__init__(message)
+        self.request_key = request_key
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _LegacyCompletionMessage:
+        # Keep request identity when legacy routes copy messages before editing them.
+        result = _LegacyCompletionMessage({}, self.request_key)
+        memo[id(self)] = result
+        result.update(deepcopy(dict(self), memo))
+        return result
+
+
+_native_completion_controls: ContextVar[_NativeCompletionControls | None] = ContextVar(
     "native_completion_controls", default=None,
 )
 

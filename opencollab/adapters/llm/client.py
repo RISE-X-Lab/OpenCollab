@@ -43,6 +43,7 @@ from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.ports import (
     _NATIVE_COMPLETION_CAPABILITY,
     _NATIVE_REQUEST_ADMISSION,
+    _LegacyCompletionMessage,
     _native_completion_controls,
 )
 from opencollab.domain.token_estimation import estimate_request_tokens
@@ -324,22 +325,21 @@ class LLMClient:
         backoff. ``on_usage`` receives the final aggregate before slot release.
         """
         scope = _native_completion_controls.get()
-        if scope is not None:
-            owner, submitted, admission_callback, controls = scope
-            # An explicitly forwarded admission callback still identifies a rewritten request.
-            forwarded = admission_callback is not None and on_admitted is admission_callback
-            if controls and (forwarded or submitted == messages):
-                if on_admitted is None:
-                    on_admitted = controls.get("on_admitted")
-                if before_request is None:
-                    before_request = controls.get("before_request")
-                if on_attempt_usage is None:
-                    on_attempt_usage = controls.get("on_attempt_usage")
-                if on_usage is None:
-                    on_usage = controls.get("on_usage")
-                controls.clear()
-            elif owner is self and on_admitted is None:
-                on_admitted = controls.pop("on_admitted", None)
+        if scope is not None and scope.callbacks and scope.matches(messages, on_admitted):
+            controls = scope.callbacks
+            if on_admitted is None:
+                on_admitted = controls.get("on_admitted")
+            if before_request is None:
+                before_request = controls.get("before_request")
+            if on_attempt_usage is None:
+                on_attempt_usage = controls.get("on_attempt_usage")
+            if on_usage is None:
+                on_usage = controls.get("on_usage")
+            controls.clear()
+        if scope is not None and scope.admission_callback is None:
+            messages = [
+                dict(message) if isinstance(message, _LegacyCompletionMessage) else message for message in messages
+            ]
 
         start = time.monotonic()
         response = None

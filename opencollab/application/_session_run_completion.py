@@ -44,6 +44,7 @@ from opencollab.application.ports import (
     RequestTokenEstimatorPort,
     ThinkingPrefixPort,
     _native_completion_controls,
+    _NativeCompletionControls,
 )
 from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.shaping.pipeline import context_token_estimator
@@ -64,17 +65,14 @@ logger = logging.getLogger(__name__)
 
 async def _with_native_completion_controls(
     operation: Awaitable[CompletionResponse],
-    owner: object | None,
-    messages: list[dict[str, Any]],
-    admission_callback: Callable[[], None] | None,
-    controls: dict[str, Callable[..., Any]],
+    scope: _NativeCompletionControls | None,
 ) -> CompletionResponse:
-    scope = (owner, messages, admission_callback, controls) if owner is not None and controls else None
     token = _native_completion_controls.set(scope)
     try:
         return await operation
     finally:
-        controls.clear()
+        if scope is not None:
+            scope.callbacks.clear()
         _native_completion_controls.reset(token)
 
 def _completion_keyword_parameters(
@@ -817,7 +815,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         max_output_tokens: int,
         usage_accounting: _CompletionUsageAccounting,
         revalidate: Callable[[], int],
-    ) -> tuple[asyncio.Event | None, object | None, dict[str, Callable[..., Any]]]:
+    ) -> tuple[asyncio.Event | None, _NativeCompletionControls | None]:
         keywords, outer_accepts_kwargs, outer_keywords = _completion_keyword_parameters(complete)
         owner = getattr(complete, "__self__", None)
         scoped: dict[str, Callable[..., Any]] = {}
@@ -868,7 +866,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             native_support=_NATIVE_REQUEST_ADMISSION,
             allow_scope=self._per_call_timeout is not None and outer_accepts_kwargs,
         )
-        return admitted if has_admission else None, owner, scoped
+        scope = _NativeCompletionControls(kwargs.get("on_admitted"), scoped) if scoped else None
+        return admitted if has_admission else None, scope
 
     def _revalidate_request(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool = False,
@@ -904,10 +903,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             )
             return min(limit, _summary_output_limit(messages)) if _summary_output_limit is not None else limit
 
-        admitted, native_owner, scoped = self._add_completion_controls(
+        admitted, scope = self._add_completion_controls(
             self.llm.complete, kwargs, max_output_tokens=max_output_tokens,
             usage_accounting=usage_accounting, revalidate=revalidate,
         )
+        if scope is not None:
+            messages = scope.prepare_messages(messages)
         abandoned = False
         if self.tracer:
             self.tracer.log_step(step_type="llm_call_started", payload={
@@ -941,10 +942,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._finish_run_control_if_quiesced()
 
         operation = complete_owned()
-        if scoped or _native_completion_controls.get() is not None:
-            operation = _with_native_completion_controls(
-                operation, native_owner, messages, kwargs.get("on_admitted"), scoped,
-            )
+        if scope is not None or _native_completion_controls.get() is not None:
+            operation = _with_native_completion_controls(operation, scope)
         owner = asyncio.create_task(operation)
         self._track_provider_task(owner)
         try:
@@ -982,13 +981,16 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         protected_call = self.state.wind_down_done
         usage_accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
         complete = self.llm.complete
-        admitted, native_owner, scoped = self._add_completion_controls(
-            complete, kwargs, max_output_tokens=max_output_tokens, usage_accounting=usage_accounting,
+        admitted, scope = self._add_completion_controls(
+            complete, kwargs, max_output_tokens=max_output_tokens,
+            usage_accounting=usage_accounting,
             revalidate=lambda: self._revalidate_request(
                 kwargs["messages"], kwargs.get("tools"), thinking=kwargs.get("thinking", False),
                 thinking_params=kwargs.get("thinking_params"),
             ),
         )
+        if scope is not None:
+            kwargs["messages"] = scope.prepare_messages(kwargs["messages"])
         late_accounted = False
 
         async def complete_owned() -> CompletionResponse:
@@ -1014,10 +1016,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._record_late_provider_result(task, protected_call=protected_call, usage_accounted=True)
 
         operation = complete_owned()
-        if scoped or _native_completion_controls.get() is not None:
-            operation = _with_native_completion_controls(
-                operation, native_owner, kwargs["messages"], kwargs.get("on_admitted"), scoped,
-            )
+        if scope is not None or _native_completion_controls.get() is not None:
+            operation = _with_native_completion_controls(operation, scope)
         try:
             response = await operation if self._per_call_timeout is None else await abandon_on_timeout(
                 operation,

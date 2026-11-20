@@ -75,6 +75,12 @@ class _MetadataLegacyRoute(_VariadicLegacyRoute):
         return await super().complete(*args, **kwargs)
 
 
+class _ExplicitAdmissionRoute(_DelegatingPooledClient):
+    @wraps(_LegacyPooledClient.complete)
+    async def complete(self, *args, on_admitted=None, **kwargs):
+        return await self.delegate(*args, on_admitted=on_admitted, **kwargs)
+
+
 @pytest.fixture(
     params=[LLMClient, _AdmissionMiddleware, _ForwardingPooledClient],
     ids=["native", "decorated", "inherited"],
@@ -313,20 +319,42 @@ async def test_routed_native_completion_keeps_the_generation_deadline(
 
 @pytest.mark.parametrize("summary", [False, True])
 @pytest.mark.parametrize("stall", [False, True])
+@pytest.mark.parametrize(
+    "route_class", [_VariadicLegacyRoute, _DelegatingPooledClient, _ExplicitAdmissionRoute],
+    ids=["opaque", "legacy-metadata", "explicit-admission"],
+)
 async def test_routed_rewrite_preserves_deadline_and_separate_preflight_usage(
-    tmp_path, monkeypatch, local_environment_factory, summary, stall,
+    tmp_path, monkeypatch, local_environment_factory, summary, stall, route_class,
 ):
     ready = asyncio.Event()
     entered = asyncio.Event()
     calls = []
+    preflight_limits = []
+    target_limit = 64 if route_class is _DelegatingPooledClient else 128
+    reserved = 0
 
-    async def complete(_client, _model, messages, *_args, **_kwargs):
-        if messages[-1]["content"] == "Preflight":
-            return LLMResponse(content="ok", usage=Usage(2, 2))
+    async def complete(
+        _client, model, messages, *_args, max_output_tokens, before_attempt, on_attempt_usage, **_kwargs,
+    ):
+        if model == "preflight" or messages[-1]["content"] == "Preflight":
+            preflight_limits.append(max_output_tokens)
+            return LLMResponse(content="ok", usage=Usage(20, 30))
         calls.append(True)
+        assert messages[-1]["content"] == "Routed request"
+        assert type(max_output_tokens) is int and max_output_tokens == target_limit
+        assert all(type(message) is dict for message in messages)
         entered.set()
         if stall:
             await asyncio.Event().wait()
+        assert before_attempt() == target_limit
+        previously_used = session.used_tokens
+        on_attempt_usage(Usage(2, 1))
+        assert session.used_tokens == previously_used + 3
+        session.max_budget_tokens = session.used_tokens + reserved + 31
+        try:
+            assert before_attempt() == 31
+        finally:
+            session.max_budget_tokens = 20_000
         content = "<summary>Earlier context.</summary>" if summary and len(calls) == 1 else "answer"
         return LLMResponse(content=content, usage=Usage(7, 3))
 
@@ -335,19 +363,28 @@ async def test_routed_rewrite_preserves_deadline_and_separate_preflight_usage(
     destination.mkdir()
     config = dict(api_key="local", context_window=40_000, request_capacity=1)
     async with (
-        _VariadicLegacyRoute(**config, request_pool=str(tmp_path)) as client,
+        route_class(**config, request_pool=str(tmp_path)) as client,
         LLMClient(**config, request_pool=str(destination)) as recipient,
+        LLMClient(api_key=__name__, model="preflight") as helper,
     ):
         async def delegate(messages, *args, **kwargs):
-            await LLMClient.complete(client, [{"role": "user", "content": "Preflight"}])
+            nonlocal reserved
+            reserved = client.estimate_request_tokens(messages, kwargs.get("tools"))
+            if route_class is _ExplicitAdmissionRoute:
+                await helper.complete(deepcopy(messages))
+            else:
+                await LLMClient.complete(client, [{"role": "user", "content": "Preflight"}])
             ready.set()
-            rewritten = [*messages, {"role": "system", "content": "Routed request"}]
+            rewritten = deepcopy(messages) + [{"role": "system", "content": "Routed request"}]
+            if route_class is _DelegatingPooledClient:
+                kwargs.pop("temperature", None)
+                kwargs["max_output_tokens"] = min(int(kwargs["max_output_tokens"]), target_limit)
             return await recipient.complete(rewritten, *args, **kwargs)
 
         client.delegate = delegate
         session = build_session(
-            agent=Agent(name="routed", system_prompt="system"), llm=client,
-            env=local_environment_factory(str(tmp_path)), llm_timeout=0.09,
+            agent=Agent(name="routed", system_prompt="system", max_tokens_per_step=128), llm=client,
+            env=local_environment_factory(str(tmp_path)), llm_timeout=0.09, max_budget_tokens=20_000,
         )
         session.messages = history(summary)
         try:
@@ -357,6 +394,7 @@ async def test_routed_rewrite_preserves_deadline_and_separate_preflight_usage(
                 await asyncio.sleep(0.15)
                 assert not owner.done() and not entered.is_set()
                 assert session.used_tokens == 0
+                assert preflight_limits == [None]
             await asyncio.wait_for(entered.wait(), 1)
             if stall:
                 with pytest.raises(GenerationTimeoutError):
@@ -366,6 +404,9 @@ async def test_routed_rewrite_preserves_deadline_and_separate_preflight_usage(
                 assert len(calls) == (2 if summary else 1)
                 assert session.used_tokens == 10 * len(calls)
         finally:
+            if not owner.done():
+                owner.cancel()
+            await asyncio.gather(owner, return_exceptions=True)
             await session.aclose()
 
 
