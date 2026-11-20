@@ -279,6 +279,51 @@ recovery_parent() {
 }
 '''
 
+_RECOVERY_GIT_DIRECTORIES = r'''
+private=$(git rev-parse --absolute-git-dir && printf .) || exit
+private=${private%??}
+common=$(git rev-parse --git-common-dir && printf .) || exit
+common=${common%??}
+'''
+
+
+async def _mounted_recovery_paths(environment: Any, workspace: str) -> tuple[str, ...]:
+    # The volume receipts live beside the primary backup, including for linked worktrees.
+    command = f"cd -- {shlex.quote(workspace)} || exit\n" + _RECOVERY_PARENT + _RECOVERY_GIT_DIRECTORIES + r'''
+workspace=$(pwd -P && printf .) || exit
+workspace=${workspace%??}
+prefix=${workspace%/}/
+primary=$(recovery_parent "$common" "$private" && printf .) || exit
+primary=${primary%??}
+if [ "$primary" -ef "$common" ] || [ "$primary" -ef "$private" ]; then primary=; fi
+if [ "$private" -ef "$common" ]; then private=; fi
+for parent in "$common" "$private" "$primary"; do
+    [ -n "$parent" ] || continue
+    for backup in "$parent"/candidate-recovery-????????; do
+        [ -d "$backup" ] && [ ! -L "$backup" ] && [ -O "$backup" ] || continue
+        volumes=$backup/volumes
+        [ -d "$volumes" ] && [ ! -L "$volumes" ] && [ -O "$volumes" ] || continue
+        for receipt in "$volumes"/volume-????????; do
+            [ -f "$receipt" ] && [ ! -L "$receipt" ] && [ -O "$receipt" ] || continue
+            store=$(cat -- "$receipt" && printf .) || continue
+            store=${store%.}
+            case "$store" in "$prefix"*) ;; *) continue;; esac
+            case "${store##*/}" in .candidate-recovery-????????) ;; *) continue;; esac
+            [ -d "$store" ] && [ ! -L "$store" ] && [ -O "$store" ] || continue
+            anchor=${store%/*}
+            top=$(cd -P -- "${anchor:-/}" && [ "$PWD" = "${anchor:-/}" ] &&
+                GIT_DISCOVERY_ACROSS_FILESYSTEM=1 git rev-parse --show-toplevel 2>/dev/null &&
+                printf .) || continue
+            [ "${top%??}" = "$workspace" ] || continue
+            printf '%s\0' "${store#"$prefix"}"
+        done
+    done
+done
+'''
+    result = _complete(await environment.exec_cmd(command, timeout=30), "mounted candidate recovery locations")
+    return tuple(dict.fromkeys(path for path in result.split("\0") if path))
+
+
 _RECOVER_PATHS = _COMPARE_ENTRIES + _CHECK_PARENTS + _RESTORE_SAVED + _RECOVERY_STORES + r'''
 
 check_candidate_descendants() {
@@ -531,11 +576,9 @@ async def _adoption_transaction(
     directory_script = f"cd -- {shlex.quote(workspace)} || exit\n" + _RECOVERY_PARENT
     if repository:
         # Git removes private metadata with the linked worktree.
-        directory_script += r'''
-private=$(git rev-parse --absolute-git-dir && printf .) || exit
-printf '%s\0' "${private%??}" || exit
-common=$(git rev-parse --git-common-dir && printf .) || exit
-recovery_parent "${common%??}" "${private%??}"
+        directory_script += _RECOVERY_GIT_DIRECTORIES + r'''
+printf '%s\0' "$private" || exit
+recovery_parent "$common" "$private"
 '''
     else:
         directory_script += 'recovery_parent "${TMPDIR:-/tmp}"'

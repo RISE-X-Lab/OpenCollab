@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.application.workflow_candidates import CandidateWorkspaceTrackingError
 from tests.workflows.test_candidate_adoption_recovery import _partial_publication
 from tests.workflows.test_workflow_candidate_workspace import _git
 
@@ -150,3 +152,111 @@ async def test_candidate_adoption_with_nested_mount(tmp_path, monkeypatch, scena
         if published_fd is not None:
             os.close(published_fd)
         await environment.cleanup()
+
+
+@pytest.mark.parametrize(("source_edit", "linked"), [
+    (None, False),
+    (None, True),
+    ("tracked", False),
+    ("untracked", False),
+])
+async def test_followup_candidate_ignores_only_registered_mount_recovery(tmp_path, monkeypatch, source_edit, linked):
+    source, candidate = _partial_publication(tmp_path)
+    (source / "app.py").write_text("value = 1\n")
+    mounted_file = "mounted/record.txt"
+    (source / "mounted").mkdir()
+    (source / mounted_file).write_text("original\n")
+    (source / ".gitignore").write_text("settings/\n")
+    if linked:
+        (source / ".gitattributes").write_text("*.txt text eol=lf\n")
+    _git(source, "add", ".")
+    _git(source, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+         "-c", "commit.gpgsign=false", "commit", "-qm", "test: prepare mounted source")
+    repo = source
+    if linked:
+        repo = tmp_path / "linked"
+        _git(source, "worktree", "add", "--detach", str(repo))
+        (repo / "settings").mkdir()
+        (repo / "settings/notes.txt").write_text("existing settings\n")
+
+    mount = repo / "mounted"
+    target = repo / mounted_file
+    candidate = replace(candidate, diff=candidate.diff.replace("record.txt", mounted_file))
+    user_data = mount / ".candidate-recovery-userdata"
+    user_data.mkdir()
+    user_note = user_data / "note.txt"
+    user_note.write_text("user data\n")
+    index = Path(_git(repo, "rev-parse", "--absolute-git-dir").removesuffix("\n")) / "index"
+    index_before = index.read_bytes()
+    environment = LocalEnvironment(str(repo))
+    workspace = EnvCandidateWorkspace(environment)
+    execute = environment.exec_cmd
+
+    async def with_mount(command, timeout=120, **kwargs):
+        if "filesystem()" in command:
+            command = _mount_commands(repo, mount, bind=False, hard_links=True) + command
+        return await execute(command, timeout, **kwargs)
+
+    monkeypatch.setattr(environment, "exec_cmd", with_mount)
+    store_path = None
+    retained = None
+    with target.open("ab", buffering=0) as old_writer:
+        async def edit(child, _):
+            worktree = Path(child.workspace_root)
+            assert not (worktree / store_path).exists()
+            assert (worktree / user_note.relative_to(repo)).read_text() == "user data\n"
+            (worktree / "app.py").write_text("value = 2\n")
+            old_writer.write(b"late original write\n")
+            if source_edit == "tracked":
+                (repo / "record.txt").write_text("tracked source edit\n")
+            elif source_edit == "untracked":
+                user_note.write_text("untracked source edit\n")
+
+        async def flow(ctx, _):
+            nonlocal store_path, retained
+            with pytest.raises(RuntimeError, match="candidate adoption failed"):
+                await ctx.adopt_candidate(candidate)
+            _git(repo, "restore", "--source=HEAD", "--worktree", mounted_file)
+            recovery, = (source / ".git").glob("candidate-recovery-*")
+            location, = (recovery / "volumes").iterdir()
+            store = Path(location.read_text())
+            store_path = store.relative_to(repo)
+            retained, = (store / "original-inodes").glob("[0-9]")
+            assert retained.stat().st_ino == os.fstat(old_writer.fileno()).st_ino
+
+            before = await workspace.source_diff()
+            assert str(store_path) not in before
+            assert "+user data\n" in before
+            if linked:
+                lease = await workspace._acquire("team follow-up", strict_capture=True)
+                try:
+                    tree = Path(lease.candidate_workspace)
+                    assert not (tree / store_path).exists()
+                    assert (tree / user_note.relative_to(repo)).read_text() == "user data\n"
+                    assert not await lease.source_contents_changed()
+                finally:
+                    await lease.cleanup()
+            if source_edit is None:
+                followup = await ctx.candidate_workflow(edit, {}, label="unrelated candidate")
+                assert "+value = 2" in followup.diff
+                await ctx.adopt_candidate(followup)
+            else:
+                try:
+                    with pytest.raises(CandidateWorkspaceTrackingError, match="source worktree changed"):
+                        await ctx.candidate_workflow(edit, {}, label="unrelated candidate")
+                finally:
+                    registered = _git(repo, "worktree", "list", "--porcelain").splitlines()
+                    for entry in registered:
+                        if entry.startswith("worktree ") and Path(entry[9:]) != repo:
+                            _git(repo, "worktree", "remove", "--force", entry[9:])
+            assert await workspace.source_diff() != before
+
+        try:
+            result = await OpenCollab(repo, environment=environment, model="offline").workflow(flow, trace=False)
+            assert result.ok, result.reason
+            assert target.read_text() == "original\n"
+            assert retained.read_bytes() == b"original\nlate original write\n"
+            assert (repo / "app.py").read_text() == ("value = 1\n" if source_edit else "value = 2\n")
+            assert index.read_bytes() == index_before
+        finally:
+            await environment.cleanup()
