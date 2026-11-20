@@ -13,6 +13,13 @@ from opencollab.domain.token_estimation import (  # noqa: F401 - compatibility r
 )
 
 
+class _NativeUsageOrigin:
+    __slots__ = ()
+
+    def __deepcopy__(self, _memo: dict[int, Any]) -> _NativeUsageOrigin:
+        return self
+
+
 @dataclass
 class Usage:
     """Token accounting for one completion.
@@ -22,6 +29,9 @@ class Usage:
     reports; they are already included in ``input_tokens`` and must not be
     added again to compute the budget total.
     """
+
+    # Retain request identity through copies without adding it to usage telemetry.
+    __slots__ = ("__dict__", "__weakref__", "_native_usage_origin")
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -38,6 +48,9 @@ class Usage:
     context_tokens: int | None = None
     context_output_tokens: int | None = None
     context_tokens_estimated: bool | None = None
+
+    def __post_init__(self) -> None:
+        self._native_usage_origin = _NativeUsageOrigin()
 
     @property
     def total_tokens(self) -> int:

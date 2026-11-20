@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 
@@ -20,7 +21,8 @@ from tests.support.provider_sdk_http import completion_http_response, http_respo
 @pytest.mark.parametrize("summary", [False, True])
 @pytest.mark.parametrize("forward_fallback", [False, True])
 @pytest.mark.parametrize("scenario", [
-    "primary", "copied-primary", "fallback", "equal-fallback", "copied-fallback",
+    "primary", "copied-primary", "scrubbed-primary", "replaced-primary",
+    "fallback", "equal-fallback", "copied-fallback", "scrubbed-fallback", "replaced-fallback",
     "failed-primary", "failed-primary-attempt-callback-only",
 ])
 async def test_routed_completion_accounts_for_each_provider(
@@ -29,8 +31,8 @@ async def test_routed_completion_accounts_for_each_provider(
     requests = []
     events = []
     answer = "<summary>Answer.</summary>" if summary else "Answer."
-    usable_primary = scenario in {"primary", "copied-primary"}
-    equal_usage = scenario in {"equal-fallback", "copied-fallback"}
+    usable_primary = scenario in {"primary", "copied-primary", "scrubbed-primary", "replaced-primary"}
+    equal_usage = scenario in {"equal-fallback", "copied-fallback", "scrubbed-fallback", "replaced-fallback"}
     failed_primary = scenario.startswith("failed-primary")
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
@@ -48,6 +50,14 @@ async def test_routed_completion_accounts_for_each_provider(
             return completion_http_response(request, text=answer if usable_primary else "", output_tokens=55)
         return completion_http_response(request, text=answer, output_tokens=55 if equal_usage else 2)
 
+    def copy_response(response):
+        if scenario.startswith("replaced-"):
+            return replace(response, usage=replace(response.usage, raw_usage={}))
+        copied = deepcopy(response)
+        if scenario.startswith("scrubbed-"):
+            copied.usage.raw_usage.clear()
+        return copied
+
     class FallbackClient(LLMClient):
         async def complete(
             self, messages, *, on_admitted=None, before_request=None,
@@ -64,9 +74,11 @@ async def test_routed_completion_accounts_for_each_provider(
                 assert failed_primary
             else:
                 if first.content and first.content.strip():
-                    return deepcopy(first) if scenario == "copied-primary" else first
+                    return copy_response(first) if scenario != "primary" else first
             final = await fallback.complete(messages, **kwargs, **(controls if forward_fallback else {}))
-            return deepcopy(final) if failed_primary or scenario == "copied-fallback" else final
+            if failed_primary or scenario in {"copied-fallback", "scrubbed-fallback", "replaced-fallback"}:
+                return copy_response(final)
+            return final
 
     install_sdk_transport(monkeypatch, "openai", handle)
     options = dict(api_key=__name__, context_window=40_000, request_pool=str(tmp_path), request_capacity=1)

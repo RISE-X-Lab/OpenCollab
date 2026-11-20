@@ -7,6 +7,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import fields
 from typing import Any, Awaitable, Callable
 
 _native_usage_owner: ContextVar[object | None] = ContextVar("native_usage_owner", default=None)
@@ -57,6 +58,14 @@ def _normalize_completion_usage(usage: Any) -> tuple[int, int]:
     return input_tokens if context_tokens is None else context_tokens, max(reported_total, input_tokens + output_tokens)
 
 
+def _same_usage_measurements(native: Any, usage: Any) -> bool:
+    # dataclasses.replace can rebuild usage while redacting only provider telemetry.
+    return type(native) is type(usage) and all(
+        getattr(native, field.name) == getattr(usage, field.name)
+        for field in fields(usage) if field.name != "raw_usage"
+    )
+
+
 class _CompletionUsageAccounting:
     def __init__(self, runner: Any, *, protected_call: bool) -> None:
         self.runner = runner
@@ -101,8 +110,19 @@ class _CompletionUsageAccounting:
             return False
         # Middleware may copy the chosen response or return a different native call with equal counters.
         native = next((item for item in self._native_usages if item[0] is usage), None)
+        origin = getattr(usage, "_native_usage_origin", None)
+        if native is None and origin is not None:
+            native = next(
+                (item for item in self._native_usages if getattr(item[0], "_native_usage_origin", None) is origin),
+                None,
+            )
         if usage is not None and native is None:
             native = next((item for item in reversed(self._native_usages) if item[0] == usage), None)
+        if native is None and origin is not None:
+            native = next(
+                (item for item in reversed(self._native_usages) if _same_usage_measurements(item[0], usage)),
+                None,
+            )
         native_usage = usage if native is None else native[0]
         if usage is not None and all(native_usage is not settled for settled, _tokens in self._settled):
             attempt_tokens = self._attempt_tokens.pop(None, 0) if native is None else 0
