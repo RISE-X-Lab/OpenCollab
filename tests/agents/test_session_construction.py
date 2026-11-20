@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import threading
+from collections import OrderedDict
+from enum import IntEnum
 
 import pytest
 
@@ -294,6 +296,49 @@ def test_checkpoint_rejects_sequence_older_than_persisted_journal(tmp_path):
     restored = store.load_snapshot(str(path), "system")
     assert restored["_autosave_sequence"] == 2
     assert restored["messages"][-1]["content"] == "newer-delta"
+
+
+class _SavedAgentId(IntEnum):
+    READER = 12
+
+
+class _SavedScore(float):
+    pass
+
+
+class _SavedScores(list):
+    pass
+
+
+@pytest.mark.parametrize(("aid", "metadata"), [
+    pytest.param(_SavedAgentId.READER, {}, id="integer-enum"),
+    pytest.param(12, {"scores": [_SavedScore(-0.0), _SavedScore(0.75)]}, id="float-subclass"),
+    pytest.param(12, OrderedDict(scores=[-0.0, 0.75]), id="dict-subclass"),
+    pytest.param(12, {"scores": _SavedScores([-0.0, 0.75])}, id="list-subclass"),
+])
+async def test_autosave_checkpoints_json_builtin_subclasses(local_environment_factory, tmp_path, aid, metadata):
+    path = tmp_path / "subclasses.json"
+    session = _new_session(
+        local_environment_factory,
+        env=local_environment_factory(str(tmp_path)),
+        aid=aid,
+        auto_save_path=str(path),
+        seed_user_messages=[{"role": "user", "content": "seed", "metadata": metadata}],
+    )
+    try:
+        await session.add_user_message("record this turn")
+        await asyncio.gather(*session.pending_cleanup_tasks)
+
+        assert session.persistence_errors == ()
+        saved = json.loads(path.read_bytes())
+        assert saved["_autosave_sequence"] == 1
+        assert saved["aid"] == 12
+        assert json.dumps(saved["messages"][1]["metadata"]) == json.dumps(metadata)
+        assert saved["messages"][-1]["content"] == "record this turn"
+        assert path.with_suffix(".json.journal").read_bytes() == b""
+    finally:
+        await session.aclose()
+
 
 @pytest.mark.parametrize("publisher", ["journal", "snapshot"])
 @pytest.mark.parametrize(

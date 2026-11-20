@@ -17,20 +17,23 @@ MAX_SCOUT_LEDGER_CARDS = 256
 def same_snapshot_value(left: Any, right: Any) -> bool:
     if left is right:
         return True
+    # The JSON encoder writes builtin subclasses as their underlying values.
     if isinstance(left, str) and isinstance(right, str):
-        # The JSON encoder writes string subclasses, including enums, as text.
         return str.__eq__(left, right)
-    if type(left) is not type(right):
-        return False
-    if isinstance(left, dict):
+    if isinstance(left, dict) and isinstance(right, dict):
         return left.keys() == right.keys() and all(
             same_snapshot_value(value, right[key]) for key, value in left.items()
         )
-    if isinstance(left, list):
+    if isinstance(left, list) and isinstance(right, list):
         return len(left) == len(right) and all(same_snapshot_value(a, b) for a, b in zip(left, right))
-    if isinstance(left, float) and left == right == 0:
-        return math.copysign(1, left) == math.copysign(1, right)
-    return left == right
+    if isinstance(left, int) and isinstance(right, int):
+        return (type(left) is bool) == (type(right) is bool) and int.__eq__(left, right)
+    if isinstance(left, float) and isinstance(right, float):
+        left, right = float.__float__(left), float.__float__(right)
+        if left == right == 0:
+            return math.copysign(1, left) == math.copysign(1, right)
+        return left == right
+    return type(left) is type(right) and left == right
 
 
 def _now_iso() -> str:
