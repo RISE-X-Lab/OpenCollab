@@ -858,7 +858,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or accepts("max_output_tokens"):
             kwargs["max_output_tokens"] = max_output_tokens
         add_control("on_attempt_usage", "supports_attempt_usage", usage_accounting.record_attempt)
-        add_control("on_usage", "supports_usage_settlement", usage_accounting.settle)
+        add_control("on_usage", "supports_usage_settlement", usage_accounting.settle_provider)
         add_control("before_request", "supports_request_revalidation", revalidate)
         admitted = asyncio.Event()
         has_admission = add_control(
@@ -918,15 +918,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             })
 
         def account_response(response: CompletionResponse) -> None:
-            input_tokens, total_tokens = _normalize_completion_usage(response.usage)
-            usage_accounting.settle(response.usage)
-            self._record_usage_event(response.usage, total_tokens, purpose="summary", late=abandoned)
+            input_tokens, _total_tokens = _normalize_completion_usage(response.usage)
+            usage_accounting.finish(response.usage, purpose="summary", late=abandoned)
             self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
             self.state.set_context_tokens(input_tokens)
-            if abandoned:
-                self._late_provider_usage += (total_tokens,)
-                if self.late_provider_usage_checkpoint is not None:
-                    self.late_provider_usage_checkpoint()
             self.record_llm_trace(response, time.monotonic() - start, purpose="summary", thinking=thinking)
 
         async def complete_owned() -> CompletionResponse:
@@ -1000,20 +995,19 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                     self, complete, usage_accounting=usage_accounting, **kwargs,
                 )
                 late_accounted = asyncio.current_task() in self._draining_provider_tasks
-                self._account_completion_usage(
-                    response, protected_call=protected_call, late=late_accounted,
-                    accounted_tokens=usage_accounting.tokens,
-                )
+                usage_accounting.finish(response.usage, purpose="completion", late=late_accounted)
                 return response
             finally:
                 self._draining_provider_tasks.discard(asyncio.current_task())
                 self._finish_run_control_if_quiesced()
 
         def record_abandoned(task: asyncio.Task[Any]) -> None:
-            if late_accounted:
+            try:
+                if not late_accounted and not task.cancelled() and task.exception() is None:
+                    usage_accounting.record_late()
+            finally:
+                self._draining_provider_tasks.discard(task)
                 self._provider_task_done(task)
-            else:
-                self._record_late_provider_result(task, protected_call=protected_call, usage_accounted=True)
 
         operation = complete_owned()
         if scope is not None or _native_completion_controls.get() is not None:

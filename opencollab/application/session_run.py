@@ -246,43 +246,10 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         ):
             self.state.budget_reserve_consumed = True
 
-    def _record_late_provider_result(
-        self,
-        task: asyncio.Future[Any],
-        *,
-        protected_call: bool = False,
-        usage_accounted: bool = False,
-    ) -> None:
-        """Charge a provider response that survived caller cancellation or timeout."""
-        try:
-            response = task.result()
-            self._account_completion_usage(
-                response, protected_call=protected_call, late=True, usage_accounted=usage_accounted,
-            )
-        except BaseException:
-            pass
-        finally:
-            self._draining_provider_tasks.discard(task)
-            self._finish_run_control_if_quiesced()
-
     def _charge_completion_tokens(self, tokens: int) -> None:
         self.state.add_used_tokens(tokens)
         if tokens and self._on_completion_tokens is not None:
             self._on_completion_tokens(tokens)
-
-    def _account_completion_usage(
-        self, response: Any, *, protected_call: bool, late: bool, usage_accounted: bool = False,
-        accounted_tokens: int = 0,
-    ) -> None:
-        _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
-        if not usage_accounted:
-            self._charge_completion_tokens(total_tokens - accounted_tokens)
-            self._record_usage_event(response.usage, total_tokens, purpose="completion", late=late)
-            self._mark_budget_reserve_consumed(protected_call=protected_call)
-        if late:
-            self._late_provider_usage += (total_tokens,)
-            if self.late_provider_usage_checkpoint is not None:
-                self.late_provider_usage_checkpoint()
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.

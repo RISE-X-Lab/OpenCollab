@@ -39,6 +39,7 @@ from opencollab.adapters.llm.responses_provider import complete_responses
 from opencollab.adapters.llm.retry import RetryTimeBudget, _scoped_native_retry_budget
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
+from opencollab.application._session_run_usage import _observe_native_usage, _own_native_usage
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.ports import (
     _NATIVE_COMPLETION_CAPABILITY,
@@ -370,6 +371,8 @@ class LLMClient:
         )
         try:
             async with AsyncExitStack() as request_owner:
+                if on_usage is not None or on_attempt_usage is not None:
+                    request_owner.enter_context(_own_native_usage())
                 first_token = request_owner.enter_context(recording())
                 try:
                     await request_owner.enter_async_context(request_slot(self.request_pool, self.request_capacity))
@@ -447,6 +450,7 @@ class LLMClient:
                     raise
                 finally:
                     settled_usage = getattr(response if response is not None else provider_error, "usage", None)
+                    _observe_native_usage(settled_usage)
                     transport_timing = first_token.snapshot()
                     latency_s = time.monotonic() - start
                     if response is not None:

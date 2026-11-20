@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+import json
+from copy import deepcopy
+
+import pytest
+
+from opencollab import OpenCollab
+from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.llm.client import LLMClient
+from opencollab.application.run_control import RunControl
+from opencollab.bootstrap import build_session
+from opencollab.domain.agent import Agent
+from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport
+
+
+@pytest.mark.parametrize("summary", [False, True])
+@pytest.mark.parametrize("forward_fallback", [False, True])
+@pytest.mark.parametrize("scenario", ["primary", "copied-primary", "fallback", "equal-fallback", "copied-fallback"])
+async def test_routed_completion_accounts_for_each_provider(
+    tmp_path, monkeypatch, summary, forward_fallback, scenario,
+):
+    requests = []
+    events = []
+    answer = "<summary>Answer.</summary>" if summary else "Answer."
+    usable_primary = scenario in {"primary", "copied-primary"}
+    equal_usage = scenario in {"equal-fallback", "copied-fallback"}
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+
+    async def handle(request):
+        route = request.url.path.split("/")[1]
+        requests.append(route)
+        if route == "primary":
+            return completion_http_response(request, text=answer if usable_primary else "", output_tokens=55)
+        return completion_http_response(request, text=answer, output_tokens=55 if equal_usage else 2)
+
+    class FallbackClient(LLMClient):
+        async def complete(
+            self, messages, *, on_admitted=None, before_request=None,
+            on_attempt_usage=None, on_usage=None, **kwargs,
+        ):
+            controls = dict(on_admitted=on_admitted, before_request=before_request,
+                            on_attempt_usage=on_attempt_usage, on_usage=on_usage)
+            first = await super().complete(messages, **kwargs, **controls)
+            if first.content and first.content.strip():
+                return deepcopy(first) if scenario == "copied-primary" else first
+            final = await fallback.complete(messages, **kwargs, **(controls if forward_fallback else {}))
+            return deepcopy(final) if scenario == "copied-fallback" else final
+
+    install_sdk_transport(monkeypatch, "openai", handle)
+    options = dict(api_key=__name__, context_window=40_000, max_retries=0,
+                   request_pool=str(tmp_path), request_capacity=1)
+    control = RunControl(on_event=events.append)
+    async with (
+        FallbackClient(**options, base_url="https://test.invalid/primary/v1") as client,
+        LLMClient(**options, base_url="https://test.invalid/fallback/v1") as fallback,
+    ):
+        if summary:
+            env = LocalEnvironment(str(tmp_path))
+            session = build_session(
+                agent=Agent(name="routed", system_prompt="System.", max_tokens_per_step=128), llm=client,
+                env=env, llm_timeout=2, max_budget_tokens=20_000, run_control=control,
+            )
+            try:
+                await session.add_user_message("Return a brief summary.")
+                text = await session._context_summarizer.asummarize(session.messages)
+                assert text == "Summary:\nAnswer."
+                assert session._context_summarizer.last_call_cacheable
+                tokens = session.used_tokens
+            finally:
+                await session.aclose()
+                await env.cleanup()
+        else:
+            result = await OpenCollab(tmp_path, config={"llm_timeout": 2, "max_output_tokens": 128}).agent(
+                "Return a brief answer.", llm=client, tools=(), budget=20_000, trace=False,
+                run_control=control, system_prompt="System.",
+            )
+            assert result.status == "completed", result.reason
+            assert result.output == "Answer."
+            tokens = result.tokens
+
+    expected_usage = [57] if usable_primary else [57, 57 if equal_usage else 4]
+    expected_purpose = "summary" if summary else "completion"
+    ledger = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
+    assert requests == (["primary"] if usable_primary else ["primary", "fallback"])
+    assert tokens == sum(expected_usage)
+    assert [entry["usage"]["total_tokens"] for entry in ledger] == expected_usage
+    usage_events = [event for event in events if event.type == "usage"]
+    assert [event.data["total_tokens"] for event in usage_events] == expected_usage
+    assert {event.data["purpose"] for event in usage_events} == {expected_purpose}

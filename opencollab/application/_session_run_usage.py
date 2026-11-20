@@ -4,7 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Awaitable, Callable
+
+_native_usage_owner: ContextVar[object | None] = ContextVar("native_usage_owner", default=None)
+_native_usage_observer: ContextVar[Callable[[Any], None] | None] = ContextVar("native_usage_observer", default=None)
+
+
+@contextmanager
+def _own_native_usage() -> Iterator[None]:
+    token = _native_usage_owner.set(object())
+    try:
+        yield
+    finally:
+        _native_usage_owner.reset(token)
+
+
+def _observe_native_usage(usage: Any) -> None:
+    observer = _native_usage_observer.get()
+    if observer is not None and usage is not None:
+        observer(usage)
 
 
 def _nonnegative_usage_int(value: Any, field: str) -> int:
@@ -39,12 +60,58 @@ class _CompletionUsageAccounting:
         self.runner = runner
         self.protected_call = protected_call
         self.tokens = 0
+        self._attempt_tokens: dict[object | None, int] = {}
+        self._native_usages: list[Any] = []
+        self._settled: list[tuple[Any, int]] = []
+        self._reported = False
+
+    @contextmanager
+    def observe_provider_responses(self) -> Iterator[None]:
+        token = _native_usage_observer.set(self._native_usages.append)
+        try:
+            yield
+        finally:
+            _native_usage_observer.reset(token)
 
     def record_attempt(self, usage: Any) -> None:
-        self._charge(_normalize_completion_usage(usage)[1])
+        owner = _native_usage_owner.get()
+        tokens = _normalize_completion_usage(usage)[1]
+        self._charge(tokens)
+        self._attempt_tokens[owner] = self._attempt_tokens.get(owner, 0) + tokens
 
-    def settle(self, usage: Any) -> None:
-        self._charge(_normalize_completion_usage(usage)[1] - self.tokens)
+    def settle_provider(self, usage: Any) -> None:
+        tokens = _normalize_completion_usage(usage)[1]
+        self._charge(tokens - self._attempt_tokens.pop(_native_usage_owner.get(), 0))
+        self._settled.append((usage, tokens))
+
+    def finish(self, usage: Any, *, purpose: str, late: bool, error: BaseException | None = None) -> bool:
+        if self._reported:
+            return False
+        # Middleware may copy the chosen response or return a different native call with equal counters.
+        native_usage = usage
+        if usage is not None and all(item is not usage for item in self._native_usages):
+            native_usage = next((item for item in reversed(self._native_usages) if item == usage), usage)
+        if usage is not None and all(native_usage is not settled for settled, _tokens in self._settled):
+            # A routed completion can return a new response after settling another provider.
+            tokens = _normalize_completion_usage(usage)[1]
+            self._charge(tokens - sum(self._attempt_tokens.values()))
+            self._attempt_tokens.clear()
+            self._settled.append((native_usage, tokens))
+        self._reported = True
+        record_usage = getattr(self.runner, "_record_usage_event", None)
+        if callable(record_usage):
+            for settled, tokens in self._settled:
+                record_usage(settled, tokens, purpose=purpose, late=late,
+                             error=error if settled is native_usage else None)
+        if late:
+            self.record_late()
+        return bool(self._settled)
+
+    def record_late(self) -> None:
+        if self._settled:
+            self.runner._late_provider_usage += (self.tokens,)
+            if self.runner.late_provider_usage_checkpoint is not None:
+                self.runner.late_provider_usage_checkpoint()
 
     def _charge(self, tokens: int) -> None:
         self.runner._charge_completion_tokens(tokens)
@@ -63,21 +130,11 @@ async def _complete_with_error_usage(
     """Charge reported error usage inside the provider owner exactly once."""
     start = time.monotonic()
     try:
-        return await complete(*args, **kwargs)
+        with usage_accounting.observe_provider_responses():
+            return await complete(*args, **kwargs)
     except BaseException as exc:
-        usage = getattr(exc, "usage", None)
-        if usage is not None:
-            _input_tokens, total_tokens = _normalize_completion_usage(usage)
-            usage_accounting.settle(usage)
-            late = asyncio.current_task() in runner._draining_provider_tasks
-            record_usage = getattr(runner, "_record_usage_event", None)
-            if callable(record_usage):
-                record_usage(usage, total_tokens, purpose=usage_purpose,
-                             late=late, error=exc)
-            if late:
-                runner._late_provider_usage += (total_tokens,)
-                if runner.late_provider_usage_checkpoint is not None:
-                    runner.late_provider_usage_checkpoint()
+        late = asyncio.current_task() in runner._draining_provider_tasks
+        if usage_accounting.finish(getattr(exc, "usage", None), purpose=usage_purpose, late=late, error=exc):
             try:
                 runner.record_llm_trace(
                     None, time.monotonic() - start, purpose=usage_purpose,
