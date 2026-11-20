@@ -284,6 +284,101 @@ async def test_native_snapshot_preserves_typed_tool_input(monkeypatch, tmp_path,
             await environment.cleanup()
 
 
+@pytest.mark.parametrize("moment", ["live", "before-export", "after-restore"])
+@pytest.mark.parametrize("target", ["recent-user", "first-user", "both-users", "insert", "delete", "cleared-result"])
+async def test_source_edits_keep_unrelated_native_tool_compaction(monkeypatch, tmp_path, moment, target):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    marker = "Catalogue entry from the old archive."
+    clear_marker = "[Old tool result content cleared]"
+    archive = tmp_path / "archive.txt"
+    archive.write_text(f"{marker}\n" * 400)
+    peer = _BoundThinkingProvider(reads=2, thinking=False)
+    context_limit = 8_000
+    resumed_requests = []
+    resuming = False
+
+    def transport(request):
+        if resuming:
+            resumed_requests.append(json.loads(request.content))
+            if len(request.content) > context_limit:
+                return http_response(request, 400, json={"type": "error", "error": {
+                    "type": "invalid_request_error", "message": "prompt is too long for the context window",
+                }})
+        peer.read_input = {"path": archive.name, "limit": 400} if not peer.requests else {}
+        return peer(request)
+
+    install_sdk_transport(monkeypatch, "anthropic", transport)
+    first_user = "Inspect the archive"
+    recent_user = "Use a formal tone"
+    first_edit = (first_user, "Review the archive entries")
+    recent_edit = (recent_user, "Use an informal tone")
+    inserted = "Additional context from the editor"
+    edits = {
+        "recent-user": [recent_edit],
+        "first-user": [first_edit],
+        "both-users": [first_edit, recent_edit],
+        "insert": [(None, inserted)],
+        "delete": [(first_user, None)],
+        "cleared-result": [(marker, "The entries in the old archive have been revised.")],
+    }[target]
+
+    def edit(session):
+        if target == "cleared-result":
+            result = next(message for message in session.messages if message["role"] == "tool")
+            assert marker in result["content"]
+            result["content"] = edits[0][1]
+        elif target == "insert":
+            session.messages.insert(1, {"role": "user", "content": inserted})
+        elif target == "delete":
+            del session.messages[1]
+        else:
+            for original, revised in edits:
+                message = next(message for message in session.messages if message.get("content") == original)
+                message["content"] = revised
+
+    model = "claude-sonnet-5-5"
+    env = LocalEnvironment(str(tmp_path))
+    path = str(tmp_path / "compacted.json")
+    async with _client(model) as client:
+        options = {"agent": _agent(thinking=False, model=model), "llm": client, "env": env}
+        session = build_session(
+            **options, shaper=ToolOutputClearShaper(trigger_tokens=2, target_tokens=1, keep_recent=1),
+        )
+        try:
+            await session.add_user_message(first_user)
+            assert await session.run_loop() == "done"
+            await session.add_user_message(recent_user)
+            assert await session.run_loop() == "done"
+            assert marker in json.dumps(peer.requests[1]["messages"])
+            assert clear_marker in json.dumps(peer.requests[-1]["messages"])
+            assert marker in json.dumps(session.messages)
+            if moment != "after-restore":
+                edit(session)
+            if moment != "live":
+                session.save(path)
+                await session.aclose()
+                session = load_session(path, **options)
+                if moment == "after-restore":
+                    edit(session)
+            session.runner.shaper = None
+
+            await session.add_user_message("Summarize the evidence")
+            resuming = True
+            assert await session.run_loop() == "done"
+            assert len(resumed_requests) == 1
+            continued = json.dumps(resumed_requests[0]["messages"])
+            for original, revised in edits:
+                if original is not None:
+                    assert original not in continued
+                if revised is not None:
+                    assert revised in continued
+            assert marker not in continued
+            assert (clear_marker in continued) is (target != "cleared-result")
+        finally:
+            await session.aclose()
+            await env.cleanup()
+
+
 async def test_appended_system_and_changed_tools_retire_old_native_thinking(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     peer = _BoundThinkingProvider(reads=0)
@@ -517,6 +612,42 @@ def test_restored_unchanged_prefix_preserves_projection_and_tracks_future_nested
     state.messages[1]["content"][0]["text"] = "Revised requirement"
     assert _anthropic_history_input(state) == state.messages
     assert state.anthropic_history["source_messages"][1]["content"][0]["text"] == "Old requirement"
+
+
+def test_edit_in_summary_invalidates_it_even_when_a_later_message_is_identical():
+    state = SessionState(messages=[
+        {"role": "system", "content": "System instructions"},
+        {"role": "user", "content": "First request"},
+        {"role": "assistant", "content": "Acknowledged"},
+        {"role": "user", "content": "Second request"},
+        {"role": "assistant", "content": "Acknowledged"},
+    ])
+    summary = {"role": "system", "compacted": True, "content": "The first request was acknowledged"}
+    _remember_anthropic_history(state, [state.messages[0], summary, state.messages[4]], None)
+    state.messages[2]["content"] = "The first request still needs a decision"
+    assert _anthropic_history_input(state) == state.messages
+
+
+def test_disjoint_edits_do_not_reuse_a_projection_for_reused_tool_call_ids():
+    call = {
+        "role": "assistant", "content": None, "tool_calls": [{
+            "id": "read-again", "type": "function",
+            "function": {"name": "file_read", "arguments": '{"path":"archive.txt"}'},
+        }],
+    }
+    state = SessionState(messages=[
+        {"role": "user", "content": "Read the old archive"},
+        call, {"role": "tool", "tool_call_id": "read-again", "content": "Old file data"},
+        {"role": "user", "content": "Check the archive again"},
+        copy.deepcopy(call), {"role": "tool", "tool_call_id": "read-again", "content": "Revised file data"},
+        {"role": "user", "content": "Summarize what changed"},
+    ])
+    view = copy.deepcopy(state.messages)
+    view[2]["content"] = "[Old tool result content cleared]"
+    _remember_anthropic_history(state, view, None)
+    state.messages[0]["content"] = "Read the archive entries"
+    state.messages[-1]["content"] = "Summarize the latest entries"
+    assert _anthropic_history_input(state) == state.messages
 
 
 @pytest.mark.parametrize("checkpoint", [False, True], ids=["journal", "checkpoint"])

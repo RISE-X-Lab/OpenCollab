@@ -6,7 +6,7 @@ import copy
 import math
 from typing import Any
 
-from opencollab.application._anthropic_history import _anthropic_source_changed, _edited_anthropic_history
+from opencollab.application._anthropic_history import _anthropic_source_changed, _rebase_anthropic_history
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState, same_snapshot_value
 
@@ -25,8 +25,7 @@ def _serialize_anthropic_history(state: SessionState) -> dict | None:
     view = history["messages"]
     if _anthropic_source_changed(state):
         # Retire the stale projection before restore binds it to the new transcript.
-        view = _edited_anthropic_history(history["source_messages"], source)
-        view = _edited_anthropic_history(history["messages"], view)
+        view = _rebase_anthropic_history(history, source)
         count = len(source)
 
     # Aligned and suffix-aligned entries can reuse the persisted transcript.
