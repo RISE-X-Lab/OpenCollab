@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import stat
 from dataclasses import replace
 from pathlib import Path
 
@@ -154,13 +155,16 @@ async def test_candidate_adoption_with_nested_mount(tmp_path, monkeypatch, scena
         await environment.cleanup()
 
 
-@pytest.mark.parametrize(("source_edit", "linked"), [
-    (None, False),
-    (None, True),
-    ("tracked", False),
-    ("untracked", False),
+@pytest.mark.parametrize(("source_edit", "linked", "readonly_common"), [
+    (None, False, False),
+    (None, True, False),
+    pytest.param(None, True, True, id="linked-permissions-restored"),
+    ("tracked", False, False),
+    ("untracked", False, False),
 ])
-async def test_followup_candidate_ignores_only_registered_mount_recovery(tmp_path, monkeypatch, source_edit, linked):
+async def test_followup_candidate_ignores_only_registered_mount_recovery(
+    tmp_path, monkeypatch, source_edit, linked, readonly_common,
+):
     source, candidate = _partial_publication(tmp_path)
     (source / "app.py").write_text("value = 1\n")
     mounted_file = "mounted/record.txt"
@@ -188,6 +192,8 @@ async def test_followup_candidate_ignores_only_registered_mount_recovery(tmp_pat
     user_note.write_text("user data\n")
     index = Path(_git(repo, "rev-parse", "--absolute-git-dir").removesuffix("\n")) / "index"
     index_before = index.read_bytes()
+    common = source / ".git"
+    common_mode = stat.S_IMODE(common.stat().st_mode)
     environment = LocalEnvironment(str(repo))
     workspace = EnvCandidateWorkspace(environment)
     execute = environment.exec_cmd
@@ -214,10 +220,19 @@ async def test_followup_candidate_ignores_only_registered_mount_recovery(tmp_pat
 
         async def flow(ctx, _):
             nonlocal store_path, retained
-            with pytest.raises(RuntimeError, match="candidate adoption failed"):
-                await ctx.adopt_candidate(candidate)
+            try:
+                if readonly_common:
+                    common.chmod(0o555)
+                    if os.access(common, os.W_OK):
+                        pytest.skip("requires an account subject to directory permissions")
+                with pytest.raises(RuntimeError, match="candidate adoption failed"):
+                    await ctx.adopt_candidate(candidate)
+            finally:
+                if readonly_common:
+                    common.chmod(common_mode)
             _git(repo, "restore", "--source=HEAD", "--worktree", mounted_file)
-            recovery, = (source / ".git").glob("candidate-recovery-*")
+            primary = repo.parent if readonly_common else common
+            recovery, = primary.glob("candidate-recovery-*")
             location, = (recovery / "volumes").iterdir()
             store = Path(location.read_text())
             store_path = store.relative_to(repo)

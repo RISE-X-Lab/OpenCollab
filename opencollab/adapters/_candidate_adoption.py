@@ -240,6 +240,13 @@ if [ "$detached" -eq 1 ]; then printf 'original-detached\n'; fi
 _RECOVERY_PARENT = _FILESYSTEM + r'''
 writable_directory() { [ -d "$1" ] && [ -w "$1" ] && [ -x "$1" ]; }
 
+recovery_temporary() {
+    temporary=$(cd -P -- "${TMPDIR:-/tmp}" >/dev/null 2>&1 && pwd -P && printf .) || return 1
+    temporary=${temporary%??}
+    case "$temporary/" in "${1%/}/"*|"${2%/}/"*) return 1;; esac
+    printf '%s\n' "$temporary"
+}
+
 recovery_parent() {
     worktree_device=$(filesystem .) && storage_device=$(filesystem "$1/") || return 1
     if [ "$worktree_device" = "$storage_device" ] && writable_directory "$1"; then
@@ -260,16 +267,12 @@ recovery_parent() {
         fi
     done
     if [ -n "${2:-}" ]; then
-        temporary=$(cd -P -- "${TMPDIR:-/tmp}" >/dev/null 2>&1 && pwd -P && printf .) || temporary=
+        temporary=$(recovery_temporary "$workspace" "$2" && printf .) || temporary=
         temporary=${temporary%??}
-        case "$temporary/" in
-            "${workspace%/}/"*|"${2%/}/"*) ;;
-            *)
-                if writable_directory "$temporary" && [ "$(filesystem "$temporary")" = "$worktree_device" ]; then
-                    printf '%s\n' "$temporary"
-                    return
-                fi ;;
-        esac
+        if writable_directory "$temporary" && [ "$(filesystem "$temporary")" = "$worktree_device" ]; then
+            printf '%s\n' "$temporary"
+            return
+        fi
     fi
     if writable_directory "$1"; then
         printf '%s\n' "$1"
@@ -288,18 +291,13 @@ common=${common%??}
 
 
 async def _mounted_recovery_paths(environment: Any, workspace: str) -> tuple[str, ...]:
-    # The volume receipts live beside the primary backup, including for linked worktrees.
+    # Permissions may have changed since a recovery backup chose its parent.
     command = f"cd -- {shlex.quote(workspace)} || exit\n" + _RECOVERY_PARENT + _RECOVERY_GIT_DIRECTORIES + r'''
 workspace=$(pwd -P && printf .) || exit
 workspace=${workspace%??}
 prefix=${workspace%/}/
-primary=$(recovery_parent "$common" "$private" && printf .) || exit
-primary=${primary%??}
-if [ "$primary" -ef "$common" ] || [ "$primary" -ef "$private" ]; then primary=; fi
-if [ "$private" -ef "$common" ]; then private=; fi
-for parent in "$common" "$private" "$primary"; do
-    [ -n "$parent" ] || continue
-    for backup in "$parent"/candidate-recovery-????????; do
+collect_recovery_paths() {
+    for backup in "$1"/candidate-recovery-????????; do
         [ -d "$backup" ] && [ ! -L "$backup" ] && [ -O "$backup" ] || continue
         volumes=$backup/volumes
         [ -d "$volumes" ] && [ ! -L "$volumes" ] && [ -O "$volumes" ] || continue
@@ -318,7 +316,21 @@ for parent in "$common" "$private" "$primary"; do
             printf '%s\0' "${store#"$prefix"}"
         done
     done
+}
+
+collect_recovery_paths "$common"
+if [ ! "$private" -ef "$common" ]; then collect_recovery_paths "$private"; fi
+parent=$workspace
+while [ "$parent" != / ]; do
+    parent=${parent%/*}
+    parent=${parent:-/}
+    if [ ! "$parent" -ef "$common" ] && [ ! "$parent" -ef "$private" ]; then
+        collect_recovery_paths "$parent"
+    fi
 done
+if temporary=$(recovery_temporary "$workspace" "$private" && printf .); then
+    collect_recovery_paths "${temporary%??}"
+fi
 '''
     result = _complete(await environment.exec_cmd(command, timeout=30), "mounted candidate recovery locations")
     return tuple(dict.fromkeys(path for path in result.split("\0") if path))
