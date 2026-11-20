@@ -18,6 +18,7 @@ from opencollab.bootstrap import build_session
 from opencollab.domain.agent import Agent
 from tests.runtime.test_async_compaction import history
 from tests.support.environment_test_support import local_environment_factory as local_environment_factory
+from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport
 
 
 class _LegacyPooledClient(LLMClient):
@@ -79,6 +80,16 @@ class _ExplicitAdmissionRoute(_DelegatingPooledClient):
     @wraps(_LegacyPooledClient.complete)
     async def complete(self, *args, on_admitted=None, **kwargs):
         return await self.delegate(*args, on_admitted=on_admitted, **kwargs)
+
+
+def _legacy_completion_signature(self, messages, tools=None, temperature=0.0, *, max_output_tokens=None):
+    pass
+
+
+class _MetadataOnlyPooledRoute(LLMClient):
+    @wraps(_legacy_completion_signature)
+    async def complete(self, *args, **kwargs):
+        return await self.delegate(*args, **kwargs)
 
 
 @pytest.fixture(
@@ -407,6 +418,83 @@ async def test_routed_rewrite_preserves_deadline_and_separate_preflight_usage(
             if not owner.done():
                 owner.cancel()
             await asyncio.gather(owner, return_exceptions=True)
+            await session.aclose()
+
+
+@pytest.mark.parametrize("summary", [False, True])
+@pytest.mark.parametrize("stall", [False, True])
+async def test_legacy_router_normalizes_messages_and_forwards_admission(
+    tmp_path, monkeypatch, local_environment_factory, summary, stall,
+):
+    helper_limits = []
+    target_limits = []
+    ready = asyncio.Event()
+    reserved_tokens = 0
+
+    async def handler(request):
+        body = json.loads(request.content)
+        if body["model"] == "preflight":
+            helper_limits.append(body.get("max_tokens"))
+            return completion_http_response(request, output_tokens=55)
+        assert body["messages"][0]["content"].endswith("\nUse the answer format.")
+        target_limits.append(body.get("max_tokens"))
+        if stall:
+            await asyncio.Event().wait()
+        content = "<summary>Earlier context.</summary>" if summary else "answer"
+        return completion_http_response(request, text=content)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    config = dict(api_key=__name__, context_window=40_000, max_retries=0)
+    pool = dict(request_pool=str(tmp_path), request_capacity=1)
+    async with (
+        _MetadataOnlyPooledRoute(**config, **pool) as client,
+        LLMClient(**config, **pool) as recipient,
+        LLMClient(**config, model="preflight") as helper,
+    ):
+        async def delegate(messages, *, max_output_tokens=None, on_admitted=None, **kwargs):
+            nonlocal reserved_tokens
+            reserved_tokens = client.estimate_request_tokens(messages, kwargs.get("tools"))
+            await helper.complete(deepcopy(messages))
+            rewritten = json.loads(json.dumps(messages))
+            rewritten[0]["content"] += "\nUse the answer format."
+            ready.set()
+            return await recipient.complete(
+                rewritten, max_output_tokens=max_output_tokens, on_admitted=on_admitted, **kwargs,
+            )
+
+        client.delegate = delegate
+        session = build_session(
+            agent=Agent(name="router", system_prompt="system", max_tokens_per_step=128), llm=client,
+            env=local_environment_factory(str(tmp_path)), llm_timeout=0.10, max_budget_tokens=20_000,
+        )
+        await session.add_user_message("Prepare an answer.")
+        owner = None
+        try:
+            async with request_slot(str(tmp_path), 1):
+                operation = (
+                    session._context_summarizer.asummarize(session.messages) if summary else session.run_loop()
+                )
+                owner = asyncio.create_task(operation)
+                await asyncio.wait_for(ready.wait(), 2)
+                await asyncio.sleep(0.15)
+                assert not owner.done()
+                assert not target_limits
+                assert session.used_tokens == 0
+                assert helper_limits == [None]
+                session.max_budget_tokens = reserved_tokens + 31
+            if stall:
+                with pytest.raises(GenerationTimeoutError):
+                    await asyncio.wait_for(owner, 2)
+            else:
+                expected = "Summary:\nEarlier context." if summary else "answer"
+                assert await asyncio.wait_for(owner, 2) == expected
+                assert session.used_tokens == 4
+            assert target_limits == [31]
+        finally:
+            if owner is not None:
+                if not owner.done():
+                    owner.cancel()
+                await asyncio.gather(owner, return_exceptions=True)
             await session.aclose()
 
 

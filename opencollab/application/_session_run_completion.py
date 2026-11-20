@@ -77,10 +77,11 @@ async def _with_native_completion_controls(
 
 def _completion_keyword_parameters(
     complete: Callable[..., Awaitable[Any]],
-) -> tuple[set[str] | None, bool, set[str]]:
+) -> tuple[set[str] | None, bool, set[str], Callable[..., Any]]:
     keywords: set[str] = set()
     outer_accepts_kwargs = False
     outer_keywords: set[str] = set()
+    target = complete
 
     def has_fixed_keywords(target: Callable[..., Any]) -> bool:
         nonlocal outer_accepts_kwargs
@@ -100,10 +101,10 @@ def _completion_keyword_parameters(
     try:
         target = inspect.unwrap(complete, stop=has_fixed_keywords)
         if not hasattr(target, "__wrapped__") and not has_fixed_keywords(target):
-            return None, outer_accepts_kwargs, outer_keywords
+            return None, outer_accepts_kwargs, outer_keywords, target
     except (TypeError, ValueError):
         pass
-    return keywords, outer_accepts_kwargs, outer_keywords
+    return keywords, outer_accepts_kwargs, outer_keywords, target
 
 def _selector_names_tool_choice(selector: Any) -> bool:
     """Return whether a structured error selector targets ``tool_choice``."""
@@ -816,8 +817,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         usage_accounting: _CompletionUsageAccounting,
         revalidate: Callable[[], int],
     ) -> tuple[asyncio.Event | None, _NativeCompletionControls | None]:
-        keywords, outer_accepts_kwargs, outer_keywords = _completion_keyword_parameters(complete)
+        keywords, outer_accepts_kwargs, outer_keywords, wrapped = _completion_keyword_parameters(complete)
         owner = getattr(complete, "__self__", None)
+        wraps_base_method = owner is not None and any(
+            vars(base).get("complete") is wrapped for base in type(owner).__mro__[1:]
+        )
+        # A metadata-only signature leaves admission on the outer router's kwargs.
+        accepts_admission = outer_accepts_kwargs and not wraps_base_method
         scoped: dict[str, Callable[..., Any]] = {}
 
         def accepts(name: str) -> bool:
@@ -834,7 +840,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             supported = getattr(self.llm, capability, False)
             if not supported:
                 return False
-            if name in outer_keywords or (name == "on_admitted" and accepts(name)):
+            if name in outer_keywords or (name == "on_admitted" and (accepts(name) or accepts_admission)):
                 kwargs[name] = callback
                 return True
             # A native marker also appears on subclasses whose wrappers forward
