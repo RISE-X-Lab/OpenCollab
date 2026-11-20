@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import errno
+import os
+import resource
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -18,14 +21,30 @@ class _ArgumentBoundEnvironment(LocalEnvironment):
         return await super().exec_cmd(command, timeout, **kwargs)
 
 
+@pytest.fixture
+def bounded_file_descriptors():
+    previous = soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    limit = 256 if soft == resource.RLIM_INFINITY else min(soft, 256)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
+    try:
+        yield limit
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, previous)
+
+
 @pytest.mark.parametrize("blocked", [False, True])
-async def test_bulk_candidate_adoption_keeps_recovery_below_argument_limits(tmp_path, blocked):
+@pytest.mark.parametrize("file_count,already_open", [(900, 0), (120, 120)], ids=["bulk", "busy-process"])
+async def test_bulk_candidate_adoption_keeps_recovery_below_process_limits(
+    tmp_path, blocked, bounded_file_descriptors, file_count, already_open,
+):
+    if already_open and bounded_file_descriptors < 256:
+        pytest.skip("the busy process case uses a 256 descriptor limit")
     # Long absolute paths expand the recovery script past the temp-file limit
     # even though the repository-relative patch fits under one megabyte.
     repo = tmp_path.joinpath(*("nested-" + "workspace-" * 8,) * 5, "repo")
     (repo / "src").mkdir(parents=True)
     (repo / "settings").mkdir()
-    names = [f"{number:04d}_" + "module_" * 10 + ".py" for number in range(900)]
+    names = [f"{number:04d}_" + "module_" * 10 + ".py" for number in range(file_count)]
     for name in names:
         (repo / "src" / name).write_text("VALUE = 1\n")
     (repo / "settings/value.txt").write_text("original settings\n")
@@ -54,11 +73,14 @@ async def test_bulk_candidate_adoption_keeps_recovery_below_argument_limits(tmp_
     async def flow(ctx, inputs):
         candidate = await ctx.candidate_workflow(edit, {}, label="bulk-rewrite")
         assert len(candidate.effective_diff.encode()) < 1_000_000
-        if blocked:
-            with pytest.raises(RuntimeError, match="Directory not empty|Is a directory"):
+        with ExitStack() as descriptors:
+            for _ in range(already_open):
+                descriptors.enter_context(open(os.devnull, "rb"))
+            if blocked:
+                with pytest.raises(RuntimeError, match="Directory not empty|Is a directory"):
+                    await ctx.adopt_candidate(candidate)
+            else:
                 await ctx.adopt_candidate(candidate)
-        else:
-            await ctx.adopt_candidate(candidate)
         return "finished"
 
     try:

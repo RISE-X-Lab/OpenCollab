@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+import asyncio
+import sys
+
+import pytest
+from filelock import FileLock, Timeout
+
+from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.tools import base
+
+
+async def test_large_group_acquires_existing_flocks_in_path_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(base, "_local_file_lock_capacity", lambda: 2)
+    monkeypatch.setattr(base, "HOST_WRITE_LOCK_TIMEOUT_SECONDS", 0.2)
+    env = LocalEnvironment(str(tmp_path))
+    first, blocked, last = (
+        FileLock(base._host_lock_path(path, env), timeout=0) for path in ("a.txt", "b.txt", "c.txt")
+    )
+    other = FileLock(base._host_lock_path("other.txt", env), timeout=0)
+    paths = ("c.txt", "a.txt", "b.txt")
+    try:
+        with blocked, pytest.raises(TimeoutError, match="b.txt"):
+            async with base.host_write_locks(paths, env):
+                pytest.fail("group acquired a lock already held by an existing writer")
+        with first, last:
+            pass
+        async with base.host_write_locks(paths, env):
+            for lock in (first, blocked, last):
+                with pytest.raises(Timeout):
+                    lock.acquire()
+            with other:
+                pass
+    finally:
+        await env.cleanup()
+
+
+async def test_cancelled_acquisition_releases_the_partial_group(tmp_path, monkeypatch):
+    monkeypatch.setattr(base, "_local_file_lock_capacity", lambda: 2)
+    env = LocalEnvironment(str(tmp_path))
+    paths = ("a.txt", "b.txt", "c.txt")
+    first, blocked, last = (FileLock(base._host_lock_path(path, env), timeout=0) for path in paths)
+
+    async def acquire_group():
+        async with base.host_write_locks(paths, env):
+            pytest.fail("group acquired a lock already held by an existing writer")
+
+    async def wait_until_first_is_held():
+        while True:
+            try:
+                with first:
+                    pass
+            except Timeout:
+                return
+            await asyncio.sleep(0.02)
+
+    try:
+        with blocked:
+            owner = asyncio.create_task(acquire_group())
+            try:
+                await asyncio.wait_for(wait_until_first_is_held(), 5)
+                with last:
+                    pass
+            finally:
+                owner.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await owner
+            with first, last:
+                pass
+    finally:
+        await env.cleanup()
+
+
+_OWNER = """
+import asyncio
+import sys
+
+from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.tools import base
+
+
+async def main():
+    base._local_file_lock_capacity = lambda: 2
+    env = LocalEnvironment(sys.argv[1])
+    entered = asyncio.Event()
+
+    async def hold():
+        async with base.host_write_locks(sys.argv[2:], env):
+            entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(hold())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        print('ready', flush=True)
+        await asyncio.to_thread(sys.stdin.readline)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            print('cancelled', flush=True)
+        await asyncio.to_thread(sys.stdin.readline)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await env.cleanup()
+
+
+asyncio.run(main())
+"""
+
+
+@pytest.mark.parametrize("crash", [False, True])
+async def test_large_group_releases_existing_flocks_after_owner_stops(tmp_path, crash):
+    paths = ("a.txt", "b.txt", "c.txt")
+    env = LocalEnvironment(str(tmp_path))
+    old_locks = [FileLock(base._host_lock_path(path, env), timeout=2) for path in paths]
+    owner = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", _OWNER, str(tmp_path), *paths,
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+    )
+
+    def confirm_released():
+        for lock in old_locks:
+            with lock:
+                pass
+
+    try:
+        assert await asyncio.wait_for(owner.stdout.readline(), 10) == b"ready\n"
+        for lock in old_locks:
+            with pytest.raises(Timeout):
+                lock.acquire(timeout=0)
+        if crash:
+            owner.kill()
+            await owner.wait()
+        else:
+            owner.stdin.write(b"cancel\n")
+            await owner.stdin.drain()
+            assert await asyncio.wait_for(owner.stdout.readline(), 10) == b"cancelled\n"
+            assert owner.returncode is None
+        await asyncio.to_thread(confirm_released)
+    finally:
+        owner.stdin.close()
+        if owner.returncode is None:
+            owner.kill()
+        await owner.wait()
+        await env.cleanup()
