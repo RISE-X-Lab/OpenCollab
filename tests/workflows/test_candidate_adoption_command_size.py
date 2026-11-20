@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import errno
 import os
 import resource
+import subprocess
+import sys
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -21,24 +24,29 @@ class _ArgumentBoundEnvironment(LocalEnvironment):
         return await super().exec_cmd(command, timeout, **kwargs)
 
 
-@pytest.fixture
-def bounded_file_descriptors():
-    previous = soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    limit = 256 if soft == resource.RLIM_INFINITY else min(soft, 256)
-    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
-    try:
-        yield limit
-    finally:
-        resource.setrlimit(resource.RLIMIT_NOFILE, previous)
-
-
 @pytest.mark.parametrize("blocked", [False, True])
 @pytest.mark.parametrize("file_count,already_open", [(900, 0), (120, 120)], ids=["bulk", "busy-process"])
-async def test_bulk_candidate_adoption_keeps_recovery_below_process_limits(
-    tmp_path, blocked, bounded_file_descriptors, file_count, already_open,
-):
-    if already_open and bounded_file_descriptors < 256:
+def test_bulk_candidate_adoption_keeps_recovery_below_process_limits(tmp_path, blocked, file_count, already_open):
+    soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    limit = 256 if soft == resource.RLIM_INFINITY else min(soft, 256)
+    if already_open and limit < 256:
         pytest.skip("the busy process case uses a 256 descriptor limit")
+    completed = subprocess.run(
+        [
+            sys.executable, "-m", __name__, str(tmp_path),
+            str(int(blocked)), str(file_count), str(already_open), str(limit),
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        close_fds=True, capture_output=True, text=True, timeout=180,
+    )
+    if completed.returncode:
+        pytest.fail(
+            f"candidate child exited with status {completed.returncode}\n{completed.stdout}{completed.stderr}",
+            pytrace=False,
+        )
+
+
+async def _exercise_bulk_candidate(tmp_path: Path, blocked: bool, file_count: int, already_open: int) -> None:
     # Long absolute paths expand the recovery script past the temp-file limit
     # even though the repository-relative patch fits under one megabyte.
     repo = tmp_path.joinpath(*("nested-" + "workspace-" * 8,) * 5, "repo")
@@ -60,6 +68,7 @@ async def test_bulk_candidate_adoption_keeps_recovery_below_process_limits(
     first_module = repo / "src" / names[0]
     original_inode = first_module.stat().st_ino
     environment = _ArgumentBoundEnvironment(str(repo))
+    adoption_failure: RuntimeError | None = None
 
     async def edit(child, inputs):
         folder = Path(child.workspace_root)
@@ -71,14 +80,16 @@ async def test_bulk_candidate_adoption_keeps_recovery_below_process_limits(
         return "updated"
 
     async def flow(ctx, inputs):
+        nonlocal adoption_failure
         candidate = await ctx.candidate_workflow(edit, {}, label="bulk-rewrite")
         assert len(candidate.effective_diff.encode()) < 1_000_000
         with ExitStack() as descriptors:
             for _ in range(already_open):
                 descriptors.enter_context(open(os.devnull, "rb"))
             if blocked:
-                with pytest.raises(RuntimeError, match="Directory not empty|Is a directory"):
+                with pytest.raises(RuntimeError, match="Directory not empty|Is a directory") as failed:
                     await ctx.adopt_candidate(candidate)
+                adoption_failure = failed.value
             else:
                 await ctx.adopt_candidate(candidate)
         return "finished"
@@ -86,7 +97,8 @@ async def test_bulk_candidate_adoption_keeps_recovery_below_process_limits(
     try:
         result = await OpenCollab(repo, environment=environment).workflow(flow, {}, trace=False)
         assert result.ok, result.reason
-        assert not environment.revoked
+        if environment.revoked:
+            raise AssertionError("candidate adoption revoked the source environment") from adoption_failure
         expected = "VALUE = 1\n" if blocked else "VALUE = 2\n"
         assert all((repo / "src" / name).read_text() == expected for name in names)
         if blocked:
@@ -107,3 +119,9 @@ async def test_bulk_candidate_adoption_keeps_recovery_below_process_limits(
         assert not list((repo / ".git").rglob(".candidate-command-*.sh"))
     finally:
         await environment.cleanup()
+
+
+if __name__ == "__main__":
+    directory, blocked, file_count, already_open, limit = sys.argv[1:]
+    resource.setrlimit(resource.RLIMIT_NOFILE, (int(limit), int(limit)))
+    asyncio.run(_exercise_bulk_candidate(Path(directory), bool(int(blocked)), int(file_count), int(already_open)))
