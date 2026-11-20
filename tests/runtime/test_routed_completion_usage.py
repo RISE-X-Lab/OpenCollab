@@ -23,6 +23,8 @@ from tests.support.provider_sdk_http import completion_http_response, http_respo
 @pytest.mark.parametrize("scenario", [
     "primary", "copied-primary", "scrubbed-primary", "replaced-primary",
     "fallback", "equal-fallback", "copied-fallback", "scrubbed-fallback", "replaced-fallback",
+    "annotated-primary", "annotated-fallback", "annotated-primary-after-helper",
+    "annotated-primary-after-helper-without-timing",
     "failed-primary", "failed-primary-attempt-callback-only",
 ])
 async def test_routed_completion_accounts_for_each_provider(
@@ -31,8 +33,14 @@ async def test_routed_completion_accounts_for_each_provider(
     requests = []
     events = []
     answer = "<summary>Answer.</summary>" if summary else "Answer."
-    usable_primary = scenario in {"primary", "copied-primary", "scrubbed-primary", "replaced-primary"}
-    equal_usage = scenario in {"equal-fallback", "copied-fallback", "scrubbed-fallback", "replaced-fallback"}
+    independent_helper = scenario.startswith("annotated-primary-after-helper")
+    usable_primary = independent_helper or scenario in {
+        "primary", "copied-primary", "scrubbed-primary", "replaced-primary",
+        "annotated-primary",
+    }
+    equal_usage = independent_helper or scenario in {
+        "equal-fallback", "copied-fallback", "scrubbed-fallback", "replaced-fallback", "annotated-fallback",
+    }
     failed_primary = scenario.startswith("failed-primary")
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
@@ -53,6 +61,17 @@ async def test_routed_completion_accounts_for_each_provider(
     def copy_response(response):
         if scenario.startswith("replaced-"):
             return replace(response, usage=replace(response.usage, raw_usage={}))
+        if scenario.startswith("annotated-"):
+            removes_timing = scenario == "annotated-primary-after-helper-without-timing"
+            usage = replace(
+                response.usage,
+                context_tokens=7,
+                context_output_tokens=5,
+                context_tokens_estimated=True,
+                raw_usage=response.usage.raw_usage if removes_timing else {},
+            )
+            timing = None if removes_timing else response.transport_timing
+            return replace(response, usage=usage, transport_timing=timing)
         copied = deepcopy(response)
         if scenario.startswith("scrubbed-"):
             copied.usage.raw_usage.clear()
@@ -74,9 +93,13 @@ async def test_routed_completion_accounts_for_each_provider(
                 assert failed_primary
             else:
                 if first.content and first.content.strip():
+                    if independent_helper:
+                        await fallback.complete(messages, **kwargs)
                     return copy_response(first) if scenario != "primary" else first
             final = await fallback.complete(messages, **kwargs, **(controls if forward_fallback else {}))
-            if failed_primary or scenario in {"copied-fallback", "scrubbed-fallback", "replaced-fallback"}:
+            if failed_primary or scenario in {
+                "copied-fallback", "scrubbed-fallback", "replaced-fallback", "annotated-fallback",
+            }:
                 return copy_response(final)
             return final
 
@@ -102,6 +125,8 @@ async def test_routed_completion_accounts_for_each_provider(
                 text = await session._context_summarizer.asummarize(session.messages)
                 assert text == "Summary:\nAnswer."
                 assert session._context_summarizer.last_call_cacheable
+                if scenario.startswith("annotated-"):
+                    assert session.state.context_tokens == 7
                 tokens = session.used_tokens
             finally:
                 await session.aclose()
@@ -121,11 +146,11 @@ async def test_routed_completion_accounts_for_each_provider(
     expected_purpose = "summary" if summary else "completion"
     ledger = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
     expected_requests = ["primary", "primary"] if failed_primary else ["primary"]
-    if not usable_primary:
+    if not usable_primary or independent_helper:
         expected_requests.append("fallback")
     assert requests == expected_requests
     assert tokens == sum(expected_usage)
-    assert [entry["usage"]["total_tokens"] for entry in ledger] == expected_usage
+    assert [entry["usage"]["total_tokens"] for entry in ledger] == expected_usage + ([57] if independent_helper else [])
     usage_events = [event for event in events if event.type == "usage"]
     assert [event.data["total_tokens"] for event in usage_events] == expected_usage
     assert {event.data["purpose"] for event in usage_events} == {expected_purpose}

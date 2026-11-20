@@ -925,7 +925,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
         def account_response(response: CompletionResponse) -> None:
             input_tokens, _total_tokens = _normalize_completion_usage(response.usage)
-            usage_accounting.finish(response.usage, purpose="summary", late=abandoned)
+            usage_accounting.finish(
+                response.usage, purpose="summary", late=abandoned,
+                transport_timing=getattr(response, "transport_timing", None),
+            )
             self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
             self.state.set_context_tokens(input_tokens)
             self.record_llm_trace(response, time.monotonic() - start, purpose="summary", thinking=thinking)
@@ -1001,7 +1004,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                     self, complete, usage_accounting=usage_accounting, **kwargs,
                 )
                 late_accounted = asyncio.current_task() in self._draining_provider_tasks
-                usage_accounting.finish(response.usage, purpose="completion", late=late_accounted)
+                usage_accounting.finish(
+                    response.usage, purpose="completion", late=late_accounted,
+                    transport_timing=getattr(response, "transport_timing", None),
+                )
                 return response
             finally:
                 self._draining_provider_tasks.discard(asyncio.current_task())

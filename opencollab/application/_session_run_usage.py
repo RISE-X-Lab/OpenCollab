@@ -7,11 +7,10 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import fields
 from typing import Any, Awaitable, Callable
 
 _native_usage_owner: ContextVar[object | None] = ContextVar("native_usage_owner", default=None)
-_native_usage_observer: ContextVar[Callable[[Any, BaseException | None], None] | None] = ContextVar(
+_native_usage_observer: ContextVar[Callable[[Any, BaseException | None, object | None], None] | None] = ContextVar(
     "native_usage_observer", default=None,
 )
 
@@ -25,10 +24,10 @@ def _own_native_usage() -> Iterator[None]:
         _native_usage_owner.reset(token)
 
 
-def _observe_native_usage(usage: Any, error: BaseException | None) -> None:
+def _observe_native_usage(usage: Any, error: BaseException | None, transport_timing: object | None) -> None:
     observer = _native_usage_observer.get()
     if observer is not None:
-        observer(usage, error)
+        observer(usage, error, transport_timing)
 
 
 def _nonnegative_usage_int(value: Any, field: str) -> int:
@@ -59,10 +58,13 @@ def _normalize_completion_usage(usage: Any) -> tuple[int, int]:
 
 
 def _same_usage_measurements(native: Any, usage: Any) -> bool:
-    # dataclasses.replace can rebuild usage while redacting only provider telemetry.
+    # Context estimates and tool-markup annotations do not change provider usage.
     return type(native) is type(usage) and all(
-        getattr(native, field.name) == getattr(usage, field.name)
-        for field in fields(usage) if field.name != "raw_usage"
+        getattr(native, name) == getattr(usage, name)
+        for name in (
+            "input_tokens", "output_tokens", "total_tokens",
+            "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens",
+        )
     )
 
 
@@ -72,7 +74,7 @@ class _CompletionUsageAccounting:
         self.protected_call = protected_call
         self.tokens = 0
         self._attempt_tokens: dict[object | None, int] = {}
-        self._native_usages: list[tuple[Any, BaseException | None]] = []
+        self._native_usages: list[tuple[Any, BaseException | None, object | None]] = []
         self._settled: list[tuple[Any, int]] = []
         self._reported = False
 
@@ -93,8 +95,10 @@ class _CompletionUsageAccounting:
     def settle_provider(self, usage: Any) -> None:
         self._settle(usage, self._attempt_tokens.pop(_native_usage_owner.get(), 0))
 
-    def _observe_provider_response(self, usage: Any, error: BaseException | None) -> None:
-        self._native_usages.append((usage, error))
+    def _observe_provider_response(
+        self, usage: Any, error: BaseException | None, transport_timing: object | None,
+    ) -> None:
+        self._native_usages.append((usage, error, transport_timing))
         owner = _native_usage_owner.get()
         # A router can forward the retry hook and keep the final callback for its chosen response.
         if owner is not None and owner in self._attempt_tokens:
@@ -105,7 +109,10 @@ class _CompletionUsageAccounting:
         self._charge(tokens - attempt_tokens)
         self._settled.append((usage, tokens))
 
-    def finish(self, usage: Any, *, purpose: str, late: bool, error: BaseException | None = None) -> bool:
+    def finish(
+        self, usage: Any, *, purpose: str, late: bool, error: BaseException | None = None,
+        transport_timing: object | None = None,
+    ) -> bool:
         if self._reported:
             return False
         # Middleware may copy the chosen response or return a different native call with equal counters.
@@ -116,6 +123,22 @@ class _CompletionUsageAccounting:
                 (item for item in self._native_usages if getattr(item[0], "_native_usage_origin", None) is origin),
                 None,
             )
+        if native is None and transport_timing is not None:
+            # The native request's timing object survives replacements of the response and usage.
+            native = next(
+                (item for item in self._native_usages
+                 if item[2] is transport_timing and _same_usage_measurements(item[0], usage)),
+                None,
+            )
+        if native is None and origin is not None:
+            raw_usage = getattr(usage, "raw_usage", None)
+            if raw_usage is not None:
+                # A dataclass replacement normally retains the original provider payload.
+                native = next(
+                    (item for item in self._native_usages
+                     if getattr(item[0], "raw_usage", None) is raw_usage and _same_usage_measurements(item[0], usage)),
+                    None,
+                )
         if usage is not None and native is None:
             native = next((item for item in reversed(self._native_usages) if item[0] == usage), None)
         if native is None and origin is not None:
@@ -131,7 +154,7 @@ class _CompletionUsageAccounting:
         record_usage = getattr(self.runner, "_record_usage_event", None)
         if callable(record_usage):
             for settled, tokens in self._settled:
-                provider_error = next((failure for item, failure in self._native_usages if item is settled), None)
+                provider_error = next((failure for item, failure, _ in self._native_usages if item is settled), None)
                 record_usage(settled, tokens, purpose=purpose, late=late,
                              error=error if settled is native_usage and error is not None else provider_error)
         if late:
