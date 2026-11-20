@@ -10,7 +10,9 @@ from contextvars import ContextVar
 from typing import Any, Awaitable, Callable
 
 _native_usage_owner: ContextVar[object | None] = ContextVar("native_usage_owner", default=None)
-_native_usage_observer: ContextVar[Callable[[Any], None] | None] = ContextVar("native_usage_observer", default=None)
+_native_usage_observer: ContextVar[Callable[[Any, BaseException | None], None] | None] = ContextVar(
+    "native_usage_observer", default=None,
+)
 
 
 @contextmanager
@@ -22,10 +24,10 @@ def _own_native_usage() -> Iterator[None]:
         _native_usage_owner.reset(token)
 
 
-def _observe_native_usage(usage: Any) -> None:
+def _observe_native_usage(usage: Any, error: BaseException | None) -> None:
     observer = _native_usage_observer.get()
-    if observer is not None and usage is not None:
-        observer(usage)
+    if observer is not None:
+        observer(usage, error)
 
 
 def _nonnegative_usage_int(value: Any, field: str) -> int:
@@ -61,13 +63,13 @@ class _CompletionUsageAccounting:
         self.protected_call = protected_call
         self.tokens = 0
         self._attempt_tokens: dict[object | None, int] = {}
-        self._native_usages: list[Any] = []
+        self._native_usages: list[tuple[Any, BaseException | None]] = []
         self._settled: list[tuple[Any, int]] = []
         self._reported = False
 
     @contextmanager
     def observe_provider_responses(self) -> Iterator[None]:
-        token = _native_usage_observer.set(self._native_usages.append)
+        token = _native_usage_observer.set(self._observe_provider_response)
         try:
             yield
         finally:
@@ -80,29 +82,38 @@ class _CompletionUsageAccounting:
         self._attempt_tokens[owner] = self._attempt_tokens.get(owner, 0) + tokens
 
     def settle_provider(self, usage: Any) -> None:
+        self._settle(usage, self._attempt_tokens.pop(_native_usage_owner.get(), 0))
+
+    def _observe_provider_response(self, usage: Any, error: BaseException | None) -> None:
+        self._native_usages.append((usage, error))
+        owner = _native_usage_owner.get()
+        # A router can forward the retry hook and keep the final callback for its chosen response.
+        if owner is not None and owner in self._attempt_tokens:
+            self.settle_provider(usage)
+
+    def _settle(self, usage: Any, attempt_tokens: int) -> None:
         tokens = _normalize_completion_usage(usage)[1]
-        self._charge(tokens - self._attempt_tokens.pop(_native_usage_owner.get(), 0))
+        self._charge(tokens - attempt_tokens)
         self._settled.append((usage, tokens))
 
     def finish(self, usage: Any, *, purpose: str, late: bool, error: BaseException | None = None) -> bool:
         if self._reported:
             return False
         # Middleware may copy the chosen response or return a different native call with equal counters.
-        native_usage = usage
-        if usage is not None and all(item is not usage for item in self._native_usages):
-            native_usage = next((item for item in reversed(self._native_usages) if item == usage), usage)
+        native = next((item for item in self._native_usages if item[0] is usage), None)
+        if usage is not None and native is None:
+            native = next((item for item in reversed(self._native_usages) if item[0] == usage), None)
+        native_usage = usage if native is None else native[0]
         if usage is not None and all(native_usage is not settled for settled, _tokens in self._settled):
-            # A routed completion can return a new response after settling another provider.
-            tokens = _normalize_completion_usage(usage)[1]
-            self._charge(tokens - sum(self._attempt_tokens.values()))
-            self._attempt_tokens.clear()
-            self._settled.append((native_usage, tokens))
+            attempt_tokens = self._attempt_tokens.pop(None, 0) if native is None else 0
+            self._settle(native_usage, attempt_tokens)
         self._reported = True
         record_usage = getattr(self.runner, "_record_usage_event", None)
         if callable(record_usage):
             for settled, tokens in self._settled:
+                provider_error = next((failure for item, failure in self._native_usages if item is settled), None)
                 record_usage(settled, tokens, purpose=purpose, late=late,
-                             error=error if settled is native_usage else None)
+                             error=error if settled is native_usage and error is not None else provider_error)
         if late:
             self.record_late()
         return bool(self._settled)

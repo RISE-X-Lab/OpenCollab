@@ -450,7 +450,6 @@ class LLMClient:
                     raise
                 finally:
                     settled_usage = getattr(response if response is not None else provider_error, "usage", None)
-                    _observe_native_usage(settled_usage)
                     transport_timing = first_token.snapshot()
                     latency_s = time.monotonic() - start
                     if response is not None:
@@ -458,9 +457,11 @@ class LLMClient:
                             response.transport_timing = transport_timing
                         except (AttributeError, TypeError):
                             pass
-                    if on_usage is not None and settled_usage is not None:
+                    if settled_usage is not None:
                         try:
-                            on_usage(settled_usage)
+                            if on_usage is not None:
+                                on_usage(settled_usage)
+                            _observe_native_usage(settled_usage, provider_error)
                         except BaseException as exc:
                             exc.usage = settled_usage
                             settlement_error = exc
