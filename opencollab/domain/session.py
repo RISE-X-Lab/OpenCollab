@@ -15,9 +15,11 @@ MAX_SCOUT_LEDGER_CARDS = 256
 
 
 def same_snapshot_value(left: Any, right: Any) -> bool:
-    """Compare snapshot values without equating JSON booleans and numbers."""
     if left is right:
         return True
+    if isinstance(left, str) and isinstance(right, str):
+        # The JSON encoder writes string subclasses, including enums, as text.
+        return str.__eq__(left, right)
     if type(left) is not type(right):
         return False
     if isinstance(left, dict):
@@ -33,6 +35,10 @@ def same_snapshot_value(left: Any, right: Any) -> bool:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class _MessageTimestamp(Enum):
+    UNKNOWN = 0
 
 
 class SessionPhase(Enum):
@@ -198,7 +204,7 @@ class SessionState:
     # Per-message creation timestamps (UTC ISO-8601), index-aligned with
     # ``messages``. Kept as a sidecar so ``messages`` stays a clean,
     # API-shaped list; merged into each message only when persisting.
-    message_timestamps: list[str] = field(default_factory=list)
+    message_timestamps: list[str | _MessageTimestamp] = field(default_factory=list)
     # User messages queued by the scheduler but not yet appended to
     # ``messages`` because the session is mid-turn or awaiting tool results.
     # These are persisted for observability/recovery without changing the
@@ -240,7 +246,7 @@ class SessionState:
             raise ValueError("message start must be a non-negative integer")
         self._align_timestamps()
         return [
-            {**msg, "timestamp": ts}
+            dict(msg) if ts is _MessageTimestamp.UNKNOWN else {**msg, "timestamp": ts}
             for msg, ts in zip(
                 self.messages[start:],
                 self.message_timestamps[start:],
@@ -306,24 +312,23 @@ class SessionState:
         self.messages.append(message)
         self.message_timestamps.append(_now_iso())
 
-    def replace_messages(self, messages: list[dict[str, Any]]) -> None:
-        """Swap the conversation, re-deriving aligned timestamps.
-
-        Precedence per message: an embedded ``timestamp`` (e.g. a resumed
-        transcript) wins; else the prior timestamp of the same dict object
-        (preserved across a slice-and-rebuild); else now.
-        """
+    def replace_messages(self, messages: list[dict[str, Any]], *, restoring: bool = False) -> None:
         prior = {id(m): ts for m, ts in zip(self.messages, self.message_timestamps)}
-        rebuilt = [
-            (
-                ({k: v for k, v in m.items() if k != "timestamp"}, m["timestamp"])
-                if isinstance(m, dict) and "timestamp" in m
-                else (m, prior.get(id(m)) or _now_iso())
-            )
-            for m in messages
-        ]
-        self.messages = [m for m, _ in rebuilt]
-        self.message_timestamps = [ts for _, ts in rebuilt]
+        rebuilt_messages: list[dict[str, Any]] = []
+        timestamps: list[str | _MessageTimestamp] = []
+        for message in messages:
+            if isinstance(message, dict) and "timestamp" in message:
+                timestamp = message["timestamp"]
+                message = {key: value for key, value in message.items() if key != "timestamp"}
+            elif id(message) in prior:
+                timestamp = prior[id(message)]
+            else:
+                # A legacy transcript leaves the message creation time unknown.
+                timestamp = _MessageTimestamp.UNKNOWN if restoring else _now_iso()
+            rebuilt_messages.append(message)
+            timestamps.append(timestamp)
+        self.messages = rebuilt_messages
+        self.message_timestamps = timestamps
         self.anthropic_history = None
 
     def add_used_tokens(self, tokens: int) -> None:

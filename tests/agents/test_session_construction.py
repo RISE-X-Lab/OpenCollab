@@ -295,7 +295,13 @@ def test_checkpoint_rejects_sequence_older_than_persisted_journal(tmp_path):
     assert restored["_autosave_sequence"] == 2
     assert restored["messages"][-1]["content"] == "newer-delta"
 
-def test_checkpoint_rejects_conflicting_same_sequence_journal(tmp_path):
+@pytest.mark.parametrize("publisher", ["journal", "snapshot"])
+@pytest.mark.parametrize(
+    ("published_value", "conflicting_value"),
+    [("published", "conflict"), (True, 1), (1, 1.0), (0.0, -0.0)],
+    ids=["content", "bool-number", "int-float", "signed-zero"],
+)
+def test_checkpoint_rejects_conflicting_same_sequence(tmp_path, publisher, published_value, conflicting_value):
     path = tmp_path / "same-sequence-checkpoint.json"
     store = SessionStore()
     base = [
@@ -304,20 +310,24 @@ def test_checkpoint_rejects_conflicting_same_sequence_journal(tmp_path):
     ]
     meta = {"snapshot_version": 1, "session_state": {}}
     store.checkpoint_snapshot(str(path), base, meta=meta, sequence=1)
-    store.append_snapshot_delta(
-        str(path),
-        sequence=2,
-        replace_from=2,
-        messages=[{"role": "assistant", "content": "newer-delta"}],
-        meta=meta,
-    )
+    published = {"role": "assistant", "content": "newer", "metadata": {"value": published_value}}
+    conflict = {**published, "metadata": {"value": conflicting_value}}
+    if publisher == "journal":
+        store.append_snapshot_delta(str(path), sequence=2, replace_from=2, messages=[published], meta=meta)
+    else:
+        store.checkpoint_snapshot(str(path), [*base, published], meta=meta, sequence=2)
 
-    with pytest.raises(ValueError, match="conflicts with persisted journal state"):
-        store.checkpoint_snapshot(str(path), base, meta=meta, sequence=2)
+    with pytest.raises(ValueError, match=f"conflicts with persisted {publisher} state"):
+        store.checkpoint_snapshot(str(path), [*base, conflict], meta=meta, sequence=2)
 
     restored = store.load_snapshot(str(path), "system")
     assert restored["_autosave_sequence"] == 2
-    assert restored["messages"][-1]["content"] == "newer-delta"
+    assert json.dumps(restored["messages"][-1]) == json.dumps(published)
+
+    store.checkpoint_snapshot(str(path), [*base, published], meta=meta, sequence=2)
+    assert path.with_suffix(".json.journal").read_bytes() == b""
+    store.checkpoint_snapshot(str(path), [*base, conflict], meta=meta, sequence=3)
+    assert store.load_snapshot(str(path), "system")["_autosave_sequence"] == 3
 
 def test_checkpoint_rejects_ambiguous_duplicate_journal_sequence(tmp_path):
     path = str(tmp_path / "duplicate-sequence-checkpoint.json")

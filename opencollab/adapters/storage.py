@@ -20,7 +20,7 @@ from opencollab.adapters.safe_files import (
     write_regular_bytes_atomic,
     write_regular_file_atomic,
 )
-from opencollab.application.ports import SnapshotCapacityError
+from opencollab.application.ports import SnapshotCapacityError, SnapshotSequenceConflict
 from opencollab.domain.session import same_snapshot_value
 
 MAX_SESSION_SNAPSHOT_BYTES = 64 * 1024 * 1024
@@ -466,6 +466,7 @@ class SessionStore:
         *,
         meta: dict[str, Any],
         sequence: int,
+        reject_conflicts: bool = False,
     ) -> bool:
         state = meta.get("session_state")
         seen_result_hashes = state.get("seen_result_hashes", []) if isinstance(state, dict) else []
@@ -483,7 +484,15 @@ class SessionStore:
             except FileNotFoundError:
                 pass
             else:
-                if sequence <= self._snapshot_sequence(persisted):
+                persisted_sequence = self._snapshot_sequence(persisted)
+                if sequence <= persisted_sequence:
+                    if reject_conflicts:
+                        candidate = {**meta, _AUTOSAVE_SEQUENCE_KEY: sequence, "messages": messages}
+                        if not self._checkpoint_states_equal(persisted, candidate):
+                            raise SnapshotSequenceConflict(
+                                f"refusing replacement sequence {sequence}; "
+                                f"it conflicts with persisted state at sequence {persisted_sequence}"
+                            )
                     return False
                 stored_messages = persisted["messages"]
                 replace_from = min(len(stored_messages), len(messages))
@@ -570,7 +579,7 @@ class SessionStore:
         with _journal_operation_lock(path):
             persisted_sequence = self._newest_persisted_sequence(path)
             if persisted_sequence > sequence:
-                raise ValueError(
+                raise SnapshotSequenceConflict(
                     "refusing stale checkpoint sequence "
                     f"{sequence}; persisted sequence {persisted_sequence} is newer"
                 )
@@ -584,21 +593,18 @@ class SessionStore:
                 # Multiple records at one cursor are ambiguous: replay skips
                 # the second and later records, so accepting this checkpoint
                 # would clear data that cannot be proven equivalent.
-                raise ValueError(
+                raise SnapshotSequenceConflict(
                     "refusing checkpoint sequence "
                     f"{sequence}; persisted journal contains duplicate sequence records"
                 )
-            if same_sequence_records:
-                # A same-sequence journal record may belong to another writer.
-                # Only compact it when the proposed checkpoint is exactly the
-                # state obtained by replaying the durable base and journal;
-                # otherwise retaining the journal is safer than silently
-                # discarding a peer's update.
+            if persisted_sequence == sequence > 0:
+                # A peer can own this sequence in either the base or the journal.
                 persisted = self._load_snapshot_unlocked(path, "")
                 if not self._checkpoint_states_equal(persisted, obj):
-                    raise ValueError(
+                    source = "journal" if same_sequence_records else "snapshot"
+                    raise SnapshotSequenceConflict(
                         "refusing checkpoint sequence "
-                        f"{sequence}; it conflicts with persisted journal state"
+                        f"{sequence}; it conflicts with persisted {source} state"
                     )
             try:
                 self._atomic_json_write(path, obj)

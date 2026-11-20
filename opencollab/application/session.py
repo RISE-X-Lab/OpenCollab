@@ -22,6 +22,7 @@ from opencollab.application.ports import (
     SessionStorePort,
     SnapshotCapacityError,
     SnapshotReplacementStorePort,
+    SnapshotSequenceConflict,
     SnapshotStorePort,
     TracePort,
 )
@@ -150,6 +151,7 @@ class Session:
         self._terminal_checkpoint_error: Exception | None = None
         self._auto_save_sequence = 0
         self._auto_save_reserved_sequence = 0
+        self._auto_save_conflict: str | None = None
         self._auto_save_message_count = 0
         self._auto_save_messages: list[dict] | None = None
         self._auto_save_rewrite_from: int | None = 0
@@ -439,6 +441,10 @@ class Session:
             # The pending rows and their elapsed time are now complete. Persist
             # this suspension without emitting the step_end reserved for resume.
             return
+        with self._auto_save_lock:
+            if self._auto_save_conflict is not None:
+                # The autosave worker already reported the ownership conflict.
+                return
         # Journal-backed autosave normally appends a delta. A terminal turn
         # must also publish a self-contained base snapshot: callers and crash
         # recovery may read the base file directly, without replaying its
@@ -535,7 +541,7 @@ class Session:
             messages=[],
             aid=_snapshot_int(snapshot.get("aid"), default=self.state.aid),
         )
-        restored.replace_messages(messages)
+        restored.replace_messages(messages, restoring=True)
         pending_messages = snapshot.get("pending_messages", [])
         restored.pending_user_messages = (
             [
@@ -751,6 +757,7 @@ class Session:
         sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
         self._auto_save_sequence = sequence
         self._auto_save_reserved_sequence = sequence
+        self._auto_save_conflict = None
         stored_messages = snapshot.get("messages")
         self._auto_save_message_count = min(
             len(stored_messages) if isinstance(stored_messages, list) else 0,
@@ -959,6 +966,7 @@ class Session:
                         self._auto_save_sequence = sequence
                         self._auto_save_message_count = len(messages)
                         self._auto_save_messages = tracked_messages
+                        self._auto_save_conflict = None
                         if self._auto_save_rewrite_revision == rewrite_revision:
                             self._auto_save_rewrite_from = None
                         self._auto_save_seen_result_hashes = set(meta["session_state"]["seen_result_hashes"])
@@ -1061,6 +1069,8 @@ class Session:
         return self._auto_save_reserved_sequence
 
     def _prepare_journal_auto_save(self, path: str) -> Callable[[], None]:
+        if self._auto_save_conflict is not None:
+            raise SnapshotSequenceConflict(self._auto_save_conflict)
         preceding_write_pending = self._auto_save_reserved_sequence > self._auto_save_sequence
         sequence = self._reserve_auto_save_sequence()
         message_count = len(self.state.messages)
@@ -1120,6 +1130,29 @@ class Session:
                 self._auto_save_rewrite_from = None
             self._auto_save_seen_result_hashes = current_seen_hashes
 
+        def write_checkpoint(full_messages: list[dict]) -> bool:
+            try:
+                self.store.checkpoint_snapshot(path, full_messages, meta=meta, sequence=sequence)
+            except (OSError, SnapshotCapacityError) as checkpoint_error:
+                if replacement_store is None:
+                    raise
+                try:
+                    saved = replacement_store.append_snapshot_replacement(
+                        path,
+                        full_messages,
+                        meta=meta,
+                        sequence=sequence,
+                        reject_conflicts=True,
+                    )
+                except SnapshotSequenceConflict:
+                    raise
+                except Exception as journal_error:
+                    raise checkpoint_error from journal_error
+                if not saved:
+                    raise
+                return False
+            return True
+
         def persist() -> None:
             if replacement_store is None:
                 self.store.append_snapshot_delta(
@@ -1142,33 +1175,18 @@ class Session:
                         if sequence < self._auto_save_sequence:
                             return
                     try:
-                        self.store.checkpoint_snapshot(
-                            path,
-                            checkpoint_messages,
-                            meta=meta,
-                            sequence=sequence,
-                        )
-                    except (OSError, SnapshotCapacityError) as checkpoint_error:
-                        if replacement_store is None:
-                            raise
-                        try:
-                            saved = replacement_store.append_snapshot_replacement(
-                                path,
-                                checkpoint_messages,
-                                meta=meta,
-                                sequence=sequence,
-                            )
-                        except Exception as journal_error:
-                            raise checkpoint_error from journal_error
-                        if not saved:
-                            raise
-                        with self._auto_save_lock:
-                            advance_cursor()
-                        return
+                        compacted = write_checkpoint(checkpoint_messages)
+                    except SnapshotSequenceConflict as conflict:
+                        if replacement_store is not None:
+                            # A later cursor from this stale session still refers to the same old base.
+                            with self._auto_save_lock:
+                                self._auto_save_conflict = str(conflict)
+                        raise
                     with self._auto_save_lock:
                         if replacement_store is not None:
                             advance_cursor()
-                        self._next_auto_save_checkpoint = 1 << sequence.bit_length()
+                        if compacted:
+                            self._next_auto_save_checkpoint = 1 << sequence.bit_length()
 
         def persist_incrementally() -> None:
             with self._auto_save_lock:

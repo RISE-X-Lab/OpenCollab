@@ -629,6 +629,11 @@ class JournalSnapshotStorePort(Protocol):
 class SnapshotCapacityError(ValueError):
     """An encoded snapshot exceeds the store's write limit."""
 
+
+class SnapshotSequenceConflict(ValueError):
+    """The requested cursor conflicts with a durable snapshot or delta."""
+
+
 @runtime_checkable
 class SnapshotReplacementStorePort(Protocol):
     def append_snapshot_replacement(
@@ -638,6 +643,7 @@ class SnapshotReplacementStorePort(Protocol):
         *,
         meta: dict[str, Any],
         sequence: int,
+        reject_conflicts: bool = False,
     ) -> bool:
         """Return whether the replacement was appended at a new durable cursor."""
         ...

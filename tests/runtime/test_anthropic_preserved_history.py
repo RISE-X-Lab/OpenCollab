@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import shutil
+import threading
 
 import pytest
 
@@ -858,6 +859,180 @@ async def test_native_rewrite_recovers_tool_result_when_checkpoint_fails(monkeyp
             resume.set()
             if running is not None:
                 await asyncio.gather(running, return_exceptions=True)
+            if restored is not None:
+                await restored.aclose()
+            await session.aclose()
+            await environment.cleanup()
+
+
+@pytest.mark.parametrize("peer_publishes_during_fallback", [False, True], ids=["checkpoint", "fallback"])
+async def test_first_native_autosave_preserves_a_compacted_peer(
+    monkeypatch, tmp_path, peer_publishes_during_fallback,
+):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    (tmp_path / "source.txt").write_text("file evidence\n", encoding="utf-8")
+    path = tmp_path / "peer-checkpoint.json"
+    first_request, reply_to_first = asyncio.Event(), asyncio.Event()
+    second_request, reply_to_second = asyncio.Event(), asyncio.Event()
+    fallback_started, release_fallback = threading.Event(), threading.Event()
+    peer = _BoundThinkingProvider(reads=1, thinking=False)
+
+    async def provider(request):
+        response = peer(request)
+        if len(peer.requests) == 1:
+            first_request.set()
+            await reply_to_first.wait()
+        elif len(peer.requests) == 2:
+            second_request.set()
+            await reply_to_second.wait()
+        return response
+
+    install_sdk_transport(monkeypatch, "anthropic", provider)
+    model = "claude-sonnet-5-5"
+    environment = LocalEnvironment(str(tmp_path))
+    async with _client(model) as client:
+        options = {"agent": _agent(thinking=False, model=model), "llm": client, "env": environment,
+                   "auto_save_path": str(path)}
+        writer = build_session(**options)
+        stale = running = None
+        try:
+            await writer.add_user_message("Read source.txt and then answer")
+            await asyncio.gather(*writer.pending_cleanup_tasks)
+            writer.save(str(path))
+            stale = load_session(str(path), **options)
+            running = asyncio.create_task(stale.run_loop())
+            await asyncio.wait_for(first_request.wait(), 10)
+
+            if peer_publishes_during_fallback:
+                append_replacement = stale.store.append_snapshot_replacement
+
+                def fail_checkpoint(*args, **kwargs):
+                    raise OSError("controlled failure before checkpoint publication")
+
+                def pause_fallback(*args, **kwargs):
+                    fallback_started.set()
+                    if not release_fallback.wait(10):
+                        raise TimeoutError("fallback was not released")
+                    return append_replacement(*args, **kwargs)
+
+                monkeypatch.setattr(stale.store, "_atomic_json_write", fail_checkpoint)
+                monkeypatch.setattr(stale.store, "append_snapshot_replacement", pause_fallback)
+                reply_to_first.set()
+                assert await asyncio.to_thread(fallback_started.wait, 10)
+
+            writer.messages = [*writer.messages, {"role": "user", "content": "peer checkpoint evidence"}]
+            writer.save(str(path))
+            published = OpenCollab.read_session_snapshot(path)
+            release_fallback.set()
+            reply_to_first.set()
+            await asyncio.wait_for(second_request.wait(), 10)
+            await asyncio.gather(*stale._auto_save_subscriber.pending_tasks)
+            assert OpenCollab.read_session_snapshot(path) == published
+            assert any("file evidence" in row["content"] for row in stale.messages if row["role"] == "tool")
+
+            reply_to_second.set()
+            assert await running == "done"
+            assert stale.messages[-1]["content"] == "done"
+            assert OpenCollab.read_session_snapshot(path) == published
+            error, = stale.persistence_errors
+            assert "conflicts with persisted" in str(error)
+            assert path.with_suffix(".json.journal").read_bytes() == b""
+
+            writer.messages.append({"role": "assistant", "content": "peer continued"})
+            writer.save(str(path))
+            resumed = OpenCollab.read_session_snapshot(path)
+            assert resumed["_autosave_sequence"] == published["_autosave_sequence"] + 1
+            assert resumed["messages"][-1]["content"] == "peer continued"
+        finally:
+            release_fallback.set()
+            reply_to_first.set()
+            reply_to_second.set()
+            if running is not None:
+                await asyncio.gather(running, return_exceptions=True)
+            if stale is not None:
+                await stale.aclose()
+            await writer.aclose()
+            await environment.cleanup()
+
+
+@pytest.mark.parametrize("legacy_timestamps", [False, True], ids=["missing-timestamps", "timestamps"])
+async def test_native_tool_step_preserves_a_near_capacity_legacy_prefix(monkeypatch, tmp_path, legacy_timestamps):
+    limit = 96 * 1024
+    monkeypatch.setattr(storage_module, "MAX_SESSION_SNAPSHOT_BYTES", limit)
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    (tmp_path / "source.txt").write_text("file evidence\n", encoding="utf-8")
+    model = "claude-sonnet-5-5"
+    agent = _agent(thinking=False, model=model)
+    path = tmp_path / "legacy.json"
+    archive = {"role": "user", "content": ""}
+    prompt = "Read source.txt and then answer"
+    messages = [
+        {"role": "system", "content": agent.system_prompt, "timestamp": "2026-01-01T00:00:00+00:00"},
+        archive,
+        {"role": "assistant", "content": "That context is archived"},
+        {"role": "user", "content": prompt},
+    ]
+    if legacy_timestamps:
+        for message in messages:
+            message["timestamp"] = "2026-01-01T00:00:00+00:00"
+    snapshot = {
+        "snapshot_version": 1, "_autosave_sequence": 2, "messages": messages,
+        "session_state": {
+            "phase": "idle", "pending_external_user_turn": {
+                "turn_id": "legacy-turn", "status": "queued", "content": prompt, "message_index": 3,
+            },
+        },
+    }
+    archive["content"] = "x" * (limit - len(json.dumps(snapshot, separators=(",", ":"))) - 100)
+    path.write_text(json.dumps(snapshot, separators=(",", ":")), encoding="utf-8")
+    assert path.stat().st_size == limit - 100
+
+    class ArchiveShaper:
+        def shape(self, messages):
+            return [
+                {**message, "content": "[Archived context]"}
+                if message.get("content") == archive["content"] else message
+                for message in messages
+            ]
+
+    second_request = asyncio.Event()
+    peer = _BoundThinkingProvider(reads=1, thinking=False)
+
+    async def provider(request):
+        response = peer(request)
+        if len(peer.requests) == 2:
+            second_request.set()
+            await asyncio.Future()
+        return response
+
+    install_sdk_transport(monkeypatch, "anthropic", provider)
+    environment = LocalEnvironment(str(tmp_path))
+    async with _client(model) as client:
+        session = load_session(
+            str(path), agent=agent, llm=client, env=environment, auto_save_path=str(path), shaper=ArchiveShaper(),
+        )
+        running = asyncio.create_task(session.run_loop())
+        waiting = asyncio.create_task(second_request.wait())
+        restored = None
+        try:
+            done, _ = await asyncio.wait({waiting, running}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+            if running in done:
+                pytest.fail(f"Turn ended before its second request with status {running.result()}")
+            assert waiting in done
+            await asyncio.gather(*session._auto_save_subscriber.pending_tasks)
+            assert session.persistence_errors == ()
+            saved = OpenCollab.read_session_snapshot(path)
+            assert saved["_autosave_sequence"] == 3
+            assert saved["messages"][:len(messages)] == messages
+            record = json.loads(path.with_suffix(".json.journal").read_text(encoding="utf-8"))
+            assert record["replace_from"] == len(messages)
+            restored = load_session(str(path), agent=agent, llm=client, env=environment)
+            assert restored.state.anthropic_history is not None
+            assert any("file evidence" in row["content"] for row in restored.messages if row["role"] == "tool")
+        finally:
+            running.cancel()
+            waiting.cancel()
+            await asyncio.gather(running, waiting, return_exceptions=True)
             if restored is not None:
                 await restored.aclose()
             await session.aclose()
