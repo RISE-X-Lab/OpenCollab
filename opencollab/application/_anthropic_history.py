@@ -12,6 +12,7 @@ from typing import Any
 from opencollab.application.shaping.pipeline import (
     _group_spans,
     _history_shaping_stages,
+    _HistoryShapingStage,
     _observe_history_shaping,
     is_complete_tool_exchange,
 )
@@ -173,24 +174,58 @@ def _capture_anthropic_snips(
     state: SessionState | None,
 ) -> Iterator[Callable[[list[dict], list[dict]], set[int]]]:
     transitions: dict[int, tuple[list[dict], list[dict], set[int] | None]] = {}
-    snip_results_by_input: dict[int, list[tuple[tuple[object, ...], list[dict], set[int]]]] = {}
+    stage_results: dict[_HistoryShapingStage, list[list[dict]]] = {}
     snipped: set[int] = set()
+
+    def snip_path(initial: list[dict], shaped: list[dict]) -> list[tuple[list[dict], set[int]]] | None:
+        adopted: list[tuple[list[dict], set[int]]] = []
+        visited: set[int] = set()
+        while shaped is not initial:
+            key = id(shaped)
+            transition = transitions.get(key)
+            if transition is None or key in visited:
+                return None
+            visited.add(key)
+            before, _, starts = transition
+            if starts:
+                adopted.append((before, starts))
+            shaped = before
+        return adopted
+
+    def copied_result_input(before: list[dict], after: list[dict], candidates: list[list[dict]]) -> list[dict]:
+        matched = before
+        path = None
+        for result in candidates:
+            if not same_snapshot_value(result, after):
+                continue
+            candidate = snip_path(before, result)
+            if candidate is None:
+                continue
+            if path is not None and (
+                len(path) != len(candidate) or any(
+                    old_starts != new_starts or not same_snapshot_value(old_rows, new_rows)
+                    for (old_rows, old_starts), (new_rows, new_starts) in zip(path, candidate)
+                )
+            ):
+                return before
+            matched, path = result, candidate
+        return matched if path else before
 
     def observe(before: list[dict], after: list[dict], starts: set[int] | None) -> None:
         if id(after) in transitions:
             return
         stage = _history_shaping_stages.get()
-        if starts is not None:
-            snip_results_by_input.setdefault(id(before), []).append((stage, after, starts))
-        elif stage:
-            # A wrapper can return a fresh copy of the Snip result it adopted.
-            matches = {
-                frozenset(snips) for scope, result, snips in snip_results_by_input.get(id(before), ())
-                if scope[:len(stage)] == stage and same_snapshot_value(result, after)
-            }
-            if len(matches) == 1:
-                starts = set(matches.pop())
+        if id(before) not in transitions:
+            # A wrapper may give its inner shaper a fresh copy of the input.
+            before = next((entry.messages for entry in stage if same_snapshot_value(entry.messages, before)), before)
+        if before is after:
+            return
+        if starts is None and stage:
+            # A wrapper may copy the final result of a nested sequence of shapers.
+            before = copied_result_input(before, after, stage_results.get(stage[-1], []))
         transitions[id(after)] = (before, after, starts)
+        for entry in stage:
+            stage_results.setdefault(entry, []).append(after)
 
     def record(before: list[dict], starts: set[int]) -> None:
         assert state is not None
@@ -210,16 +245,7 @@ def _capture_anthropic_snips(
         snipped.update(entries[old][0] for old, new in aligned if before_spans[new][0] in starts)
 
     def collect(initial: list[dict], shaped: list[dict]) -> set[int]:
-        adopted: list[tuple[list[dict], set[int]]] = []
-        while shaped is not initial:
-            transition = transitions.pop(id(shaped), None)
-            if transition is None:
-                return set()
-            before, _, starts = transition
-            if starts:
-                adopted.append((before, starts))
-            shaped = before
-        for before, starts in reversed(adopted):
+        for before, starts in reversed(snip_path(initial, shaped) or ()):
             record(before, starts)
         return snipped
 
@@ -230,7 +256,7 @@ def _capture_anthropic_snips(
     finally:
         _observe_history_shaping.reset(token)
         transitions.clear()
-        snip_results_by_input.clear()
+        stage_results.clear()
 
 def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]]:
     history = state.anthropic_history

@@ -91,6 +91,9 @@ async def test_edit_of_repeated_turn_keeps_saved_summary(monkeypatch, tmp_path, 
     pytest.param(True, "pipeline", id="edit-summary-source"),
     pytest.param(False, "pipeline", id="edit-snipped-result"),
     pytest.param(True, "pipeline-copy", id="copied-snip-result"),
+    pytest.param(True, "pipeline-copy-input", id="copied-snip-input"),
+    pytest.param(True, "pipeline-copy-both", id="copied-snip-input-and-result"),
+    pytest.param(True, "pipeline-copy-composed", id="copied-nested-pipeline-result"),
     pytest.param(True, "sync", id="summary-trial-snip"),
     pytest.param(True, "async", id="async-summary-trial-snip"),
     pytest.param(True, "shaper", id="shaper-trial-snip"),
@@ -113,7 +116,8 @@ async def test_edit_keeps_independent_snipped_exchanges(
     correction = "Use the April archive."
     requests = []
     trial_ran = False
-    snip_as_stage = snip_mode in {"pipeline", "pipeline-copy"}
+    copying_stage = snip_mode.startswith("pipeline-copy")
+    snip_as_stage = snip_mode == "pipeline" or copying_stage
 
     def peer(request):
         body = json.loads(request.content)
@@ -161,13 +165,19 @@ async def test_edit_keeps_independent_snipped_exchanges(
     class TrialShaper:
         def shape(self, rows):
             nonlocal trial_ran
-            trial, _ = ShaperPipeline((snipper,)).shape_with_report(rows)
+            trial, _ = ShaperPipeline((snipper,)).shape_with_report(list(rows))
             trial_ran |= len(trial) < len(rows)
-            return rows
+            return [dict(row) for row in rows]
 
     class CopyingShaper:
         def shape(self, rows):
-            return [dict(row) for row in ShaperPipeline((snipper,)).shape(rows)]
+            if snip_mode == "pipeline-copy-composed":
+                if sum(row.get("role") == "tool" for row in rows) < 2:
+                    return rows
+                return [dict(row) for row in ShaperPipeline((snipper, compact)).shape(list(rows))]
+            source = rows if snip_mode == "pipeline-copy" else list(rows)
+            result = ShaperPipeline((snipper,)).shape(source)
+            return result if snip_mode == "pipeline-copy-input" else [dict(row) for row in result]
 
     class AsyncSummarizer:
         def __call__(self, rows):
@@ -178,13 +188,17 @@ async def test_edit_keeps_independent_snipped_exchanges(
             return summarize(rows)
 
     shapers = [snipper] if snip_mode == "pipeline" else []
-    if snip_mode == "pipeline-copy":
+    if copying_stage:
         shapers.append(CopyingShaper())
     if snip_mode == "shaper":
         shapers.append(TrialShaper())
-    if edit_user:
-        callback = AsyncSummarizer() if snip_mode == "async" else summarize
-        shapers.append(AutoCompactShaper(**large_history, summarizer=callback))
+    callback = AsyncSummarizer() if snip_mode == "async" else summarize
+    compact_options = dict(large_history)
+    if snip_mode == "pipeline-copy-composed":
+        compact_options["estimate_tokens"] = lambda rows: len(json.dumps(rows)) // 4
+    compact = AutoCompactShaper(**compact_options, summarizer=callback)
+    if edit_user and snip_mode != "pipeline-copy-composed":
+        shapers.append(compact)
     async with LLMClient(
         model=model, provider="anthropic", api_key="test-placeholder",  # pragma: allowlist secret
         base_url="https://provider.invalid/v1", max_retries=0,

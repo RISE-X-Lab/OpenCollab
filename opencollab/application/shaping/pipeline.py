@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Callable, Iterator
 
 from opencollab.application.ports import ShaperPort, TokenEstimatorPort
@@ -40,15 +41,24 @@ _context_estimator: ContextVar[TokenEstimatorPort | None] = ContextVar("context_
 _observe_history_shaping: ContextVar[Callable[[list[dict], list[dict], set[int] | None], None] | None] = ContextVar(
     "observe_history_shaping", default=None,
 )
-_history_shaping_stages: ContextVar[tuple[object, ...]] = ContextVar("history_shaping_stages", default=())
+
+
+@dataclass(eq=False, frozen=True, slots=True)
+class _HistoryShapingStage:
+    messages: list[dict]
+
+
+_history_shaping_stages: ContextVar[tuple[_HistoryShapingStage, ...]] = ContextVar(
+    "history_shaping_stages", default=(),
+)
 
 
 @contextmanager
-def _history_shaping_stage() -> Iterator[None]:
+def _history_shaping_stage(messages: list[dict]) -> Iterator[None]:
     if _observe_history_shaping.get() is None:
         yield
         return
-    token = _history_shaping_stages.set((*_history_shaping_stages.get(), object()))
+    token = _history_shaping_stages.set((*_history_shaping_stages.get(), _HistoryShapingStage(messages)))
     try:
         yield
     finally:
@@ -201,7 +211,7 @@ class ShaperPipeline:
         result = messages
         for shaper in self._shapers:
             before = result
-            with _history_shaping_stage():
+            with _history_shaping_stage(before):
                 result = shaper.shape(before)
                 _record_history_shaping(before, result)
         return result
@@ -212,7 +222,7 @@ class ShaperPipeline:
             for shaper in self._shapers:
                 before = result
                 ashape = getattr(shaper, "ashape", None)
-                with _history_shaping_stage():
+                with _history_shaping_stage(before):
                     result = await ashape(before) if callable(ashape) else shaper.shape(before)
                     _record_history_shaping(before, result)
         return result
@@ -226,7 +236,7 @@ class ShaperPipeline:
         tokens = approx_messages_tokens(result)
         for shaper in self._shapers:
             before = result
-            with _history_shaping_stage():
+            with _history_shaping_stage(before):
                 if isinstance(shaper, ShaperPipeline):
                     result, nested = await shaper.ashape_with_report(result)
                     entries = [entry for entry in nested if entry["rung"] != _NO_RUNG_FIRED]
@@ -268,7 +278,7 @@ class ShaperPipeline:
         tokens = approx_messages_tokens(result)
         for shaper in self._shapers:
             before = result
-            with _history_shaping_stage():
+            with _history_shaping_stage(before):
                 result, entries = self._run_rung(shaper, before, tokens)
                 _record_history_shaping(before, result)
             if entries:
