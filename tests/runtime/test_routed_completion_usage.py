@@ -28,6 +28,7 @@ from tests.support.provider_sdk_http import completion_http_response, http_respo
     "annotated-primary-after-helper-without-timing",
     "cache-redacted-primary-after-helper", "cache-redacted-primary-after-helper-without-timing",
     "cache-redacted-fallback", "fallback-with-primary-timing", "manual-primary-settlement",
+    "manual-scrubbed-primary-settlement", "manual-count-adjustment", "recovered-primary-after-redaction",
     "failed-primary", "failed-primary-attempt-callback-only",
 ])
 async def test_routed_completion_accounts_for_each_provider(
@@ -40,14 +41,20 @@ async def test_routed_completion_accounts_for_each_provider(
     cache_redacted = scenario.startswith("cache-redacted-")
     annotated = scenario.startswith("annotated-") or cache_redacted
     retains_primary_timing = scenario == "fallback-with-primary-timing"
-    manual_primary_settlement = scenario == "manual-primary-settlement"
+    manual_primary_settlement = scenario in {
+        "manual-primary-settlement", "manual-scrubbed-primary-settlement", "manual-count-adjustment",
+        "recovered-primary-after-redaction",
+    }
+    adjusted_counts = scenario == "manual-count-adjustment"
+    recovered_primary = scenario == "recovered-primary-after-redaction"
     usable_primary = independent_helper or scenario in {
         "primary", "copied-primary", "scrubbed-primary", "replaced-primary",
-        "annotated-primary",
+        "annotated-primary", "manual-count-adjustment", "recovered-primary-after-redaction",
     }
     equal_usage = independent_helper or retains_primary_timing or scenario in {
         "equal-fallback", "copied-fallback", "scrubbed-fallback", "replaced-fallback",
         "annotated-fallback", "cache-redacted-fallback", "manual-primary-settlement",
+        "manual-scrubbed-primary-settlement",
     }
     failed_primary = scenario.startswith("failed-primary")
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
@@ -62,6 +69,12 @@ async def test_routed_completion_accounts_for_each_provider(
         if route == "primary":
             if failed_primary:
                 content_type, payload = _payload(json.loads(request.content), {"kind": "failed"})
+                return http_response(request, 200, headers={"content-type": content_type}, content=payload)
+            if recovered_primary:
+                spec = {"kind": "failed"} if len(requests) == 1 else {
+                    "text": answer, "usage": {"input_tokens": 2, "output_tokens": 55, "total_tokens": 57},
+                }
+                content_type, payload = _payload(json.loads(request.content), spec)
                 return http_response(request, 200, headers={"content-type": content_type}, content=payload)
         text = answer if route != "primary" or usable_primary else ""
         output_tokens = 55 if route == "primary" or equal_usage else 2
@@ -107,7 +120,15 @@ async def test_routed_completion_accounts_for_each_provider(
                 assert failed_primary
             else:
                 if manual_primary_settlement and on_usage is not None:
-                    on_usage(replace(first.usage, cache_read_tokens=None))
+                    changes = {"cache_read_tokens": None}
+                    if scenario != "manual-primary-settlement":
+                        changes["raw_usage"] = {}
+                    if adjusted_counts:
+                        changes["output_tokens"] = first.usage.output_tokens + 1
+                    cleaned = replace(first.usage, **changes)
+                    on_usage(cleaned)
+                    if recovered_primary:
+                        return replace(first, usage=cleaned)
                 if first.content and first.content.strip():
                     if independent_helper:
                         await fallback.complete(messages, **kwargs)
@@ -127,8 +148,8 @@ async def test_routed_completion_accounts_for_each_provider(
     async with (
         FallbackClient(
             **options, base_url="https://test.invalid/primary/v1",
-            wire_protocol="responses" if failed_primary else "chat_completions",
-            max_retries=1 if failed_primary else 0,
+            wire_protocol="responses" if failed_primary or recovered_primary else "chat_completions",
+            max_retries=1 if failed_primary or recovered_primary else 0,
         ) as client,
         LLMClient(**options, base_url="https://test.invalid/fallback/v1", max_retries=0) as fallback,
     ):
@@ -158,17 +179,23 @@ async def test_routed_completion_accounts_for_each_provider(
             assert result.output == "Answer."
             tokens = result.tokens
 
-    expected_usage = [74 if failed_primary else 57]
+    expected_usage = [94 if recovered_primary else 74 if failed_primary else 57]
+    expected_ledger = expected_usage.copy()
+    if adjusted_counts:
+        expected_usage.insert(0, 58)
     if not usable_primary:
         expected_usage.append(57 if equal_usage else 4)
+        expected_ledger.append(expected_usage[-1])
     expected_purpose = "summary" if summary else "completion"
     ledger = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
-    expected_requests = ["primary", "primary"] if failed_primary else ["primary"]
+    expected_requests = ["primary", "primary"] if failed_primary or recovered_primary else ["primary"]
     if not usable_primary or independent_helper:
         expected_requests.append("fallback")
+    if independent_helper:
+        expected_ledger.append(57)
     assert requests == expected_requests
     assert tokens == sum(expected_usage)
-    assert [entry["usage"]["total_tokens"] for entry in ledger] == expected_usage + ([57] if independent_helper else [])
+    assert [entry["usage"]["total_tokens"] for entry in ledger] == expected_ledger
     usage_events = [event for event in events if event.type == "usage"]
     assert [event.data["total_tokens"] for event in usage_events] == expected_usage
     assert {event.data["purpose"] for event in usage_events} == {expected_purpose}
@@ -178,7 +205,7 @@ async def test_routed_completion_accounts_for_each_provider(
 
 
 @pytest.mark.parametrize("cache_read_tokens", [None, 0])
-@pytest.mark.parametrize("redact_at", ["response", "settlement", "wrapper"])
+@pytest.mark.parametrize("redact_at", ["response", "settlement", "wrapper", "wrapper-redacted", "wrapper-copied"])
 async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monkeypatch, cache_read_tokens, redact_at):
     (tmp_path / "facts.txt").write_text("The verified value is 42.\n", encoding="utf-8")
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
@@ -218,15 +245,22 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
             settlement_callback = on_usage
             if redact_at == "settlement" and on_usage is not None:
                 settlement_callback = redact_usage
-            elif redact_at == "wrapper":
+            elif redact_at.startswith("wrapper"):
                 settlement_callback = None
             controls = dict(on_admitted=on_admitted, before_request=before_request,
                             on_attempt_usage=on_attempt_usage, on_usage=settlement_callback)
             kwargs.update((name, callback) for name, callback in controls.items() if callback is not None)
             response = await super().complete(messages, **kwargs)
             assert response.usage.cache_read_tokens == 1
-            if redact_at == "wrapper" and on_usage is not None:
-                redact_usage(response.usage)
+            if redact_at.startswith("wrapper") and on_usage is not None:
+                if redact_at == "wrapper":
+                    redact_usage(response.usage)
+                else:
+                    redacted = replace(response.usage, cache_read_tokens=cache_read_tokens, raw_usage={})
+                    on_usage(redacted)
+                    if redact_at == "wrapper-copied":
+                        redacted = deepcopy(redacted)
+                    return replace(response, usage=redacted)
             if redact_at == "response":
                 return replace(response, usage=replace(response.usage, cache_read_tokens=cache_read_tokens))
             return response

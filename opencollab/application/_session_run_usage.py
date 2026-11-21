@@ -108,8 +108,6 @@ class _CompletionUsageAccounting:
     def settle_provider(self, usage: Any) -> None:
         owner = _native_usage_owner.get()
         native = self._find_native_usage(usage) if owner is None else None
-        if native is not None and native.usage is not usage and not _same_token_counts(native.usage, usage):
-            native = None
         if native is not None and self._already_settled(native.reported_usage):
             return
         self._settle(usage, self._attempt_tokens.pop(owner, 0))
@@ -144,7 +142,9 @@ class _CompletionUsageAccounting:
         origin = getattr(usage, "_native_usage_origin", None)
         if native is None and origin is not None:
             native = next(
-                (item for item in self._native_usages if getattr(item.usage, "_native_usage_origin", None) is origin),
+                (item for item in self._native_usages
+                 if getattr(item.usage, "_native_usage_origin", None) is origin
+                 and _same_token_counts(item.usage, usage)),
                 None,
             )
         if native is None and origin is not None:
@@ -178,7 +178,8 @@ class _CompletionUsageAccounting:
                 (item for item in reversed(self._native_usages) if _same_usage_measurements(item.usage, usage)),
                 None,
             )
-        reported_usage = usage if native is None else native.reported_usage
+        # A wrapper can settle the usage it returns after removing the provider payload.
+        reported_usage = usage if native is None or self._already_settled(usage) else native.reported_usage
         if usage is not None and not self._already_settled(reported_usage):
             attempt_tokens = self._attempt_tokens.pop(None, 0) if native is None else 0
             self._settle(reported_usage, attempt_tokens)
