@@ -186,12 +186,10 @@ async def test_routed_completion_accounts_for_each_provider(
                     if independent_helper:
                         await fallback.complete(messages, **kwargs)
                     return copy_response(first) if scenario != "primary" else first
-            fallback_controls = dict(controls) if forward_fallback else {}
+            final = await fallback.complete(messages, **kwargs, **(controls if forward_fallback else {}))
             if stale_timing:
-                fallback_controls.pop("on_usage", None)
-            final = await fallback.complete(messages, **kwargs, **fallback_controls)
-            if stale_timing:
-                return copy_response(replace(final, transport_timing=first.transport_timing))
+                redacted = replace(final.usage, raw_usage={}, cache_read_tokens=None)
+                return copy_response(replace(final, usage=redacted, transport_timing=first.transport_timing))
             if retains_primary_timing:
                 usage = replace(final.usage)
                 if rebuilt_usage:
@@ -270,12 +268,15 @@ async def test_routed_completion_accounts_for_each_provider(
 
 @pytest.mark.parametrize("parallel", [False, True])
 @pytest.mark.parametrize("retried,tight_budget", [(False, False), (True, False), (False, True)])
-@pytest.mark.parametrize("serialization", ["none", "usage", "response", "plain", "wrapped-response"])
+@pytest.mark.parametrize("serialization", [
+    "none", "usage", "response", "plain", "wrapped-response", "closure-response", "closure-plain",
+])
 async def test_manual_usage_copy_is_reconciled_before_the_next_request(
     tmp_path, monkeypatch, parallel, retried, tight_budget, serialization,
 ):
     wrap_attempt = serialization.startswith("wrapped-")
-    serialization = serialization.removeprefix("wrapped-")
+    forward_callbacks = wrap_attempt or serialization.startswith("closure-")
+    serialization = serialization.removeprefix("wrapped-").removeprefix("closure-")
     usage_path = tmp_path / "usage.jsonl"
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(usage_path))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
@@ -309,15 +310,20 @@ async def test_manual_usage_copy_is_reconciled_before_the_next_request(
         async def complete(
             self, messages, *, on_admitted=None, before_request=None, on_attempt_usage=None, on_usage=None, **kwargs,
         ):
-            if wrap_attempt:
+            if forward_callbacks:
                 assert on_attempt_usage is not None
+                assert before_request is not None
                 attempt = on_attempt_usage
+                revalidate = before_request
 
-                @wraps(attempt)
                 def trace_attempt(usage):
                     return attempt(usage)
 
-                on_attempt_usage = trace_attempt
+                def trace_revalidation():
+                    return revalidate()
+
+                on_attempt_usage = wraps(attempt)(trace_attempt) if wrap_attempt else trace_attempt
+                before_request = trace_revalidation
             controls = dict(on_admitted=on_admitted, before_request=before_request, on_attempt_usage=on_attempt_usage)
 
             async def primary():

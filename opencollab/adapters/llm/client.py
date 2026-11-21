@@ -470,7 +470,7 @@ class LLMClient:
                         try:
                             if on_usage is not None:
                                 on_usage(settled_usage)
-                            _observe_native_usage(settled_usage, provider_error, response, on_attempt_usage)
+                            _observe_native_usage(settled_usage, provider_error, response)
                         except BaseException as exc:
                             exc.usage = settled_usage
                             settlement_error = exc

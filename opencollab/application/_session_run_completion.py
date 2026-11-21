@@ -873,11 +873,16 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 return True
             return False
 
+        def revalidate_budget() -> int:
+            limit = revalidate()
+            usage_accounting.mark_request_revalidated()
+            return limit
+
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or accepts("max_output_tokens"):
             kwargs["max_output_tokens"] = max_output_tokens
         add_control("on_attempt_usage", "supports_attempt_usage", usage_accounting.record_attempt)
         add_control("on_usage", "supports_usage_settlement", usage_accounting.settle_provider)
-        add_control("before_request", "supports_request_revalidation", revalidate)
+        add_control("before_request", "supports_request_revalidation", revalidate_budget)
         admitted = asyncio.Event()
         has_admission = add_control(
             "on_admitted", "supports_request_admission", admitted.set,

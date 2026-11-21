@@ -8,13 +8,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from inspect import unwrap
 from typing import Any, Awaitable, Callable
 
 _native_usage_owner: ContextVar[object | None] = ContextVar("native_usage_owner", default=None)
-_native_usage_observer: ContextVar[
-    Callable[[Any, BaseException | None, object | None, Callable[[Any], None] | None], None] | None
-] = ContextVar(
+_native_usage_observer: ContextVar[Callable[[Any, BaseException | None, object | None], None] | None] = ContextVar(
     "native_usage_observer", default=None,
 )
 
@@ -29,12 +26,10 @@ def _own_native_usage() -> Iterator[_UsageOrigin | None]:
         _native_usage_owner.reset(token)
 
 
-def _observe_native_usage(
-    usage: Any, error: BaseException | None, response: Any, on_attempt_usage: Callable[[Any], None] | None,
-) -> None:
+def _observe_native_usage(usage: Any, error: BaseException | None, response: Any) -> None:
     observer = _native_usage_observer.get()
     if observer is not None:
-        observer(usage, error, response, on_attempt_usage)
+        observer(usage, error, response)
 
 
 def _nonnegative_usage_int(value: Any, field: str) -> int:
@@ -129,7 +124,7 @@ class _ProviderUsageObservation:
     error: BaseException | None
     settlement: _UsageSettlement | None
     task: asyncio.Task[Any] | None
-    uses_session_retry_accounting: bool
+    revalidated_budget: bool
     prepaid_tokens: int | None = None
 
 
@@ -146,6 +141,7 @@ class _CompletionUsageAccounting:
         self.runner = runner
         self.protected_call = protected_call
         self.tokens = 0
+        self._revalidated_owners: set[object] = set()
         self._attempt_tokens: dict[object | None, int] = {}
         self._callback_usages: dict[object, _UsageSettlement] = {}
         self._native_usages: list[_ProviderUsageObservation] = []
@@ -167,6 +163,11 @@ class _CompletionUsageAccounting:
         tokens = _normalize_completion_usage(usage)[1]
         self._charge(tokens)
         self._attempt_tokens[owner] = self._attempt_tokens.get(owner, 0) + tokens
+
+    def mark_request_revalidated(self) -> None:
+        owner = _native_usage_owner.get()
+        if owner is not None:
+            self._revalidated_owners.add(owner)
 
     def settle_provider(self, usage: Any) -> None:
         owner = _native_usage_owner.get()
@@ -203,7 +204,7 @@ class _CompletionUsageAccounting:
         if possible_duplicate:
             unpaid = [
                 item for item in window
-                if item.uses_session_retry_accounting and item.settlement is None and item.prepaid_tokens is None
+                if item.revalidated_budget and item.settlement is None and item.prepaid_tokens is None
                 and _same_token_counts(item.usage, usage)
             ]
             if len(unpaid) == 1:
@@ -216,9 +217,7 @@ class _CompletionUsageAccounting:
         predecessor = preceding[0] if len(preceding) == 1 else None
         self._routed_callbacks.append(_RoutedUsageCallback(settlement, boundary, observed, predecessor))
 
-    def _observe_provider_response(
-        self, usage: Any, error: BaseException | None, response: Any, on_attempt_usage: Callable[[Any], None] | None,
-    ) -> None:
+    def _observe_provider_response(self, usage: Any, error: BaseException | None, response: Any) -> None:
         owner = _native_usage_owner.get()
         if owner is not None:
             _tag_usage(usage, owner)
@@ -231,16 +230,12 @@ class _CompletionUsageAccounting:
             settlement = None
         if owner in self._attempt_tokens:
             settlement = self._settle(usage, self._attempt_tokens.pop(owner), error=error)
-        attempt_callback = self.record_attempt
-        try:
-            uses_session_retry_accounting = (
-                on_attempt_usage == attempt_callback or unwrap(on_attempt_usage) == attempt_callback
-            )
-        except ValueError:
-            uses_session_retry_accounting = False
+        revalidated_budget = owner is not None and owner in self._revalidated_owners
+        if owner is not None:
+            self._revalidated_owners.discard(owner)
         self._native_usages.append(_ProviderUsageObservation(
             usage, response, getattr(response, "provider_items", None), getattr(response, "transport_timing", None),
-            error, settlement, asyncio.current_task(), uses_session_retry_accounting,
+            error, settlement, asyncio.current_task(), revalidated_budget,
         ))
 
     def _settle(self, usage: Any, attempt_tokens: int = 0, *, error: BaseException | None = None,
@@ -289,11 +284,25 @@ class _CompletionUsageAccounting:
         matches = [
             item for item in self._native_usages
             if item.response is not None
-            and _completion_json_value(item.transport_timing) == timing
             and _same_token_counts(item.usage, usage)
             and tuple(_completion_json_value(getattr(item.response, field, None)) for field in output_fields) == output
         ]
-        return matches[0] if len(matches) == 1 else None
+        timed_matches = [item for item in matches if _completion_json_value(item.transport_timing) == timing]
+        if timed_matches:
+            return timed_matches[0] if len(timed_matches) == 1 else None
+        if len(matches) != 1 or matches[0].settlement is None:
+            return None
+        # A router may preserve timing from an earlier request while serializing the selected response.
+        if not any(
+            item.response is not None and _completion_json_value(item.transport_timing) == timing
+            for item in self._native_usages
+        ):
+            return None
+        item = matches[0]
+        native_raw_usage = getattr(item.usage, "raw_usage", None)
+        if raw_usage and _completion_json_value(raw_usage) != _completion_json_value(native_raw_usage):
+            return None
+        return item
 
     def finish(
         self, usage: Any, *, purpose: str, late: bool, error: BaseException | None = None,
