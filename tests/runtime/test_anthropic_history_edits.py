@@ -369,18 +369,45 @@ def test_reused_tool_ids_keep_a_compacted_exchange_in_an_unchanged_end(edited_in
     assert _anthropic_history_input(state) == view
 
 
+@pytest.mark.parametrize("edit", ["delete", "reorder"])
+def test_ambiguous_adjacent_reused_calls_rebuild_after_edit(edit):
+    call = {"role": "assistant", "content": "Reading archive.", "tool_calls": [
+        {"id": "archive", "type": "function", "function": {"name": "file_read", "arguments": "{}"}},
+    ]}
+    first = {"role": "tool", "tool_call_id": "archive", "content": "First version"}
+    second = {**first, "content": "Second version"} if edit == "reorder" else deepcopy(first)
+    state = SessionState(messages=[
+        {"role": "system", "content": "Review the archives."},
+        {"role": "user", "content": "Read both archive versions."},
+        call, first, deepcopy(call), second,
+        {"role": "user", "content": "Compare their dates."},
+    ])
+    view = deepcopy(state.messages)
+    view[3]["content"] = "[Old tool result content cleared]"
+    _remember_anthropic_history(state, view, None)
+    state.messages[1]["content"] = "Read the selected archive versions."
+    state.messages[-1]["content"] = "Compare their deadlines."
+    if edit == "delete":
+        del state.messages[2:4]
+    else:
+        state.messages[2:6] = [*state.messages[4:6], *state.messages[2:4]]
+    assert _anthropic_history_input(state) == state.messages
+
+
 @pytest.mark.parametrize("edit_before_save", [True, False])
-async def test_edits_preserve_cleared_results_for_distinct_calls_with_reused_ids(
-    tmp_path, monkeypatch, edit_before_save,
+@pytest.mark.parametrize("repeated_leader", [False, True], ids=["different-files", "same-file"])
+async def test_edits_preserve_cleared_results_for_calls_with_reused_ids(
+    tmp_path, monkeypatch, edit_before_save, repeated_leader,
 ):
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     model = "claude-sonnet-5-5"
     requests = []
-    read_paths = ["first.txt", "second.txt", "recent.txt"]
+    read_paths = ["archive.txt", "archive.txt", "recent.txt"] if repeated_leader else [
+        "first.txt", "second.txt", "recent.txt",
+    ]
+    revisions = ["ARCHIVE_FIRST_REVISION", "ARCHIVE_SECOND_REVISION", "ARCHIVE_LATEST_REVISION"]
     active_read = None
     resuming = False
-    for name in read_paths:
-        (tmp_path / name).write_text((f"ARCHIVE_{name} " + "entry " * 20 + "\n") * 35)
 
     def peer(request):
         nonlocal active_read
@@ -392,10 +419,12 @@ async def test_edits_preserve_cleared_results_for_distinct_calls_with_reused_ids
             })
         if active_read is None:
             return completion_http_response(request, text="Recorded.")
-        name, active_read = active_read, None
+        name, revision = active_read
+        active_read = None
+        (tmp_path / name).write_text((f"{revision} " + "entry " * 20 + "\n") * 35)
         call_id = "toolu_recent" if name == read_paths[-1] else "toolu_archive"
         return http_response(request, 200, json={
-            "id": f"msg_{name}", "type": "message", "role": "assistant", "model": model,
+            "id": f"msg_{revision}", "type": "message", "role": "assistant", "model": model,
             "content": [{
                 "type": "tool_use", "id": call_id, "name": "file_read", "input": {"path": name, "limit": 35},
             }],
@@ -425,14 +454,14 @@ async def test_edits_preserve_cleared_results_for_distinct_calls_with_reused_ids
             try:
                 await session.add_user_message("Start reviewing the archive.")
                 assert await session.run_loop() == "Recorded."
-                for name in read_paths:
-                    active_read = name
-                    await session.add_user_message(f"Open {name}.")
+                for number, (name, revision) in enumerate(zip(read_paths, revisions, strict=True), 1):
+                    active_read = (name, revision)
+                    await session.add_user_message(f"Open archive revision {number}.")
                     assert await session.run_loop() == "Recorded."
                 await session.add_user_message("Compare the archive entries.")
                 assert await session.run_loop() == "Recorded."
                 assert requests[-1].count(b"[Old tool result content cleared]") == 2
-                assert all(f"ARCHIVE_{name}" in json.dumps(session.messages) for name in read_paths)
+                assert all(revision in json.dumps(session.messages) for revision in revisions)
                 if edit_before_save:
                     revise(session)
                 session.save(snapshot)
@@ -451,9 +480,9 @@ async def test_edits_preserve_cleared_results_for_distinct_calls_with_reused_ids
                 assert requests[-1].count(b"[Old tool result content cleared]") == 2
                 assert b"Review the archived dates." in requests[-1]
                 assert b"Compare the revised archive entries." in requests[-1]
-                assert b"ARCHIVE_first.txt" not in requests[-1]
-                assert b"ARCHIVE_second.txt" not in requests[-1]
-                assert b"ARCHIVE_recent.txt" in requests[-1]
+                assert revisions[0].encode() not in requests[-1]
+                assert revisions[1].encode() not in requests[-1]
+                assert revisions[2].encode() in requests[-1]
                 blocks = [
                     (block["type"], block.get("id") or block.get("tool_use_id"))
                     for message in json.loads(requests[-1])["messages"]

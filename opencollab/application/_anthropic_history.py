@@ -321,6 +321,37 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
     source_counts = Counter(map(_anchor_key, source))
     projection_counts = Counter(map(_anchor_key, projection))
 
+    def bracketed_exchange(old: int, seen: int, next_old: int, next_seen: int) -> bool:
+        if old == 0 or next_old == len(source) or next_old != old + 1 or next_seen != seen + 1:
+            return False
+        current_index = unchanged.get(old)
+        if current_index is None or (
+            unchanged.get(old - 1) != current_index - 1 or unchanged.get(next_old) != current_index + 1
+        ):
+            return False
+        # A repeated acknowledgment can flank a call when the other neighbor is unique.
+        has_unique_anchor = False
+        for left, right in ((old - 1, seen - 1), (next_old, next_seen)):
+            key = _anchor_key(source[left])
+            unique = source_counts[key] == projection_counts[key] == 1
+            if (key[0] == "exchange" and not unique) or not same_snapshot_value(
+                _strip_anthropic_thinking(source[left]), _strip_anthropic_thinking(projection[right]),
+            ):
+                return False
+            has_unique_anchor = has_unique_anchor or unique
+        if not has_unique_anchor:
+            return False
+        original, shaped = source[old], projection[seen]
+        key = _anchor_key(original)
+        if key[0] != "exchange" or key != _anchor_key(shaped) or not same_snapshot_value(
+            _strip_anthropic_thinking(original[:1]), _strip_anthropic_thinking(shaped[:1]),
+        ):
+            return False
+        return all(
+            same_snapshot_value({**old_result, "content": result.get("content")}, result)
+            for old_result, result in zip(original[1:], shaped[1:], strict=True)
+        )
+
     def projected_groups() -> Iterator[tuple[int, int, list[list[dict]]]]:
         old = seen = 0
         anchors = _align_groups(source, projection, projected=True)
@@ -330,11 +361,13 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
                 if not gap and all(_anchor_key(group)[0] == "exchange" for group in source[old:next_old]):
                     for index in range(old, next_old):
                         yield index, index + 1, []
-                # The intact ends can retain whole slices. An isolated rewritten
-                # exchange inside the edits needs a unique call-ID anchor.
-                elif next_old <= first_edit or old >= end_edit or all(
-                    key[0] != "exchange" or source_counts[key] == projection_counts[key] == 1
-                    for key in map(_anchor_key, gap)
+                elif (
+                    next_old <= first_edit or old >= end_edit
+                    or bracketed_exchange(old, seen, next_old, next_seen)
+                    or all(
+                        key[0] != "exchange" or source_counts[key] == projection_counts[key] == 1
+                        for key in map(_anchor_key, gap)
+                    )
                 ):
                     yield old, next_old, gap
             if next_old < len(source):
