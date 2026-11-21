@@ -16,7 +16,7 @@ from opencollab.application.shaping.pipeline import (
     _observe_history_shaping,
     is_complete_tool_exchange,
 )
-from opencollab.application.shaping.reactive import _snipped_exchange_text
+from opencollab.application.shaping.reactive import DEFAULT_CLEARED_TOOL_CONTENT, _snipped_exchange_text
 from opencollab.domain.session import SessionState, same_snapshot_value
 
 _THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
@@ -189,29 +189,14 @@ def _align_groups(
             )
         return same_snapshot_value(_strip_anthropic_thinking(before[old]), after[new])
 
-    def bracketed_result_edit(left: int, right: int, old_stop: int, new_stop: int) -> tuple[int, int] | None:
-        # A repeated raw result can identify an occurrence within an isolated interval.
-        if left == 0 or right == 0 or old_stop == len(before) or new_stop == len(after):
-            return None
-        neighbors = (old_keys[left - 1], old_keys[old_stop])
-        if not any(old_counts[neighbor] == new_counts[neighbor] == 1 for neighbor in neighbors):
-            return None
-        if not same_snapshot_value(before[left - 1], after[right - 1]) or not same_snapshot_value(
-            before[old_stop], after[new_stop],
-        ):
-            return None
-        old_batch = [index for index in range(left, old_stop) if old_keys[index] in repeated_results]
-        new_batch = [index for index in range(right, new_stop) if new_keys[index] in repeated_results]
-        if len(old_batch) != 1 or len(new_batch) != 1:
-            return None
-        old, new = old_batch[0], new_batch[0]
+    def same_locally_anchored_batch(old: int, new: int) -> bool:
         key = old_keys[old]
         if (
             key != new_keys[new] or len(before[old]) <= 2
             or old in result_anchors or new in result_targets
             or not same_snapshot_value(before[old][0], after[new][0])
         ):
-            return None
+            return False
         for groups, keys, index, group in (
             (before, old_keys, old, after[new]), (after, new_keys, new, before[old]),
         ):
@@ -219,11 +204,28 @@ def _align_groups(
                 other != index and keys[other] == key and same_snapshot_value(candidate, group)
                 for other, candidate in enumerate(groups)
             ):
-                return None
-        current_rows = {row["tool_call_id"]: row for row in after[new][1:]}
-        if any(same_snapshot_value(row, current_rows[row["tool_call_id"]]) for row in before[old][1:]):
-            return old, new
-        return None
+                return False
+        current_rows = _projected_tool_results(before[old], after[new])
+        return current_rows is not None and any(
+            same_snapshot_value(row, current_rows[row["tool_call_id"]]) for row in before[old][1:]
+        )
+
+    def bracketed_result_edits(left: int, right: int, old_stop: int, new_stop: int) -> list[tuple[int, int]]:
+        if left == 0 or right == 0 or old_stop == len(before) or new_stop == len(after):
+            return []
+        neighbors = (old_keys[left - 1], old_keys[old_stop])
+        if not any(old_counts[neighbor] == new_counts[neighbor] == 1 for neighbor in neighbors):
+            return []
+        if not same_snapshot_value(before[left - 1], after[right - 1]) or not same_snapshot_value(
+            before[old_stop], after[new_stop],
+        ):
+            return []
+        old_batch = [index for index in range(left, old_stop) if old_keys[index] in repeated_results]
+        new_batch = [index for index in range(right, new_stop) if new_keys[index] in repeated_results]
+        if len(old_batch) != len(new_batch):
+            return []
+        pairs = list(zip(old_batch, new_batch))
+        return pairs if all(same_locally_anchored_batch(old, new) for old, new in pairs) else []
 
     def equal_edges(old: int, new: int, old_stop: int, new_stop: int) -> tuple[int, int]:
         size = min(old_stop - old, new_stop - new)
@@ -258,17 +260,18 @@ def _align_groups(
         head, tail = equal_edges(old, new, next_old, next_new)
         for offset in range(head):
             yield old + offset, new + offset
-        local = (
-            bracketed_result_edit(old + head, new + head, next_old - tail, next_new - tail)
-            if repeated_results and old + head + tail < next_old and new + head + tail < next_new else None
+        local_pairs = (
+            bracketed_result_edits(old + head, new + head, next_old - tail, next_new - tail)
+            if repeated_results and old + head + tail < next_old and new + head + tail < next_new else []
         )
-        if next_old - old == next_new - new and (local is None or local[0] - old == local[1] - new):
+        if next_old - old == next_new - new and all(i - old == j - new for i, j in local_pairs):
+            local_matches = set(local_pairs)
             for offset in range(head, next_old - old - tail):
                 pair = old + offset, new + offset
-                if pair == local or matches(*pair):
+                if pair in local_matches or matches(*pair):
                     yield pair
-        elif local is not None:
-            yield local
+        else:
+            yield from local_pairs
         for offset in range(-tail, 0):
             yield next_old + offset, next_new + offset
         if next_old < old_stop:
@@ -288,6 +291,37 @@ def _projected_tool_results(original: list[dict], shaped: list[dict]) -> dict[st
         if not same_snapshot_value({**row, "content": result.get("content")}, result):
             return None
     return results
+
+def _is_cleared_exchange_run(source: list[list[dict]], projection: list[list[dict]]) -> bool:
+    originals: dict[str, set[str]] = {}
+    cleared: set[str] = set()
+    marker = None
+    count = 0
+    for original, shaped in zip(source, projection, strict=True):
+        results = _projected_tool_results(original, shaped)
+        if results is None:
+            return False
+        for row in original[1:]:
+            call_id = row["tool_call_id"]
+            before = row.get("content")
+            after = results[call_id].get("content")
+            if isinstance(before, str):
+                originals.setdefault(call_id, set()).add(str.__str__(before))
+            if same_snapshot_value(before, after):
+                continue
+            if not isinstance(before, str) or not isinstance(after, str) or len(after) >= len(before):
+                return False
+            if marker is not None and not same_snapshot_value(after, marker):
+                return False
+            marker = str.__str__(after)
+            count += 1
+            cleared.add(call_id)
+    if marker is None:
+        return True
+    # A configured clearing marker repeats and cannot also be a moved original result.
+    return (count > 1 or marker == DEFAULT_CLEARED_TOOL_CONTENT) and not any(
+        marker in originals[call_id] for call_id in cleared
+    )
 
 def _rebase_tool_results(original: list[dict], shaped: list[dict], current: list[dict]) -> list[dict] | None:
     results = _projected_tool_results(original, shaped)
@@ -446,11 +480,8 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
     source_counts = Counter(map(_anchor_key, source))
     projection_counts = Counter(map(_anchor_key, projection))
 
-    def bracketed_exchange(old: int, seen: int, next_old: int, next_seen: int) -> bool:
-        if old == 0 or next_old == len(source) or next_old != old + 1 or next_seen != seen + 1:
-            return False
-        current_index = aligned.get(old)
-        if current_index is None:
+    def bracketed_exchanges(old: int, seen: int, next_old: int, next_seen: int) -> bool:
+        if old == 0 or next_old == len(source) or next_old - old != next_seen - seen:
             return False
         # A repeated acknowledgment can flank a call when the other neighbor is unique.
         has_unique_anchor = False
@@ -464,17 +495,23 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
             has_unique_anchor = has_unique_anchor or unique
         if not has_unique_anchor:
             return False
-        original, shaped = source[old], projection[seen]
-        if _projected_tool_results(original, shaped) is None:
+        if next_old == old + 1:
+            return _projected_tool_results(source[old], projection[seen]) is not None
+        # Clearing within a run preserves the position and identity of every batch.
+        return _is_cleared_exchange_run(source[old:next_old], projection[seen:next_seen])
+
+    def matched_exchange(index: int, *, contiguous: bool) -> bool:
+        current_index = aligned.get(index)
+        if current_index is None:
             return False
-        if old not in unchanged:
+        if contiguous or index not in unchanged:
             return True
-        if unchanged.get(old - 1) == current_index - 1 and unchanged.get(next_old) == current_index + 1:
+        if unchanged.get(index - 1) == current_index - 1 and unchanged.get(index + 1) == current_index + 1:
             return True
         # An edited neighbor can still bound the saved projection. Match the
         # raw occurrence independently before carrying its projection forward.
         return all(
-            sum(same_snapshot_value(group, original) for group in groups) == 1
+            sum(same_snapshot_value(group, source[index]) for group in groups) == 1
             for groups in (source, current)
         )
 
@@ -487,9 +524,17 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
                 if not gap and all(_anchor_key(group)[0] == "exchange" for group in source[old:next_old]):
                     for index in range(old, next_old):
                         yield index, index + 1, []
+                elif bracketed_exchanges(old, seen, next_old, next_seen):
+                    current_start = aligned.get(old)
+                    contiguous = next_old > old + 1 and current_start is not None and all(
+                        aligned.get(index) == current_start + index - old for index in range(old, next_old)
+                    )
+                    for offset, group in enumerate(gap):
+                        index = old + offset
+                        if matched_exchange(index, contiguous=contiguous):
+                            yield index, index + 1, [group]
                 elif (
                     next_old <= first_edit or old >= end_edit
-                    or bracketed_exchange(old, seen, next_old, next_seen)
                     or all(
                         key[0] != "exchange" or source_counts[key] == projection_counts[key] == 1
                         for key in map(_anchor_key, gap)
