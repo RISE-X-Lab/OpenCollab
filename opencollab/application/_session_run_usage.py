@@ -226,7 +226,20 @@ class _CompletionUsageAccounting:
             item = self._native_usages[0]
             if item.transport_timing is transport_timing:
                 return item
-        return None
+        if not isinstance(transport_timing, dict) or transport_timing.get("request_started_at") is None:
+            return None
+        # A serialized envelope keeps the measured timing and provider output, but loses object identity.
+        output_fields = (
+            "content", "tool_calls", "finish_reason", "reasoning", "provider_items", "provider_model", "provider_state",
+        )
+        matches = [
+            item for item in self._native_usages
+            if item.response is not None
+            and item.transport_timing == transport_timing
+            and _same_token_counts(item.usage, usage)
+            and all(getattr(item.response, field, None) == getattr(response, field, None) for field in output_fields)
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     def finish(
         self, usage: Any, *, purpose: str, late: bool, error: BaseException | None = None,

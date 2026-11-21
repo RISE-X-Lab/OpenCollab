@@ -12,6 +12,7 @@ from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm import Usage, retry
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.responses_errors import ResponsesProtocolError
+from opencollab.adapters.llm.types import LLMResponse
 from opencollab.application.run_control import RunControl
 from opencollab.bootstrap import build_session
 from opencollab.domain.agent import Agent
@@ -22,6 +23,12 @@ from tests.support.provider_sdk_http import completion_http_response, http_respo
 
 def _serialized_usage(usage):
     return json.loads(json.dumps(asdict(usage)))
+
+
+def _serialized_response(response):
+    values = json.loads(json.dumps(asdict(response)))
+    values["usage"] = Usage(**values["usage"])
+    return LLMResponse(**values)
 
 
 @dataclass
@@ -48,6 +55,8 @@ class _ReportingUsage(Usage):
     "recovered-primary-after-subclass-roundtrip",
     "fallback-with-primary-timing-and-rebuilt-usage",
     "failed-primary", "failed-primary-attempt-callback-only",
+    "serialized-primary", "serialized-equal-fallback",
+    "failed-primary-serialized-fallback", "serialized-fallback-with-stale-timing",
 ])
 async def test_routed_completion_accounts_for_each_provider(
     tmp_path, monkeypatch, summary, forward_fallback, scenario,
@@ -63,18 +72,20 @@ async def test_routed_completion_accounts_for_each_provider(
     cache_redacted = scenario.startswith("cache-redacted-")
     annotated = scenario.startswith("annotated-") or cache_redacted
     retains_primary_timing = scenario.startswith("fallback-with-primary-timing")
+    serialized = "serialized" in scenario
+    stale_timing = scenario == "serialized-fallback-with-stale-timing"
     manual_primary_settlement = recovered_primary or scenario in {
         "manual-primary-settlement", "manual-scrubbed-primary-settlement", "manual-count-adjustment",
     }
     adjusted_counts = scenario == "manual-count-adjustment"
     usable_primary = independent_helper or (recovered_primary and not recovered_fallback) or scenario in {
         "primary", "copied-primary", "scrubbed-primary", "replaced-primary",
-        "annotated-primary", "manual-count-adjustment",
+        "annotated-primary", "manual-count-adjustment", "serialized-primary",
     }
     equal_usage = independent_helper or retains_primary_timing or scenario in {
         "equal-fallback", "copied-fallback", "scrubbed-fallback", "replaced-fallback",
         "annotated-fallback", "cache-redacted-fallback", "manual-primary-settlement",
-        "manual-scrubbed-primary-settlement",
+        "manual-scrubbed-primary-settlement", "serialized-equal-fallback", "serialized-fallback-with-stale-timing",
     }
     failed_primary = scenario.startswith("failed-primary")
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
@@ -110,6 +121,8 @@ async def test_routed_completion_accounts_for_each_provider(
         return http_response(request, 200, json=payload)
 
     def copy_response(response):
+        if serialized:
+            return _serialized_response(response)
         if scenario.startswith("replaced-"):
             return replace(response, usage=replace(response.usage, raw_usage={}))
         if annotated:
@@ -168,13 +181,18 @@ async def test_routed_completion_accounts_for_each_provider(
                     if independent_helper:
                         await fallback.complete(messages, **kwargs)
                     return copy_response(first) if scenario != "primary" else first
-            final = await fallback.complete(messages, **kwargs, **(controls if forward_fallback else {}))
+            fallback_controls = dict(controls) if forward_fallback else {}
+            if stale_timing:
+                fallback_controls.pop("on_usage", None)
+            final = await fallback.complete(messages, **kwargs, **fallback_controls)
+            if stale_timing:
+                return copy_response(replace(final, transport_timing=first.transport_timing))
             if retains_primary_timing:
                 usage = replace(final.usage)
                 if rebuilt_usage:
                     usage = Usage(**(_serialized_usage(usage) | {"raw_usage": {}}))
                 return replace(final, usage=usage, transport_timing=first.transport_timing)
-            if failed_primary or annotated or scenario in {
+            if failed_primary or annotated or serialized or scenario in {
                 "copied-fallback", "scrubbed-fallback", "replaced-fallback",
             }:
                 return copy_response(final)
@@ -331,6 +349,7 @@ async def test_manual_usage_copy_is_reconciled_before_the_next_request(tmp_path,
 @pytest.mark.parametrize("cache_read_tokens", [None, 0])
 @pytest.mark.parametrize("redact_at", [
     "response", "settlement", "wrapper", "wrapper-redacted", "wrapper-copied", "wrapper-retry-roundtrip",
+    "serialized-retry",
 ])
 async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monkeypatch, cache_read_tokens, redact_at):
     (tmp_path / "facts.txt").write_text("The verified value is 42.\n", encoding="utf-8")
@@ -339,7 +358,7 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
     monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
     requests = []
     events = []
-    retried = redact_at == "wrapper-retry-roundtrip"
+    retried = redact_at in {"wrapper-retry-roundtrip", "serialized-retry"}
     limits = []
     monkeypatch.setattr(retry, "extract_retry_after_seconds", lambda _error: 0.0)
     monkeypatch.setattr(retry.random, "uniform", lambda _lo, _hi: 0.0)
@@ -398,6 +417,9 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
             kwargs.update((name, callback) for name, callback in controls.items() if callback is not None)
             response = await super().complete(messages, **kwargs)
             assert response.usage.cache_read_tokens == 1
+            if redact_at == "serialized-retry":
+                redacted = replace(response.usage, cache_read_tokens=cache_read_tokens, raw_usage={})
+                return _serialized_response(replace(response, usage=redacted))
             if redact_at.startswith("wrapper") and on_usage is not None:
                 if redact_at == "wrapper":
                     redact_usage(response.usage)
@@ -438,5 +460,5 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
     assert [entry["usage"]["total_tokens"] for entry in ledger] == [300, 337]
     usage_events = [event.data for event in events if event.type == "usage"]
     assert [event["total_tokens"] for event in usage_events] == [300, 337]
-    if redact_at != "response":
+    if redact_at not in {"response", "serialized-retry"}:
         assert [event["cache_read_tokens"] for event in usage_events] == [cache_read_tokens] * 2
