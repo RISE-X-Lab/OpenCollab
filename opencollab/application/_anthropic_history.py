@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
+from collections.abc import Iterator
+from itertools import chain
 from typing import Any
 
 from opencollab.application.shaping.pipeline import _group_spans, is_complete_tool_exchange
@@ -41,89 +43,144 @@ def _anthropic_source_changed(state: SessionState) -> bool:
     source = history.get("source_messages") if history is not None else None
     return source is not None and not same_snapshot_value(state.messages[:len(source)], source)
 
-def _anchor_key(message: dict) -> tuple[str | None, str | None]:
+def _anchor_key(group: list[dict]) -> tuple:
+    message = group[0]
+    calls = message.get("tool_calls")
+    if (
+        isinstance(calls, list) and all(isinstance(call, dict) for call in calls)
+        and is_complete_tool_exchange(group, (0, len(group)))
+    ):
+        return ("exchange", tuple(str.__str__(call["id"]) for call in calls))
     role = message.get("role")
     content = message.get("tool_call_id", message.get("content"))
     if isinstance(content, list) and content and isinstance(content[0], dict):
         content = content[0].get("text")
     return (
-        str.__str__(role) if isinstance(role, str) else None,
+        "message", str.__str__(role) if isinstance(role, str) else None,
         str.__str__(content) if isinstance(content, str) else None,
     )
 
-def _projection_anchor(
-    source: list[dict], view: list[dict], index: int, counts: Counter[tuple[str | None, str | None]],
-) -> int | None:
-    offset = len(view) - len(source)
-    if offset and counts[_anchor_key(source[index])] != 1:
-        return None
-    candidates = (index, index + offset) if offset else (index,)
-    matches = [
-        candidate for candidate in candidates
-        if 0 <= candidate < len(view) and same_snapshot_value(source[index], view[candidate])
+def _ordered_anchors(candidates: list[tuple[int, int]]) -> Iterator[tuple[int, int]]:
+    # A moved group can cross several candidates. Keep the anchors on both sides
+    # of the move and let the caller rebuild the reordered region from the source.
+    highest = -1
+    increasing = set()
+    for old, new in candidates:
+        if new > highest:
+            increasing.add(old)
+            highest = new
+    lowest = float("inf")
+    ordered = []
+    for old, new in reversed(candidates):
+        if new < lowest and old in increasing:
+            ordered.append((old, new))
+        lowest = min(lowest, new)
+    yield from reversed(ordered)
+
+def _align_groups(
+    before: list[list[dict]], after: list[list[dict]], *, projected: bool = False,
+) -> Iterator[tuple[int, int]]:
+    old_keys = list(map(_anchor_key, before))
+    new_keys = list(map(_anchor_key, after))
+    old_counts, new_counts = Counter(old_keys), Counter(new_keys)
+
+    def matches(old: int, new: int) -> bool:
+        key = old_keys[old]
+        if key != new_keys[new]:
+            return False
+        if same_snapshot_value(before[old], after[new]):
+            return True
+        if not projected:
+            return False
+        if key[0] == "exchange":
+            return old_counts[key] == new_counts[key] == 1
+        return same_snapshot_value(_strip_anthropic_thinking(before[old]), after[new])
+
+    def equal_edges(old: int, new: int, old_stop: int, new_stop: int) -> tuple[int, int]:
+        size = min(old_stop - old, new_stop - new)
+        prefix = suffix = 0
+        while prefix < size and matches(old + prefix, new + prefix):
+            prefix += 1
+        while suffix < size - prefix and matches(old_stop - suffix - 1, new_stop - suffix - 1):
+            suffix += 1
+        return prefix, suffix
+
+    # Matching runs at the ends can anchor repeated text without a unique key.
+    prefix, suffix = equal_edges(0, 0, len(before), len(after))
+    yield from ((index, index) for index in range(prefix))
+    old_stop, new_stop = len(before) - suffix, len(after) - suffix
+    old_middle, new_middle = old_keys[prefix:old_stop], new_keys[prefix:new_stop]
+    old_counts_middle, new_counts_middle = Counter(old_middle), Counter(new_middle)
+    new_positions = {
+        key: index for index, key in enumerate(new_middle, prefix) if new_counts_middle[key] == 1
+    }
+    candidates = [
+        (old, new_positions[key]) for old, key in enumerate(old_middle, prefix)
+        if old_counts_middle[key] == 1 and key in new_positions and matches(old, new_positions[key])
     ]
-    return matches[0] if len(matches) == 1 else None
 
-def _rebuild_edited_span(source: list[dict], view: list[dict], messages: list[dict]) -> list[dict]:
-    start = 0
-    while start < min(len(source), len(messages)) and same_snapshot_value(source[start], messages[start]):
-        start += 1
-
-    # Exact anchors keep independent compaction intact. A summary or transformed
-    # message between the edit and its nearest anchors may depend on the edit.
-    counts = Counter(map(_anchor_key, source)) if len(view) != len(source) else Counter()
-    view_start = source_start = 0
-    for index in range(min(start, len(source) - 1), -1, -1):
-        anchor = _projection_anchor(source, view, index, counts)
-        if anchor is not None:
-            keep = int(index < start)
-            view_start, source_start = anchor + keep, index + keep
-            break
-
-    if len(messages) >= len(source):
-        stop = len(source)
-        while stop > start and same_snapshot_value(source[stop - 1], messages[stop - 1]):
-            stop -= 1
-        for index in range(stop - 1, len(source)):
-            anchor = _projection_anchor(source, view, index, counts)
-            if anchor is not None:
-                skip = int(index < stop)
-                view_stop, source_stop = anchor + skip, index + skip
-                if view_stop >= view_start and source_stop >= source_start:
-                    return [
-                        *view[:view_start], *messages[source_start:source_stop],
-                        *view[view_stop:], *messages[len(source):],
-                    ]
-    return [*view[:view_start], *messages[source_start:]]
-
-def _tool_exchange_spans(messages: list[dict]) -> dict[tuple[str, ...], tuple[int, int] | None]:
-    exchanges: dict[tuple[str, ...], tuple[int, int] | None] = {}
-    for start, stop in _group_spans(messages):
-        calls = messages[start].get("tool_calls")
-        if not isinstance(calls, list) or not all(isinstance(call, dict) for call in calls):
-            continue
-        if is_complete_tool_exchange(messages, (start, stop)):
-            call_ids = tuple(call["id"] for call in calls)
-            exchanges[call_ids] = None if call_ids in exchanges else (start, stop)
-    return exchanges
+    old = new = prefix
+    for next_old, next_new in chain(_ordered_anchors(candidates), ((old_stop, new_stop),)):
+        head, tail = equal_edges(old, new, next_old, next_new)
+        for offset in range(head):
+            yield old + offset, new + offset
+        if next_old - old == next_new - new:
+            for offset in range(head, next_old - old - tail):
+                if matches(old + offset, new + offset):
+                    yield old + offset, new + offset
+        for offset in range(-tail, 0):
+            yield next_old + offset, next_new + offset
+        if next_old < old_stop:
+            yield next_old, next_new
+        old, new = next_old + 1, next_new + 1
+    yield from ((old_stop + offset, new_stop + offset) for offset in range(suffix))
 
 def _rebase_anthropic_history(history: dict, messages: list[dict]) -> list[dict]:
-    source = history["source_messages"]
     view = history["messages"]
-    rebased = _rebuild_edited_span(source, view, messages)
-    projections = _tool_exchange_spans(view)
-    if projections:
-        previous = _tool_exchange_spans(source)
-        current = _tool_exchange_spans(messages)
-        for call_ids, target in _tool_exchange_spans(rebased).items():
-            old = previous.get(call_ids)
-            new = current.get(call_ids)
-            projection = projections.get(call_ids)
-            if target is None or old is None or new is None or projection is None:
-                continue
-            if same_snapshot_value(source[old[0]:old[1]], messages[new[0]:new[1]]):
-                # Clear and trim shapers preserve the exchange while shortening its results.
-                rebased[target[0]:target[1]] = view[projection[0]:projection[1]]
+    source, projection, current = (
+        [rows[start:stop] for start, stop in _group_spans(rows)]
+        for rows in (history["source_messages"], view, messages)
+    )
+    unchanged = dict(_align_groups(source, current))
+    first_edit = 0
+    while unchanged.get(first_edit) == first_edit:
+        first_edit += 1
+    end_edit = len(source)
+    last_match = unchanged.get(end_edit - 1)
+    while end_edit > first_edit and last_match is not None and unchanged.get(end_edit - 1) == last_match:
+        end_edit -= 1
+        last_match -= 1
+    source_counts = Counter(map(_anchor_key, source))
+    projection_counts = Counter(map(_anchor_key, projection))
+
+    def projected_groups() -> Iterator[tuple[int, int, list[list[dict]]]]:
+        old = seen = 0
+        anchors = _align_groups(source, projection, projected=True)
+        for next_old, next_seen in chain(anchors, ((len(source), len(projection)),)):
+            if old < next_old:
+                gap = projection[seen:next_seen]
+                # The intact ends can retain whole slices. An isolated rewritten
+                # exchange inside the edits needs a unique call-ID anchor.
+                if next_old <= first_edit or old >= end_edit or all(
+                    key[0] != "exchange" or source_counts[key] == projection_counts[key] == 1
+                    for key in map(_anchor_key, gap)
+                ):
+                    yield old, next_old, gap
+            if next_old < len(source):
+                yield next_old, next_old + 1, [projection[next_seen]]
+            old, seen = next_old + 1, next_seen + 1
+
+    rebased: list[dict] = []
+    taken = 0
+    for start, stop, replacement in projected_groups():
+        start_new = unchanged.get(start)
+        # A summary covers its whole source interval, including possible insertions.
+        if start_new is None or any(unchanged.get(index) != start_new + index - start for index in range(start, stop)):
+            continue
+        rebased.extend(chain.from_iterable(current[taken:start_new]))
+        rebased.extend(chain.from_iterable(replacement))
+        taken = start_new + stop - start
+    rebased.extend(chain.from_iterable(current[taken:]))
     return _edited_anthropic_history(view, rebased)
 
 def _anthropic_history_input(state: SessionState) -> list[dict]:
