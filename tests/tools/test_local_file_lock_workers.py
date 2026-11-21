@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import os
+import resource
 import signal
+import subprocess
 import sys
+from contextlib import ExitStack
+from pathlib import Path
 
 import pytest
 from filelock import FileLock, Timeout
 
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.tools import base
+from opencollab.adapters.tools.fs import FileWriteTool
+from opencollab.application.tool_execution import ToolRuntime
 
 
 async def test_large_group_acquires_existing_flocks_in_path_order(tmp_path, monkeypatch):
@@ -69,6 +75,40 @@ async def test_cancelled_acquisition_releases_the_partial_group(tmp_path, monkey
                     await owner
             with first, last:
                 pass
+    finally:
+        await env.cleanup()
+
+
+def test_nested_file_write_with_four_free_descriptors(tmp_path):
+    completed = subprocess.run(
+        [sys.executable, "-c",
+         "import asyncio, sys; from tests.tools.test_local_file_lock_workers import _write_nested_file; "
+         "asyncio.run(_write_nested_file(sys.argv[1]))", str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[2],
+        close_fds=True, capture_output=True, text=True, timeout=20,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+async def _write_nested_file(workspace):
+    target = Path(workspace, "nested/subdirectory/note.txt")
+    target.parent.mkdir(parents=True)
+    target.write_text("before\n")
+    env = LocalEnvironment(workspace)
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        limit = 256 if soft == resource.RLIM_INFINITY else min(soft, 256)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
+        opened = len(os.listdir("/dev/fd")) - 1
+        with ExitStack() as descriptors:
+            for _ in range(limit - opened - 4):
+                descriptors.enter_context(open(os.devnull, "rb"))
+            await FileWriteTool().execute_with_runtime(
+                {"path": str(target.relative_to(workspace)), "mode": "str_replace",
+                 "old_str": "before", "new_str": "after"},
+                ToolRuntime(environment=env, safety_policy=None, permission_policy=None),
+            )
+        assert target.read_text() == "after\n"
     finally:
         await env.cleanup()
 

@@ -84,6 +84,28 @@ async def _reap_lock_holders(processes: list[subprocess.Popen]) -> None:
         await asyncio.sleep(HOST_WRITE_LOCK_POLL_SECONDS)
 
 
+async def _prepare_lock_holder(channel: socket.socket, paths: Sequence[str], env: Any) -> None:
+    loop = asyncio.get_running_loop()
+    channel.setblocking(False)
+    options = (
+        [(path, _host_lock_path(path, env)) for path in paths],
+        HOST_WRITE_LOCK_TIMEOUT_SECONDS, HOST_WRITE_LOCK_POLL_SECONDS,
+    )
+    await loop.sock_sendall(channel, json.dumps(options).encode() + b"\n")
+    response = bytearray()
+    while chunk := await loop.sock_recv(channel, 4096):
+        response.extend(chunk)
+        if chunk.endswith(b"\n"):
+            break
+    else:
+        raise RuntimeError("local write lock holder exited during acquisition")
+    status, detail = json.loads(response)
+    if status == "timeout":
+        raise TimeoutError(detail)
+    if status != "ready":
+        raise RuntimeError(f"local write lock holder failed: {detail}")
+
+
 @contextlib.asynccontextmanager
 async def _hold_lock_groups(paths: Sequence[str], env: Any, group_size: int) -> AsyncIterator[None]:
     owner = asyncio.current_task()
@@ -101,49 +123,40 @@ async def _hold_lock_groups(paths: Sequence[str], env: Any, group_size: int) -> 
                     return
             await asyncio.sleep(HOST_WRITE_LOCK_POLL_SECONDS)
 
-    # Startup sockets close before publication, leaving one descriptor for
-    # the lifetime of all lock holders.
-    read_end, write_end = os.pipe()
+    # One group can use its startup socket as the ownership signal.
+    shared = len(paths) > group_size
+    read_end, write_end = os.pipe() if shared else (-1, -1)
+    ownership_socket = None
     monitor = asyncio.create_task(watch_exit())
     try:
         for start in range(0, len(paths), group_size):
             setup, child = socket.socketpair()
-            with setup, child:
-                # Isolate terminal interrupts and avoid per-child pidfds.
-                processes.append(subprocess.Popen(
-                    [sys.executable, worker, str(read_end)], start_new_session=True,
-                    stdin=child, stdout=child, pass_fds=(read_end,),
-                ))
-                child.close()
-                reader, writer = await asyncio.open_connection(sock=setup)
-                try:
-                    options = (
-                        [(path, _host_lock_path(path, env)) for path in paths[start:start + group_size]],
-                        HOST_WRITE_LOCK_TIMEOUT_SECONDS, HOST_WRITE_LOCK_POLL_SECONDS,
-                    )
-                    writer.write(json.dumps(options).encode() + b"\n")
-                    await writer.drain()
-                    response = await reader.readline()
-                finally:
-                    writer.close()
-                    with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-                        await await_owned_operation(writer.wait_closed(), propagate_cancellation=True)
-            if not response:
-                raise RuntimeError("local write lock holder exited during acquisition")
-            status, detail = json.loads(response)
-            if status == "timeout":
-                raise TimeoutError(detail)
-            if status != "ready":
-                raise RuntimeError(f"local write lock holder failed: {detail}")
+            if not shared:
+                ownership_socket = setup
+            try:
+                with child:
+                    # Isolate terminal interrupts and avoid per-child pidfds.
+                    processes.append(subprocess.Popen(
+                        [sys.executable, worker, str(read_end if shared else 0)], start_new_session=True,
+                        stdin=child, stdout=child, pass_fds=(read_end,) if shared else (),
+                    ))
+                await _prepare_lock_holder(setup, paths[start:start + group_size], env)
+            finally:
+                if shared:
+                    setup.close()
             ready += 1
-        os.close(read_end)
-        read_end = -1
+        if shared:
+            os.close(read_end)
+            read_end = -1
         yield
     finally:
         monitor.cancel()
         if read_end >= 0:
             os.close(read_end)
-        os.close(write_end)
+        if shared:
+            os.close(write_end)
+        if ownership_socket is not None:
+            ownership_socket.close()
         await await_owned_operation(_reap_lock_holders(processes), propagate_cancellation=True)
 
 
