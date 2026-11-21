@@ -27,7 +27,7 @@ from tests.support.provider_sdk_http import completion_http_response, http_respo
     "annotated-primary", "annotated-fallback", "annotated-primary-after-helper",
     "annotated-primary-after-helper-without-timing",
     "cache-redacted-primary-after-helper", "cache-redacted-primary-after-helper-without-timing",
-    "cache-redacted-fallback", "fallback-with-primary-timing",
+    "cache-redacted-fallback", "fallback-with-primary-timing", "manual-primary-settlement",
     "failed-primary", "failed-primary-attempt-callback-only",
 ])
 async def test_routed_completion_accounts_for_each_provider(
@@ -40,13 +40,14 @@ async def test_routed_completion_accounts_for_each_provider(
     cache_redacted = scenario.startswith("cache-redacted-")
     annotated = scenario.startswith("annotated-") or cache_redacted
     retains_primary_timing = scenario == "fallback-with-primary-timing"
+    manual_primary_settlement = scenario == "manual-primary-settlement"
     usable_primary = independent_helper or scenario in {
         "primary", "copied-primary", "scrubbed-primary", "replaced-primary",
         "annotated-primary",
     }
     equal_usage = independent_helper or retains_primary_timing or scenario in {
         "equal-fallback", "copied-fallback", "scrubbed-fallback", "replaced-fallback",
-        "annotated-fallback", "cache-redacted-fallback",
+        "annotated-fallback", "cache-redacted-fallback", "manual-primary-settlement",
     }
     failed_primary = scenario.startswith("failed-primary")
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
@@ -98,13 +99,15 @@ async def test_routed_completion_accounts_for_each_provider(
             controls = dict(on_admitted=on_admitted, before_request=before_request,
                             on_attempt_usage=on_attempt_usage, on_usage=on_usage)
             primary_controls = dict(controls)
-            if scenario == "failed-primary-attempt-callback-only":
+            if manual_primary_settlement or scenario == "failed-primary-attempt-callback-only":
                 primary_controls.pop("on_usage")
             try:
                 first = await super().complete(messages, **kwargs, **primary_controls)
             except ResponsesProtocolError:
                 assert failed_primary
             else:
+                if manual_primary_settlement and on_usage is not None:
+                    on_usage(replace(first.usage, cache_read_tokens=None))
                 if first.content and first.content.strip():
                     if independent_helper:
                         await fallback.complete(messages, **kwargs)
@@ -175,7 +178,7 @@ async def test_routed_completion_accounts_for_each_provider(
 
 
 @pytest.mark.parametrize("cache_read_tokens", [None, 0])
-@pytest.mark.parametrize("redact_at", ["response", "settlement"])
+@pytest.mark.parametrize("redact_at", ["response", "settlement", "wrapper"])
 async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monkeypatch, cache_read_tokens, redact_at):
     (tmp_path / "facts.txt").write_text("The verified value is 42.\n", encoding="utf-8")
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
@@ -212,12 +215,18 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
             def redact_usage(usage):
                 on_usage(replace(usage, cache_read_tokens=cache_read_tokens))
 
-            settlement_callback = redact_usage if redact_at == "settlement" and on_usage is not None else on_usage
+            settlement_callback = on_usage
+            if redact_at == "settlement" and on_usage is not None:
+                settlement_callback = redact_usage
+            elif redact_at == "wrapper":
+                settlement_callback = None
             controls = dict(on_admitted=on_admitted, before_request=before_request,
                             on_attempt_usage=on_attempt_usage, on_usage=settlement_callback)
             kwargs.update((name, callback) for name, callback in controls.items() if callback is not None)
             response = await super().complete(messages, **kwargs)
             assert response.usage.cache_read_tokens == 1
+            if redact_at == "wrapper" and on_usage is not None:
+                redact_usage(response.usage)
             if redact_at == "response":
                 return replace(response, usage=replace(response.usage, cache_read_tokens=cache_read_tokens))
             return response
@@ -243,5 +252,5 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
     assert [entry["usage"]["total_tokens"] for entry in ledger] == [300, 337]
     usage_events = [event.data for event in events if event.type == "usage"]
     assert [event["total_tokens"] for event in usage_events] == [300, 337]
-    if redact_at == "settlement":
+    if redact_at != "response":
         assert [event["cache_read_tokens"] for event in usage_events] == [cache_read_tokens] * 2

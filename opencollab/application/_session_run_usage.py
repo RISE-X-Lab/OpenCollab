@@ -7,6 +7,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 _native_usage_owner: ContextVar[object | None] = ContextVar("native_usage_owner", default=None)
@@ -71,6 +72,14 @@ def _same_usage_measurements(native: Any, usage: Any) -> bool:
     )
 
 
+@dataclass
+class _ProviderUsageObservation:
+    usage: Any
+    error: BaseException | None
+    transport_timing: object | None
+    reported_usage: Any
+
+
 class _CompletionUsageAccounting:
     def __init__(self, runner: Any, *, protected_call: bool) -> None:
         self.runner = runner
@@ -78,7 +87,7 @@ class _CompletionUsageAccounting:
         self.tokens = 0
         self._attempt_tokens: dict[object | None, int] = {}
         self._callback_usages: dict[object, Any] = {}
-        self._native_usages: list[tuple[Any, BaseException | None, object | None, Any]] = []
+        self._native_usages: list[_ProviderUsageObservation] = []
         self._settled: list[tuple[Any, int]] = []
         self._reported = False
 
@@ -98,8 +107,15 @@ class _CompletionUsageAccounting:
 
     def settle_provider(self, usage: Any) -> None:
         owner = _native_usage_owner.get()
+        native = self._find_native_usage(usage) if owner is None else None
+        if native is not None and native.usage is not usage and not _same_token_counts(native.usage, usage):
+            native = None
+        if native is not None and self._already_settled(native.reported_usage):
+            return
         self._settle(usage, self._attempt_tokens.pop(owner, 0))
-        if owner is not None:
+        if native is not None:
+            native.reported_usage = usage
+        elif owner is not None:
             self._callback_usages[owner] = usage
 
     def _observe_provider_response(
@@ -110,7 +126,7 @@ class _CompletionUsageAccounting:
         settled = self._callback_usages.pop(owner, usage)
         if settled is not usage and not _same_token_counts(usage, settled):
             settled = usage
-        self._native_usages.append((usage, error, transport_timing, settled))
+        self._native_usages.append(_ProviderUsageObservation(usage, error, transport_timing, settled))
         # A router can forward the retry hook and keep the final callback for its chosen response.
         if owner is not None and owner in self._attempt_tokens:
             self._settle(usage, self._attempt_tokens.pop(owner))
@@ -120,44 +136,50 @@ class _CompletionUsageAccounting:
         self._charge(tokens - attempt_tokens)
         self._settled.append((usage, tokens))
 
+    def _already_settled(self, usage: Any) -> bool:
+        return any(usage is settled for settled, _tokens in self._settled)
+
+    def _find_native_usage(self, usage: Any) -> _ProviderUsageObservation | None:
+        native = next((item for item in self._native_usages if item.usage is usage), None)
+        origin = getattr(usage, "_native_usage_origin", None)
+        if native is None and origin is not None:
+            native = next(
+                (item for item in self._native_usages if getattr(item.usage, "_native_usage_origin", None) is origin),
+                None,
+            )
+        if native is None and origin is not None:
+            raw_usage = getattr(usage, "raw_usage", None)
+            if raw_usage is not None:
+                native = next(
+                    (item for item in self._native_usages
+                     if getattr(item.usage, "raw_usage", None) is raw_usage and _same_token_counts(item.usage, usage)),
+                    None,
+                )
+        return native
+
     def finish(
         self, usage: Any, *, purpose: str, late: bool, error: BaseException | None = None,
         transport_timing: object | None = None,
     ) -> bool:
         if self._reported:
             return False
-        # Middleware may copy the chosen response or return a different native call with equal counters.
-        native = next((item for item in self._native_usages if item[0] is usage), None)
-        origin = getattr(usage, "_native_usage_origin", None)
-        if native is None and origin is not None:
-            native = next(
-                (item for item in self._native_usages if getattr(item[0], "_native_usage_origin", None) is origin),
-                None,
-            )
-        if native is None and origin is not None:
-            raw_usage = getattr(usage, "raw_usage", None)
-            if raw_usage is not None:
-                # The usage payload takes precedence when a router carries timing from another call.
-                native = next(
-                    (item for item in self._native_usages
-                     if getattr(item[0], "raw_usage", None) is raw_usage and _same_token_counts(item[0], usage)),
-                    None,
-                )
+        # A router can retain timing from a different call, so prefer the usage payload.
+        native = self._find_native_usage(usage)
         if native is None and transport_timing is not None:
             native = next(
                 (item for item in self._native_usages
-                 if item[2] is transport_timing and _same_token_counts(item[0], usage)),
+                 if item.transport_timing is transport_timing and _same_token_counts(item.usage, usage)),
                 None,
             )
         if usage is not None and native is None:
-            native = next((item for item in reversed(self._native_usages) if item[0] == usage), None)
-        if native is None and origin is not None:
+            native = next((item for item in reversed(self._native_usages) if item.usage == usage), None)
+        if native is None and getattr(usage, "_native_usage_origin", None) is not None:
             native = next(
-                (item for item in reversed(self._native_usages) if _same_usage_measurements(item[0], usage)),
+                (item for item in reversed(self._native_usages) if _same_usage_measurements(item.usage, usage)),
                 None,
             )
-        reported_usage = usage if native is None else native[3]
-        if usage is not None and all(reported_usage is not settled for settled, _tokens in self._settled):
+        reported_usage = usage if native is None else native.reported_usage
+        if usage is not None and not self._already_settled(reported_usage):
             attempt_tokens = self._attempt_tokens.pop(None, 0) if native is None else 0
             self._settle(reported_usage, attempt_tokens)
         self._reported = True
@@ -165,7 +187,7 @@ class _CompletionUsageAccounting:
         if callable(record_usage):
             for settled, tokens in self._settled:
                 provider_error = next(
-                    (failure for _, failure, _, recorded in self._native_usages if recorded is settled), None,
+                    (item.error for item in self._native_usages if item.reported_usage is settled), None,
                 )
                 record_usage(settled, tokens, purpose=purpose, late=late,
                              error=error if settled is reported_usage and error is not None else provider_error)
