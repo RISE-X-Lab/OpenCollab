@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import contextlib
+import errno
 import hashlib
 import os
 import posixpath
@@ -87,14 +88,47 @@ def _write_receipt(stdout: str, expected: str, *, observe_change: bool) -> str |
 _IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$")
 _FULL_ID_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
 @dataclass
 class _WriteLockEntry:
     shared_owners: set[asyncio.Task] = field(default_factory=set)
     users: int = 0
 
+
 _WRITE_LOCKS: dict[str, _WriteLockEntry] = {}
 _WRITE_LOCK_OWNERS: dict[str, asyncio.Task] = {}
+_WRITE_LOCK_WAITS: dict[asyncio.Task, tuple[str, bool]] = {}
 _WRITE_LOCKS_GUARD = threading.Lock()
+
+
+def _write_lock_blockers(key: str, task: asyncio.Task, *, shared: bool) -> set[asyncio.Task]:
+    """Compute blockers while holding the registry guard."""
+    owner = _WRITE_LOCK_OWNERS.get(key)
+    if owner is not None:
+        return {owner} - {task}
+    if shared:
+        return set()
+    return _WRITE_LOCKS[key].shared_owners - {task}
+
+
+def _write_lock_would_deadlock(task: asyncio.Task, blockers: set[asyncio.Task]) -> bool:
+    pending = list(blockers)
+    visited = set()
+    while pending:
+        owner = pending.pop()
+        if owner is task:
+            return True
+        if owner in visited:
+            continue
+        visited.add(owner)
+        wait = _WRITE_LOCK_WAITS.get(owner)
+        if wait is not None:
+            key, shared = wait
+            # Ownership may change while the waiter is between polls.
+            pending.extend(_write_lock_blockers(key, owner, shared=shared))
+    return False
+
 
 # Git commits need an author in benchmark images. Pass an anonymous identity
 # per exec so handoff commits succeed without changing the repository config
@@ -822,13 +856,19 @@ class DockerEnvironment(Environment):
             # without blocking either loop or binding it to the first waiter.
             while True:
                 with _WRITE_LOCKS_GUARD:
-                    if key not in _WRITE_LOCK_OWNERS and (shared or not entry.shared_owners):
+                    blockers = _write_lock_blockers(key, task, shared=shared)
+                    if not blockers:
                         if shared:
                             entry.shared_owners.add(task)
                         else:
+                            # An upgrade keeps its outer shared ownership after release.
                             _WRITE_LOCK_OWNERS[key] = task
+                        _WRITE_LOCK_WAITS.pop(task, None)
                         acquired = True
                         break
+                    if _write_lock_would_deadlock(task, blockers):
+                        raise OSError(errno.EDEADLK, "Docker write lock would deadlock", target)
+                    _WRITE_LOCK_WAITS[task] = (key, shared)
                 await asyncio.sleep(0.02)
             self._ensure_active()
             yield target
@@ -839,6 +879,8 @@ class DockerEnvironment(Environment):
                         entry.shared_owners.remove(task)
                     else:
                         del _WRITE_LOCK_OWNERS[key]
+                else:
+                    _WRITE_LOCK_WAITS.pop(task, None)
                 entry.users -= 1
                 if entry.users == 0:
                     del _WRITE_LOCKS[key]
