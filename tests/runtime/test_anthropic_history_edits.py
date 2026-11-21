@@ -370,16 +370,25 @@ def test_reused_tool_ids_keep_a_compacted_exchange_in_an_unchanged_end(edited_in
 
 
 @pytest.mark.parametrize("edit", ["delete", "reorder"])
-def test_ambiguous_adjacent_reused_calls_rebuild_after_edit(edit):
+@pytest.mark.parametrize("include_shared_result", [False, True])
+def test_ambiguous_adjacent_reused_calls_rebuild_after_edit(edit, include_shared_result):
     call = {"role": "assistant", "content": "Reading archive.", "tool_calls": [
         {"id": "archive", "type": "function", "function": {"name": "file_read", "arguments": "{}"}},
     ]}
     first = {"role": "tool", "tool_call_id": "archive", "content": "First version"}
     second = {**first, "content": "Second version"} if edit == "reorder" else deepcopy(first)
+    shared = []
+    if include_shared_result:
+        call["tool_calls"].append({
+            "id": "index", "type": "function", "function": {"name": "file_read", "arguments": "{}"},
+        })
+        shared = [{"role": "tool", "tool_call_id": "index", "content": "Shared index"}]
+    first_batch = [call, first, *shared]
+    second_batch = [deepcopy(call), second, *deepcopy(shared)]
     state = SessionState(messages=[
         {"role": "system", "content": "Review the archives."},
         {"role": "user", "content": "Read both archive versions."},
-        call, first, deepcopy(call), second,
+        *first_batch, *second_batch,
         {"role": "user", "content": "Compare their dates."},
     ])
     view = deepcopy(state.messages)
@@ -387,11 +396,70 @@ def test_ambiguous_adjacent_reused_calls_rebuild_after_edit(edit):
     _remember_anthropic_history(state, view, None)
     state.messages[1]["content"] = "Read the selected archive versions."
     state.messages[-1]["content"] = "Compare their deadlines."
+    boundary = 2 + len(first_batch)
     if edit == "delete":
-        del state.messages[2:4]
+        del state.messages[2:boundary]
     else:
-        state.messages[2:6] = [*state.messages[4:6], *state.messages[2:4]]
+        state.messages[2:-1] = [*state.messages[boundary:-1], *state.messages[2:boundary]]
     assert _anthropic_history_input(state) == state.messages
+
+
+@pytest.mark.parametrize("edited_batch", [0, 1])
+@pytest.mark.parametrize("scenario", [
+    "different-leaders", "identical-leaders", "shared-sibling", "changed-neighbor",
+    "deleted-neighbor", "shared-sibling-changed-neighbor", "shared-sibling-deleted-neighbor", "replaced-leader",
+])
+def test_reused_batch_keeps_unchanged_results_in_its_original_turn(edited_batch, scenario):
+    calls = [
+        {"id": call_id, "type": "function", "function": {"name": "file_read", "arguments": f'{{"path":"{call_id}"}}'}}
+        for call_id in ("report", "index")
+    ]
+    rows = [{"role": "system", "content": "Review the archive."}]
+    batches = []
+    for version in ("original", "revised"):
+        current_batch = {
+            "user": {"role": "user", "content": f"Read the {version} archive."},
+            "leader": {
+                "role": "assistant", "tool_calls": deepcopy(calls),
+                "content": (
+                    f"Reading the {version} archive." if scenario == "different-leaders" else "Reading the archive."
+                ),
+            },
+            "report": {"role": "tool", "tool_call_id": "report", "content": f"{version} report"},
+            "index": {
+                "role": "tool", "tool_call_id": "index",
+                "content": "Shared index" if scenario.startswith("shared-sibling") else f"{version} index",
+            },
+            "answer": {"role": "assistant", "content": f"Reviewed the {version} batch."},
+        }
+        rows.extend(current_batch.values())
+        batches.append(current_batch)
+    rows.append({"role": "user", "content": "Compare the archives."})
+    state = SessionState(messages=rows)
+    view = deepcopy(rows)
+    for index, batch in enumerate(batches):
+        for tool_id in ("report", "index"):
+            result_index = next(i for i, row in enumerate(rows) if row is batch[tool_id])
+            view[result_index]["content"] = f"Cleared {tool_id} from batch {index}."
+    _remember_anthropic_history(state, view, None)
+
+    changed_batch = batches[edited_batch]
+    if scenario.endswith("changed-neighbor"):
+        changed_batch["user"]["content"] += " Include a citation."
+    if scenario.endswith("deleted-neighbor"):
+        rows.remove(changed_batch["user"])
+    if scenario == "replaced-leader":
+        changed_batch["leader"]["tool_calls"][0]["function"]["arguments"] = '{"path":"replacement"}'
+    changed_batch["report"]["content"] = "Updated report."
+
+    expected = deepcopy(rows)
+    for index, batch in enumerate(batches):
+        for tool_id in ("report", "index"):
+            if index == edited_batch and (tool_id == "report" or scenario == "replaced-leader"):
+                continue
+            result_index = next(i for i, row in enumerate(rows) if row is batch[tool_id])
+            expected[result_index]["content"] = f"Cleared {tool_id} from batch {index}."
+    assert _anthropic_history_input(state) == expected
 
 
 def test_changed_tool_arguments_do_not_reuse_previous_results():
