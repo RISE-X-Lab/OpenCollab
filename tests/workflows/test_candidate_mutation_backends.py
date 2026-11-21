@@ -180,7 +180,7 @@ async def test_cancelled_publication_recovers_before_releasing_shared_writer(tmp
 
 
 @pytest.mark.parametrize("backend", ["local", "docker"])
-@pytest.mark.parametrize("attribute_source", ["nested", "root-missing", "configured"])
+@pytest.mark.parametrize("attribute_source", ["nested", "root-missing", "configured", "configured-symlink"])
 async def test_in_place_publication_keeps_git_attributes_stable_through_recovery(
     tmp_path, monkeypatch, backend, attribute_source,
 ):
@@ -192,11 +192,16 @@ async def test_in_place_publication_keeps_git_attributes_stable_through_recovery
         "nested": repo / "settings/.gitattributes",
         "root-missing": repo / ".gitattributes",
         "configured": repo / "line-endings",
+        "configured-symlink": repo / "settings/line endings",
     }[attribute_source]
     if attribute_source != "root-missing":
         attributes.write_text("*.txt text eol=lf\n")
     if attribute_source == "configured":
         _git(repo, "config", "core.attributesFile", attributes.name)
+    if attribute_source == "configured-symlink":
+        alias = repo / "line-endings"
+        alias.symlink_to(attributes.relative_to(repo))
+        _git(repo, "config", "core.attributesFile", alias.name)
     _git(repo, "add", "-A")
     _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "test: prepare in-place publication")
     target.write_bytes(b"candidate\n")
@@ -258,11 +263,19 @@ async def test_in_place_publication_keeps_git_attributes_stable_through_recovery
 
 
 @pytest.mark.parametrize("backend", ["local", "docker"])
-async def test_publication_uses_configured_attributes_selected_after_lock_wait(tmp_path, monkeypatch, backend):
+@pytest.mark.parametrize("selection", ["config", "symlink"])
+async def test_publication_uses_configured_attributes_selected_after_lock_wait(
+    tmp_path, monkeypatch, backend, selection,
+):
     repo = _repository(tmp_path)
     _git(repo, "config", "core.autocrlf", "false")
-    _git(repo, "config", "--local", "core.attributesFile", "lf.attrs")
-    (repo / "lf.attrs").write_text("*.txt text eol=lf\n")
+    original_attributes = repo / "lf.attrs"
+    original_attributes.write_text("*.txt text eol=lf\n")
+    configured_attributes = original_attributes
+    if selection == "symlink":
+        configured_attributes = repo / "active.attrs"
+        configured_attributes.symlink_to(original_attributes.name)
+    _git(repo, "config", "--local", "core.attributesFile", configured_attributes.name)
     changed_attributes = repo / "crlf.attrs"
     changed_attributes.write_text("*.txt text eol=crlf\n")
     target = repo / "settings/value.txt"
@@ -286,7 +299,13 @@ async def test_publication_uses_configured_attributes_selected_after_lock_wait(t
             entered.set()
             await publish.wait()
         result = await execute(command, timeout, **kwargs)
-        if "config --path --get core.attributesFile" in command and result.stdout.strip() == "lf.attrs":
+        if (
+            selection == "config" and "config --path --get core.attributesFile" in command
+            and result.stdout.strip() == original_attributes.name
+        ) or (
+            selection == "symlink" and command.startswith("readlink -f")
+            and result.stdout.strip() == str(original_attributes)
+        ):
             selected.set()
         if live:
             assert result.returncode == 0
@@ -302,7 +321,11 @@ async def test_publication_uses_configured_attributes_selected_after_lock_wait(t
             publication = asyncio.create_task(_apply_increment(environment, str(repo), patch))
             await asyncio.wait_for(selected.wait(), 10)
             assert not publication.done()
-            _git(repo, "config", "--local", "core.attributesFile", "crlf.attrs")
+            if selection == "symlink":
+                configured_attributes.unlink()
+                configured_attributes.symlink_to(changed_attributes.name)
+            else:
+                _git(repo, "config", "--local", "core.attributesFile", changed_attributes.name)
             assert _git(repo, "check-attr", "eol", "--", "settings/value.txt").endswith("eol: crlf\n")
         await asyncio.wait_for(entered.wait(), 10)
         writer = asyncio.create_task(FileWriteTool().execute_with_runtime({

@@ -49,16 +49,31 @@ async def _candidate_write_locks(
         docker or local or getattr(environment, "_handles_file_lock_hierarchy", False)
     )
     lock_attributes = prefer_shared_ancestors and repository
-    attributes_file = await read_attributes_file() if lock_attributes and read_attributes_file is not None else None
+    workspace_prefix = posixpath.normpath(workspace).rstrip("/") + "/"
+
+    async def read_attribute_paths() -> tuple[str | None, str | None]:
+        configured = await read_attributes_file() if read_attributes_file is not None else None
+        referent = None
+        if lock_attributes and configured not in (None, "/dev/null"):
+            if posixpath.normpath(configured).startswith(workspace_prefix):
+                resolved = _complete(await environment.exec_cmd(
+                    f"readlink -f -- {shlex.quote(configured)} 2>/dev/null || true", timeout=120,
+                ), "candidate attribute path resolution").removesuffix("\n")
+                referent = resolved if posixpath.isabs(resolved) else None
+        return configured, referent
+
+    attribute_paths = await read_attribute_paths() if lock_attributes else (None, None)
     while True:
         targets = patch_targets.copy()
         share_ancestors = prefer_shared_ancestors
         if lock_attributes:
             targets.update(_worktree_attributes(workspace, paths))
-            if attributes_file not in (None, "/dev/null"):
-                configured = posixpath.normpath(attributes_file)
-                if configured.startswith(posixpath.normpath(workspace).rstrip("/") + "/"):
-                    targets.add(configured)
+            for path in attribute_paths:
+                if path in (None, "/dev/null"):
+                    continue
+                normalized = posixpath.normpath(path)
+                if normalized.startswith(workspace_prefix):
+                    targets.add(normalized)
                 else:
                     share_ancestors = False
         ordered = (publication_lock, *sorted(targets - {publication_lock}))
@@ -67,10 +82,10 @@ async def _candidate_write_locks(
             if docker else host_write_locks(ordered, environment, shared_ancestors=share_ancestors)
         )
         async with locks:
-            current = await read_attributes_file() if read_attributes_file is not None else None
-            if lock_attributes and current != attributes_file:
-                # Configuration may change while another publication owns the locks.
-                attributes_file = current
+            current = await read_attribute_paths()
+            if lock_attributes and current != attribute_paths:
+                # Git configuration or its symlink can change while acquisition waits.
+                attribute_paths = current
                 continue
             if share_ancestors:
                 # Git reports the patch's intent. Check the actual files after taking the locks.
@@ -86,7 +101,7 @@ async def _candidate_write_locks(
                 if result.returncode == 1:
                     prefer_shared_ancestors = False
                     continue
-            yield current
+            yield current[0]
             return
 
 
