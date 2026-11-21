@@ -163,14 +163,19 @@ async def test_remote_alias_group_resolves_before_and_after_ordered_acquisition_
             waiting = asyncio.create_task(FileWriteTool().execute_with_runtime({
                 "path": "alias/value.py", "mode": "create", "content": "VALUE = 100\n",
             }, ToolRuntime(environment, None, None)))
-            await asyncio.sleep(0.1)
-            assert not waiting.done()
             alias_key = environment._container_id + "\0" + environment.workspace + "/alias"
-            assert alias_key in docker_module._WRITE_LOCK_OWNERS
+
+            async def wait_for_alias_lock():
+                while alias_key not in docker_module._WRITE_LOCKS:
+                    await asyncio.sleep(0.005)
+
+            await asyncio.wait_for(wait_for_alias_lock(), 5)
+            assert not waiting.done()
+            assert docker_module._WRITE_LOCKS[alias_key].shared_owners == {waiting}
             waiting.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await waiting
-            assert alias_key not in docker_module._WRITE_LOCK_OWNERS
+            assert alias_key not in docker_module._WRITE_LOCKS
         output = await asyncio.wait_for(FileWriteTool().execute_with_runtime({
             "path": "alias/value.py", "mode": "create", "content": "VALUE = 100\n",
         }, ToolRuntime(environment, None, None)), 5)

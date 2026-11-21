@@ -89,7 +89,7 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$")
 _FULL_ID_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 @dataclass
 class _WriteLockEntry:
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    shared_owners: set[asyncio.Task] = field(default_factory=set)
     users: int = 0
 
 _WRITE_LOCKS: dict[str, _WriteLockEntry] = {}
@@ -212,6 +212,7 @@ class DockerEnvironment(Environment):
 
     process_isolated = True
     remote_filesystem = True
+    _delegates_file_write_lock = True
 
     def __init__(
         self,
@@ -697,37 +698,46 @@ class DockerEnvironment(Environment):
     async def file_write_locks(
         self, paths: Sequence[str], *, _repository_root: str | None = None,
     ) -> AsyncIterator[None]:
+        async with self._file_write_locks(paths, repository_root=_repository_root):
+            yield
+
+    @contextlib.asynccontextmanager
+    async def _file_write_locks(
+        self, paths: Sequence[str], *, repository_root: str | None = None, shared_ancestors: bool = False,
+    ) -> AsyncIterator[str | None]:
         self._ensure_active()
         await self._bind_attached()
         if self._container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
-        ordered = await self._grouped_write_targets(paths, repository_root=_repository_root)
+        current = await self._grouped_write_targets(paths, repository_root=repository_root)
         while True:
+            primary, ordered = current
             async with contextlib.AsyncExitStack() as locks:
                 for target in ordered:
-                    await locks.enter_async_context(self._resolved_file_write_lock(target))
+                    await locks.enter_async_context(
+                        self._resolved_file_write_lock(target, shared=shared_ancestors and target != primary)
+                    )
                 # An earlier publisher may have changed a directory alias while
                 # we waited. Release the group before acquiring any new target.
-                current = await self._grouped_write_targets(paths, repository_root=_repository_root)
-                if current == ordered:
-                    yield None
+                current = await self._grouped_write_targets(paths, repository_root=repository_root)
+                if current == (primary, ordered):
+                    yield primary
                     return
-            ordered = current
 
     async def _grouped_write_targets(
         self, paths: Sequence[str], *, repository_root: str | None = None,
-    ) -> list[str]:
+    ) -> tuple[str | None, list[str]]:
         requested = {self._validate_container_path(path) for path in paths}
         if not requested:
-            return []
+            return None, []
         # The first path sorts before any of its descendants, so it can
         # establish the physical workspace using ordinary parent resolution.
         parent_cache: dict[tuple[str, str, tuple[str, ...]], tuple[str, str]] = {}
         first = min(requested)
         workspace = repository_root or self.workspace
-        targets = {await self._resolve_write_target(
+        primary = await self._resolve_write_target(
             first, parent_cache=parent_cache, repository_root=repository_root,
-        )}
+        )
         physical_workspace = parent_cache[(workspace, posixpath.dirname(first), ())][0]
         ancestors_by_path: dict[str, tuple[str, ...]] = {}
         for path in sorted(requested):
@@ -749,14 +759,15 @@ class DockerEnvironment(Environment):
                 if ancestor not in resolve:
                     resolve[ancestor] = ancestors[index + 1:]
         resolve.pop(first)
-        targets.update({
+        targets = {
             await self._resolve_write_target(
                 path, replaceable_parents=tuple(parent for parent in ancestors if parent in requested),
                 parent_cache=parent_cache, repository_root=repository_root,
             )
             for path, ancestors in resolve.items()
-        })
-        return _write_lock_paths(targets, self, workspace=physical_workspace)
+        }
+        targets.add(primary)
+        return primary, _write_lock_paths(targets, self, workspace=physical_workspace)
 
     @contextlib.asynccontextmanager
     async def file_write_lock(
@@ -765,7 +776,19 @@ class DockerEnvironment(Environment):
         *,
         containment_root: str | None = None,
     ) -> AsyncIterator[str]:
-        """Hold the target lock across a native edit, including its final write."""
+        if containment_root is not None:
+            async with self._target_file_write_lock(path, containment_root=containment_root) as target:
+                yield target
+            return
+        # An ancestor replacement needs exclusivity while edits of siblings can share it.
+        async with self._file_write_locks((path,), shared_ancestors=True) as target:
+            assert target is not None
+            yield target
+
+    @contextlib.asynccontextmanager
+    async def _target_file_write_lock(
+        self, path: str, *, containment_root: str | None,
+    ) -> AsyncIterator[str]:
         self._ensure_active()
         await self._bind_attached()
         if self._container_id is None:
@@ -776,16 +799,16 @@ class DockerEnvironment(Environment):
             yield target
 
     @contextlib.asynccontextmanager
-    async def _resolved_file_write_lock(self, target: str) -> AsyncIterator[str]:
+    async def _resolved_file_write_lock(self, target: str, *, shared: bool = False) -> AsyncIterator[str]:
         key = f"{self._container_id}\0{target}"
         task = asyncio.current_task()
         assert task is not None
         # Native tools already hold this lock when they call write_file. Only
         # the actual owning task can reenter; a spawned task must still wait.
         with _WRITE_LOCKS_GUARD:
-            reentrant = _WRITE_LOCK_OWNERS.get(key) is task
+            entry = _WRITE_LOCKS.setdefault(key, _WriteLockEntry())
+            reentrant = _WRITE_LOCK_OWNERS.get(key) is task or (shared and task in entry.shared_owners)
             if not reentrant:
-                entry = _WRITE_LOCKS.setdefault(key, _WriteLockEntry())
                 entry.users += 1
         if reentrant:
             yield target
@@ -795,21 +818,25 @@ class DockerEnvironment(Environment):
             # Attached containers survive individual event loops, and callers
             # can edit them from different threads. Poll a process-wide lock
             # without blocking either loop or binding it to the first waiter.
-            while not entry.lock.acquire(blocking=False):
-                await asyncio.sleep(0.02)
-            acquired = True
-            self._ensure_active()
-            with _WRITE_LOCKS_GUARD:
-                _WRITE_LOCK_OWNERS[key] = task
-            try:
-                yield target
-            finally:
+            while True:
                 with _WRITE_LOCKS_GUARD:
-                    _WRITE_LOCK_OWNERS.pop(key, None)
+                    if key not in _WRITE_LOCK_OWNERS and (shared or not entry.shared_owners):
+                        if shared:
+                            entry.shared_owners.add(task)
+                        else:
+                            _WRITE_LOCK_OWNERS[key] = task
+                        acquired = True
+                        break
+                await asyncio.sleep(0.02)
+            self._ensure_active()
+            yield target
         finally:
-            if acquired:
-                entry.lock.release()
             with _WRITE_LOCKS_GUARD:
+                if acquired:
+                    if shared:
+                        entry.shared_owners.remove(task)
+                    else:
+                        del _WRITE_LOCK_OWNERS[key]
                 entry.users -= 1
                 if entry.users == 0:
                     del _WRITE_LOCKS[key]
@@ -827,7 +854,7 @@ class DockerEnvironment(Environment):
             raise OSError(
                 f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {path}"
             )
-        async with self.file_write_lock(path, containment_root=containment_root) as target:
+        async with self._target_file_write_lock(path, containment_root=containment_root) as target:
             if containment_root == "/tmp":
                 self._temporary_files.add(path)
             return await self._write_file_atomic(target, payload, observe_change=observe_change)
