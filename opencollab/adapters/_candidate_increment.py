@@ -26,20 +26,42 @@ def _safe_path(value: str) -> str:
     return normalized
 
 
+def _worktree_attributes(workspace: str, paths: Sequence[str]) -> set[str]:
+    directories = {""}
+    for path in paths:
+        while (path := posixpath.dirname(path)) not in directories:
+            directories.add(path)
+    return {posixpath.join(workspace, path, ".gitattributes") for path in directories}
+
+
 @asynccontextmanager
 async def _candidate_write_locks(
-    environment: Any, workspace: str, paths: Sequence[str], *, repository: bool, in_place: bool,
+    environment: Any, workspace: str, paths: Sequence[str], *,
+    repository: bool, in_place: bool, attributes_file: str | None,
 ) -> AsyncIterator[None]:
     delegate = getattr(environment, "_delegate", environment)
     docker = isinstance(delegate, DockerEnvironment)
     local = getattr(environment, "local_filesystem", False)
     lock_root = workspace if docker or local else getattr(environment, "workspace", workspace)
-    targets = (posixpath.join(lock_root, ".candidate-adoption"), *(posixpath.join(workspace, path) for path in paths))
-    can_share = docker or local or getattr(environment, "_handles_file_lock_hierarchy", False)
-    for share_ancestors in (True, False) if in_place and paths and can_share else (False,):
+    publication_lock = posixpath.join(lock_root, ".candidate-adoption")
+    targets = {posixpath.join(workspace, path) for path in paths}
+    can_share = in_place and bool(paths) and (
+        docker or local or getattr(environment, "_handles_file_lock_hierarchy", False)
+    )
+    if can_share and repository:
+        # The live application and recovery replay need the same attribute rules.
+        targets.update(_worktree_attributes(workspace, paths))
+        if attributes_file is not None:
+            configured = posixpath.normpath(attributes_file)
+            if configured.startswith(posixpath.normpath(workspace).rstrip("/") + "/"):
+                targets.add(configured)
+            else:
+                can_share = False
+    ordered = (publication_lock, *sorted(targets - {publication_lock}))
+    for share_ancestors in (True, False) if can_share else (False,):
         locks = (
-            delegate.file_write_locks(targets, _repository_root=workspace, _shared_ancestors=share_ancestors)
-            if docker else host_write_locks(targets, environment, shared_ancestors=share_ancestors)
+            delegate.file_write_locks(ordered, _repository_root=workspace, _shared_ancestors=share_ancestors)
+            if docker else host_write_locks(ordered, environment, shared_ancestors=share_ancestors)
         )
         async with locks:
             if share_ancestors:
@@ -97,15 +119,23 @@ async def _apply_increment(
                 or any(part.casefold() == ".git" for part in path.split("/"))
             ):
                 raise RuntimeError(f"invalid path in candidate patch: {path!r}")
+        git = f"{git_prefix} -c core.filemode=true"
+        guard = ""
+        if strict and repository:
+            git, guard = _git_command_and_config_guard()
+        command = f"cd -- {shlex.quote(workspace)} && {guard}{git}"
+        attributes_file = None
+        if repository and not strict and not physical_paths:
+            configured = _complete(await environment.exec_cmd(
+                f"{command} config --path --get core.attributesFile", timeout=120,
+            ), "candidate attribute configuration", allowed=(0, 1)).removesuffix("\n")
+            if configured:
+                attributes_file = posixpath.join(workspace, configured)
         async with _candidate_write_locks(
             environment, workspace, paths, repository=repository, in_place=bool(separator and not summary.strip()),
+            attributes_file=attributes_file,
         ):
-            git = f"{git_prefix} -c core.filemode=true"
-            guard = ""
-            if strict and repository:
-                git, guard = _git_command_and_config_guard()
             async with AsyncExitStack() as resources:
-                command = f"cd -- {shlex.quote(workspace)} && {guard}{git}"
                 operation = "candidate adoption"
                 if physical_paths and repository:
                     if guard:
@@ -119,13 +149,7 @@ async def _apply_increment(
                 # Let Git reject unsafe path aliases before a recursive backup can
                 # encounter repository metadata. Publication can still fail later.
                 check = f"{command} apply --check --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}"
-                configured_rules = repository and not strict and not physical_paths
-                if configured_rules:
-                    check += f' && ({git} config --path --get core.attributesFile || [ "$?" -eq 1 ])'
-                checked = _complete(await environment.exec_cmd(check, timeout=120), operation)
-                attributes_file = None
-                if configured_rules and (configured := checked.removesuffix("\n")):
-                    attributes_file = posixpath.join(workspace, configured)
+                _complete(await environment.exec_cmd(check, timeout=120), operation)
 
                 async def replay(
                     staged: str, git_directory: str | None, saved_attributes_file: str | None,

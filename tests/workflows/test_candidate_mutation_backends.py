@@ -173,6 +173,84 @@ async def test_cancelled_publication_recovers_before_releasing_shared_writer(tmp
         await environment.cleanup()
 
 
+@pytest.mark.parametrize("backend", ["local", "docker"])
+@pytest.mark.parametrize("attribute_source", ["nested", "root-missing", "configured"])
+async def test_in_place_publication_keeps_git_attributes_stable_through_recovery(
+    tmp_path, monkeypatch, backend, attribute_source,
+):
+    repo = _repository(tmp_path)
+    _git(repo, "config", "core.autocrlf", "false")
+    target = repo / "settings/value.txt"
+    target.write_bytes(b"original\n")
+    attributes = {
+        "nested": repo / "settings/.gitattributes",
+        "root-missing": repo / ".gitattributes",
+        "configured": repo / "line-endings",
+    }[attribute_source]
+    if attribute_source != "root-missing":
+        attributes.write_text("*.txt text eol=lf\n")
+    if attribute_source == "configured":
+        _git(repo, "config", "core.attributesFile", attributes.name)
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "test: prepare in-place publication")
+    target.write_bytes(b"candidate\n")
+    patch = _git(repo, "diff", "--binary", "--", "settings/value.txt")
+    target.write_bytes(b"original\n")
+    index = (repo / ".git/index").read_bytes()
+
+    environment = (LocalEnvironment(str(repo)) if backend == "local" else
+                   docker_environment(repo, LocalDockerTransport(repo, pair_reads=False)))
+    entered, publish = asyncio.Event(), asyncio.Event()
+    recovering, recover = asyncio.Event(), asyncio.Event()
+    execute = environment.exec_cmd
+
+    async def observe(cmd, timeout=120, **kwargs):
+        if " apply --binary " in cmd and ".candidate-adopt-" in cmd:
+            entered.set()
+            await publish.wait()
+            result = await execute(cmd, timeout, **kwargs)
+            assert result.returncode == 0
+            assert target.read_bytes() == b"candidate\n"
+            raise RuntimeError("publication acknowledgement lost")
+        if cmd.startswith("failed=0;"):
+            recovering.set()
+            await recover.wait()
+        return await execute(cmd, timeout, **kwargs)
+
+    monkeypatch.setattr(environment, "exec_cmd", observe)
+    publication = asyncio.create_task(_apply_increment(environment, str(repo), patch))
+    writer = None
+    runtime = ToolRuntime(environment, None, None)
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        writer = asyncio.create_task(FileWriteTool().execute_with_runtime({
+            "path": str(attributes), "mode": "create", "overwrite": True, "content": "*.txt text eol=crlf\n",
+        }, runtime))
+        sibling = await asyncio.wait_for(FileWriteTool().execute_with_runtime({
+            "path": "settings/independent.txt", "mode": "create", "content": "sibling edit\n",
+        }, runtime), 5)
+        assert "Created/wrote" in sibling
+        assert not writer.done()
+        publish.set()
+        await asyncio.wait_for(recovering.wait(), 10)
+        assert not writer.done()
+        recover.set()
+        with pytest.raises(RuntimeError, match="^publication acknowledgement lost") as failure:
+            await asyncio.wait_for(publication, 10)
+        assert type(failure.value) is RuntimeError
+        assert "Created/wrote" in await asyncio.wait_for(writer, 10)
+        assert target.read_bytes() == b"original\n"
+        assert attributes.read_text() == "*.txt text eol=crlf\n"
+        assert (repo / "settings/independent.txt").read_text() == "sibling edit\n"
+        assert (repo / ".git/index").read_bytes() == index
+        assert not environment.revoked
+    finally:
+        publish.set()
+        recover.set()
+        await asyncio.gather(publication, *([writer] if writer is not None else []), return_exceptions=True)
+        await environment.cleanup()
+
+
 async def test_local_mutation_lock_normalizes_workspace_parent_aliases(tmp_path):
     workspace = tmp_path / "workspace"
     target = workspace / "nested/value.py"
