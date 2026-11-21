@@ -19,6 +19,7 @@ from typing import Any
 
 from filelock import FileLock, Timeout
 
+from opencollab.adapters.tools._file_lock_worker import _try_file_lock
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 
@@ -84,11 +85,13 @@ async def _reap_lock_holders(processes: list[subprocess.Popen]) -> None:
         await asyncio.sleep(HOST_WRITE_LOCK_POLL_SECONDS)
 
 
-async def _prepare_lock_holder(channel: socket.socket, paths: Sequence[str], env: Any) -> None:
+async def _prepare_lock_holder(
+    channel: socket.socket, paths: Sequence[str], env: Any, shared_paths: frozenset[str],
+) -> None:
     loop = asyncio.get_running_loop()
     channel.setblocking(False)
     options = (
-        [(path, _host_lock_path(path, env)) for path in paths],
+        [(path, _host_lock_path(path, env), path in shared_paths) for path in paths],
         HOST_WRITE_LOCK_TIMEOUT_SECONDS, HOST_WRITE_LOCK_POLL_SECONDS,
     )
     await loop.sock_sendall(channel, json.dumps(options).encode() + b"\n")
@@ -107,7 +110,9 @@ async def _prepare_lock_holder(channel: socket.socket, paths: Sequence[str], env
 
 
 @contextlib.asynccontextmanager
-async def _hold_lock_groups(paths: Sequence[str], env: Any, group_size: int) -> AsyncIterator[None]:
+async def _hold_lock_groups(
+    paths: Sequence[str], env: Any, group_size: int, shared_paths: frozenset[str],
+) -> AsyncIterator[None]:
     owner = asyncio.current_task()
     assert owner is not None
     processes: list[subprocess.Popen] = []
@@ -140,7 +145,7 @@ async def _hold_lock_groups(paths: Sequence[str], env: Any, group_size: int) -> 
                         [sys.executable, worker, str(read_end if shared else 0)], start_new_session=True,
                         stdin=child, stdout=child, pass_fds=(read_end,) if shared else (),
                     ))
-                await _prepare_lock_holder(setup, paths[start:start + group_size], env)
+                await _prepare_lock_holder(setup, paths[start:start + group_size], env, shared_paths)
             finally:
                 if shared:
                     setup.close()
@@ -161,14 +166,16 @@ async def _hold_lock_groups(paths: Sequence[str], env: Any, group_size: int) -> 
 
 
 @contextlib.asynccontextmanager
-async def _local_write_locks(paths: Sequence[str], env: Any) -> AsyncIterator[FileLock | None]:
+async def _local_write_locks(
+    paths: Sequence[str], env: Any, *, shared_paths: frozenset[str] = frozenset(),
+) -> AsyncIterator[FileLock | None]:
     capacity = _local_file_lock_capacity()
     if len(paths) == 1 or len(paths) <= _available_local_file_locks(capacity):
         async with contextlib.AsyncExitStack() as locks:
             target = None
             try:
                 for path in paths:
-                    target = await locks.enter_async_context(_target_write_lock(path, env))
+                    target = await locks.enter_async_context(_target_write_lock(path, env, shared=path in shared_paths))
             except OSError as exc:
                 if exc.errno != errno.EMFILE:
                     raise
@@ -177,7 +184,7 @@ async def _local_write_locks(paths: Sequence[str], env: Any) -> AsyncIterator[Fi
                 return
     # Every holder uses the same per-path locks. Contention order stays the
     # same across groups, direct callers and older installations.
-    async with _hold_lock_groups(paths, env, min(512, capacity)):
+    async with _hold_lock_groups(paths, env, min(512, capacity), shared_paths):
         yield None
 
 
@@ -206,12 +213,18 @@ async def host_write_locks(paths: Sequence[str], env: Any) -> AsyncIterator[Any]
 
 @contextlib.asynccontextmanager
 async def host_write_lock(path: str, env: Any) -> AsyncIterator[Any]:
+    if env is None or getattr(env, "local_filesystem", False):
+        paths = _write_lock_paths((path,), env)
+        # The single target sorts after its ancestors.
+        async with _local_write_locks(paths, env, shared_paths=frozenset(paths[:-1])) as target:
+            yield target
+        return
     async with host_write_locks((path,), env) as target:
         yield target
 
 
 @contextlib.asynccontextmanager
-async def _target_write_lock(path: str, env: Any) -> AsyncIterator[Any]:
+async def _target_write_lock(path: str, env: Any, *, shared: bool = False) -> AsyncIterator[Any]:
     if env is not None and not getattr(env, "local_filesystem", False):
         environment_lock = getattr(env, "file_write_lock", None)
         if callable(environment_lock):
@@ -221,15 +234,13 @@ async def _target_write_lock(path: str, env: Any) -> AsyncIterator[Any]:
             yield None
         return
 
-    lock = FileLock(_host_lock_path(path, env), timeout=0)
+    lock_path = _host_lock_path(path, env)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + HOST_WRITE_LOCK_TIMEOUT_SECONDS
-    acquired = False
-    try:
+    with contextlib.ExitStack() as held:
         while True:
             try:
-                lock.acquire(timeout=0)
-                acquired = True
+                lock = held.enter_context(_try_file_lock(lock_path, shared=shared))
                 break
             except Timeout:
                 remaining = deadline - loop.time()
@@ -237,9 +248,6 @@ async def _target_write_lock(path: str, env: Any) -> AsyncIterator[Any]:
                     raise TimeoutError(f"timed out acquiring write lock for {path}")
                 await asyncio.sleep(min(HOST_WRITE_LOCK_POLL_SECONDS, remaining))
         yield lock
-    finally:
-        if acquired:
-            lock.release()
 
 class Tool:
     """Base class for all tools. Subclass and implement ``execute_with_runtime``.

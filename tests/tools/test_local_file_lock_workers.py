@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import errno
+import fcntl
 import os
 import resource
 import signal
@@ -14,8 +16,106 @@ from filelock import FileLock, Timeout
 
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.tools import base
+from opencollab.adapters.tools._file_lock_worker import _try_file_lock
 from opencollab.adapters.tools.fs import FileWriteTool
 from opencollab.application.tool_execution import ToolRuntime
+
+
+@pytest.mark.parametrize("use_workers", [False, True], ids=["direct", "worker"])
+async def test_native_sibling_writes_share_ancestors_and_exclude_transactions(tmp_path, monkeypatch, use_workers):
+    if use_workers:
+        monkeypatch.setattr(base, "_local_file_lock_capacity", lambda: 2)
+    monkeypatch.setattr(base, "HOST_WRITE_LOCK_TIMEOUT_SECONDS", 0.25)
+    directory = tmp_path / "nested"
+    directory.mkdir()
+    for name in ("one.txt", "two.txt", "three.txt"):
+        (directory / name).write_text("before\n")
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    transaction_paths = ("nested", "other.txt", "unrelated.txt")
+    started, finish = asyncio.Event(), asyncio.Event()
+    read_file = env.read_file
+
+    async def pause_first_read(path):
+        if Path(path).name == "one.txt" and not started.is_set():
+            started.set()
+            await finish.wait()
+        return await read_file(path)
+
+    monkeypatch.setattr(env, "read_file", pause_first_read)
+
+    async def write(name):
+        return await FileWriteTool().execute_with_runtime(
+            {"path": f"nested/{name}", "mode": "str_replace", "old_str": "before", "new_str": "after"}, runtime,
+        )
+
+    first = asyncio.create_task(write("one.txt"))
+    try:
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            await asyncio.wait_for(write("two.txt"), 5)
+            assert (directory / "two.txt").read_text() == "after\n"
+            assert (directory / "one.txt").read_text() == "before\n"
+            with pytest.raises(TimeoutError, match="one.txt"):
+                await write("one.txt")
+            with pytest.raises(TimeoutError, match="nested$"):
+                async with base.host_write_locks(transaction_paths, env):
+                    pytest.fail("transaction acquired a directory with an active child edit")
+        finally:
+            finish.set()
+            await first
+
+        assert (directory / "one.txt").read_text() == "after\n"
+        async with base.host_write_locks(transaction_paths, env):
+            with pytest.raises(TimeoutError, match="nested$"):
+                await write("three.txt")
+        assert (directory / "three.txt").read_text() == "before\n"
+        await write("three.txt")
+        assert (directory / "three.txt").read_text() == "after\n"
+    finally:
+        await env.cleanup()
+
+
+def test_shared_flock_rejects_inode_unlinked_before_acquisition(tmp_path, monkeypatch):
+    path = tmp_path / "directory.lock"
+    acquire_exclusive = FileLock(path, timeout=0)
+    acquire_exclusive.acquire()
+    open_file = os.open
+
+    def open_then_release(*args, **kwargs):
+        fd = open_file(*args, **kwargs)
+        path.unlink()
+        acquire_exclusive.release()
+        return fd
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "open", open_then_release)
+            with pytest.raises(Timeout), _try_file_lock(str(path), shared=True):
+                pytest.fail("shared lock acquired an unlinked inode")
+        with _try_file_lock(str(path), shared=True):
+            with pytest.raises(Timeout), acquire_exclusive:
+                pytest.fail("legacy writer acquired an active shared inode")
+    finally:
+        acquire_exclusive.release()
+
+
+def test_unavailable_shared_flock_uses_exclusive_file_lock(tmp_path, monkeypatch):
+    path = tmp_path / "directory.lock"
+    flock = fcntl.flock
+
+    def exclusive_only(fd, mode):
+        if mode & fcntl.LOCK_SH:
+            raise OSError(errno.ENOSYS, "shared flock unavailable")
+        return flock(fd, mode)
+
+    monkeypatch.setattr(fcntl, "flock", exclusive_only)
+    acquire_exclusive = FileLock(path, timeout=0)
+    with _try_file_lock(str(path), shared=True):
+        with pytest.raises(Timeout), acquire_exclusive:
+            pytest.fail("legacy writer acquired a fallback lock")
+    with acquire_exclusive:
+        pass
 
 
 async def test_large_group_acquires_existing_flocks_in_path_order(tmp_path, monkeypatch):
