@@ -97,6 +97,10 @@ async def test_edit_of_repeated_turn_keeps_saved_summary(monkeypatch, tmp_path, 
     pytest.param(True, "sync", id="summary-trial-snip"),
     pytest.param(True, "async", id="async-summary-trial-snip"),
     pytest.param(True, "shaper", id="shaper-trial-snip"),
+    pytest.param(True, "restored-trial-original", id="restored-trial-original"),
+    pytest.param(True, "restored-trial-copy", id="restored-trial-copy"),
+    pytest.param(True, "restored-trial-result", id="restored-trial-result"),
+    pytest.param(True, "pipeline-noop-copy", id="noop-copy-after-adopted-snip"),
 ])
 @pytest.mark.parametrize("assistant_text", [False, True], ids=["tool-only", "with-assistant-text"])
 async def test_edit_keeps_independent_snipped_exchanges(
@@ -117,7 +121,7 @@ async def test_edit_keeps_independent_snipped_exchanges(
     requests = []
     trial_ran = False
     copying_stage = snip_mode.startswith("pipeline-copy")
-    snip_as_stage = snip_mode == "pipeline" or copying_stage
+    snip_as_stage = snip_mode in {"pipeline", "pipeline-noop-copy"} or copying_stage
 
     def peer(request):
         body = json.loads(request.content)
@@ -169,6 +173,26 @@ async def test_edit_keeps_independent_snipped_exchanges(
             trial_ran |= len(trial) < len(rows)
             return [dict(row) for row in rows]
 
+    class RestoredTrialShaper:
+        def shape(self, rows):
+            class RestoreInput:
+                def shape(self, trial):
+                    nonlocal trial_ran
+                    trial_ran |= len(trial) < len(rows)
+                    return [dict(row) for row in rows]
+
+            trial = ShaperPipeline((snipper, RestoreInput())).shape(rows)
+            assert trial == rows and trial is not rows
+            if snip_mode == "restored-trial-original":
+                return rows
+            if snip_mode == "restored-trial-result":
+                return trial
+            return [dict(row) for row in rows]
+
+    class CopyInput:
+        def shape(self, rows):
+            return [dict(row) for row in rows]
+
     class CopyingShaper:
         def shape(self, rows):
             if snip_mode == "pipeline-copy-composed":
@@ -187,11 +211,15 @@ async def test_edit_keeps_independent_snipped_exchanges(
             await asyncio.sleep(0)
             return summarize(rows)
 
-    shapers = [snipper] if snip_mode == "pipeline" else []
+    shapers = [snipper] if snip_mode in {"pipeline", "pipeline-noop-copy"} else []
     if copying_stage:
         shapers.append(CopyingShaper())
     if snip_mode == "shaper":
         shapers.append(TrialShaper())
+    if snip_mode.startswith("restored-trial-"):
+        shapers.append(RestoredTrialShaper())
+    if snip_mode == "pipeline-noop-copy":
+        shapers.append(CopyInput())
     callback = AsyncSummarizer() if snip_mode == "async" else summarize
     compact_options = dict(large_history)
     if snip_mode == "pipeline-copy-composed":

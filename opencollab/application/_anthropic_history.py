@@ -212,20 +212,27 @@ def _capture_anthropic_snips(
         return matched if path else before
 
     def observe(before: list[dict], after: list[dict], starts: set[int] | None) -> None:
-        if id(after) in transitions:
-            return
+        result_key = id(after)
+        known_result = result_key in transitions
         stage = _history_shaping_stages.get()
+        candidates = stage_results.get(stage[-1], []) if stage else []
+        if known_result and (starts is not None or all(result is not after for result in candidates)):
+            return
         if id(before) not in transitions:
             # A wrapper may give its inner shaper a fresh copy of the input.
             before = next((entry.messages for entry in stage if same_snapshot_value(entry.messages, before)), before)
         if before is after:
             return
-        if starts is None and stage:
-            # A wrapper may copy the final result of a nested sequence of shapers.
-            before = copied_result_input(before, after, stage_results.get(stage[-1], []))
-        transitions[id(after)] = (before, after, starts)
-        for entry in stage:
-            stage_results.setdefault(entry, []).append(after)
+        # An unchanged stage preserves the input's ancestry even if a trial
+        # produced the same value through a different sequence of transformations.
+        if starts is None and candidates and not same_snapshot_value(before, after):
+            if known_result:
+                return
+            before = copied_result_input(before, after, candidates)
+        transitions[result_key] = (before, after, starts)
+        if not known_result:
+            for entry in stage:
+                stage_results.setdefault(entry, []).append(after)
 
     def record(before: list[dict], starts: set[int]) -> None:
         assert state is not None
