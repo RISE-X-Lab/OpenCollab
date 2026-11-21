@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Set
+from contextlib import contextmanager
 from itertools import chain
 from typing import Any
 
 from opencollab.application.shaping.pipeline import _group_spans, is_complete_tool_exchange
+from opencollab.application.shaping.reactive import _observe_history_snips, _snipped_exchange_text
 from opencollab.domain.session import SessionState, same_snapshot_value
 
 _THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
@@ -135,12 +137,70 @@ def _align_groups(
         old, new = next_old + 1, next_new + 1
     yield from ((old_stop + offset, new_stop + offset) for offset in range(suffix))
 
-def _rebase_anthropic_history(history: dict, messages: list[dict]) -> list[dict]:
+def _groups(rows: list[dict]) -> list[list[dict]]:
+    return [rows[start:stop] for start, stop in _group_spans(rows)]
+
+def _groups_with_snips(rows: list[dict], snipped: Set[int]) -> Iterator[tuple[int, list[dict]]]:
+    for start, stop in _group_spans(rows):
+        if start not in snipped:
+            yield start, rows[start:stop]
+        elif (text := _snipped_exchange_text(rows[start])) is not None:
+            yield start, [text]
+
+def _retained_snips(state: SessionState) -> set[int]:
+    history = state.anthropic_history
+    snipped = history.get("snipped_exchanges") if history is not None else None
+    if not snipped:
+        return set()
+    if not _anthropic_source_changed(state):
+        return set(snipped)
+    snipped = set(snipped)
+    source = history["source_messages"]
+    old_spans = _group_spans(source)
+    new_spans = _group_spans(state.messages)
+    return {
+        new_spans[new][0] for old, new in _align_groups(_groups(source), _groups(state.messages))
+        if old_spans[old][0] in snipped
+    }
+
+@contextmanager
+def _capture_anthropic_snips(state: SessionState | None) -> Iterator[set[int]]:
+    snipped: set[int] = set()
+
+    def record(before: list[dict], starts: set[int]) -> None:
+        assert state is not None
+        entries = list(_groups_with_snips(state.messages, _retained_snips(state) | snipped))
+        candidates = [group for _, group in entries]
+        before_spans = _group_spans(before)
+        projected = _groups(before)
+        if list(map(_anchor_key, candidates)) == list(map(_anchor_key, projected)):
+            # The earlier budget and clearing layers keep occurrences in order.
+            aligned = (
+                (index, index) for index, (old, new) in enumerate(zip(candidates, projected))
+                if same_snapshot_value(old[0], new[0])
+                or same_snapshot_value(_strip_anthropic_thinking(old)[0], new[0])
+            )
+        else:
+            aligned = _align_groups(candidates, projected, projected=True)
+        snipped.update(entries[old][0] for old, new in aligned if before_spans[new][0] in starts)
+
+    token = _observe_history_snips.set(record if state is not None else None)
+    try:
+        yield snipped
+    finally:
+        _observe_history_snips.reset(token)
+
+def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]]:
+    history = state.anthropic_history
+    assert history is not None
     view = history["messages"]
-    source, projection, current = (
-        [rows[start:stop] for start, stop in _group_spans(rows)]
-        for rows in (history["source_messages"], view, messages)
-    )
+    retained = _retained_snips(state)
+    # A later summary only saw the text left behind by earlier snips.
+    source = [group for _, group in _groups_with_snips(
+        history["source_messages"], set(history.get("snipped_exchanges", ())),
+    )]
+    projection = _groups(view)
+    current = [group for _, group in _groups_with_snips(state.messages, retained)]
     unchanged = dict(_align_groups(source, current))
     first_edit = 0
     while unchanged.get(first_edit) == first_edit:
@@ -159,9 +219,12 @@ def _rebase_anthropic_history(history: dict, messages: list[dict]) -> list[dict]
         for next_old, next_seen in chain(anchors, ((len(source), len(projection)),)):
             if old < next_old:
                 gap = projection[seen:next_seen]
+                if not gap and all(_anchor_key(group)[0] == "exchange" for group in source[old:next_old]):
+                    for index in range(old, next_old):
+                        yield index, index + 1, []
                 # The intact ends can retain whole slices. An isolated rewritten
                 # exchange inside the edits needs a unique call-ID anchor.
-                if next_old <= first_edit or old >= end_edit or all(
+                elif next_old <= first_edit or old >= end_edit or all(
                     key[0] != "exchange" or source_counts[key] == projection_counts[key] == 1
                     for key in map(_anchor_key, gap)
                 ):
@@ -181,18 +244,19 @@ def _rebase_anthropic_history(history: dict, messages: list[dict]) -> list[dict]
         rebased.extend(chain.from_iterable(replacement))
         taken = start_new + stop - start
     rebased.extend(chain.from_iterable(current[taken:]))
-    return _edited_anthropic_history(view, rebased)
+    return _edited_anthropic_history(view, rebased), retained
 
 def _anthropic_history_input(state: SessionState) -> list[dict]:
     history = state.anthropic_history
     if history is None:
         return state.messages
     if _anthropic_source_changed(state):
-        return copy.deepcopy(_rebase_anthropic_history(history, state.messages))
+        return copy.deepcopy(_rebase_anthropic_history(state)[0])
     return copy.deepcopy([*history["messages"], *state.messages[history["source_count"]:]])
 
 def _remember_anthropic_history(
     state: SessionState, messages: list[dict], tools: list[dict] | None,
+    snipped_exchanges: set[int] | None = None,
 ) -> list[dict]:
     """Persist edits so removed blocks and compacted content stay removed."""
     history = state.anthropic_history
@@ -201,10 +265,13 @@ def _remember_anthropic_history(
         messages = _edited_anthropic_history(history["messages"], messages)
         if not same_snapshot_value(history["tools"], tools):
             messages = _strip_anthropic_thinking(messages)
+    snipped = _retained_snips(state) | (snipped_exchanges or set())
     state.anthropic_history = copy.deepcopy({
         "messages": messages, "source_count": len(state.messages), "tools": tools,
         "source_messages": state.messages,
     })
+    if snipped:
+        state.anthropic_history["snipped_exchanges"] = sorted(snipped)
     return messages
 
 def _recover_anthropic_history(

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
+from contextvars import ContextVar
 from typing import Any, Callable
 
 from opencollab.application.ports import TokenEstimatorPort
@@ -45,6 +46,9 @@ DEFAULT_AUTOCOMPACT_CACHE_SIZE = 8
 
 # Keep the summarizer synchronous to match ShaperPort.shape. None disables it.
 SummarizerPort = Callable[[list[dict[str, Any]]], str]
+_observe_history_snips: ContextVar[Callable[[list[dict], set[int]], None] | None] = ContextVar(
+    "observe_history_snips", default=None,
+)
 
 class _ReactiveHistoryShaper:
     """Shared trigger/estimate plumbing for the reactive history layers."""
@@ -153,6 +157,29 @@ class ToolOutputClearShaper(_ReactiveHistoryShaper):
             and len(self.cleared_content) < len(messages[result_index]["content"])
         }
 
+def _snipped_exchange_text(leader: dict) -> dict | None:
+    if not leader.get("content"):
+        return None
+    retained = {key: value for key, value in leader.items() if key != "tool_calls"}
+    replay = leader.get("response_items")
+    if isinstance(replay, list):
+        retained["response_items"] = [
+            item for item in replay
+            if not isinstance(item, dict) or item.get("type") != "function_call"
+        ]
+    provider_state = leader.get("provider_state")
+    if isinstance(provider_state, dict):
+        blocks = provider_state.get("anthropic_content")
+        if isinstance(blocks, list):
+            retained["provider_state"] = {
+                **provider_state,
+                "anthropic_content": [
+                    block for block in blocks
+                    if not isinstance(block, dict) or block.get("type") != "tool_use"
+                ],
+            }
+    return retained
+
 class OldHistorySnipShaper(_ReactiveHistoryShaper):
     """Layer A — cheapest history compaction: pure deletion of old turns.
 
@@ -179,6 +206,7 @@ class OldHistorySnipShaper(_ReactiveHistoryShaper):
         running = self._estimate(messages)
         drop: set[int] = set()
         replacements: dict[int, dict[str, Any]] = {}
+        snipped: set[int] = set()
         for gi in range(lo, hi):
             start, end = spans[gi]
             leader = messages[start]
@@ -191,28 +219,9 @@ class OldHistorySnipShaper(_ReactiveHistoryShaper):
             reasoning = leader.get("reasoning_content") or leader.get("reasoning")
             if reasoning and not content:
                 continue  # cannot safely split provider-signed reasoning
-            replacement = None
-            if content:
-                replacement = {
-                    key: value for key, value in leader.items() if key != "tool_calls"
-                }
-                replay = leader.get("response_items")
-                if isinstance(replay, list):
-                    replacement["response_items"] = [
-                        item for item in replay
-                        if not isinstance(item, dict) or item.get("type") != "function_call"
-                    ]
-                provider_state = leader.get("provider_state")
-                if isinstance(provider_state, dict):
-                    blocks = provider_state.get("anthropic_content")
-                    if isinstance(blocks, list):
-                        replacement["provider_state"] = {
-                            **provider_state,
-                            "anthropic_content": [
-                                block for block in blocks
-                                if not isinstance(block, dict) or block.get("type") != "tool_use"
-                            ],
-                        }
+            replacement = _snipped_exchange_text(leader)
+            snipped.add(start)
+            if replacement is not None:
                 replacements[start] = replacement
                 drop.update(range(start + 1, end))
             else:
@@ -226,6 +235,9 @@ class OldHistorySnipShaper(_ReactiveHistoryShaper):
 
         if not drop:
             return messages
+        observer = _observe_history_snips.get()
+        if observer is not None:
+            observer(messages, snipped)
         return [
             replacements.get(index, message)
             for index, message in enumerate(messages)

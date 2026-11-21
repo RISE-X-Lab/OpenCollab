@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 
 from opencollab.application._anthropic_history import (
     _anthropic_history_input,
+    _capture_anthropic_snips,
     _edited_anthropic_history,
     _recover_anthropic_history,
     _remember_anthropic_history,
@@ -554,9 +555,11 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
         elif steering is not None and self._requires_thinking_prefix():
             self.state.append_message(steering)
+        preserve_history = self._requires_thinking_prefix()
         history = _anthropic_history_input(self.state)
-        messages = await self._shape_and_trace(history)
-        if self._requires_thinking_prefix():
+        with _capture_anthropic_snips(self.state if preserve_history else None) as snipped:
+            messages = await self._shape_and_trace(history)
+        if preserve_history:
             messages = _edited_anthropic_history(history, messages)
         elif steering is not None and not persisted:
             messages = [*messages, steering]
@@ -570,19 +573,22 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             self._pending_tool_gate_label = None
 
         try:
-            return await self._complete(messages, tools, tool_choice_override)
+            return await self._complete(messages, tools, tool_choice_override, snipped_exchanges=snipped)
         except Exception as exc:
             if not self._is_context_overflow(exc):
                 raise
 
         # First overflow: force a maximal compaction pass and retry once.
-        with context_token_estimator(self._context_pressure):
+        with (
+            context_token_estimator(self._context_pressure),
+            _capture_anthropic_snips(self.state if preserve_history else None) as emergency_snipped,
+        ):
             history = _anthropic_history_input(self.state)
             forced = (
                 await ShaperPipeline((self.shaper,)).ashape(history, force=True)
                 if self.shaper is not None else history
             )
-        if self._requires_thinking_prefix():
+        if preserve_history:
             forced = _edited_anthropic_history(history, forced)
         # No FRESH steering on the emergency-shrink retry: this path is fighting
         # for token space. Any budget folded into a trailing user turn already
@@ -601,6 +607,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 forced,
                 tools,
                 tool_choice_override,
+                snipped_exchanges=emergency_snipped,
             )
         except Exception as exc:
             if self._is_context_overflow(exc):
@@ -612,12 +619,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         messages: list[dict],
         tools: list[dict] | None,
         tool_choice_override: Any | None = None,
+        *,
+        snipped_exchanges: set[int] | None = None,
     ) -> CompletionResponse:
         # Duck-typed agents may omit tool_choice. A steering override takes precedence,
         # and unsupported forced choices get one retry with "auto".
         tool_choice = tool_choice_override or getattr(self.agent, "tool_choice", None)
         try:
-            return await self._complete_with_choice(messages, tools, tool_choice)
+            return await self._complete_with_choice(messages, tools, tool_choice, snipped_exchanges)
         except Exception as exc:
             forced_choice = tool_choice == "required" or (
                 isinstance(tool_choice, dict)
@@ -636,7 +645,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 type(exc).__name__,
             )
             try:
-                return await self._complete_with_choice(messages, tools, "auto")
+                return await self._complete_with_choice(messages, tools, "auto", snipped_exchanges)
             except Exception as fallback_exc:
                 if hasattr(exc, "add_note"):
                     exc.add_note(
@@ -646,7 +655,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 raise exc from fallback_exc
 
     async def _complete_with_choice(
-        self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None
+        self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None,
+        snipped_exchanges: set[int] | None = None,
     ) -> CompletionResponse:
         # Capture the application-stage request after steering and fallback, before
         # provider conversion, for record_llm_trace. These fields only serve tracing.
@@ -670,7 +680,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             params = None
         await self._prepare_request_budget(messages, tools, thinking=thinking, thinking_params=params)
         if self._requires_thinking_prefix():
-            messages = _remember_anthropic_history(self.state, messages, tools)
+            messages = _remember_anthropic_history(self.state, messages, tools, snipped_exchanges)
         max_output_tokens = self._request_output_limit(
             messages, tools, thinking=thinking, thinking_params=params,
         )
