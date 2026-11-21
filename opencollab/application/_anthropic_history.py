@@ -9,7 +9,12 @@ from contextlib import contextmanager
 from itertools import chain
 from typing import Any
 
-from opencollab.application.shaping.pipeline import _group_spans, _observe_history_shaping, is_complete_tool_exchange
+from opencollab.application.shaping.pipeline import (
+    _group_spans,
+    _history_shaping_stages,
+    _observe_history_shaping,
+    is_complete_tool_exchange,
+)
 from opencollab.application.shaping.reactive import _snipped_exchange_text
 from opencollab.domain.session import SessionState, same_snapshot_value
 
@@ -168,10 +173,24 @@ def _capture_anthropic_snips(
     state: SessionState | None,
 ) -> Iterator[Callable[[list[dict], list[dict]], set[int]]]:
     transitions: dict[int, tuple[list[dict], list[dict], set[int] | None]] = {}
+    snip_results_by_input: dict[int, list[tuple[tuple[object, ...], list[dict], set[int]]]] = {}
     snipped: set[int] = set()
 
     def observe(before: list[dict], after: list[dict], starts: set[int] | None) -> None:
-        transitions.setdefault(id(after), (before, after, starts))
+        if id(after) in transitions:
+            return
+        stage = _history_shaping_stages.get()
+        if starts is not None:
+            snip_results_by_input.setdefault(id(before), []).append((stage, after, starts))
+        elif stage:
+            # A wrapper can return a fresh copy of the Snip result it adopted.
+            matches = {
+                frozenset(snips) for scope, result, snips in snip_results_by_input.get(id(before), ())
+                if scope[:len(stage)] == stage and same_snapshot_value(result, after)
+            }
+            if len(matches) == 1:
+                starts = set(matches.pop())
+        transitions[id(after)] = (before, after, starts)
 
     def record(before: list[dict], starts: set[int]) -> None:
         assert state is not None
@@ -211,6 +230,7 @@ def _capture_anthropic_snips(
     finally:
         _observe_history_shaping.reset(token)
         transitions.clear()
+        snip_results_by_input.clear()
 
 def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]]:
     history = state.anthropic_history

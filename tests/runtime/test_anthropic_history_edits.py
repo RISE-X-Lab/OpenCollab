@@ -90,6 +90,7 @@ async def test_edit_of_repeated_turn_keeps_saved_summary(monkeypatch, tmp_path, 
 @pytest.mark.parametrize(("edit_user", "snip_mode"), [
     pytest.param(True, "pipeline", id="edit-summary-source"),
     pytest.param(False, "pipeline", id="edit-snipped-result"),
+    pytest.param(True, "pipeline-copy", id="copied-snip-result"),
     pytest.param(True, "sync", id="summary-trial-snip"),
     pytest.param(True, "async", id="async-summary-trial-snip"),
     pytest.param(True, "shaper", id="shaper-trial-snip"),
@@ -112,7 +113,7 @@ async def test_edit_keeps_independent_snipped_exchanges(
     correction = "Use the April archive."
     requests = []
     trial_ran = False
-    snip_as_stage = snip_mode == "pipeline"
+    snip_as_stage = snip_mode in {"pipeline", "pipeline-copy"}
 
     def peer(request):
         body = json.loads(request.content)
@@ -164,6 +165,10 @@ async def test_edit_keeps_independent_snipped_exchanges(
             trial_ran |= len(trial) < len(rows)
             return rows
 
+    class CopyingShaper:
+        def shape(self, rows):
+            return [dict(row) for row in ShaperPipeline((snipper,)).shape(rows)]
+
     class AsyncSummarizer:
         def __call__(self, rows):
             return summarize(rows)
@@ -172,7 +177,9 @@ async def test_edit_keeps_independent_snipped_exchanges(
             await asyncio.sleep(0)
             return summarize(rows)
 
-    shapers = [snipper] if snip_as_stage else []
+    shapers = [snipper] if snip_mode == "pipeline" else []
+    if snip_mode == "pipeline-copy":
+        shapers.append(CopyingShaper())
     if snip_mode == "shaper":
         shapers.append(TrialShaper())
     if edit_user:
