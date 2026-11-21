@@ -77,7 +77,8 @@ class _CompletionUsageAccounting:
         self.protected_call = protected_call
         self.tokens = 0
         self._attempt_tokens: dict[object | None, int] = {}
-        self._native_usages: list[tuple[Any, BaseException | None, object | None]] = []
+        self._callback_usages: dict[object, Any] = {}
+        self._native_usages: list[tuple[Any, BaseException | None, object | None, Any]] = []
         self._settled: list[tuple[Any, int]] = []
         self._reported = False
 
@@ -96,16 +97,23 @@ class _CompletionUsageAccounting:
         self._attempt_tokens[owner] = self._attempt_tokens.get(owner, 0) + tokens
 
     def settle_provider(self, usage: Any) -> None:
-        self._settle(usage, self._attempt_tokens.pop(_native_usage_owner.get(), 0))
+        owner = _native_usage_owner.get()
+        self._settle(usage, self._attempt_tokens.pop(owner, 0))
+        if owner is not None:
+            self._callback_usages[owner] = usage
 
     def _observe_provider_response(
         self, usage: Any, error: BaseException | None, transport_timing: object | None,
     ) -> None:
-        self._native_usages.append((usage, error, transport_timing))
         owner = _native_usage_owner.get()
+        # A callback may settle a redacted copy of this request's usage.
+        settled = self._callback_usages.pop(owner, usage)
+        if settled is not usage and not _same_token_counts(usage, settled):
+            settled = usage
+        self._native_usages.append((usage, error, transport_timing, settled))
         # A router can forward the retry hook and keep the final callback for its chosen response.
         if owner is not None and owner in self._attempt_tokens:
-            self.settle_provider(usage)
+            self._settle(usage, self._attempt_tokens.pop(owner))
 
     def _settle(self, usage: Any, attempt_tokens: int) -> None:
         tokens = _normalize_completion_usage(usage)[1]
@@ -148,17 +156,19 @@ class _CompletionUsageAccounting:
                 (item for item in reversed(self._native_usages) if _same_usage_measurements(item[0], usage)),
                 None,
             )
-        native_usage = usage if native is None else native[0]
-        if usage is not None and all(native_usage is not settled for settled, _tokens in self._settled):
+        reported_usage = usage if native is None else native[3]
+        if usage is not None and all(reported_usage is not settled for settled, _tokens in self._settled):
             attempt_tokens = self._attempt_tokens.pop(None, 0) if native is None else 0
-            self._settle(native_usage, attempt_tokens)
+            self._settle(reported_usage, attempt_tokens)
         self._reported = True
         record_usage = getattr(self.runner, "_record_usage_event", None)
         if callable(record_usage):
             for settled, tokens in self._settled:
-                provider_error = next((failure for item, failure, _ in self._native_usages if item is settled), None)
+                provider_error = next(
+                    (failure for _, failure, _, recorded in self._native_usages if recorded is settled), None,
+                )
                 record_usage(settled, tokens, purpose=purpose, late=late,
-                             error=error if settled is native_usage and error is not None else provider_error)
+                             error=error if settled is reported_usage and error is not None else provider_error)
         if late:
             self.record_late()
         return bool(self._settled)

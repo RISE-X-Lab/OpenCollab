@@ -175,7 +175,8 @@ async def test_routed_completion_accounts_for_each_provider(
 
 
 @pytest.mark.parametrize("cache_read_tokens", [None, 0])
-async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monkeypatch, cache_read_tokens):
+@pytest.mark.parametrize("redact_at", ["response", "settlement"])
+async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monkeypatch, cache_read_tokens, redact_at):
     (tmp_path / "facts.txt").write_text("The verified value is 42.\n", encoding="utf-8")
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
@@ -208,12 +209,18 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
         async def complete(
             self, messages, *, on_admitted=None, before_request=None, on_attempt_usage=None, on_usage=None, **kwargs,
         ):
+            def redact_usage(usage):
+                on_usage(replace(usage, cache_read_tokens=cache_read_tokens))
+
+            settlement_callback = redact_usage if redact_at == "settlement" and on_usage is not None else on_usage
             controls = dict(on_admitted=on_admitted, before_request=before_request,
-                            on_attempt_usage=on_attempt_usage, on_usage=on_usage)
+                            on_attempt_usage=on_attempt_usage, on_usage=settlement_callback)
             kwargs.update((name, callback) for name, callback in controls.items() if callback is not None)
             response = await super().complete(messages, **kwargs)
             assert response.usage.cache_read_tokens == 1
-            return replace(response, usage=replace(response.usage, cache_read_tokens=cache_read_tokens))
+            if redact_at == "response":
+                return replace(response, usage=replace(response.usage, cache_read_tokens=cache_read_tokens))
+            return response
 
     install_sdk_transport(monkeypatch, "openai", handle)
     async with CacheRedactingClient(
@@ -234,4 +241,7 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
     assert "The verified value is 42." in requests[1][0]
     ledger = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
     assert [entry["usage"]["total_tokens"] for entry in ledger] == [300, 337]
-    assert [event.data["total_tokens"] for event in events if event.type == "usage"] == [300, 337]
+    usage_events = [event.data for event in events if event.type == "usage"]
+    assert [event["total_tokens"] for event in usage_events] == [300, 337]
+    if redact_at == "settlement":
+        assert [event["cache_read_tokens"] for event in usage_events] == [cache_read_tokens] * 2
