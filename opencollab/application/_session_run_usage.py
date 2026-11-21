@@ -86,6 +86,14 @@ def _same_usage_origin(first: Any, second: Any) -> bool:
     return first is second or (origin is not None and origin is getattr(second, "_native_usage_origin", None))
 
 
+def _completion_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _completion_json_value(item) for key, item in value.items() if item is not None}
+    if isinstance(value, (list, tuple)):
+        return [_completion_json_value(item) for item in value]
+    return value
+
+
 @dataclass(eq=False)
 class _UsageSettlement:
     usage: Any
@@ -228,16 +236,18 @@ class _CompletionUsageAccounting:
                 return item
         if not isinstance(transport_timing, dict) or transport_timing.get("request_started_at") is None:
             return None
-        # A serialized envelope keeps the measured timing and provider output, but loses object identity.
+        # JSON serializers may omit null object fields in timing and provider output.
         output_fields = (
             "content", "tool_calls", "finish_reason", "reasoning", "provider_items", "provider_model", "provider_state",
         )
+        timing = _completion_json_value(transport_timing)
+        output = tuple(_completion_json_value(getattr(response, field, None)) for field in output_fields)
         matches = [
             item for item in self._native_usages
             if item.response is not None
-            and item.transport_timing == transport_timing
+            and _completion_json_value(item.transport_timing) == timing
             and _same_token_counts(item.usage, usage)
-            and all(getattr(item.response, field, None) == getattr(response, field, None) for field in output_fields)
+            and tuple(_completion_json_value(getattr(item.response, field, None)) for field in output_fields) == output
         ]
         return matches[0] if len(matches) == 1 else None
 
