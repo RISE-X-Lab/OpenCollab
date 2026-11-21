@@ -7,7 +7,7 @@ Ollama, vLLM, etc.) via the OpenAI SDK.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Callable
 
 from opencollab.adapters.llm._attempt_usage import _combine_attempt_usage
 from opencollab.adapters.llm._chat_response import _parse_response, _reported_chat_usage
@@ -229,6 +229,8 @@ async def complete_openai(
     stream: bool = False,
     first_event_timeout: float | None = 180.0,
     stream_idle_timeout: float | None = 180.0,
+    before_attempt: Callable[[], int | None] | None = None,
+    on_attempt_usage: Callable[[Usage], None] | None = None,
 ) -> LLMResponse:
     """Single-shot completion against an OpenAI-compatible endpoint.
 
@@ -248,36 +250,41 @@ async def complete_openai(
         max_output_tokens,
         reasoning_effort,
     )
-    if not stream:
-
-        async def unstreamed_once() -> Any:
-            # Record the non-streamed attempt's start and unavailable first-token timing.
-            begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
-            return await client.chat.completions.create(**kwargs)
-
-        resp = await with_retry(
-            unstreamed_once,
-            max_retries=max_retries,
-            retry_time_budget=provider_error_time_budget,
-        )
-        return _parse_response(resp, kwargs["messages"], kwargs.get("tools"))
-
-    stream_kwargs = {**kwargs, **_STREAM_REQUEST_FIELDS}
+    if stream:
+        kwargs.update(_STREAM_REQUEST_FIELDS)
     failed_usages: list[Usage | None] = []
+
+    def prepare_attempt() -> None:
+        if before_attempt is not None and (limit := before_attempt()) is not None:
+            field = "max_completion_tokens" if _uses_reasoning_request_fields(model) else "max_tokens"
+            kwargs[field] = limit
+
+    def report_failure(_exc: BaseException) -> None:
+        if failed_usages and (usage := failed_usages[-1]) is not None and on_attempt_usage is not None:
+            on_attempt_usage(usage)
 
     async def request_once() -> LLMResponse:
         # Retry stream creation and draining together. Creation returns at headers,
         # so its success alone cannot cover a later stream failure.
         state = None
+        resp = None
         try:
+            if not stream:
+                begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
+                resp = await client.chat.completions.create(**kwargs)
+                return _parse_response(resp, kwargs["messages"], kwargs.get("tools"))
             state = await _create_and_consume_chat_stream(
-                client, stream_kwargs, first_event_timeout, stream_idle_timeout
+                client, kwargs, first_event_timeout, stream_idle_timeout
             )
             return _stream_state_to_response(
-                state, stream_kwargs["messages"], stream_kwargs.get("tools")
+                state, kwargs["messages"], kwargs.get("tools")
             )
         except BaseException as exc:
-            usage = _reported_chat_usage(state.usage_object) if state is not None else getattr(exc, "usage", None)
+            usage = (
+                _reported_chat_usage(state.usage_object) if state is not None
+                else _reported_chat_usage(resp.usage) if resp is not None
+                else getattr(exc, "usage", None)
+            )
             failed_usages.append(usage)
             raise
 
@@ -286,6 +293,8 @@ async def complete_openai(
             request_once,
             max_retries=max_retries,
             retry_time_budget=provider_error_time_budget,
+            before_attempt=prepare_attempt,
+            on_failure=report_failure,
         )
     except BaseException as exc:
         usage = _combine_attempt_usage(failed_usages)

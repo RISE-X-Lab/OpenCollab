@@ -15,7 +15,8 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Allow the full suite and the Python 3.12 DOM checks to finish on hosted runners.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

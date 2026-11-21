@@ -157,6 +157,62 @@ def test_store_replay_ignores_journal_records_covered_by_atomic_base(tmp_path) -
         "step 3",
     ]
 
+def test_invalid_checkpoint_messages_preserve_the_durable_journal(tmp_path) -> None:
+    path = str(tmp_path / "session.json")
+    store = SessionStore()
+    messages = [{"role": "user", "content": "last durable prompt"}]
+    store.append_snapshot_delta(path, sequence=1, replace_from=0, messages=messages, meta={})
+
+    with pytest.raises(ValueError, match="missing 'content'"):
+        store.checkpoint_snapshot(path, [{"role": "user"}], meta={}, sequence=2)
+
+    restored = store.load_snapshot(path, "fallback")
+    assert restored["_autosave_sequence"] == 1
+    assert restored["messages"] == messages
+
+def test_journal_replacement_uses_the_durable_prefix_and_requires_a_new_sequence(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "replacement.json"
+    journal = path.with_suffix(".json.journal")
+    store = SessionStore()
+    base = [{"role": "system", "content": "prompt"}]
+    archive = {"role": "user", "content": "\u20ac" * 1024}
+    replacement = [*base, archive, {"role": "assistant", "content": "latest"}]
+    store.checkpoint_snapshot(str(path), base, meta={}, sequence=1)
+    store.append_snapshot_delta(
+        str(path), sequence=2, replace_from=1, messages=[archive], meta={},
+        seen_result_hashes_added=["prior"],
+    )
+    before = journal.read_bytes()
+    monkeypatch.setattr(storage_module, "MAX_SESSION_SNAPSHOT_BYTES", len(before) + 512)
+
+    meta = {"session_state": {"seen_result_hashes": ["latest"]}}
+    for sequence in (1, 2):
+        assert not store.append_snapshot_replacement(str(path), replacement, meta=meta, sequence=sequence)
+        assert journal.read_bytes() == before
+
+    edited_archive = {"role": "user", "content": "\u96ea" * 1024}
+    with pytest.raises(ValueError, match="autosave journal exceeds"):
+        store.append_snapshot_replacement(str(path), [*base, edited_archive], meta=meta, sequence=3)
+    assert journal.read_bytes() == before
+
+    assert store.append_snapshot_replacement(str(path), replacement, meta=meta, sequence=3)
+    saved = SessionStore().load_snapshot(str(path), "prompt")
+    assert saved == {
+        "_autosave_sequence": 3,
+        "messages": replacement,
+        "session_state": {"seen_result_hashes": ["latest"]},
+    }
+    assert json.loads(journal.read_bytes().splitlines()[-1])["replace_from"] == 2
+
+def test_journal_replacement_uses_real_messages_from_blank_legacy_base(tmp_path) -> None:
+    path = tmp_path / "empty.json"
+    path.touch()
+    messages = [{"role": "system", "content": ""}, {"role": "user", "content": "persist me"}]
+    store = SessionStore()
+
+    assert store.append_snapshot_replacement(str(path), messages, meta={}, sequence=1)
+    assert store.load_messages(str(path), "") == messages
+
 def test_store_rejects_complete_invalid_journal_record(tmp_path) -> None:
     path = tmp_path / "session.json"
     store = SessionStore()

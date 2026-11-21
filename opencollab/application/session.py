@@ -20,6 +20,9 @@ from opencollab.application.ports import (
     PermissionPort,
     SafetyPolicyPort,
     SessionStorePort,
+    SnapshotCapacityError,
+    SnapshotReplacementStorePort,
+    SnapshotSequenceConflict,
     SnapshotStorePort,
     TracePort,
 )
@@ -30,6 +33,7 @@ from opencollab.application.session_snapshot import (
     _restore_pending_row,
     _restore_phase,
     _restore_queued_external_user_turn,
+    _serialize_anthropic_history,
     _serialize_pending_row,
     _snapshot_int,
     _snapshot_nonnegative_float,
@@ -39,7 +43,7 @@ from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import Agent
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
-from opencollab.domain.session import SessionPhase, SessionState
+from opencollab.domain.session import SessionPhase, SessionState, same_snapshot_value
 from opencollab.domain.tool_loops import LoopState
 
 if TYPE_CHECKING:
@@ -147,7 +151,9 @@ class Session:
         self._terminal_checkpoint_error: Exception | None = None
         self._auto_save_sequence = 0
         self._auto_save_reserved_sequence = 0
+        self._auto_save_conflict: str | None = None
         self._auto_save_message_count = 0
+        self._auto_save_messages: list[dict] | None = None
         self._auto_save_rewrite_from: int | None = 0
         self._auto_save_rewrite_revision = 0
         self._auto_save_lock = threading.Lock()
@@ -317,9 +323,7 @@ class Session:
     def messages(self, value: list[dict]) -> None:
         self.state.replace_messages(value)
         if hasattr(self, "_auto_save_rewrite_from"):
-            with self._auto_save_lock:
-                self._auto_save_rewrite_from = 0
-                self._auto_save_rewrite_revision += 1
+            self._mark_auto_save_rewrite(0)
 
     @property
     def used_tokens(self) -> int:
@@ -437,6 +441,10 @@ class Session:
             # The pending rows and their elapsed time are now complete. Persist
             # this suspension without emitting the step_end reserved for resume.
             return
+        with self._auto_save_lock:
+            if self._auto_save_conflict is not None:
+                # The autosave worker already reported the ownership conflict.
+                return
         # Journal-backed autosave normally appends a delta. A terminal turn
         # must also publish a self-contained base snapshot: callers and crash
         # recovery may read the base file directly, without replaying its
@@ -533,7 +541,7 @@ class Session:
             messages=[],
             aid=_snapshot_int(snapshot.get("aid"), default=self.state.aid),
         )
-        restored.replace_messages(messages)
+        restored.replace_messages(messages, restoring=True)
         pending_messages = snapshot.get("pending_messages", [])
         restored.pending_user_messages = (
             [
@@ -749,10 +757,17 @@ class Session:
         sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
         self._auto_save_sequence = sequence
         self._auto_save_reserved_sequence = sequence
+        self._auto_save_conflict = None
         stored_messages = snapshot.get("messages")
         self._auto_save_message_count = min(
             len(stored_messages) if isinstance(stored_messages, list) else 0,
             len(self.state.messages),
+        )
+        self._auto_save_messages = (
+            copy.deepcopy(stored_messages)
+            if isinstance(stored_messages, list) and self._auto_save_path
+            and isinstance(self.store, JournalSnapshotStorePort) and self.state.anthropic_history is not None
+            else None
         )
         self._auto_save_rewrite_from = None
         self._auto_save_seen_result_hashes = set(
@@ -773,7 +788,25 @@ class Session:
         sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
         if isinstance(self.store, JournalSnapshotStorePort):
             sequence += 1
-            self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+            try:
+                self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+            except SnapshotSequenceConflict:
+                saved_message_count = len(snapshot.get("messages", ()))
+                if saved_message_count >= len(messages) or not isinstance(self.store, SnapshotStorePort):
+                    raise
+                previous = self.store.load_snapshot(target_path, self.agent.system_prompt)
+                previous_messages = previous["messages"]
+                if previous.get("_autosave_sequence") != sequence or len(previous_messages) != len(messages):
+                    raise
+                # A retry regenerates recovery rows with a new wall-clock time.
+                # The checkpoint still compares their content and every source row.
+                timestamps = [message.get("timestamp") for message in previous_messages[saved_message_count:]]
+                if not all(isinstance(timestamp, str) for timestamp in timestamps):
+                    raise
+                for message, timestamp in zip(messages[saved_message_count:], timestamps):
+                    message["timestamp"] = timestamp
+                self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+                restored.message_timestamps[saved_message_count:] = timestamps
         else:
             meta["_autosave_sequence"] = sequence
             self.store.save(target_path, messages, meta=meta)
@@ -936,6 +969,8 @@ class Session:
             # skip its sequence and its completion cannot rewind our cursor.
             with self._auto_save_lock:
                 messages, meta = self._snapshot_for_save()
+                track_messages = self._auto_save_messages is not None or self.state.anthropic_history is not None
+                tracked_messages = messages if track_messages else None
                 sequence = self._reserve_auto_save_sequence()
                 rewrite_revision = self._auto_save_rewrite_revision
                 self._auto_save_pending_checkpoints.add(sequence)
@@ -948,6 +983,8 @@ class Session:
                     with self._auto_save_lock:
                         self._auto_save_sequence = sequence
                         self._auto_save_message_count = len(messages)
+                        self._auto_save_messages = tracked_messages
+                        self._auto_save_conflict = None
                         if self._auto_save_rewrite_revision == rewrite_revision:
                             self._auto_save_rewrite_from = None
                         self._auto_save_seen_result_hashes = set(meta["session_state"]["seen_result_hashes"])
@@ -1004,7 +1041,7 @@ class Session:
                 "completed_turn_start_message_index": state.completed_turn_start_message_index,
                 "pending_step_latency": state.pending_step_latency,
                 "submitted_summary": state.submitted_summary,
-                "anthropic_history": state.anthropic_history,
+                "anthropic_history": _serialize_anthropic_history(state),
             },
         }
         if self.run_id is not None:
@@ -1037,6 +1074,12 @@ class Session:
         with self._auto_save_lock:
             return self._prepare_journal_auto_save(path)
 
+    def _mark_auto_save_rewrite(self, start: int) -> None:
+        with self._auto_save_lock:
+            previous = self._auto_save_rewrite_from
+            self._auto_save_rewrite_from = start if previous is None else min(previous, start)
+            self._auto_save_rewrite_revision += 1
+
     def _reserve_auto_save_sequence(self) -> int:
         self._auto_save_reserved_sequence = max(
             self._auto_save_reserved_sequence, self._auto_save_sequence,
@@ -1044,6 +1087,8 @@ class Session:
         return self._auto_save_reserved_sequence
 
     def _prepare_journal_auto_save(self, path: str) -> Callable[[], None]:
+        if self._auto_save_conflict is not None:
+            raise SnapshotSequenceConflict(self._auto_save_conflict)
         preceding_write_pending = self._auto_save_reserved_sequence > self._auto_save_sequence
         sequence = self._reserve_auto_save_sequence()
         message_count = len(self.state.messages)
@@ -1058,7 +1103,28 @@ class Session:
         rewrite_revision = self._auto_save_rewrite_revision
         if self._auto_save_rewrite_from is not None:
             replace_from = min(replace_from, self._auto_save_rewrite_from)
+        has_native_history = self.state.anthropic_history is not None
+        track_messages = self._auto_save_messages is not None or has_native_history
+        stored_messages = self._auto_save_messages or []
+        if track_messages:
+            # Native history references resolve against the last committed transcript.
+            replace_from = min(replace_from, len(stored_messages))
+            if replace_from:
+                current_messages = self.state.enriched_messages()
+                for index in range(replace_from):
+                    if not same_snapshot_value(current_messages[index], stored_messages[index]):
+                        replace_from = index
+                        break
+        # A full native rewrite can exceed the journal's remaining capacity.
+        replacement_store = None
+        if (
+            has_native_history and replace_from == 0
+            and (preceding_write_pending or self._auto_save_message_count > 0)
+            and isinstance(self.store, SnapshotReplacementStorePort)
+        ):
+            replacement_store = self.store
         messages, meta = self._snapshot_for_save(replace_from)
+        tracked_messages = [*stored_messages[:replace_from], *messages] if track_messages else None
         current_seen_hashes = set(self.state.turn.seen_result_hashes)
         seen_hashes_reset = preceding_write_pending or not self._auto_save_seen_result_hashes.issubset(
             current_seen_hashes
@@ -1068,47 +1134,77 @@ class Session:
             if seen_hashes_reset
             else current_seen_hashes - self._auto_save_seen_result_hashes
         )
-        checkpoint_due = sequence >= self._next_auto_save_checkpoint
-        checkpoint_messages = (
-            copy.deepcopy(self.state.enriched_messages())
-            if checkpoint_due
-            else None
-        )
+        checkpoint_messages = None
+        if replacement_store is not None or sequence >= self._next_auto_save_checkpoint:
+            checkpoint_messages = tracked_messages
+            if checkpoint_messages is None:
+                checkpoint_messages = copy.deepcopy(self.state.enriched_messages())
+
+        def advance_cursor() -> None:
+            self._auto_save_sequence = sequence
+            self._auto_save_message_count = message_count
+            self._auto_save_messages = tracked_messages
+            if self._auto_save_rewrite_revision == rewrite_revision:
+                self._auto_save_rewrite_from = None
+            self._auto_save_seen_result_hashes = current_seen_hashes
+
+        def write_checkpoint(full_messages: list[dict]) -> bool:
+            try:
+                self.store.checkpoint_snapshot(path, full_messages, meta=meta, sequence=sequence)
+            except (OSError, SnapshotCapacityError) as checkpoint_error:
+                if replacement_store is None:
+                    raise
+                try:
+                    saved = replacement_store.append_snapshot_replacement(
+                        path,
+                        full_messages,
+                        meta=meta,
+                        sequence=sequence,
+                        reject_conflicts=True,
+                    )
+                except SnapshotSequenceConflict:
+                    raise
+                except Exception as journal_error:
+                    raise checkpoint_error from journal_error
+                if not saved:
+                    raise
+                return False
+            return True
 
         def persist() -> None:
-            self.store.append_snapshot_delta(
-                path,
-                sequence=sequence,
-                replace_from=replace_from,
-                messages=messages,
-                meta=meta,
-                seen_result_hashes_reset=seen_hashes_reset,
-                seen_result_hashes_added=seen_hashes_added,
-            )
-            with self._auto_save_lock:
-                if sequence <= self._auto_save_sequence:
-                    return
-                # The journal append is already fsync'd. Advance the absolute
-                # cursor before optional compaction so a failed base rewrite
-                # cannot cause the durable delta to be skipped on the next save.
-                self._auto_save_sequence = sequence
-                self._auto_save_message_count = message_count
-                if self._auto_save_rewrite_revision == rewrite_revision:
-                    self._auto_save_rewrite_from = None
-                self._auto_save_seen_result_hashes = current_seen_hashes
+            if replacement_store is None:
+                self.store.append_snapshot_delta(
+                    path,
+                    sequence=sequence,
+                    replace_from=replace_from,
+                    messages=messages,
+                    meta=meta,
+                    seen_result_hashes_reset=seen_hashes_reset,
+                    seen_result_hashes_added=seen_hashes_added,
+                )
+                with self._auto_save_lock:
+                    if sequence <= self._auto_save_sequence:
+                        return
+                    # The fsync'd append survives a failed base rewrite.
+                    advance_cursor()
             if checkpoint_messages is not None:
                 with self._auto_save_checkpoint_lock:
                     with self._auto_save_lock:
                         if sequence < self._auto_save_sequence:
                             return
-                    self.store.checkpoint_snapshot(
-                        path,
-                        checkpoint_messages,
-                        meta=meta,
-                        sequence=sequence,
-                    )
+                    try:
+                        compacted = write_checkpoint(checkpoint_messages)
+                    except SnapshotSequenceConflict as conflict:
+                        if replacement_store is not None:
+                            # A later cursor from this stale session still refers to the same old base.
+                            with self._auto_save_lock:
+                                self._auto_save_conflict = str(conflict)
+                        raise
                     with self._auto_save_lock:
-                        self._next_auto_save_checkpoint = 1 << sequence.bit_length()
+                        if replacement_store is not None:
+                            advance_cursor()
+                        if compacted:
+                            self._next_auto_save_checkpoint = 1 << sequence.bit_length()
 
         def persist_incrementally() -> None:
             with self._auto_save_lock:

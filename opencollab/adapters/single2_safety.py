@@ -28,6 +28,10 @@ class Single2SafetyPolicy:
     def check_path(self, target_path: str) -> str:
         return self._policy.check_path(target_path)
 
+    def check_remote_file_path(self, target_path: str) -> str | None:
+        check = getattr(self._policy, "check_remote_file_path", None)
+        return check(target_path) if callable(check) else None
+
     def check_cmd(self, cmd: str) -> None:
         self._policy.check_cmd(cmd)
         self._check_container_search(cmd)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from opencollab.adapters._env_base import _track_shell_command
 from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.tool_execution import ToolRuntime
@@ -116,7 +117,8 @@ class BashTool(Tool):
         if safety_policy:
             await safety_policy.check_cmd_interactive(cmd, runtime.confirm_fn())
 
-        result = await env.exec_cmd(cmd, timeout=timeout)
+        with _track_shell_command(env):
+            result = await env.exec_cmd(cmd, timeout=timeout)
         observations = getattr(runtime, "observations", None)
         if observations is not None:
             observations.record_execution(

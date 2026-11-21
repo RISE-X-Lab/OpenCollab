@@ -4,6 +4,7 @@ import asyncio
 import os
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -12,6 +13,60 @@ from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.request_admission import request_slot
 from opencollab.adapters.llm.types import LLMResponse
 from tests.support.paths import PACKAGE_ROOT
+
+
+@pytest.mark.parametrize("configuration, provider_function", [
+    ({"model": "gpt-4o"}, "complete_openai"),
+    ({"model": "gpt-4o", "wire_protocol": "responses"}, "complete_responses"),
+    ({"model": "claude-sonnet-4-6", "provider": "anthropic"}, "complete_anthropic"),
+], ids=["chat", "responses", "anthropic"])
+@pytest.mark.parametrize("consume_hooks", [False, True])
+@pytest.mark.parametrize("configured_limit", [None, 50, 128])
+async def test_slot_admission_prepares_first_request_before_provider_entry(
+    tmp_path, monkeypatch, configuration, provider_function, consume_hooks, configured_limit,
+):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    queued = asyncio.Event()
+    events = []
+    limits = iter([80, 31])
+    native_slot = transport.request_slot
+    first_limit = 80 if configured_limit is None else min(configured_limit, 80)
+
+    @asynccontextmanager
+    async def observed_slot(*args):
+        queued.set()
+        async with native_slot(*args):
+            yield
+
+    def revalidate():
+        limit = next(limits)
+        events.append(f"limit_{limit}")
+        return limit
+
+    async def complete(*_args, **kwargs):
+        events.append("provider")
+        assert events == ["limit_80", "admitted", "provider"]
+        assert kwargs["max_output_tokens"] == first_limit
+        if consume_hooks:
+            assert kwargs["before_attempt"]() == first_limit
+            assert events == ["limit_80", "admitted", "provider"]
+            assert kwargs["before_attempt"]() == 31
+        return LLMResponse(content="answer")
+
+    monkeypatch.setattr(transport, "request_slot", observed_slot)
+    monkeypatch.setattr(transport, provider_function, complete)
+    async with LLMClient(
+        **configuration, api_key="local-test", request_pool=str(tmp_path), request_capacity=1,
+    ) as client:
+        async with native_slot(str(tmp_path), 1):
+            owner = asyncio.create_task(client.complete(
+                [], max_output_tokens=configured_limit, before_request=revalidate,
+                on_admitted=lambda: events.append("admitted"),
+            ))
+            await asyncio.wait_for(queued.wait(), 1)
+            assert events == []
+        assert (await asyncio.wait_for(owner, 1)).content == "answer"
+    assert events == ["limit_80", "admitted", "provider", *(["limit_31"] if consume_hooks else [])]
 
 
 async def test_cancellation_retains_slot_until_native_cleanup_finishes(tmp_path, monkeypatch):

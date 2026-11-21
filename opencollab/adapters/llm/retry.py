@@ -139,6 +139,8 @@ async def with_retry(
     max_retries: int | None,
     *,
     retry_time_budget: RetryTimeBudget | None = None,
+    before_attempt: Callable[[], None] | None = None,
+    on_failure: Callable[[BaseException], None] | None = None,
 ) -> Any:
     """Retry transient provider errors with exponential backoff.
 
@@ -146,14 +148,19 @@ async def with_retry(
     """
     attempt = 0
     while True:
+        if before_attempt is not None:
+            before_attempt()
         started = time.monotonic()
         try:
             return await call_factory()
-        except Exception as e:
-            if not is_retryable_error(e):
+        except BaseException as e:
+            elapsed = time.monotonic() - started
+            if on_failure is not None:
+                on_failure(e)
+            if not isinstance(e, Exception) or not is_retryable_error(e):
                 raise
             retry_time_available = retry_time_budget is None or retry_time_budget.consume(
-                time.monotonic() - started
+                elapsed
             )
             if max_retries is not None and attempt >= max_retries:
                 raise

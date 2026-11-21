@@ -31,6 +31,7 @@ import logging
 import math
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from copy import deepcopy
 from typing import Any
 
@@ -210,6 +211,7 @@ class WorkflowContext(
             _TaskConcurrencyPermit | None
         ] = contextvars.ContextVar("workflow_task_concurrency_permit", default=None)
         self._pending_cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self._workflow_imports: ExitStack | None = None
         self._active_call_tasks: set[asyncio.Task[Any]] = set()
         self._active_session_tasks: set[asyncio.Task[Any]] = set()
         self._agent_failures: list[dict[str, Any]] = []
@@ -712,6 +714,10 @@ class WorkflowContext(
         lease = self._active_budget_lease.get()
         if lease is not None:
             lease.sessions.append(session)
+            runner = getattr(session, "runner", None)
+            if lease.reserved and runner is not None:
+                # Other leases keep their allocation when a sibling overspends.
+                runner.budget_reservations.append(lambda: max(0, -int(self.budget.remaining())))
 
     def _active_call_has_pending_cleanup(self) -> bool:
         lease = self._active_budget_lease.get()

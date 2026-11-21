@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from opencollab.application.workflow_candidates import CandidateAdoptionRecoveryError
 from opencollab.workflows import CandidateRun
 
 MAX_PUBLIC_COMMAND_BYTES = 4_000
@@ -98,6 +99,8 @@ async def _adopt(
         attempts.append(label)
         try:
             await ctx.adopt_candidate(candidate, preserve_paths=preserve_paths)
+        except CandidateAdoptionRecoveryError:
+            raise
         except Exception as exc:  # noqa: BLE001
             await ctx.log(f"Duo adoption failed ({label}) after {type(exc).__name__}")
             continue

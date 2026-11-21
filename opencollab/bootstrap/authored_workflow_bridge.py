@@ -7,26 +7,30 @@ import json
 import math
 import posixpath
 import time
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange
+from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange, _track_shell_command
 from opencollab.adapters.llm import errors as llm_errors
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.types import LLMResponse, Usage, to_plain_data
-from opencollab.adapters.tools.base import host_write_lock
+from opencollab.adapters.tools.base import host_write_lock, host_write_locks
+from opencollab.application._session_run_shared import _TeamBudgetStop, _TokenBudgetStop
 from opencollab.application._session_run_usage import _normalize_completion_usage
 from opencollab.application.async_timeout import await_owned_operation, consume_task_result
 from opencollab.application.exception_notes import add_exception_note
+from opencollab.application.run_control import _RunCancelled
+from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 
 _METADATA = {"context_window", "estimate_request_tokens", "estimate_context_tokens", "minimum_output_tokens"}
 _COMPLETION = {"messages", "tools", "temperature", "thinking", "thinking_params", "reasoning_effort",
                "tool_choice", "top_p", "max_output_tokens", "response_session_id"}
-_ENVIRONMENT = {"exec_cmd", "read_file", "read_text_range", "write_file", "write_temp_file", "remove_file"}
+_ENVIRONMENT = {"exec_cmd", "read_file", "read_text_range", "write_file", "write_temp_file", "remove_file",
+                "resolve_search_path"}
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -36,29 +40,41 @@ def _write_json(path: Path, value: Any) -> None:
 
 
 def _restore_error(value: dict[str, Any]) -> Exception:
-    name = value.pop("type")
-    cls = getattr(llm_errors, name, getattr(builtins, name, RuntimeError))
-    if not isinstance(cls, type) or not issubclass(cls, Exception):
-        cls = RuntimeError
-    error = cls(value.pop("message"))
+    error_type = value["type"]
+    error: Exception
+    if error_type == "_RunCancelled":
+        error = _RunCancelled()
+    elif error_type == "_TeamBudgetStop":
+        error = _TeamBudgetStop()
+    elif error_type == "_TokenBudgetStop":
+        error = _TokenBudgetStop(
+            reserved_input_tokens=value["reserved_input_tokens"], remaining_budget=value["remaining_budget"],
+            minimum_output_tokens=value["minimum_output_tokens"],
+        )
+    else:
+        cls = getattr(llm_errors, error_type, getattr(builtins, error_type, RuntimeError))
+        if not isinstance(cls, type) or not issubclass(cls, Exception):
+            cls = RuntimeError
+        error = cls(value["message"])
     for name, item in value.items():
-        setattr(error, name, Usage(**item) if name == "usage" else item)
+        if name not in {"type", "message"}:
+            setattr(error, name, Usage(**item) if name == "usage" else item)
     return error
 
 
 class _FileEdit:
     """Run native operations in the task holding their environment's edit lock."""
 
-    def __init__(self, environment: Any, path: str) -> None:
+    def __init__(self, environment: Any, lock: AbstractAsyncContextManager[Any]) -> None:
         self.environment = environment
         self.ready = asyncio.get_running_loop().create_future()
         self.ready.add_done_callback(consume_task_result)
         self.calls: asyncio.Queue[tuple[str, dict[str, Any], asyncio.Future[Any]] | None] = asyncio.Queue()
-        self.task = asyncio.create_task(self._run(path))
+        self.task = asyncio.create_task(self._run(lock))
 
-    async def _run(self, path: str) -> None:
+    async def _run(self, lock: AbstractAsyncContextManager[Any]) -> None:
         try:
-            async with host_write_lock(path, self.environment):
+            async with lock:
                 self.ready.set_result(None)
                 while (call := await self.calls.get()) is not None:
                     action, arguments, reply = call
@@ -102,7 +118,11 @@ class AuthoredWorkflowBridge:
     """Own only this authored run's strategy pools and admitted operations."""
 
     def __init__(self, environment: Any, artifacts: str, pool: Any, llm: Any, runtime: Any,
-                 *, allow_unisolated_shell: bool) -> None:
+                 *, allow_unisolated_shell: bool, budget: int | None = None,
+                 remaining_budget: Callable[[], int | None] | None = None,
+                 on_usage: Callable[[int], None] | None = None,
+                 team_budget_exhausted: Callable[[], bool] | None = None,
+                 cancel_requested: Callable[[], bool] | None = None) -> None:
         relative = posixpath.relpath(artifacts, environment.workspace)
         if relative == ".." or relative.startswith("../") or posixpath.isabs(relative):
             raise ValueError("child mailbox must be inside the member workspace")
@@ -114,6 +134,11 @@ class AuthoredWorkflowBridge:
         self._environments = {0: environment}
         self._next_environment = 0
         self.tokens = 0
+        self._budget = budget
+        self._remaining_budget = remaining_budget
+        self._on_usage = on_usage
+        self._team_budget_exhausted = team_budget_exhausted
+        self._cancel_requested = cancel_requested
         self._tasks: dict[str, asyncio.Task] = {}
         self._handles: dict[str, int] = {}
         self._edits: dict[str, _FileEdit] = {}
@@ -141,6 +166,41 @@ class AuthoredWorkflowBridge:
                 "requires_thinking_prefix": None,
                 "supports_request_admission": self._config.get("request_pool") is not None,
                 "supports_response_session_identity": self._config.get("wire_protocol") == "responses"}
+
+    def _request_output_limit(self, arguments: dict[str, Any]) -> int:
+        if self._cancel_requested is not None and self._cancel_requested():
+            raise _RunCancelled
+        if self._team_budget_exhausted is not None and self._team_budget_exhausted():
+            raise _TeamBudgetStop
+        configured = arguments.get("max_output_tokens")
+        if configured is None:
+            configured = self._config.get("max_output_tokens", DEFAULT_MAX_TOKENS_PER_STEP)
+        remaining = None if self._budget is None else self._budget - self.tokens
+        if self._remaining_budget is not None:
+            parent_remaining = self._remaining_budget()
+            if parent_remaining is not None:
+                remaining = parent_remaining if remaining is None else min(remaining, parent_remaining)
+        if remaining is None:
+            return configured
+        model = self._model()
+        thinking = arguments.get("thinking", False)
+        thinking_params = arguments.get("thinking_params")
+        reserved = model.estimate_request_tokens(
+            arguments["messages"], arguments.get("tools"), thinking=thinking, thinking_params=thinking_params,
+        )
+        minimum = model.minimum_output_tokens(
+            max_output_tokens=configured, thinking=thinking, thinking_params=thinking_params,
+        )
+        if remaining - reserved < minimum:
+            raise _TokenBudgetStop(
+                reserved_input_tokens=reserved, remaining_budget=remaining, minimum_output_tokens=minimum,
+            )
+        return min(configured, remaining - reserved)
+
+    def _account_native_usage(self, usage: Any, *, accounted_tokens: int = 0) -> None:
+        self.tokens += _normalize_completion_usage(usage)[1] - accounted_tokens
+        if self._on_usage is not None:
+            self._on_usage(self.tokens)
 
     async def poll(self) -> None:
         try:
@@ -183,10 +243,13 @@ class AuthoredWorkflowBridge:
             if not isinstance(exc, (Exception, asyncio.CancelledError)):
                 raise
             error = {"type": type(exc).__name__, "message": str(exc)}
-            for name in ("usage", "status_code", "code", "param", "body"):
+            for name in ("usage", "status_code", "code", "param", "body", "reserved_input_tokens",
+                         "remaining_budget", "minimum_output_tokens"):
                 value = getattr(exc, name, None)
                 if value is not None:
-                    error[name] = to_plain_data(value)
+                    error[name] = (
+                        asdict(value) if name == "usage" and isinstance(value, Usage) else to_plain_data(value)
+                    )
             reply = {"error": error}
         await await_owned_operation(self._environment.write_file(
             posixpath.join(self._directory, f"{identity}.json"), json.dumps(reply, ensure_ascii=False),
@@ -200,10 +263,19 @@ class AuthoredWorkflowBridge:
         if isinstance(handle, bool) or not isinstance(handle, int) or handle not in self._environments:
             raise ValueError("unknown environment for this authored run")
         environment = self._environments[handle]
-        if action == "file_write_lock":
-            if set(arguments) != {"path"}:
-                raise ValueError("file edit lock needs a path")
-            edit = _FileEdit(environment, arguments["path"])
+        if action in {"file_write_lock", "file_write_locks"}:
+            required = {"path"} if action == "file_write_lock" else {"paths"}
+            optional = {"shared_ancestors"} if action == "file_write_locks" else set()
+            if not required <= arguments.keys() <= required | optional:
+                raise ValueError("file edit lock needs paths")
+            paths = [arguments["path"]] if action == "file_write_lock" else arguments["paths"]
+            if not isinstance(paths, list) or not paths or any(not isinstance(path, str) for path in paths):
+                raise ValueError("file edit lock needs non-empty text paths")
+            lock = (
+                host_write_lock(paths[0], environment) if action == "file_write_lock"
+                else host_write_locks(paths, environment, shared_ancestors=arguments.get("shared_ancestors") is True)
+            )
+            edit = _FileEdit(environment, lock)
             self._edits[identity] = edit
             try:
                 await asyncio.shield(edit.ready)
@@ -233,6 +305,22 @@ class AuthoredWorkflowBridge:
             if set(arguments) - _COMPLETION:
                 raise ValueError("unknown completion controls")
             notifications = []
+            native_accounting = getattr(self._model(), "supports_request_revalidation", False)
+            if native_accounting:
+                accounted_tokens = 0
+
+                def account_attempt(usage: Any) -> None:
+                    nonlocal accounted_tokens
+                    total = _normalize_completion_usage(usage)[1]
+                    accounted_tokens += total
+                    self._account_native_usage(usage)
+
+                arguments["before_request"] = lambda: self._request_output_limit(arguments)
+                arguments["on_usage"] = lambda usage: self._account_native_usage(
+                    usage, accounted_tokens=accounted_tokens,
+                )
+                if getattr(self._model(), "supports_attempt_usage", False):
+                    arguments["on_attempt_usage"] = account_attempt
             if getattr(self._model(), "supports_request_admission", False):
                 def admitted() -> None:
                     notifications.append(asyncio.create_task(self._environment.write_file(
@@ -243,10 +331,11 @@ class AuthoredWorkflowBridge:
                 try:
                     response = await self._model().complete(**arguments)
                 except BaseException as exc:
-                    if getattr(exc, "usage", None) is not None:
-                        self.tokens += _normalize_completion_usage(exc.usage)[1]
+                    if not native_accounting and getattr(exc, "usage", None) is not None:
+                        self._account_native_usage(exc.usage)
                     raise
-                self.tokens += _normalize_completion_usage(response.usage)[1]
+                if not native_accounting:
+                    self._account_native_usage(response.usage)
                 return to_plain_data(response)
             finally:
                 if notifications:
@@ -259,6 +348,7 @@ class AuthoredWorkflowBridge:
             self._next_environment += 1
             self._environments[self._next_environment] = acquired
             return {"handle": self._next_environment, "workspace": acquired.workspace,
+                    "remote_filesystem": getattr(acquired, "remote_filesystem", False) is True,
                     "process_isolated": bool(getattr(acquired, "process_isolated", False))}
         if action == "release":
             if arguments or handle == 0:
@@ -287,13 +377,14 @@ class AuthoredWorkflowBridge:
             if "input_bytes" in arguments:
                 arguments["input_bytes"] = base64.b64decode(arguments["input_bytes"], validate=True)
         edit_id = request.get("edit")
-        if edit_id is None:
-            result = await getattr(environment, action)(**arguments)
-        else:
-            edit = self._edits.get(edit_id)
-            if edit is None or edit.environment is not environment:
-                raise ValueError("unknown file edit lock for this environment")
-            result = await edit.call(action, arguments)
+        with _track_shell_command(environment) if action == "exec_cmd" else nullcontext():
+            if edit_id is None:
+                result = await getattr(environment, action)(**arguments)
+            else:
+                edit = self._edits.get(edit_id)
+                if edit is None or edit.environment is not environment:
+                    raise ValueError("unknown file edit lock for this environment")
+                result = await edit.call(action, arguments)
         if isinstance(result, (ExecResult, TextFileRange)):
             result = asdict(result)
             if result.get("stdout_bytes") is not None:
@@ -377,7 +468,7 @@ class BridgeClient:
                 usage = getattr(exc, "usage", None)
             else:
                 usage = Usage(**value["usage"]) if action == "complete" and isinstance(value, dict) else None
-                if action == "file_write_lock":
+                if action in {"file_write_lock", "file_write_locks"}:
                     try:
                         await await_owned_operation(self.call("file_write_unlock", {"id": value}, environment))
                     except Exception as exc:
@@ -405,19 +496,33 @@ class BridgeClient:
 
 
 class BridgeEnvironment(Environment):
+    _handles_file_lock_hierarchy = True
+
     def __init__(self, client: BridgeClient, options: dict[str, Any]) -> None:
         super().__init__()
         self.client, self.handle = client, options["handle"]
         self.workspace, self.process_isolated = options["workspace"], options["process_isolated"]
+        self.remote_filesystem = options.get("remote_filesystem") is True
         self._released = False
         self._edit: ContextVar[str | None] = ContextVar("authored_file_edit", default=None)
 
     async def _call(self, action: str, arguments: dict[str, Any]) -> Any:
         return await self.client.call(action, arguments, self.handle, edit=self._edit.get())
 
+    def file_write_lock(self, path: str) -> AbstractAsyncContextManager[None]:
+        return self._file_edit("file_write_lock", {"path": path})
+
+    def file_write_locks(
+        self, paths: Sequence[str], *, _shared_ancestors: bool = False,
+    ) -> AbstractAsyncContextManager[None]:
+        arguments: dict[str, Any] = {"paths": list(paths)}
+        if _shared_ancestors:
+            arguments["shared_ancestors"] = True
+        return self._file_edit("file_write_locks", arguments)
+
     @asynccontextmanager
-    async def file_write_lock(self, path: str) -> AsyncIterator[None]:
-        identity = await self.client.call("file_write_lock", {"path": path}, self.handle)
+    async def _file_edit(self, action: str, arguments: dict[str, Any]) -> AsyncIterator[None]:
+        identity = await self.client.call(action, arguments, self.handle)
         token = self._edit.set(identity)
         try:
             yield None
@@ -439,6 +544,9 @@ class BridgeEnvironment(Environment):
 
     async def read_file(self, path: str) -> str:
         return await self._call("read_file", {"path": path})
+
+    async def resolve_search_path(self, path: str) -> str:
+        return await self._call("resolve_search_path", {"path": path})
 
     async def read_text_range(self, path: str, **kwargs: Any) -> TextFileRange:
         return TextFileRange(**await self._call("read_text_range", {"path": path, **kwargs}))
