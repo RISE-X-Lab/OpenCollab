@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from opencollab import OpenCollab
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.storage import SessionStore
@@ -199,8 +200,20 @@ async def test_old_anthropic_export_can_resume_an_existing_autosave_twice(tmp_pa
 
             old_export = json.loads(exported.read_text())
             history = old_export["session_state"]["anthropic_history"]
+            assert any(type(row) is int for row in history["messages"])
+            current_inspection = OpenCollab.read_session_snapshot(exported)
+            assert current_inspection["session_state"]["anthropic_history"]["messages"] == [
+                messages[row] if type(row) is int else row for row in history["messages"]
+            ]
+            current_inspection["messages"][1]["content"] = "Changing the inspection data."
+            assert current_inspection["session_state"]["anthropic_history"]["messages"][1]["content"] == (
+                "Remember the review deadline."
+            )
+            assert json.loads(exported.read_text()) == old_export
+
             history["messages"] = [messages[row] if type(row) is int else row for row in history["messages"]]
             exported.write_text(json.dumps(old_export))
+            assert OpenCollab.read_session_snapshot(exported)["session_state"]["anthropic_history"] == history
             first = load_session(str(exported), **options, auto_save_path=str(target))
             await first.aclose()
 

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.storage import SessionStore
+from opencollab.application.session_snapshot import decode_anthropic_history
 from opencollab.bootstrap.config import resolve_model_route
 
 
@@ -37,4 +39,11 @@ def configured_model_client(
 
 def read_session_snapshot(path: str | Path, password: str = "") -> dict[str, Any]:
     """Read the native snapshot and journal through their owning storage adapter."""
-    return SessionStore().load_snapshot(str(path), password)
+    snapshot = SessionStore().load_snapshot(str(path), password)
+    state = snapshot.get("session_state")
+    history = state.get("anthropic_history") if isinstance(state, dict) else None
+    if isinstance(history, dict):
+        decoded = decode_anthropic_history(history, snapshot["messages"])
+        if decoded is not None:
+            history["messages"] = copy.deepcopy(decoded["messages"])
+    return snapshot
