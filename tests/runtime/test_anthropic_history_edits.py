@@ -406,7 +406,8 @@ def test_ambiguous_adjacent_reused_calls_rebuild_after_edit(edit, include_shared
 
 @pytest.mark.parametrize("scenario", [
     "first-edit", "later-edit", "both-edit", "same-sibling", "asymmetric", "custom-marker",
-    "delete", "reorder", "reordered-projection", "marker-conflicts",
+    "retained-neighbor", "single-custom-marker", "identical-retained-neighbor",
+    "delete", "delete-retained-duplicate", "reorder", "reordered-projection", "marker-conflicts",
 ])
 def test_adjacent_cleared_batches_keep_their_ordered_projection(scenario):
     leader = {"role": "assistant", "content": "Reading the archive.", "tool_calls": [
@@ -417,9 +418,10 @@ def test_adjacent_cleared_batches_keep_their_ordered_projection(scenario):
         {"role": "system", "content": "Summarize the archive."},
         {"role": "user", "content": "Read both archive versions."},
     ]
+    identical = scenario in {"delete", "delete-retained-duplicate", "identical-retained-neighbor"}
     for month in ("April", "May"):
-        report = "Identical" if scenario == "delete" else month
-        index = "Shared" if scenario in {"same-sibling", "delete"} else month
+        report = "Identical" if identical else month
+        index = "Shared" if identical or scenario == "same-sibling" else month
         index_content = f"{index} index details. " * 10
         if scenario in {"asymmetric", "reordered-projection"}:
             index_content = f"{index} index."
@@ -437,30 +439,40 @@ def test_adjacent_cleared_batches_keep_their_ordered_projection(scenario):
     state = SessionState(messages=source)
     projection = deepcopy(source)
     marker = (
-        "Earlier result cleared." if scenario in {"custom-marker", "marker-conflicts"}
+        "Earlier result cleared." if scenario in {
+            "custom-marker", "marker-conflicts", "single-custom-marker",
+            "identical-retained-neighbor", "delete-retained-duplicate",
+        }
         else "[Old tool result content cleared]"
     )
-    cleared_rows = (3, 6) if scenario in {"asymmetric", "reordered-projection"} else (3, 4, 6, 7)
+    cleared_rows = {
+        "asymmetric": (3, 6), "reordered-projection": (3, 6), "retained-neighbor": (3, 4),
+        "single-custom-marker": (4,), "identical-retained-neighbor": (3,),
+        "delete-retained-duplicate": (3,), "delete": (3, 4, 6),
+    }.get(scenario, (3, 4, 6, 7))
     for index in cleared_rows:
-        if scenario != "delete" or index != 7:
-            projection[index]["content"] = marker
+        projection[index]["content"] = marker
     if scenario == "reordered-projection":
         projection[2:8] = [*projection[5:8], *projection[2:5]]
     _remember_anthropic_history(state, projection, None)
 
+    source[0]["content"] = "Summarize the latest archive."
     source[-1]["content"] = "Compare their updated deadlines."
-    if scenario == "delete":
+    if scenario in {"delete", "delete-retained-duplicate"}:
         del source[2:5]
     elif scenario == "reorder":
         source[2:8] = [*source[5:8], *source[2:5]]
     else:
-        targets = (6,) if scenario == "later-edit" else (3, 6) if scenario in {"both-edit", "same-sibling"} else (3,)
+        targets = {
+            "later-edit": (6,), "both-edit": (3, 6), "same-sibling": (3, 6), "identical-retained-neighbor": (),
+        }.get(scenario, (3,))
         for index in targets:
             source[index]["content"] = f"Edited report {index}."
-    if scenario in {"delete", "reorder", "reordered-projection", "marker-conflicts"}:
+    if scenario in {"delete", "delete-retained-duplicate", "reorder", "reordered-projection", "marker-conflicts"}:
         expected = source
     else:
         expected = projection
+        expected[0] = source[0]
         expected[-1] = source[-1]
         for index in targets:
             expected[index] = source[index]

@@ -16,7 +16,7 @@ from opencollab.application.shaping.pipeline import (
     _observe_history_shaping,
     is_complete_tool_exchange,
 )
-from opencollab.application.shaping.reactive import DEFAULT_CLEARED_TOOL_CONTENT, _snipped_exchange_text
+from opencollab.application.shaping.reactive import _snipped_exchange_text
 from opencollab.domain.session import SessionState, same_snapshot_value
 
 _THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
@@ -296,7 +296,6 @@ def _is_cleared_exchange_run(source: list[list[dict]], projection: list[list[dic
     originals: dict[str, set[str]] = {}
     cleared: set[str] = set()
     marker = None
-    count = 0
     for original, shaped in zip(source, projection, strict=True):
         results = _projected_tool_results(original, shaped)
         if results is None:
@@ -314,14 +313,11 @@ def _is_cleared_exchange_run(source: list[list[dict]], projection: list[list[dic
             if marker is not None and not same_snapshot_value(after, marker):
                 return False
             marker = str.__str__(after)
-            count += 1
             cleared.add(call_id)
     if marker is None:
         return True
-    # A configured clearing marker repeats and cannot also be a moved original result.
-    return (count > 1 or marker == DEFAULT_CLEARED_TOOL_CONTENT) and not any(
-        marker in originals[call_id] for call_id in cleared
-    )
+    # A configured clearing marker cannot also be a moved original result.
+    return not any(marker in originals[call_id] for call_id in cleared)
 
 def _rebase_tool_results(original: list[dict], shaped: list[dict], current: list[dict]) -> list[dict] | None:
     results = _projected_tool_results(original, shaped)
@@ -480,6 +476,31 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
     source_counts = Counter(map(_anchor_key, source))
     projection_counts = Counter(map(_anchor_key, projection))
 
+    def unique_exchange(key: tuple, boundary: list[dict]) -> bool:
+        return all(
+            sum(
+                _anchor_key(group) == key and same_snapshot_value(_strip_anthropic_thinking(group), boundary)
+                for group in groups
+            ) == 1
+            for groups in (source, projection)
+        )
+
+    def projection_anchor(index: int, projected: int) -> bool:
+        group = source[index]
+        key = _anchor_key(group)
+        if key[0] != "exchange" or source_counts[key] == projection_counts[key] == 1:
+            return True
+        if not any(
+            _anchor_key(neighbor) == key for neighbor in source[max(0, index - 1):index] + source[index + 1:index + 2]
+        ):
+            return True
+        boundary = _strip_anthropic_thinking(group)
+        # Identical neighboring exchanges belong in the ordered run if this
+        # exact value cannot distinguish an occurrence.
+        return not same_snapshot_value(boundary, _strip_anthropic_thinking(projection[projected])) or unique_exchange(
+            key, boundary,
+        )
+
     def bracketed_exchanges(old: int, seen: int, next_old: int, next_seen: int) -> bool:
         if old == 0 or next_old == len(source) or next_old - old != next_seen - seen:
             return False
@@ -487,11 +508,14 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
         has_unique_anchor = False
         for left, right in ((old - 1, seen - 1), (next_old, next_seen)):
             key = _anchor_key(source[left])
-            unique = source_counts[key] == projection_counts[key] == 1
-            if (key[0] == "exchange" and not unique) or not same_snapshot_value(
-                _strip_anthropic_thinking(source[left]), _strip_anthropic_thinking(projection[right]),
-            ):
+            boundary = _strip_anthropic_thinking(source[left])
+            if not same_snapshot_value(boundary, _strip_anthropic_thinking(projection[right])):
                 return False
+            unique = source_counts[key] == projection_counts[key] == 1
+            if key[0] == "exchange" and not unique:
+                unique = unique_exchange(key, boundary)
+                if not unique:
+                    return False
             has_unique_anchor = has_unique_anchor or unique
         if not has_unique_anchor:
             return False
@@ -517,7 +541,10 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
 
     def projected_groups() -> Iterator[tuple[int, int, list[list[dict]]]]:
         old = seen = 0
-        anchors = _align_groups(source, projection, projected=True)
+        anchors = (
+            (index, projected) for index, projected in _align_groups(source, projection, projected=True)
+            if projection_anchor(index, projected)
+        )
         for next_old, next_seen in chain(anchors, ((len(source), len(projection)),)):
             if old < next_old:
                 gap = projection[seen:next_seen]
