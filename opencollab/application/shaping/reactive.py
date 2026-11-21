@@ -12,7 +12,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
-from contextvars import ContextVar
 from typing import Any, Callable
 
 from opencollab.application.ports import TokenEstimatorPort
@@ -23,6 +22,7 @@ from opencollab.application.shaping.pipeline import (
     _droppable_region,
     _forced_shaper_ids,
     _group_spans,
+    _record_history_shaping,
     approx_messages_tokens,
     is_complete_tool_exchange,
     matched_tool_result_occurrences,
@@ -46,9 +46,6 @@ DEFAULT_AUTOCOMPACT_CACHE_SIZE = 8
 
 # Keep the summarizer synchronous to match ShaperPort.shape. None disables it.
 SummarizerPort = Callable[[list[dict[str, Any]]], str]
-_observe_history_snips: ContextVar[Callable[[list[dict], set[int]], None] | None] = ContextVar(
-    "observe_history_snips", default=None,
-)
 
 class _ReactiveHistoryShaper:
     """Shared trigger/estimate plumbing for the reactive history layers."""
@@ -235,14 +232,13 @@ class OldHistorySnipShaper(_ReactiveHistoryShaper):
 
         if not drop:
             return messages
-        observer = _observe_history_snips.get()
-        if observer is not None:
-            observer(messages, snipped)
-        return [
+        result = [
             replacements.get(index, message)
             for index, message in enumerate(messages)
             if index not in drop
         ]
+        _record_history_shaping(messages, result, snipped=snipped)
+        return result
 
 class AutoCompactShaper(_ReactiveHistoryShaper):
     """Layer B — heaviest history compaction: model-generated summary.

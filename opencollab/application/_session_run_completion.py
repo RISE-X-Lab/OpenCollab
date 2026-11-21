@@ -557,8 +557,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             self.state.append_message(steering)
         preserve_history = self._requires_thinking_prefix()
         history = _anthropic_history_input(self.state)
-        with _capture_anthropic_snips(self.state if preserve_history else None) as snipped:
+        with _capture_anthropic_snips(self.state if preserve_history else None) as adopted_snips:
             messages = await self._shape_and_trace(history)
+            snipped = adopted_snips(history, messages)
         if preserve_history:
             messages = _edited_anthropic_history(history, messages)
         elif steering is not None and not persisted:
@@ -581,13 +582,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         # First overflow: force a maximal compaction pass and retry once.
         with (
             context_token_estimator(self._context_pressure),
-            _capture_anthropic_snips(self.state if preserve_history else None) as emergency_snipped,
+            _capture_anthropic_snips(self.state if preserve_history else None) as adopted_snips,
         ):
             history = _anthropic_history_input(self.state)
             forced = (
                 await ShaperPipeline((self.shaper,)).ashape(history, force=True)
                 if self.shaper is not None else history
             )
+            emergency_snipped = adopted_snips(history, forced)
         if preserve_history:
             forced = _edited_anthropic_history(history, forced)
         # No FRESH steering on the emergency-shrink retry: this path is fighting

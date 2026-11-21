@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
-from collections.abc import Iterator, Set
+from collections.abc import Callable, Iterator, Set
 from contextlib import contextmanager
 from itertools import chain
 from typing import Any
 
-from opencollab.application.shaping.pipeline import _group_spans, is_complete_tool_exchange
-from opencollab.application.shaping.reactive import _observe_history_snips, _snipped_exchange_text
+from opencollab.application.shaping.pipeline import _group_spans, _observe_history_shaping, is_complete_tool_exchange
+from opencollab.application.shaping.reactive import _snipped_exchange_text
 from opencollab.domain.session import SessionState, same_snapshot_value
 
 _THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
@@ -164,8 +164,14 @@ def _retained_snips(state: SessionState) -> set[int]:
     }
 
 @contextmanager
-def _capture_anthropic_snips(state: SessionState | None) -> Iterator[set[int]]:
+def _capture_anthropic_snips(
+    state: SessionState | None,
+) -> Iterator[Callable[[list[dict], list[dict]], set[int]]]:
+    transitions: dict[int, tuple[list[dict], list[dict], set[int] | None]] = {}
     snipped: set[int] = set()
+
+    def observe(before: list[dict], after: list[dict], starts: set[int] | None) -> None:
+        transitions.setdefault(id(after), (before, after, starts))
 
     def record(before: list[dict], starts: set[int]) -> None:
         assert state is not None
@@ -184,11 +190,27 @@ def _capture_anthropic_snips(state: SessionState | None) -> Iterator[set[int]]:
             aligned = _align_groups(candidates, projected, projected=True)
         snipped.update(entries[old][0] for old, new in aligned if before_spans[new][0] in starts)
 
-    token = _observe_history_snips.set(record if state is not None else None)
+    def collect(initial: list[dict], shaped: list[dict]) -> set[int]:
+        adopted: list[tuple[list[dict], set[int]]] = []
+        while shaped is not initial:
+            transition = transitions.pop(id(shaped), None)
+            if transition is None:
+                return set()
+            before, _, starts = transition
+            if starts:
+                adopted.append((before, starts))
+            shaped = before
+        for before, starts in reversed(adopted):
+            record(before, starts)
+        return snipped
+
+    # Collect only transformations on the path to the history used by the request.
+    token = _observe_history_shaping.set(observe if state is not None else None)
     try:
-        yield snipped
+        yield collect
     finally:
-        _observe_history_snips.reset(token)
+        _observe_history_shaping.reset(token)
+        transitions.clear()
 
 def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]]:
     history = state.anthropic_history

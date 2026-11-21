@@ -1,8 +1,10 @@
+import asyncio
 import json
 from copy import deepcopy
 
 import pytest
 
+from opencollab import RunControl
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.application._anthropic_history import _anthropic_history_input, _remember_anthropic_history
@@ -85,10 +87,16 @@ async def test_edit_of_repeated_turn_keeps_saved_summary(monkeypatch, tmp_path, 
             await env.cleanup()
 
 @pytest.mark.parametrize("edit_before_save", [True, False], ids=["edit-before-save", "edit-after-restore"])
-@pytest.mark.parametrize("edit_user", [True, False], ids=["edit-summary-source", "edit-snipped-result"])
+@pytest.mark.parametrize(("edit_user", "snip_mode"), [
+    pytest.param(True, "pipeline", id="edit-summary-source"),
+    pytest.param(False, "pipeline", id="edit-snipped-result"),
+    pytest.param(True, "sync", id="summary-trial-snip"),
+    pytest.param(True, "async", id="async-summary-trial-snip"),
+    pytest.param(True, "shaper", id="shaper-trial-snip"),
+])
 @pytest.mark.parametrize("assistant_text", [False, True], ids=["tool-only", "with-assistant-text"])
 async def test_edit_keeps_independent_snipped_exchanges(
-    monkeypatch, tmp_path, edit_before_save, edit_user, assistant_text,
+    monkeypatch, tmp_path, edit_before_save, edit_user, assistant_text, snip_mode,
 ):
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
@@ -103,11 +111,13 @@ async def test_edit_keeps_independent_snipped_exchanges(
     updated_summary = "The archive was reviewed."
     correction = "Use the April archive."
     requests = []
+    trial_ran = False
+    snip_as_stage = snip_mode == "pipeline"
 
     def peer(request):
         body = json.loads(request.content)
         requests.append(body["messages"])
-        if len(requests) > 3 and len(request.content) > 6000:
+        if snip_as_stage and len(requests) > 3 and len(request.content) > 6000:
             return http_response(request, 400, json={
                 "type": "error",
                 "error": {"type": "invalid_request_error", "message": "prompt is too long for the context window"},
@@ -138,14 +148,43 @@ async def test_edit_keeps_independent_snipped_exchanges(
     env = LocalEnvironment(str(tmp_path))
     snapshot = str(tmp_path / "session.json")
     large_history = {"trigger_tokens": 100, "target_tokens": 60, "keep_recent_groups": 0}
-    shapers = [OldHistorySnipShaper(**large_history)]
+    snipper = OldHistorySnipShaper(**large_history)
+
+    def summarize(rows):
+        nonlocal trial_ran
+        if snip_mode in {"sync", "async"}:
+            trial = snipper.shape(rows)
+            trial_ran |= len(trial) < len(rows)
+        return summary
+
+    class TrialShaper:
+        def shape(self, rows):
+            nonlocal trial_ran
+            trial, _ = ShaperPipeline((snipper,)).shape_with_report(rows)
+            trial_ran |= len(trial) < len(rows)
+            return rows
+
+    class AsyncSummarizer:
+        def __call__(self, rows):
+            return summarize(rows)
+
+        async def asummarize(self, rows):
+            await asyncio.sleep(0)
+            return summarize(rows)
+
+    shapers = [snipper] if snip_as_stage else []
+    if snip_mode == "shaper":
+        shapers.append(TrialShaper())
     if edit_user:
-        shapers.append(AutoCompactShaper(**large_history, summarizer=lambda rows: summary))
+        callback = AsyncSummarizer() if snip_mode == "async" else summarize
+        shapers.append(AutoCompactShaper(**large_history, summarizer=callback))
     async with LLMClient(
         model=model, provider="anthropic", api_key="test-placeholder",  # pragma: allowlist secret
         base_url="https://provider.invalid/v1", max_retries=0,
     ) as client:
         options = {"agent": agent, "llm": client, "env": env, "max_budget_tokens": 100_000}
+        if assistant_text:
+            options["run_control"] = RunControl(on_event=lambda _event: None)
         resume = {**options, "context_policy": ContextPolicy(name="no_history_compaction")}
         session = build_session(**options, shaper=ShaperPipeline(tuple(shapers)))
         try:
@@ -155,6 +194,7 @@ async def test_edit_keeps_independent_snipped_exchanges(
             assert "ARCHIVE_older" not in projected and "ARCHIVE_unchanged" not in projected
             assert not edit_user or summary in projected
             assert all(f"ARCHIVE_{name}" in json.dumps(session.messages) for name in archive_names)
+            assert snip_as_stage or trial_ran
             if edit_before_save:
                 edit(session)
             session.save(snapshot)
@@ -163,7 +203,7 @@ async def test_edit_keeps_independent_snipped_exchanges(
             if not edit_before_save:
                 edit(session)
 
-            for turn in range(3):
+            for turn in range(3 if snip_as_stage else 1):
                 if turn == 2:
                     corrected_row = next(row for row in session.messages if row.get("content") == correction)
                     corrected_row["content"] = correction + " Verify the dates."
@@ -171,6 +211,11 @@ async def test_edit_keeps_independent_snipped_exchanges(
                 assert await session.run_loop() == "Finished"
                 assert len(requests) == 4 + turn
                 projected = json.dumps(requests[-1])
+                if not snip_as_stage:
+                    assert correction in projected and summary not in projected
+                    assert all(f"ARCHIVE_{name}" in projected for name in archive_names)
+                    assert "snipped_exchanges" not in session.state.anthropic_history
+                    break
                 assert "ARCHIVE_older" not in projected and "ARCHIVE_unchanged" not in projected
                 assert "ARCHIVE_unchanged" in json.dumps(session.messages)
                 assert summary not in projected
