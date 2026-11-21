@@ -189,6 +189,35 @@ def _align_groups(
             )
         return same_snapshot_value(_strip_anthropic_thinking(before[old]), after[new])
 
+    def duplicates_keep_ordinals(old: int, new: int, others: list[int]) -> bool:
+        # An identical batch at its unchanged position is not a move.
+        key = old_keys[old]
+
+        def run(keys: list[tuple], index: int) -> tuple[int, int]:
+            start, stop = index, index + 1
+            while start > 0 and keys[start - 1] == key:
+                start -= 1
+            while stop < len(keys) and keys[stop] == key:
+                stop += 1
+            return start, stop
+
+        old_start, old_stop = run(old_keys, old)
+        new_start, new_stop = run(new_keys, new)
+        if (
+            old_start == 0 or new_start == 0 or old_stop == len(before) or new_stop == len(after)
+            or old_stop - old_start != new_stop - new_start or old - old_start != new - new_start
+        ):
+            return False
+        return (
+            same_snapshot_value(before[old_start - 1], after[new_start - 1])
+            and same_snapshot_value(before[old_stop], after[new_stop])
+            and all(
+                new_start <= other < new_stop
+                and same_snapshot_value(before[old_start + other - new_start], after[other])
+                for other in others
+            )
+        )
+
     def same_locally_anchored_batch(old: int, new: int) -> bool:
         key = old_keys[old]
         if (
@@ -197,14 +226,18 @@ def _align_groups(
             or not same_snapshot_value(before[old][0], after[new][0])
         ):
             return False
-        for groups, keys, index, group in (
-            (before, old_keys, old, after[new]), (after, new_keys, new, before[old]),
+        if any(
+            other != old and old_keys[other] == key and same_snapshot_value(candidate, after[new])
+            for other, candidate in enumerate(before)
         ):
-            if any(
-                other != index and keys[other] == key and same_snapshot_value(candidate, group)
-                for other, candidate in enumerate(groups)
-            ):
-                return False
+            return False
+        duplicates = [
+            other
+            for other, candidate in enumerate(after)
+            if other != new and new_keys[other] == key and same_snapshot_value(candidate, before[old])
+        ]
+        if duplicates and not duplicates_keep_ordinals(old, new, duplicates):
+            return False
         current_rows = _projected_tool_results(before[old], after[new])
         return current_rows is not None and any(
             same_snapshot_value(row, current_rows[row["tool_call_id"]]) for row in before[old][1:]
@@ -530,8 +563,6 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
             return False
         if contiguous or index not in unchanged:
             return True
-        if unchanged.get(index - 1) == current_index - 1 and unchanged.get(index + 1) == current_index + 1:
-            return True
         # An edited neighbor can still bound the saved projection. Match the
         # raw occurrence independently before carrying its projection forward.
         return all(
@@ -553,8 +584,11 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
                         yield index, index + 1, []
                 elif bracketed_exchanges(old, seen, next_old, next_seen):
                     current_start = aligned.get(old)
-                    contiguous = next_old > old + 1 and current_start is not None and all(
-                        aligned.get(index) == current_start + index - old for index in range(old, next_old)
+                    contiguous = (
+                        current_start is not None
+                        and unchanged.get(old - 1) == current_start - 1
+                        and unchanged.get(next_old) == current_start + next_old - old
+                        and all(aligned.get(index) == current_start + index - old for index in range(old, next_old))
                     )
                     for offset, group in enumerate(gap):
                         index = old + offset
