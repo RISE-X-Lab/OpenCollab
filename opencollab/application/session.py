@@ -788,7 +788,25 @@ class Session:
         sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
         if isinstance(self.store, JournalSnapshotStorePort):
             sequence += 1
-            self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+            try:
+                self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+            except SnapshotSequenceConflict:
+                saved_message_count = len(snapshot.get("messages", ()))
+                if saved_message_count >= len(messages) or not isinstance(self.store, SnapshotStorePort):
+                    raise
+                previous = self.store.load_snapshot(target_path, self.agent.system_prompt)
+                previous_messages = previous["messages"]
+                if previous.get("_autosave_sequence") != sequence or len(previous_messages) != len(messages):
+                    raise
+                # A retry regenerates recovery rows with a new wall-clock time.
+                # The checkpoint still compares their content and every source row.
+                timestamps = [message.get("timestamp") for message in previous_messages[saved_message_count:]]
+                if not all(isinstance(timestamp, str) for timestamp in timestamps):
+                    raise
+                for message, timestamp in zip(messages[saved_message_count:], timestamps):
+                    message["timestamp"] = timestamp
+                self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+                restored.message_timestamps[saved_message_count:] = timestamps
         else:
             meta["_autosave_sequence"] = sequence
             self.store.save(target_path, messages, meta=meta)

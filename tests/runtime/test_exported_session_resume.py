@@ -10,10 +10,12 @@ import pytest
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.storage import SessionStore
+from opencollab.application.ports import SnapshotSequenceConflict
 from opencollab.bootstrap import build_session, load_session
+from opencollab.domain import session as session_module
 from opencollab.domain.agent import Agent
 from opencollab.tools import builtin_tools
-from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport
+from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
 from tests.support.session_run_test_support import FakeLLM, llm_response, tool_call
 
 
@@ -217,6 +219,82 @@ async def test_old_anthropic_export_can_resume_an_existing_autosave_twice(tmp_pa
                 await resumed.aclose()
     finally:
         await environment.cleanup()
+
+
+@pytest.mark.parametrize("conflict", [None, "source-timestamp", "recovered-content"])
+async def test_interrupted_tool_export_retries_the_same_autosave(tmp_path, monkeypatch, conflict):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    exported, target = tmp_path / "interrupted.json", tmp_path / "automatic.json"
+    (tmp_path / "archive.txt").write_text("The archive opened on April 18.")
+    model = "claude-sonnet-5-5"
+    agent = Agent(name="reviewer", system_prompt="Read the archive.", model=model,
+                  provider="anthropic", tools=builtin_tools("file_read", headless=False))
+    env = LocalEnvironment(str(tmp_path))
+    requests = []
+
+    def peer(request):
+        requests.append(json.loads(request.content))
+        if len(requests) > 1:
+            return completion_http_response(request, text="Done")
+        return http_response(request, 200, json={
+            "id": "msg_read", "type": "message", "role": "assistant", "model": model,
+            "content": [{"type": "tool_use", "id": "read-archive", "name": "file_read",
+                         "input": {"path": "archive.txt"}}],
+            "stop_reason": "tool_use", "stop_sequence": None,
+            "usage": {"input_tokens": 5, "output_tokens": 5},
+        })
+
+    async def export_at_tool_start(event):
+        if event.type == "tool_start":
+            original.save(str(exported))
+
+    install_sdk_transport(monkeypatch, "anthropic", peer)
+    try:
+        async with LLMClient(
+            model=model, provider="anthropic", max_retries=0,
+            api_key="test-placeholder", base_url="https://provider.invalid/v1",  # pragma: allowlist secret
+        ) as client:
+            options = {"agent": agent, "llm": client, "env": env}
+            original = build_session(**options, event_sink=export_at_tool_start)
+            try:
+                await original.add_user_message("Look up the date.")
+                assert await original.run_loop() == "Done"
+            finally:
+                await original.aclose()
+
+            first_stamp = "2026-01-01T00:00:00+00:00"
+            monkeypatch.setattr(session_module, "_now_iso", lambda: first_stamp)
+            first = load_session(str(exported), **options, auto_save_path=str(target))
+            await first.aclose()
+            stored = json.loads(target.read_text())
+            assert stored["_autosave_sequence"] == 1
+            assert stored["messages"][-1]["timestamp"] == first_stamp
+            assert stored["messages"][-1]["content"] == "Tool execution interrupted by session restore."
+
+            if conflict == "source-timestamp":
+                stored["messages"][1]["timestamp"] = "2026-01-01T00:00:02+00:00"
+            elif conflict == "recovered-content":
+                stored["messages"][-1]["content"] = "A different result was confirmed."
+            target.write_text(json.dumps(stored))
+            monkeypatch.setattr(session_module, "_now_iso", lambda: "2026-01-01T00:00:01+00:00")
+
+            if conflict:
+                with pytest.raises(SnapshotSequenceConflict, match="conflicts with persisted snapshot state"):
+                    load_session(str(exported), **options, auto_save_path=str(target))
+            else:
+                resumed = load_session(str(exported), **options, auto_save_path=str(target))
+                try:
+                    assert resumed.state.enriched_messages() == stored["messages"]
+                    assert resumed.state.anthropic_history is not None
+                finally:
+                    await resumed.aclose()
+            assert json.loads(target.read_text()) == stored
+            assert len(requests) == 2
+    finally:
+        await env.cleanup()
+
 
 class SnapshotOnlyStore:
     """Exercise full-snapshot persistence without journal support."""
