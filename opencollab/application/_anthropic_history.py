@@ -68,6 +68,22 @@ def _anchor_key(group: list[dict]) -> tuple:
         str.__str__(content) if isinstance(content, str) else None,
     )
 
+def _exchange_leader_key(group: list[dict]) -> tuple | None:
+    leader = group[0]
+    content = leader.get("content")
+    if content is not None and not isinstance(content, str):
+        return None
+    calls = []
+    for call in leader["tool_calls"]:
+        function = call.get("function")
+        if not isinstance(function, dict):
+            return None
+        name, arguments = function.get("name"), function.get("arguments")
+        if not isinstance(name, str) or not isinstance(arguments, str):
+            return None
+        calls.append((str.__str__(name), str.__str__(arguments)))
+    return (str.__str__(content) if content is not None else None, tuple(calls))
+
 def _ordered_anchors(candidates: list[tuple[int, int]]) -> Iterator[tuple[int, int]]:
     # A moved group can cross several candidates. Keep the anchors on both sides
     # of the move and let the caller rebuild the reordered region from the source.
@@ -90,6 +106,17 @@ def _align_groups(
 ) -> Iterator[tuple[int, int]]:
     old_keys = list(map(_anchor_key, before))
     new_keys = list(map(_anchor_key, after))
+    if projected:
+        old_counts, new_counts = Counter(old_keys), Counter(new_keys)
+        # Result clearing keeps the leader even when a provider reuses its call IDs.
+        repeated = {
+            key for key in old_counts.keys() | new_counts.keys()
+            if key[0] == "exchange" and (old_counts[key] > 1 or new_counts[key] > 1)
+        }
+        old_keys = [(*key, _exchange_leader_key(group)) if key in repeated else key
+                    for key, group in zip(old_keys, before)]
+        new_keys = [(*key, _exchange_leader_key(group)) if key in repeated else key
+                    for key, group in zip(new_keys, after)]
     old_counts, new_counts = Counter(old_keys), Counter(new_keys)
 
     def matches(old: int, new: int) -> bool:
@@ -101,7 +128,13 @@ def _align_groups(
         if not projected:
             return False
         if key[0] == "exchange":
-            return old_counts[key] == new_counts[key] == 1
+            if old_counts[key] != 1 or new_counts[key] != 1:
+                return False
+            if len(key) == 2:
+                return True
+            return key[2] is not None and same_snapshot_value(
+                _strip_anthropic_thinking(before[old][:1]), _strip_anthropic_thinking(after[new][:1]),
+            )
         return same_snapshot_value(_strip_anthropic_thinking(before[old]), after[new])
 
     def equal_edges(old: int, new: int, old_stop: int, new_stop: int) -> tuple[int, int]:

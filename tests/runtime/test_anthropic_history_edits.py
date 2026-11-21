@@ -8,7 +8,12 @@ from opencollab import RunControl
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.application._anthropic_history import _anthropic_history_input, _remember_anthropic_history
-from opencollab.application.shaping import AutoCompactShaper, OldHistorySnipShaper, ShaperPipeline
+from opencollab.application.shaping import (
+    AutoCompactShaper,
+    OldHistorySnipShaper,
+    ShaperPipeline,
+    ToolOutputClearShaper,
+)
 from opencollab.bootstrap import build_session, load_session
 from opencollab.bootstrap.context_policy import ContextPolicy
 from opencollab.domain.agent import Agent
@@ -362,3 +367,106 @@ def test_reused_tool_ids_keep_a_compacted_exchange_in_an_unchanged_end(edited_in
     state.messages[edited_index]["content"] = "Look up the deadline"
     view[edited_index]["content"] = "Look up the deadline"
     assert _anthropic_history_input(state) == view
+
+
+@pytest.mark.parametrize("edit_before_save", [True, False])
+async def test_edits_preserve_cleared_results_for_distinct_calls_with_reused_ids(
+    tmp_path, monkeypatch, edit_before_save,
+):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    model = "claude-sonnet-5-5"
+    requests = []
+    read_paths = ["first.txt", "second.txt", "recent.txt"]
+    active_read = None
+    resuming = False
+    for name in read_paths:
+        (tmp_path / name).write_text((f"ARCHIVE_{name} " + "entry " * 20 + "\n") * 35)
+
+    def peer(request):
+        nonlocal active_read
+        requests.append(request.content)
+        if resuming and len(request.content) > 8_000:
+            return http_response(request, 400, json={
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": "prompt is too long for the context window"},
+            })
+        if active_read is None:
+            return completion_http_response(request, text="Recorded.")
+        name, active_read = active_read, None
+        call_id = "toolu_recent" if name == read_paths[-1] else "toolu_archive"
+        return http_response(request, 200, json={
+            "id": f"msg_{name}", "type": "message", "role": "assistant", "model": model,
+            "content": [{
+                "type": "tool_use", "id": call_id, "name": "file_read", "input": {"path": name, "limit": 35},
+            }],
+            "stop_reason": "tool_use", "stop_sequence": None,
+            "usage": {"input_tokens": 5, "output_tokens": 5},
+        })
+
+    def revise(session):
+        for message in session.messages:
+            if message.get("content") == "Start reviewing the archive.":
+                message["content"] = "Review the archived dates."
+            elif message.get("content") == "Compare the archive entries.":
+                message["content"] = "Compare the revised archive entries."
+
+    install_sdk_transport(monkeypatch, "anthropic", peer)
+    agent = Agent(name="reader", system_prompt="Review the archives.", model=model, provider="anthropic",
+                  thinking=False, tools=builtin_tools("file_read", headless=False))
+    env = LocalEnvironment(str(tmp_path))
+    snapshot = str(tmp_path / "export.json")
+    try:
+        async with LLMClient(model=model, provider="anthropic", max_retries=0,
+                             api_key=__name__, base_url="https://example.invalid/v1") as client:
+            options = {"agent": agent, "llm": client, "env": env}
+            session = build_session(
+                **options, shaper=ToolOutputClearShaper(trigger_tokens=200, target_tokens=100, keep_recent=1),
+            )
+            try:
+                await session.add_user_message("Start reviewing the archive.")
+                assert await session.run_loop() == "Recorded."
+                for name in read_paths:
+                    active_read = name
+                    await session.add_user_message(f"Open {name}.")
+                    assert await session.run_loop() == "Recorded."
+                await session.add_user_message("Compare the archive entries.")
+                assert await session.run_loop() == "Recorded."
+                assert requests[-1].count(b"[Old tool result content cleared]") == 2
+                assert all(f"ARCHIVE_{name}" in json.dumps(session.messages) for name in read_paths)
+                if edit_before_save:
+                    revise(session)
+                session.save(snapshot)
+            finally:
+                await session.aclose()
+
+            session = load_session(snapshot, **options, context_policy=ContextPolicy(name="no_history_compaction"))
+            try:
+                if not edit_before_save:
+                    revise(session)
+                resuming = True
+                await session.add_user_message("What should the report highlight?")
+                sent = len(requests)
+                assert await session.run_loop() == "Recorded."
+                assert len(requests) == sent + 1
+                assert requests[-1].count(b"[Old tool result content cleared]") == 2
+                assert b"Review the archived dates." in requests[-1]
+                assert b"Compare the revised archive entries." in requests[-1]
+                assert b"ARCHIVE_first.txt" not in requests[-1]
+                assert b"ARCHIVE_second.txt" not in requests[-1]
+                assert b"ARCHIVE_recent.txt" in requests[-1]
+                blocks = [
+                    (block["type"], block.get("id") or block.get("tool_use_id"))
+                    for message in json.loads(requests[-1])["messages"]
+                    if isinstance(message["content"], list)
+                    for block in message["content"]
+                    if block["type"] in {"tool_use", "tool_result"}
+                ]
+                assert blocks == [
+                    (kind, call_id)
+                    for call_id in ("toolu_archive", "toolu_archive", "toolu_recent")
+                    for kind in ("tool_use", "tool_result")
+                ]
+            finally:
+                await session.aclose()
+    finally:
+        await env.cleanup()
