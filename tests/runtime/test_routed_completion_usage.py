@@ -268,8 +268,11 @@ async def test_routed_completion_accounts_for_each_provider(
 
 
 @pytest.mark.parametrize("parallel", [False, True])
-@pytest.mark.parametrize("retried", [False, True])
-async def test_manual_usage_copy_is_reconciled_before_the_next_request(tmp_path, monkeypatch, parallel, retried):
+@pytest.mark.parametrize("retried,tight_budget", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("serialization", ["none", "usage", "response", "plain"])
+async def test_manual_usage_copy_is_reconciled_before_the_next_request(
+    tmp_path, monkeypatch, parallel, retried, tight_budget, serialization,
+):
     usage_path = tmp_path / "usage.jsonl"
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(usage_path))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
@@ -294,7 +297,7 @@ async def test_manual_usage_copy_is_reconciled_before_the_next_request(tmp_path,
             content_type, payload = _payload(body, spec)
             return http_response(request, 200, headers={"content-type": content_type}, content=payload)
         if route == "followup":
-            return completion_http_response(request, output_tokens=13)
+            return completion_http_response(request, output_tokens=min(13, body["max_tokens"]))
         payload = completion_http_response(request, text="Other answer.", output_tokens=output_tokens).json()
         payload["usage"].update(prompt_tokens=input_tokens, total_tokens=each_total)
         return http_response(request, 200, json=payload)
@@ -321,8 +324,14 @@ async def test_manual_usage_copy_is_reconciled_before_the_next_request(tmp_path,
             assert public_usage == response.usage == public_usage
             redacted = replace(response.usage, raw_usage={}, cache_read_tokens=None)
             assert on_usage is not None
+            if serialization != "none":
+                redacted = Usage(**_serialized_usage(redacted))
             on_usage(deepcopy(redacted) if parallel else redacted)
             await followup.complete(messages, **kwargs, **controls, on_usage=on_usage)
+            if serialization in {"response", "plain"}:
+                return _serialized_response(replace(response, usage=redacted), plain=serialization == "plain")
+            if serialization == "usage":
+                return replace(response, usage=redacted)
             return response
 
     install_sdk_transport(monkeypatch, "openai", handle)
@@ -334,19 +343,30 @@ async def test_manual_usage_copy_is_reconciled_before_the_next_request(tmp_path,
         LLMClient(**options, base_url="https://test.invalid/followup/v1", max_retries=0) as followup,
     ):
         result = await OpenCollab(tmp_path, config={"llm_timeout": 3, "max_output_tokens": 900}).agent(
-            "Give one clear answer.", llm=client, tools=(), budget=1_020, trace=False,
+            "Give one clear answer.", llm=client, tools=(), budget=270 if tight_budget else 1_020, trace=False,
             run_control=RunControl(on_event=events.append), system_prompt="System.",
         )
 
-    assert result.status == "completed", result.reason
-    assert result.output == "Primary answer."
-    assert result.tokens == each_total * 2 + 15
-    assert sorted(route for route, _ in requests[:-1]) == ["alternate", *(["primary"] * (1 + retried))]
-    assert requests[-1] == ("followup", requests[0][1] - each_total * 2)
     ledger = [json.loads(line) for line in usage_path.read_text().splitlines()]
-    assert [entry["usage"]["total_tokens"] for entry in ledger] == [each_total, each_total, 15]
+    expected = [each_total, each_total]
+    expected_routes = ["alternate", *(["primary"] * (1 + retried))]
+    if tight_budget:
+        assert result.status == "stopped"
+        assert "budget exhausted before model call" in result.reason
+        assert sorted(route for route, _ in requests) == expected_routes
+        blocked = ledger.pop()
+        assert blocked["status"] == "error"
+        assert blocked["usage"]["total_tokens"] == 0
+    else:
+        assert result.status == "completed", result.reason
+        assert result.output == "Primary answer."
+        assert sorted(route for route, _ in requests[:-1]) == expected_routes
+        assert requests[-1] == ("followup", requests[0][1] - each_total * 2)
+        expected.append(15)
+    assert result.tokens == sum(expected)
+    assert [entry["usage"]["total_tokens"] for entry in ledger] == expected
     usage_events = [event.data for event in events if event.type == "usage"]
-    assert [event["total_tokens"] for event in usage_events] == [each_total, each_total, 15]
+    assert [event["total_tokens"] for event in usage_events] == expected
     assert [event["cache_read_tokens"] for event in usage_events].count(None) == 1
 
 

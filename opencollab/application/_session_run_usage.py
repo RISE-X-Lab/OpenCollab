@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 _native_usage_owner: ContextVar[object | None] = ContextVar("native_usage_owner", default=None)
-_native_usage_observer: ContextVar[Callable[[Any, BaseException | None, object | None], None] | None] = ContextVar(
+_native_usage_observer: ContextVar[
+    Callable[[Any, BaseException | None, object | None, Callable[[Any], None] | None], None] | None
+] = ContextVar(
     "native_usage_observer", default=None,
 )
 
@@ -26,10 +28,12 @@ def _own_native_usage() -> Iterator[_UsageOrigin | None]:
         _native_usage_owner.reset(token)
 
 
-def _observe_native_usage(usage: Any, error: BaseException | None, response: Any) -> None:
+def _observe_native_usage(
+    usage: Any, error: BaseException | None, response: Any, on_attempt_usage: Callable[[Any], None] | None,
+) -> None:
     observer = _native_usage_observer.get()
     if observer is not None:
-        observer(usage, error, response)
+        observer(usage, error, response, on_attempt_usage)
 
 
 def _nonnegative_usage_int(value: Any, field: str) -> int:
@@ -94,6 +98,19 @@ def _completion_json_value(value: Any) -> Any:
     return value
 
 
+def _same_serialized_usage(first: Any, second: Any) -> bool:
+    def fields(usage: Any) -> dict[str, Any]:
+        values = _completion_json_value(getattr(usage, "__dict__", {}))
+        # A Usage reconstructed from a missing cache counter defaults to zero.
+        for name in ("cache_read_tokens", "cache_creation_tokens"):
+            if values.get(name) == 0:
+                values.pop(name)
+        return values
+
+    first_fields = fields(first)
+    return bool(first_fields) and first_fields == fields(second)
+
+
 @dataclass(eq=False)
 class _UsageSettlement:
     usage: Any
@@ -111,11 +128,14 @@ class _ProviderUsageObservation:
     error: BaseException | None
     settlement: _UsageSettlement | None
     task: asyncio.Task[Any] | None
+    uses_session_retry_accounting: bool
+    prepaid_tokens: int | None = None
 
 
 @dataclass
 class _RoutedUsageCallback:
     settlement: _UsageSettlement
+    boundary: int
     observed: int
     predecessor: _ProviderUsageObservation | None
 
@@ -162,7 +182,7 @@ class _CompletionUsageAccounting:
         native = self._find_native_usage(usage)
         if native is not None and _same_token_counts(native.usage, usage):
             if native.settlement is None:
-                native.settlement = self._settle(usage, error=native.error)
+                native.settlement = self._settle(usage, native.prepaid_tokens or 0, error=native.error)
             else:
                 native.settlement.usage = usage
             _tag_usage(usage, _UsageOrigin())
@@ -172,16 +192,32 @@ class _CompletionUsageAccounting:
         # Resolve those against the returned response before incrementing the budget again.
         attempt_tokens = self._attempt_tokens.pop(None, 0)
         possible_duplicate = native is None and not attempt_tokens and any(
-            item.settlement is not None and _same_token_counts(item.usage, usage)
+            (item.settlement is not None or item.prepaid_tokens is not None) and _same_token_counts(item.usage, usage)
             for item in self._native_usages
         )
         _tag_usage(usage, _UsageOrigin())
         settlement = self._settle(usage, attempt_tokens, defer=possible_duplicate)
-        preceding = [item for item in self._native_usages[boundary:observed] if task is not None and item.task is task]
+        window = self._native_usages[boundary:observed]
+        preceding = [item for item in window if task is not None and item.task is task]
+        if possible_duplicate:
+            unpaid = [
+                item for item in window
+                if item.uses_session_retry_accounting and item.settlement is None and item.prepaid_tokens is None
+                and _same_token_counts(item.usage, usage)
+            ]
+            if len(unpaid) == 1:
+                # Charge the owned request before admission revalidates another call.
+                # Keep the ambiguous report separate until completion identifies its source.
+                item = unpaid[0]
+                item.prepaid_tokens = _normalize_completion_usage(item.usage)[1]
+                self._charge(item.prepaid_tokens)
+                preceding = unpaid
         predecessor = preceding[0] if len(preceding) == 1 else None
-        self._routed_callbacks.append(_RoutedUsageCallback(settlement, observed, predecessor))
+        self._routed_callbacks.append(_RoutedUsageCallback(settlement, boundary, observed, predecessor))
 
-    def _observe_provider_response(self, usage: Any, error: BaseException | None, response: Any) -> None:
+    def _observe_provider_response(
+        self, usage: Any, error: BaseException | None, response: Any, on_attempt_usage: Callable[[Any], None] | None,
+    ) -> None:
         owner = _native_usage_owner.get()
         if owner is not None:
             _tag_usage(usage, owner)
@@ -196,7 +232,7 @@ class _CompletionUsageAccounting:
             settlement = self._settle(usage, self._attempt_tokens.pop(owner), error=error)
         self._native_usages.append(_ProviderUsageObservation(
             usage, response, getattr(response, "provider_items", None), getattr(response, "transport_timing", None),
-            error, settlement, asyncio.current_task(),
+            error, settlement, asyncio.current_task(), on_attempt_usage == self.record_attempt,
         ))
 
     def _settle(self, usage: Any, attempt_tokens: int = 0, *, error: BaseException | None = None,
@@ -264,14 +300,25 @@ class _CompletionUsageAccounting:
         for callback in self._routed_callbacks:
             reported = callback.settlement
             returned = _same_usage_origin(reported.usage, usage) and _same_token_counts(reported.usage, usage)
+            native_precedes_callback = native is not None and any(
+                item is native for item in self._native_usages[:callback.observed]
+            )
+            if not reported.charged and any(
+                item is native for item in self._native_usages[callback.boundary:callback.observed]
+            ) and _same_serialized_usage(reported.usage, usage):
+                returned = True
             target = callback.predecessor
             if returned:
                 final = reported
-                if native is not None and any(item is native for item in self._native_usages[:callback.observed]):
+                if native_precedes_callback:
                     target = native
+                elif response is not None and target is not None and target.prepaid_tokens is not None:
+                    target = None
             if target is None or not _same_token_counts(target.usage, reported.usage):
                 continue
             if target.settlement is None:
+                if target.prepaid_tokens is not None:
+                    reported.charged = True
                 target.settlement = reported
             elif not reported.charged:
                 target.settlement.usage = reported.usage
@@ -282,11 +329,14 @@ class _CompletionUsageAccounting:
 
         if native is not None and _same_token_counts(native.usage, usage):
             if native.settlement is None:
-                native.settlement = self._settle(native.usage, error=native.error)
+                native.settlement = self._settle(native.usage, native.prepaid_tokens or 0, error=native.error)
             final = native.settlement
         elif usage is not None and final is None:
             final = self._settle(usage, self._attempt_tokens.pop(None, 0))
 
+        for item in self._native_usages:
+            if item.prepaid_tokens is not None and item.settlement is None:
+                item.settlement = self._settle(item.usage, item.prepaid_tokens, error=item.error)
         self._reported = True
         record_usage = getattr(self.runner, "_record_usage_event", None)
         for settlement in self._settlements:
