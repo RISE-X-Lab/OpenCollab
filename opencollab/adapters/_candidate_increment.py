@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import posixpath
 import shlex
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
@@ -37,33 +37,41 @@ def _worktree_attributes(workspace: str, paths: Sequence[str]) -> set[str]:
 @asynccontextmanager
 async def _candidate_write_locks(
     environment: Any, workspace: str, paths: Sequence[str], *,
-    repository: bool, in_place: bool, attributes_file: str | None,
-) -> AsyncIterator[None]:
+    repository: bool, in_place: bool, read_attributes_file: Callable[[], Awaitable[str | None]] | None,
+) -> AsyncIterator[str | None]:
     delegate = getattr(environment, "_delegate", environment)
     docker = isinstance(delegate, DockerEnvironment)
     local = getattr(environment, "local_filesystem", False)
     lock_root = workspace if docker or local else getattr(environment, "workspace", workspace)
     publication_lock = posixpath.join(lock_root, ".candidate-adoption")
-    targets = {posixpath.join(workspace, path) for path in paths}
-    can_share = in_place and bool(paths) and (
+    patch_targets = {posixpath.join(workspace, path) for path in paths}
+    prefer_shared_ancestors = in_place and bool(paths) and (
         docker or local or getattr(environment, "_handles_file_lock_hierarchy", False)
     )
-    if can_share and repository:
-        # The live application and recovery replay need the same attribute rules.
-        targets.update(_worktree_attributes(workspace, paths))
-        if attributes_file is not None:
-            configured = posixpath.normpath(attributes_file)
-            if configured.startswith(posixpath.normpath(workspace).rstrip("/") + "/"):
-                targets.add(configured)
-            else:
-                can_share = False
-    ordered = (publication_lock, *sorted(targets - {publication_lock}))
-    for share_ancestors in (True, False) if can_share else (False,):
+    lock_attributes = prefer_shared_ancestors and repository
+    attributes_file = await read_attributes_file() if lock_attributes and read_attributes_file is not None else None
+    while True:
+        targets = patch_targets.copy()
+        share_ancestors = prefer_shared_ancestors
+        if lock_attributes:
+            targets.update(_worktree_attributes(workspace, paths))
+            if attributes_file is not None:
+                configured = posixpath.normpath(attributes_file)
+                if configured.startswith(posixpath.normpath(workspace).rstrip("/") + "/"):
+                    targets.add(configured)
+                else:
+                    share_ancestors = False
+        ordered = (publication_lock, *sorted(targets - {publication_lock}))
         locks = (
             delegate.file_write_locks(ordered, _repository_root=workspace, _shared_ancestors=share_ancestors)
             if docker else host_write_locks(ordered, environment, shared_ancestors=share_ancestors)
         )
         async with locks:
+            current = await read_attributes_file() if read_attributes_file is not None else None
+            if lock_attributes and current != attributes_file:
+                # Configuration may change while another publication owns the locks.
+                attributes_file = current
+                continue
             if share_ancestors:
                 # Git reports the patch's intent. Check the actual files after taking the locks.
                 inspection = (
@@ -76,8 +84,9 @@ async def _candidate_write_locks(
                     result = await environment.exec_cmd(command, timeout=120)
                 _complete(result, "candidate existing-file inspection", allowed=(0, 1))
                 if result.returncode == 1:
+                    prefer_shared_ancestors = False
                     continue
-            yield
+            yield current
             return
 
 
@@ -123,18 +132,22 @@ async def _apply_increment(
         guard = ""
         if strict and repository:
             git, guard = _git_command_and_config_guard()
-        command = f"cd -- {shlex.quote(workspace)} && {guard}{git}"
-        attributes_file = None
-        if repository and not strict and not physical_paths:
+        repository_git = f"cd -- {shlex.quote(workspace)} && {guard}{git}"
+
+        async def read_attributes_file() -> str | None:
             configured = _complete(await environment.exec_cmd(
-                f"{command} config --path --get core.attributesFile", timeout=120,
+                f"{repository_git} config --path --get core.attributesFile", timeout=120,
             ), "candidate attribute configuration", allowed=(0, 1)).removesuffix("\n")
-            if configured:
-                attributes_file = posixpath.join(workspace, configured)
+            return posixpath.join(workspace, configured) if configured else None
+
+        configured_rules = repository and not strict and not physical_paths
         async with _candidate_write_locks(
             environment, workspace, paths, repository=repository, in_place=bool(separator and not summary.strip()),
-            attributes_file=attributes_file,
-        ):
+            read_attributes_file=read_attributes_file if configured_rules else None,
+        ) as attributes_file:
+            command = repository_git
+            if attributes_file is not None:
+                command += f" -c core.attributesFile={shlex.quote(attributes_file)}"
             async with AsyncExitStack() as resources:
                 operation = "candidate adoption"
                 if physical_paths and repository:
@@ -155,7 +168,7 @@ async def _apply_increment(
                     staged: str, git_directory: str | None, saved_attributes_file: str | None,
                 ) -> None:
                     async with AsyncExitStack() as metadata:
-                        replay_git = f"cd -- {shlex.quote(workspace)} && {guard}{git}"
+                        replay_git = repository_git
                         if physical_paths and repository:
                             replay_git, git_directory = await metadata.enter_async_context(_physical_git(
                                 environment, workspace, physical_paths, strict=strict,

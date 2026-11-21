@@ -251,6 +251,79 @@ async def test_in_place_publication_keeps_git_attributes_stable_through_recovery
         await environment.cleanup()
 
 
+@pytest.mark.parametrize("backend", ["local", "docker"])
+async def test_publication_uses_configured_attributes_selected_after_lock_wait(tmp_path, monkeypatch, backend):
+    repo = _repository(tmp_path)
+    _git(repo, "config", "core.autocrlf", "false")
+    _git(repo, "config", "--local", "core.attributesFile", "lf.attrs")
+    (repo / "lf.attrs").write_text("*.txt text eol=lf\n")
+    changed_attributes = repo / "crlf.attrs"
+    changed_attributes.write_text("*.txt text eol=crlf\n")
+    target = repo / "settings/value.txt"
+    target.write_bytes(b"original\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "test: prepare attribute selection")
+    target.write_bytes(b"candidate\n")
+    patch = _git(repo, "diff", "--binary", "--", "settings/value.txt")
+    target.write_bytes(b"original\n")
+    index = (repo / ".git/index").read_bytes()
+
+    environment = (LocalEnvironment(str(repo)) if backend == "local" else
+                   docker_environment(repo, LocalDockerTransport(repo, pair_reads=False)))
+    selected, entered, publish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    published = []
+    execute = environment.exec_cmd
+
+    async def observe(command, timeout=120, **kwargs):
+        live = " apply --binary " in command and ".candidate-adopt-" in command
+        if live:
+            entered.set()
+            await publish.wait()
+        result = await execute(command, timeout, **kwargs)
+        if "config --path --get core.attributesFile" in command and result.stdout.strip() == "lf.attrs":
+            selected.set()
+        if live:
+            assert result.returncode == 0
+            published.append(target.read_bytes())
+            raise RuntimeError("publication acknowledgement lost")
+        return result
+
+    monkeypatch.setattr(environment, "exec_cmd", observe)
+    publication = None
+    writer = None
+    try:
+        async with host_write_locks((str(repo / ".candidate-adoption"),), environment):
+            publication = asyncio.create_task(_apply_increment(environment, str(repo), patch))
+            await asyncio.wait_for(selected.wait(), 10)
+            assert not publication.done()
+            _git(repo, "config", "--local", "core.attributesFile", "crlf.attrs")
+            assert _git(repo, "check-attr", "eol", "--", "settings/value.txt").endswith("eol: crlf\n")
+        await asyncio.wait_for(entered.wait(), 10)
+        writer = asyncio.create_task(FileWriteTool().execute_with_runtime({
+            "path": str(changed_attributes), "mode": "create", "overwrite": True,
+            "content": "*.txt text eol=lf\n",
+        }, ToolRuntime(environment, None, None)))
+        done, _ = await asyncio.wait((writer,), timeout=0.2)
+        assert not done
+        publish.set()
+        with pytest.raises(RuntimeError, match="^publication acknowledgement lost") as failure:
+            await asyncio.wait_for(publication, 15)
+        assert type(failure.value) is RuntimeError
+        assert published == [b"candidate\r\n"]
+        assert target.read_bytes() == b"original\n"
+        assert (repo / ".git/index").read_bytes() == index
+        assert not environment.revoked
+        assert "Created/wrote" in await asyncio.wait_for(writer, 10)
+        assert changed_attributes.read_text() == "*.txt text eol=lf\n"
+    finally:
+        publish.set()
+        if publication is not None:
+            if not publication.done():
+                publication.cancel()
+            await asyncio.gather(publication, *([writer] if writer is not None else []), return_exceptions=True)
+        await environment.cleanup()
+
+
 async def test_local_mutation_lock_normalizes_workspace_parent_aliases(tmp_path):
     workspace = tmp_path / "workspace"
     target = workspace / "nested/value.py"
