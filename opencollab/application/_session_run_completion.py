@@ -937,7 +937,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             input_tokens, _total_tokens = _normalize_completion_usage(response.usage)
             usage_accounting.finish(
                 response.usage, purpose="summary", late=abandoned,
-                transport_timing=getattr(response, "transport_timing", None),
+                response=response,
             )
             self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
             self.state.set_context_tokens(input_tokens)
@@ -1016,7 +1016,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 late_accounted = asyncio.current_task() in self._draining_provider_tasks
                 usage_accounting.finish(
                     response.usage, purpose="completion", late=late_accounted,
-                    transport_timing=getattr(response, "transport_timing", None),
+                    response=response,
                 )
                 return response
             finally:

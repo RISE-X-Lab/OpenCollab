@@ -371,8 +371,7 @@ class LLMClient:
         )
         try:
             async with AsyncExitStack() as request_owner:
-                if on_usage is not None or on_attempt_usage is not None:
-                    request_owner.enter_context(_own_native_usage())
+                request_owner.enter_context(_own_native_usage())
                 first_token = request_owner.enter_context(recording())
                 try:
                     await request_owner.enter_async_context(request_slot(self.request_pool, self.request_capacity))
@@ -461,9 +460,7 @@ class LLMClient:
                         try:
                             if on_usage is not None:
                                 on_usage(settled_usage)
-                            _observe_native_usage(
-                                settled_usage, provider_error, transport_timing if response is not None else None,
-                            )
+                            _observe_native_usage(settled_usage, provider_error, response)
                         except BaseException as exc:
                             exc.usage = settled_usage
                             settlement_error = exc

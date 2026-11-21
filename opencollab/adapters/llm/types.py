@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import KW_ONLY, InitVar, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any
 
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
@@ -11,16 +11,6 @@ from opencollab.domain.token_estimation import (  # noqa: F401 - compatibility r
     estimate_messages_tokens,
     estimate_tokens,
 )
-
-
-class _NativeUsageOrigin:
-    __slots__ = ()
-
-    def __deepcopy__(self, _memo: dict[int, Any]) -> _NativeUsageOrigin:
-        return self
-
-    def __get__(self, usage: Usage | None, _owner: type[Usage] | None = None) -> _NativeUsageOrigin | None:
-        return None if usage is None else usage._native_usage_origin
 
 
 @dataclass
@@ -33,7 +23,6 @@ class Usage:
     added again to compute the budget total.
     """
 
-    # Retain request identity through copies without adding it to usage telemetry.
     __slots__ = ("__dict__", "__weakref__", "_native_usage_origin")
 
     input_tokens: int = 0
@@ -51,12 +40,6 @@ class Usage:
     context_tokens: int | None = None
     context_output_tokens: int | None = None
     context_tokens_estimated: bool | None = None
-    _: KW_ONLY
-    # dataclasses.replace reads this InitVar without including it in serialized fields.
-    _origin: InitVar[_NativeUsageOrigin | None] = _NativeUsageOrigin()
-
-    def __post_init__(self, _origin: _NativeUsageOrigin | None) -> None:
-        self._native_usage_origin = _NativeUsageOrigin() if _origin is None else _origin
 
     @property
     def total_tokens(self) -> int:

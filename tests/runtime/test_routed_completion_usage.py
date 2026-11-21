@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, dataclass, replace
 
 import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters.env import LocalEnvironment
-from opencollab.adapters.llm import retry
+from opencollab.adapters.llm import Usage, retry
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.responses_errors import ResponsesProtocolError
 from opencollab.application.run_control import RunControl
@@ -17,6 +17,18 @@ from opencollab.domain.agent import Agent
 from opencollab.tools import builtin_tools
 from tests.runtime.test_responses_error_usage_http import _payload
 from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
+
+
+def _serialized_usage(usage):
+    return json.loads(json.dumps(asdict(usage)))
+
+
+@dataclass
+class _ReportingUsage(Usage):
+    source: str = " responses "
+
+    def __post_init__(self):
+        self.source = self.source.strip()
 
 
 @pytest.mark.parametrize("summary", [False, True])
@@ -29,6 +41,11 @@ from tests.support.provider_sdk_http import completion_http_response, http_respo
     "cache-redacted-primary-after-helper", "cache-redacted-primary-after-helper-without-timing",
     "cache-redacted-fallback", "fallback-with-primary-timing", "manual-primary-settlement",
     "manual-scrubbed-primary-settlement", "manual-count-adjustment", "recovered-primary-after-redaction",
+    "recovered-primary-after-roundtrip",
+    "recovered-primary-after-roundtrip-with-helper",
+    "recovered-primary-after-roundtrip-with-fallback",
+    "recovered-primary-after-subclass-roundtrip",
+    "fallback-with-primary-timing-and-rebuilt-usage",
     "failed-primary", "failed-primary-attempt-callback-only",
 ])
 async def test_routed_completion_accounts_for_each_provider(
@@ -37,19 +54,21 @@ async def test_routed_completion_accounts_for_each_provider(
     requests = []
     events = []
     answer = "<summary>Answer.</summary>" if summary else "Answer."
-    independent_helper = "-primary-after-helper" in scenario
+    recovered_primary = scenario.startswith("recovered-primary-")
+    recovered_helper = scenario == "recovered-primary-after-roundtrip-with-helper"
+    recovered_fallback = scenario == "recovered-primary-after-roundtrip-with-fallback"
+    rebuilt_usage = "roundtrip" in scenario or scenario.endswith("-rebuilt-usage")
+    independent_helper = "-primary-after-helper" in scenario or recovered_helper
     cache_redacted = scenario.startswith("cache-redacted-")
     annotated = scenario.startswith("annotated-") or cache_redacted
-    retains_primary_timing = scenario == "fallback-with-primary-timing"
-    manual_primary_settlement = scenario in {
+    retains_primary_timing = scenario.startswith("fallback-with-primary-timing")
+    manual_primary_settlement = recovered_primary or scenario in {
         "manual-primary-settlement", "manual-scrubbed-primary-settlement", "manual-count-adjustment",
-        "recovered-primary-after-redaction",
     }
     adjusted_counts = scenario == "manual-count-adjustment"
-    recovered_primary = scenario == "recovered-primary-after-redaction"
-    usable_primary = independent_helper or scenario in {
+    usable_primary = independent_helper or (recovered_primary and not recovered_fallback) or scenario in {
         "primary", "copied-primary", "scrubbed-primary", "replaced-primary",
-        "annotated-primary", "manual-count-adjustment", "recovered-primary-after-redaction",
+        "annotated-primary", "manual-count-adjustment",
     }
     equal_usage = independent_helper or retains_primary_timing or scenario in {
         "equal-fallback", "copied-fallback", "scrubbed-fallback", "replaced-fallback",
@@ -72,13 +91,18 @@ async def test_routed_completion_accounts_for_each_provider(
                 return http_response(request, 200, headers={"content-type": content_type}, content=payload)
             if recovered_primary:
                 spec = {"kind": "failed"} if len(requests) == 1 else {
-                    "text": answer, "usage": {"input_tokens": 2, "output_tokens": 55, "total_tokens": 57},
+                    "text": answer, "usage": {
+                        "input_tokens": 2, "output_tokens": 55, "total_tokens": 57,
+                        "input_tokens_details": {"cached_tokens": 1},
+                    },
                 }
                 content_type, payload = _payload(json.loads(request.content), spec)
                 return http_response(request, 200, headers={"content-type": content_type}, content=payload)
         text = answer if route != "primary" or usable_primary else ""
         output_tokens = 55 if route == "primary" or equal_usage else 2
         payload = completion_http_response(request, text=text, output_tokens=output_tokens).json()
+        if recovered_helper or recovered_fallback:
+            payload["usage"].update(prompt_tokens=32, completion_tokens=62, total_tokens=94)
         payload["usage"]["prompt_tokens_details"] = {
             "cached_tokens": 0 if retains_primary_timing and route == "fallback" else 1,
         }
@@ -125,17 +149,30 @@ async def test_routed_completion_accounts_for_each_provider(
                         changes["raw_usage"] = {}
                     if adjusted_counts:
                         changes["output_tokens"] = first.usage.output_tokens + 1
-                    cleaned = replace(first.usage, **changes)
+                    if rebuilt_usage:
+                        assert first.usage.cache_read_tokens == 1
+                        values = _serialized_usage(first.usage)
+                        cls = _ReportingUsage if "subclass" in scenario else Usage
+                        cleaned = cls(**(values | changes))
+                        if isinstance(cleaned, _ReportingUsage):
+                            assert cleaned.source == "responses"
+                        if recovered_helper:
+                            await fallback.complete(messages, **kwargs)
+                    else:
+                        cleaned = replace(first.usage, **changes)
                     on_usage(cleaned)
-                    if recovered_primary:
+                    if recovered_primary and not recovered_fallback:
                         return replace(first, usage=cleaned)
-                if first.content and first.content.strip():
+                if not recovered_fallback and first.content and first.content.strip():
                     if independent_helper:
                         await fallback.complete(messages, **kwargs)
                     return copy_response(first) if scenario != "primary" else first
             final = await fallback.complete(messages, **kwargs, **(controls if forward_fallback else {}))
             if retains_primary_timing:
-                return replace(final, usage=replace(final.usage), transport_timing=first.transport_timing)
+                usage = replace(final.usage)
+                if rebuilt_usage:
+                    usage = Usage(**(_serialized_usage(usage) | {"raw_usage": {}}))
+                return replace(final, usage=usage, transport_timing=first.transport_timing)
             if failed_primary or annotated or scenario in {
                 "copied-fallback", "scrubbed-fallback", "replaced-fallback",
             }:
@@ -184,7 +221,7 @@ async def test_routed_completion_accounts_for_each_provider(
     if adjusted_counts:
         expected_usage.insert(0, 58)
     if not usable_primary:
-        expected_usage.append(57 if equal_usage else 4)
+        expected_usage.append(94 if recovered_fallback else 57 if equal_usage else 4)
         expected_ledger.append(expected_usage[-1])
     expected_purpose = "summary" if summary else "completion"
     ledger = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
@@ -192,20 +229,25 @@ async def test_routed_completion_accounts_for_each_provider(
     if not usable_primary or independent_helper:
         expected_requests.append("fallback")
     if independent_helper:
-        expected_ledger.append(57)
+        expected_ledger.append(94 if recovered_helper else 57)
     assert requests == expected_requests
     assert tokens == sum(expected_usage)
     assert [entry["usage"]["total_tokens"] for entry in ledger] == expected_ledger
     usage_events = [event for event in events if event.type == "usage"]
     assert [event.data["total_tokens"] for event in usage_events] == expected_usage
     assert {event.data["purpose"] for event in usage_events} == {expected_purpose}
+    if rebuilt_usage and recovered_primary:
+        assert ledger[0]["usage"]["cached_input_tokens"] == 1
+        assert usage_events[0].data["cache_read_tokens"] is None
     if failed_primary:
         assert [entry["status"] for entry in ledger] == ["error", "success"]
         assert [event.data["error_type"] for event in usage_events] == ["ResponsesTransientEventError", None]
 
 
 @pytest.mark.parametrize("cache_read_tokens", [None, 0])
-@pytest.mark.parametrize("redact_at", ["response", "settlement", "wrapper", "wrapper-redacted", "wrapper-copied"])
+@pytest.mark.parametrize("redact_at", [
+    "response", "settlement", "wrapper", "wrapper-redacted", "wrapper-copied", "wrapper-retry-roundtrip",
+])
 async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monkeypatch, cache_read_tokens, redact_at):
     (tmp_path / "facts.txt").write_text("The verified value is 42.\n", encoding="utf-8")
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
@@ -213,9 +255,29 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
     monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
     requests = []
     events = []
+    retried = redact_at == "wrapper-retry-roundtrip"
+    limits = []
+    monkeypatch.setattr(retry, "extract_retry_after_seconds", lambda _error: 0.0)
+    monkeypatch.setattr(retry.random, "uniform", lambda _lo, _hi: 0.0)
 
     async def handle(request):
         body = json.loads(request.content)
+        if retried:
+            tool_results = [item["output"] for item in body["input"] if item.get("type") == "function_call_output"]
+            requests.append(tool_results)
+            limits.append(body["max_output_tokens"])
+            input_tokens, output_tokens = (315, 22) if tool_results else (233, 30)
+            spec = {"text": "The value is 42.", "usage": {
+                "input_tokens": input_tokens, "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens, "input_tokens_details": {"cached_tokens": 1},
+            }}
+            if not tool_results:
+                spec["function_arguments"] = json.dumps({"path": "facts.txt"})
+            if len(requests) == 1:
+                spec = {"kind": "failed"}
+            content_type, payload = _payload(body, spec)
+            payload = payload.replace(b'"name": "structured_output"', b'"name": "file_read"')
+            return http_response(request, 200, headers={"content-type": content_type}, content=payload)
         tool_results = [message["content"] for message in body["messages"] if message["role"] == "tool"]
         requests.append(tool_results)
         input_tokens, output_tokens = (315, 22) if tool_results else (270, 30)
@@ -256,7 +318,11 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
                 if redact_at == "wrapper":
                     redact_usage(response.usage)
                 else:
-                    redacted = replace(response.usage, cache_read_tokens=cache_read_tokens, raw_usage={})
+                    changes = {"cache_read_tokens": cache_read_tokens, "raw_usage": {}}
+                    if retried:
+                        redacted = Usage(**(_serialized_usage(response.usage) | changes))
+                    else:
+                        redacted = replace(response.usage, **changes)
                     on_usage(redacted)
                     if redact_at == "wrapper-copied":
                         redacted = deepcopy(redacted)
@@ -267,7 +333,8 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
 
     install_sdk_transport(monkeypatch, "openai", handle)
     async with CacheRedactingClient(
-        api_key=__name__, base_url="https://test.invalid/v1", max_retries=0,
+        api_key=__name__, base_url="https://test.invalid/v1", max_retries=int(retried),
+        wire_protocol="responses" if retried else "chat_completions",
         context_window=40_000, request_pool=str(tmp_path), request_capacity=1,
     ) as client:
         result = await OpenCollab(tmp_path, config={"llm_timeout": 3, "max_output_tokens": 900}).agent(
@@ -279,9 +346,10 @@ async def test_cache_redaction_preserves_budget_for_tool_followup(tmp_path, monk
     assert result.status == "completed", result.reason
     assert result.output == "The value is 42."
     assert result.tokens == 637
-    assert len(requests) == 2
-    assert requests[0] == []
-    assert "The verified value is 42." in requests[1][0]
+    assert requests[:-1] == ([[], []] if retried else [[]])
+    assert "The verified value is 42." in requests[-1][0]
+    if retried:
+        assert limits[1] == limits[0] - 37
     ledger = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
     assert [entry["usage"]["total_tokens"] for entry in ledger] == [300, 337]
     usage_events = [event.data for event in events if event.type == "usage"]
