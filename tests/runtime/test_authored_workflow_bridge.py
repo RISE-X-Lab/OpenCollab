@@ -18,6 +18,7 @@ from opencollab.adapters.llm.errors import TransientProviderError
 from opencollab.adapters.llm.request_admission import request_slot
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.session_environments import SessionEnvironmentPool
+from opencollab.adapters.tools import base
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileWriteTool
 from opencollab.application._session_run_shared import _TeamBudgetStop, _TokenBudgetStop
@@ -234,6 +235,68 @@ async def test_bridge_retains_native_whole_edit_lock(tmp_path, monkeypatch, dock
         await bridge.aclose()
         await environment.cleanup()
         await mailbox.cleanup()
+
+
+async def test_authored_native_sibling_edits_share_ancestors_and_exclude_transactions(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(base, "HOST_WRITE_LOCK_TIMEOUT_SECONDS", 0.25)
+    directory = tmp_path / "nested"
+    directory.mkdir()
+    for name in ("first.txt", "second.txt"):
+        (directory / name).write_text("before\n")
+    environment = LocalEnvironment(str(tmp_path))
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    bridge = AuthoredWorkflowBridge(
+        environment, str(artifacts),
+        SessionEnvironmentPool(str(tmp_path), isolation="shared", base_environment=environment),
+        {}, ToolRuntime(environment, None, None), allow_unisolated_shell=True,
+    )
+    client = BridgeClient(artifacts, bridge.options())
+    proxy = BridgeEnvironment(client, {"handle": 0, "workspace": environment.workspace,
+                                       "process_isolated": False})
+    entered, finish, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    read_file = environment.read_file
+
+    async def pause_first_read(path):
+        if path == "nested/first.txt":
+            entered.set()
+            await finish.wait()
+        return await read_file(path)
+
+    monkeypatch.setattr(environment, "read_file", pause_first_read)
+
+    async def serve():
+        while not stop.is_set():
+            await bridge.poll()
+            await asyncio.sleep(0.005)
+
+    async def write(name):
+        return await FileWriteTool().execute_with_runtime(
+            {"path": f"nested/{name}", "mode": "str_replace", "old_str": "before", "new_str": "after"},
+            ToolRuntime(proxy, None, None),
+        )
+
+    server = asyncio.create_task(serve())
+    first = asyncio.create_task(write("first.txt"))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await asyncio.wait_for(write("second.txt"), 5)
+        assert (directory / "second.txt").read_text() == "after\n"
+        assert (directory / "first.txt").read_text() == "before\n"
+        with pytest.raises(TimeoutError, match="nested$"):
+            async with proxy.file_write_locks(("nested",)):
+                pytest.fail("transaction acquired a directory with an active child edit")
+        finish.set()
+        await asyncio.wait_for(first, 5)
+        assert (directory / "first.txt").read_text() == "after\n"
+    finally:
+        finish.set()
+        await asyncio.gather(first, return_exceptions=True)
+        stop.set()
+        await server
+        await bridge.aclose()
+        await environment.cleanup()
 
 
 async def test_cancelled_bridge_edit_settles_native_write_and_releases_waiters(tmp_path, monkeypatch):

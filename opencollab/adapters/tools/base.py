@@ -219,7 +219,11 @@ async def host_write_lock(path: str, env: Any) -> AsyncIterator[Any]:
         async with _local_write_locks(paths, env, shared_paths=frozenset(paths[:-1])) as target:
             yield target
         return
-    async with host_write_locks((path,), env) as target:
+    lock = (
+        _target_write_lock(path, env) if getattr(env, "_delegates_file_write_lock", False)
+        else host_write_locks((path,), env)
+    )
+    async with lock as target:
         yield target
 
 
