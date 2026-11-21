@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import posixpath
 import shlex
-from collections.abc import Sequence
-from contextlib import AsyncExitStack
+from collections.abc import AsyncIterator, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
-from opencollab.adapters._candidate_adoption import _adoption_transaction
+from opencollab.adapters._candidate_adoption import _CHECK_PARENTS, _adoption_command, _adoption_transaction
 from opencollab.adapters._candidate_physical import _physical_git
 from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._git_patch_bytes import _complete, _patch_temporary
@@ -25,6 +25,40 @@ def _safe_path(value: str) -> str:
         raise ValueError("candidate preserve path escapes the repository")
     return normalized
 
+
+@asynccontextmanager
+async def _candidate_write_locks(
+    environment: Any, workspace: str, paths: Sequence[str], *, repository: bool, in_place: bool,
+) -> AsyncIterator[None]:
+    delegate = getattr(environment, "_delegate", environment)
+    docker = isinstance(delegate, DockerEnvironment)
+    local = getattr(environment, "local_filesystem", False)
+    lock_root = workspace if docker or local else getattr(environment, "workspace", workspace)
+    targets = (posixpath.join(lock_root, ".candidate-adoption"), *(posixpath.join(workspace, path) for path in paths))
+    can_share = docker or local or getattr(environment, "_handles_file_lock_hierarchy", False)
+    for share_ancestors in (True, False) if in_place and paths and can_share else (False,):
+        locks = (
+            delegate.file_write_locks(targets, _repository_root=workspace, _shared_ancestors=share_ancestors)
+            if docker else host_write_locks(targets, environment, shared_ancestors=share_ancestors)
+        )
+        async with locks:
+            if share_ancestors:
+                # Git reports the patch's intent. Check the actual files after taking the locks.
+                inspection = (
+                    f"cd -- {shlex.quote(workspace)} && workspace=$(pwd -P && printf .) || exit 2\n"
+                    'workspace=${workspace%??}\nconflict() { return 1; }\n' + _CHECK_PARENTS
+                    + f"for path in {shlex.join(paths)}; do live=\"$workspace/$path\"; "
+                    'check_parents "$live" && [ -f "$live" ] && [ ! -L "$live" ] || exit 1; done'
+                )
+                async with _adoption_command(environment, workspace, inspection, repository=repository) as command:
+                    result = await environment.exec_cmd(command, timeout=120)
+                _complete(result, "candidate existing-file inspection", allowed=(0, 1))
+                if result.returncode == 1:
+                    continue
+            yield
+            return
+
+
 async def _apply_increment(
     environment: Any, workspace: str, patch: str,
     preserve_paths: Sequence[str] = (), *, repository: bool = True, strict: bool = False,
@@ -34,12 +68,6 @@ async def _apply_increment(
     if not isinstance(patch, str) or not patch.strip():
         raise ValueError("candidate patch must be non-empty")
     preserved = tuple(_safe_path(path) for path in preserve_paths)
-    delegate = getattr(environment, "_delegate", environment)
-    docker = isinstance(delegate, DockerEnvironment)
-    lock_root = (
-        workspace if docker or getattr(environment, "local_filesystem", False)
-        else getattr(environment, "workspace", workspace)
-    )
     # Directory copies can sit below an unrelated Git worktree.
     git_prefix = "git" if repository else "GIT_DIR=/dev/null git"
     async with _patch_temporary(
@@ -47,11 +75,13 @@ async def _apply_increment(
         cleanup_best_effort=True, repository=repository,
     ) as candidate_file:
         output = _complete(await environment.exec_cmd(
-            f"{git_prefix} -C {shlex.quote(workspace)} apply --numstat -z -- {shlex.quote(candidate_file)}",
+            f"{git_prefix} -C {shlex.quote(workspace)} apply --numstat -z --summary -- {shlex.quote(candidate_file)}",
             timeout=30,
         ), "candidate path inspection")
+        stats, separator, summary = output.rpartition("\0")
         candidate_paths = {
-            line.split("\t", 2)[-1] for line in output.split("\0") if line.count("\t") >= 2
+            line.split("\t", 2)[-1] for line in (stats if separator else output).split("\0")
+            if line.count("\t") >= 2
         }
         candidate_paths.update(patch_paths(patch))
         if any(
@@ -59,13 +89,17 @@ async def _apply_increment(
             for protected in preserved for path in candidate_paths
         ):
             raise ValueError("candidate patch overlaps a preserved path")
-        targets = (posixpath.join(lock_root, ".candidate-adoption"),
-                   *(posixpath.join(workspace, path) for path in sorted(candidate_paths)))
-        locks = (
-            delegate.file_write_locks(targets, _repository_root=workspace)
-            if docker else host_write_locks(targets, environment)
-        )
-        async with locks:
+        paths = sorted(candidate_paths)
+        for path in paths:
+            if (
+                not path or "\0" in path or posixpath.normpath(path) != path or posixpath.isabs(path)
+                or path in {".", ".."} or path.startswith("../")
+                or any(part.casefold() == ".git" for part in path.split("/"))
+            ):
+                raise RuntimeError(f"invalid path in candidate patch: {path!r}")
+        async with _candidate_write_locks(
+            environment, workspace, paths, repository=repository, in_place=bool(separator and not summary.strip()),
+        ):
             git = f"{git_prefix} -c core.filemode=true"
             guard = ""
             if strict and repository:
@@ -122,7 +156,7 @@ async def _apply_increment(
                         _complete(result, "candidate recovery replay", allowed=(0, 128))
 
                 async with _adoption_transaction(
-                    environment, workspace, sorted(candidate_paths), repository=repository,
+                    environment, workspace, paths, repository=repository,
                     replay=replay, attributes_file=attributes_file,
                 ):
                     try:

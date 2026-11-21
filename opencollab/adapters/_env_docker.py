@@ -212,7 +212,7 @@ class DockerEnvironment(Environment):
 
     process_isolated = True
     remote_filesystem = True
-    _delegates_file_write_lock = True
+    _handles_file_lock_hierarchy = True
 
     def __init__(
         self,
@@ -696,9 +696,9 @@ class DockerEnvironment(Environment):
 
     @contextlib.asynccontextmanager
     async def file_write_locks(
-        self, paths: Sequence[str], *, _repository_root: str | None = None,
+        self, paths: Sequence[str], *, _repository_root: str | None = None, _shared_ancestors: bool = False,
     ) -> AsyncIterator[None]:
-        async with self._file_write_locks(paths, repository_root=_repository_root):
+        async with self._file_write_locks(paths, repository_root=_repository_root, shared_ancestors=_shared_ancestors):
             yield
 
     @contextlib.asynccontextmanager
@@ -711,25 +711,25 @@ class DockerEnvironment(Environment):
             raise RuntimeError("Container not started. Call setup() first.")
         current = await self._grouped_write_targets(paths, repository_root=repository_root)
         while True:
-            primary, ordered = current
+            primary, ordered, ancestors = current
             async with contextlib.AsyncExitStack() as locks:
                 for target in ordered:
                     await locks.enter_async_context(
-                        self._resolved_file_write_lock(target, shared=shared_ancestors and target != primary)
+                        self._resolved_file_write_lock(target, shared=shared_ancestors and target in ancestors)
                     )
                 # An earlier publisher may have changed a directory alias while
                 # we waited. Release the group before acquiring any new target.
                 current = await self._grouped_write_targets(paths, repository_root=repository_root)
-                if current == (primary, ordered):
+                if current == (primary, ordered, ancestors):
                     yield primary
                     return
 
     async def _grouped_write_targets(
         self, paths: Sequence[str], *, repository_root: str | None = None,
-    ) -> tuple[str | None, list[str]]:
+    ) -> tuple[str | None, list[str], frozenset[str]]:
         requested = {self._validate_container_path(path) for path in paths}
         if not requested:
-            return None, []
+            return None, [], frozenset()
         # The first path sorts before any of its descendants, so it can
         # establish the physical workspace using ordinary parent resolution.
         parent_cache: dict[tuple[str, str, tuple[str, ...]], tuple[str, str]] = {}
@@ -759,15 +759,17 @@ class DockerEnvironment(Environment):
                 if ancestor not in resolve:
                     resolve[ancestor] = ancestors[index + 1:]
         resolve.pop(first)
-        targets = {
-            await self._resolve_write_target(
+        resolved = {
+            path: await self._resolve_write_target(
                 path, replaceable_parents=tuple(parent for parent in ancestors if parent in requested),
                 parent_cache=parent_cache, repository_root=repository_root,
             )
             for path, ancestors in resolve.items()
         }
-        targets.add(primary)
-        return primary, _write_lock_paths(targets, self, workspace=physical_workspace)
+        resolved[first] = primary
+        ordered, _ancestors = _write_lock_paths(list(resolved.values()), self, workspace=physical_workspace)
+        explicit = {resolved[path] for path in requested}
+        return primary, ordered, frozenset(ordered) - explicit
 
     @contextlib.asynccontextmanager
     async def file_write_lock(

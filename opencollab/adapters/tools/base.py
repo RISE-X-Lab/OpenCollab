@@ -40,13 +40,14 @@ def _host_lock_path(path: str, env: Any) -> str:
 
 def _write_lock_paths(
     paths: Sequence[str], env: Any, *, workspace: str | None = None,
-) -> list[str]:
+) -> tuple[list[str], frozenset[str]]:
     local = bool(getattr(env, "local_filesystem", False))
     path_module = os.path if local else posixpath
     workspace = path_module.abspath(workspace or getattr(env, "workspace", "") or ".")
     if local:
         workspace = os.path.realpath(workspace)
     targets = set()
+    ancestors = set()
     for path in paths:
         target = path_module.normpath(path_module.join(workspace, path))
         if local:
@@ -54,9 +55,9 @@ def _write_lock_paths(
         targets.add(target)
         parent = path_module.dirname(target)
         while parent != workspace and parent.startswith(workspace.rstrip("/") + "/"):
-            targets.add(parent)
+            ancestors.add(parent)
             parent = path_module.dirname(parent)
-    return sorted(targets)
+    return sorted(targets | ancestors), frozenset(ancestors - targets)
 
 
 def _local_file_lock_capacity() -> int:
@@ -189,15 +190,22 @@ async def _local_write_locks(
 
 
 @contextlib.asynccontextmanager
-async def host_write_locks(paths: Sequence[str], env: Any) -> AsyncIterator[Any]:
+async def host_write_locks(
+    paths: Sequence[str], env: Any, *, shared_ancestors: bool = False,
+) -> AsyncIterator[Any]:
     """Own edited paths and their ancestors through publication or recovery."""
     if env is None or getattr(env, "local_filesystem", False):
-        async with _local_write_locks(_write_lock_paths(paths, env), env) as target:
+        ordered, ancestors = _write_lock_paths(paths, env)
+        shared_paths = ancestors if shared_ancestors else frozenset()
+        async with _local_write_locks(ordered, env, shared_paths=shared_paths) as target:
             yield target
         return
     grouped = getattr(env, "file_write_locks", None)
     if callable(grouped):
-        async with grouped(paths) as target:
+        lock = grouped(paths, _shared_ancestors=True) if (
+            shared_ancestors and getattr(env, "_handles_file_lock_hierarchy", False)
+        ) else grouped(paths)
+        async with lock as target:
             yield target
         return
     if getattr(env, "file_write_lock_scope", None) == "workspace":
@@ -206,7 +214,8 @@ async def host_write_locks(paths: Sequence[str], env: Any) -> AsyncIterator[Any]
         return
     async with contextlib.AsyncExitStack() as locks:
         target = None
-        for path in _write_lock_paths(paths, env):
+        ordered, _ancestors = _write_lock_paths(paths, env)
+        for path in ordered:
             target = await locks.enter_async_context(_target_write_lock(path, env))
         yield target
 
@@ -214,13 +223,11 @@ async def host_write_locks(paths: Sequence[str], env: Any) -> AsyncIterator[Any]
 @contextlib.asynccontextmanager
 async def host_write_lock(path: str, env: Any) -> AsyncIterator[Any]:
     if env is None or getattr(env, "local_filesystem", False):
-        paths = _write_lock_paths((path,), env)
-        # The single target sorts after its ancestors.
-        async with _local_write_locks(paths, env, shared_paths=frozenset(paths[:-1])) as target:
+        async with host_write_locks((path,), env, shared_ancestors=True) as target:
             yield target
         return
     lock = (
-        _target_write_lock(path, env) if getattr(env, "_delegates_file_write_lock", False)
+        _target_write_lock(path, env) if getattr(env, "_handles_file_lock_hierarchy", False)
         else host_write_locks((path,), env)
     )
     async with lock as target:

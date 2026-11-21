@@ -538,13 +538,6 @@ async def _adoption_transaction(
     replay: Callable[[str, str | None, str | None], Awaitable[None]],
     attributes_file: str | None = None,
 ) -> AsyncIterator[None]:
-    for path in paths:
-        if (
-            not path or "\0" in path or posixpath.normpath(path) != path or posixpath.isabs(path)
-            or path in {".", ".."} or path.startswith("../")
-            or any(part.casefold() == ".git" for part in path.split("/"))
-        ):
-            raise RuntimeError(f"invalid path in candidate patch: {path!r}")
     # Own a missing or non-directory ancestor too, so rollback also reverses
     # directory creation and file/directory replacements without following links.
     inspection = (

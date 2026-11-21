@@ -35,6 +35,8 @@ async def test_candidate_and_bridge_share_native_mutation_ownership(
     _git(repo, "reset", "--hard", "-q")
     if failure:
         assert _run(repo, cache=True) == "1\n"
+    else:
+        (repo / "settings/independent.py").write_text("before\n")
     index = (repo / ".git/index").read_bytes()
     native = (LocalEnvironment(str(repo)) if backend == "local" else
               docker_environment(repo, LocalDockerTransport(repo, pair_reads=False)))
@@ -81,9 +83,17 @@ async def test_candidate_and_bridge_share_native_mutation_ownership(
         finally:
             entered_task.cancel()
             await asyncio.gather(entered_task, return_exceptions=True)
+        writer_runtime = ToolRuntime(native if bridge_entry else proxy, None, None)
+        if not failure:
+            result = await asyncio.wait_for(FileWriteTool().execute_with_runtime({
+                "path": "settings/independent.py", "mode": "str_replace",
+                "old_str": "before", "new_str": "after",
+            }, writer_runtime), 5)
+            assert "Replaced" in result
+            assert (repo / "settings/independent.py").read_text() == "after\n"
         writer = asyncio.create_task(FileWriteTool().execute_with_runtime({
             "path": "settings/defaults.py", "mode": "create", "content": "VALUE = 100\n",
-        }, ToolRuntime(native if bridge_entry else proxy, None, None)))
+        }, writer_runtime))
         await asyncio.sleep(0.05)
         assert not writer.done()
         assert (repo / "settings/defaults.py").read_text() == "VALUE = 1\n"
@@ -111,6 +121,8 @@ async def test_candidate_and_bridge_share_native_mutation_ownership(
 async def test_cancelled_publication_recovers_before_releasing_shared_writer(tmp_path, monkeypatch):
     repo = _repository(tmp_path)
     target = repo / "settings/defaults.py"
+    sibling = repo / "settings/independent.py"
+    sibling.write_text("before\n")
     index = (repo / ".git/index").read_bytes()
     target.write_text("VALUE = 42\n")
     patch = _git(repo, "diff", "--binary", "--", "settings/defaults.py")
@@ -134,9 +146,14 @@ async def test_cancelled_publication_recovers_before_releasing_shared_writer(tmp
     writer = None
     try:
         await asyncio.wait_for(entered.wait(), 10)
+        runtime = ToolRuntime(environment, None, None)
+        result = await asyncio.wait_for(FileWriteTool().execute_with_runtime({
+            "path": str(sibling), "mode": "str_replace", "old_str": "before", "new_str": "during",
+        }, runtime), 5)
+        assert "Replaced" in result
         writer = asyncio.create_task(FileWriteTool().execute_with_runtime({
             "path": str(target), "mode": "create", "content": "VALUE = 100\n",
-        }, ToolRuntime(environment, None, None)))
+        }, runtime))
         await asyncio.sleep(0.05)
         assert not writer.done()
         publication.cancel()
@@ -144,6 +161,7 @@ async def test_cancelled_publication_recovers_before_releasing_shared_writer(tmp
             await publication
         assert "Created/wrote" in await asyncio.wait_for(writer, 10)
         assert _run(repo) == "100\n"
+        assert sibling.read_text() == "during\n"
         assert (repo / ".git/index").read_bytes() == index
         assert _detached_files(repo / ".git") == (
             {target: b"VALUE = 1\n"}, {target: b"VALUE = 42\n"},

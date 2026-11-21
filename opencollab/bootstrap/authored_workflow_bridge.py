@@ -264,14 +264,16 @@ class AuthoredWorkflowBridge:
             raise ValueError("unknown environment for this authored run")
         environment = self._environments[handle]
         if action in {"file_write_lock", "file_write_locks"}:
-            if set(arguments) != ({"path"} if action == "file_write_lock" else {"paths"}):
+            required = {"path"} if action == "file_write_lock" else {"paths"}
+            optional = {"shared_ancestors"} if action == "file_write_locks" else set()
+            if not required <= arguments.keys() <= required | optional:
                 raise ValueError("file edit lock needs paths")
             paths = [arguments["path"]] if action == "file_write_lock" else arguments["paths"]
             if not isinstance(paths, list) or not paths or any(not isinstance(path, str) for path in paths):
                 raise ValueError("file edit lock needs non-empty text paths")
             lock = (
                 host_write_lock(paths[0], environment) if action == "file_write_lock"
-                else host_write_locks(paths, environment)
+                else host_write_locks(paths, environment, shared_ancestors=arguments.get("shared_ancestors") is True)
             )
             edit = _FileEdit(environment, lock)
             self._edits[identity] = edit
@@ -494,7 +496,7 @@ class BridgeClient:
 
 
 class BridgeEnvironment(Environment):
-    _delegates_file_write_lock = True
+    _handles_file_lock_hierarchy = True
 
     def __init__(self, client: BridgeClient, options: dict[str, Any]) -> None:
         super().__init__()
@@ -510,8 +512,13 @@ class BridgeEnvironment(Environment):
     def file_write_lock(self, path: str) -> AbstractAsyncContextManager[None]:
         return self._file_edit("file_write_lock", {"path": path})
 
-    def file_write_locks(self, paths: Sequence[str]) -> AbstractAsyncContextManager[None]:
-        return self._file_edit("file_write_locks", {"paths": list(paths)})
+    def file_write_locks(
+        self, paths: Sequence[str], *, _shared_ancestors: bool = False,
+    ) -> AbstractAsyncContextManager[None]:
+        arguments: dict[str, Any] = {"paths": list(paths)}
+        if _shared_ancestors:
+            arguments["shared_ancestors"] = True
+        return self._file_edit("file_write_locks", arguments)
 
     @asynccontextmanager
     async def _file_edit(self, action: str, arguments: dict[str, Any]) -> AsyncIterator[None]:
