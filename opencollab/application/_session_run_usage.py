@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from inspect import unwrap
 from typing import Any, Awaitable, Callable
 
 _native_usage_owner: ContextVar[object | None] = ContextVar("native_usage_owner", default=None)
@@ -230,9 +231,16 @@ class _CompletionUsageAccounting:
             settlement = None
         if owner in self._attempt_tokens:
             settlement = self._settle(usage, self._attempt_tokens.pop(owner), error=error)
+        attempt_callback = self.record_attempt
+        try:
+            uses_session_retry_accounting = (
+                on_attempt_usage == attempt_callback or unwrap(on_attempt_usage) == attempt_callback
+            )
+        except ValueError:
+            uses_session_retry_accounting = False
         self._native_usages.append(_ProviderUsageObservation(
             usage, response, getattr(response, "provider_items", None), getattr(response, "transport_timing", None),
-            error, settlement, asyncio.current_task(), on_attempt_usage == self.record_attempt,
+            error, settlement, asyncio.current_task(), uses_session_retry_accounting,
         ))
 
     def _settle(self, usage: Any, attempt_tokens: int = 0, *, error: BaseException | None = None,

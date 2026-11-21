@@ -4,6 +4,7 @@ import asyncio
 import json
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
+from functools import wraps
 
 import pytest
 
@@ -269,10 +270,12 @@ async def test_routed_completion_accounts_for_each_provider(
 
 @pytest.mark.parametrize("parallel", [False, True])
 @pytest.mark.parametrize("retried,tight_budget", [(False, False), (True, False), (False, True)])
-@pytest.mark.parametrize("serialization", ["none", "usage", "response", "plain"])
+@pytest.mark.parametrize("serialization", ["none", "usage", "response", "plain", "wrapped-response"])
 async def test_manual_usage_copy_is_reconciled_before_the_next_request(
     tmp_path, monkeypatch, parallel, retried, tight_budget, serialization,
 ):
+    wrap_attempt = serialization.startswith("wrapped-")
+    serialization = serialization.removeprefix("wrapped-")
     usage_path = tmp_path / "usage.jsonl"
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(usage_path))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
@@ -306,6 +309,15 @@ async def test_manual_usage_copy_is_reconciled_before_the_next_request(
         async def complete(
             self, messages, *, on_admitted=None, before_request=None, on_attempt_usage=None, on_usage=None, **kwargs,
         ):
+            if wrap_attempt:
+                assert on_attempt_usage is not None
+                attempt = on_attempt_usage
+
+                @wraps(attempt)
+                def trace_attempt(usage):
+                    return attempt(usage)
+
+                on_attempt_usage = trace_attempt
             controls = dict(on_admitted=on_admitted, before_request=before_request, on_attempt_usage=on_attempt_usage)
 
             async def primary():
