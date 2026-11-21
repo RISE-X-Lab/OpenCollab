@@ -102,7 +102,8 @@ def _ordered_anchors(candidates: list[tuple[int, int]]) -> Iterator[tuple[int, i
     yield from reversed(ordered)
 
 def _align_groups(
-    before: list[list[dict]], after: list[list[dict]], *, projected: bool = False,
+    before: list[list[dict]], after: list[list[dict]], *,
+    projected: bool = False, match_edited_results: bool = False,
 ) -> Iterator[tuple[int, int]]:
     old_keys = list(map(_anchor_key, before))
     new_keys = list(map(_anchor_key, after))
@@ -125,6 +126,12 @@ def _align_groups(
             return False
         if same_snapshot_value(before[old], after[new]):
             return True
+        if match_edited_results:
+            return (
+                key[0] == "exchange" and len(before[old]) > 2
+                and old_counts[key] == new_counts[key] == 1
+                and same_snapshot_value(before[old][0], after[new][0])
+            )
         if not projected:
             return False
         if key[0] == "exchange":
@@ -175,6 +182,30 @@ def _align_groups(
             yield next_old, next_new
         old, new = next_old + 1, next_new + 1
     yield from ((old_stop + offset, new_stop + offset) for offset in range(suffix))
+
+def _projected_tool_results(original: list[dict], shaped: list[dict]) -> dict[str, dict] | None:
+    key = _anchor_key(original)
+    if key[0] != "exchange" or key != _anchor_key(shaped) or not same_snapshot_value(
+        _strip_anthropic_thinking(original[:1]), _strip_anthropic_thinking(shaped[:1]),
+    ):
+        return None
+    results = {row["tool_call_id"]: row for row in shaped[1:]}
+    for row in original[1:]:
+        result = results[row["tool_call_id"]]
+        if not same_snapshot_value({**row, "content": result.get("content")}, result):
+            return None
+    return results
+
+def _rebase_tool_results(original: list[dict], shaped: list[dict], current: list[dict]) -> list[dict] | None:
+    results = _projected_tool_results(original, shaped)
+    if results is None or not same_snapshot_value(original[0], current[0]):
+        return None
+    original_results = {row["tool_call_id"]: row for row in original[1:]}
+    rebased = [shaped[0]]
+    for row in current[1:]:
+        call_id = row["tool_call_id"]
+        rebased.append(results[call_id] if same_snapshot_value(original_results[call_id], row) else row)
+    return rebased
 
 def _groups(rows: list[dict]) -> list[list[dict]]:
     return [rows[start:stop] for start, stop in _group_spans(rows)]
@@ -309,7 +340,8 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
     )]
     projection = _groups(view)
     current = [group for _, group in _groups_with_snips(state.messages, retained)]
-    unchanged = dict(_align_groups(source, current))
+    aligned = dict(_align_groups(source, current, match_edited_results=True))
+    unchanged = {old: new for old, new in aligned.items() if same_snapshot_value(source[old], current[new])}
     first_edit = 0
     while unchanged.get(first_edit) == first_edit:
         first_edit += 1
@@ -325,9 +357,7 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
         if old == 0 or next_old == len(source) or next_old != old + 1 or next_seen != seen + 1:
             return False
         current_index = unchanged.get(old)
-        if current_index is None or (
-            unchanged.get(old - 1) != current_index - 1 or unchanged.get(next_old) != current_index + 1
-        ):
+        if current_index is None:
             return False
         # A repeated acknowledgment can flank a call when the other neighbor is unique.
         has_unique_anchor = False
@@ -342,14 +372,15 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
         if not has_unique_anchor:
             return False
         original, shaped = source[old], projection[seen]
-        key = _anchor_key(original)
-        if key[0] != "exchange" or key != _anchor_key(shaped) or not same_snapshot_value(
-            _strip_anthropic_thinking(original[:1]), _strip_anthropic_thinking(shaped[:1]),
-        ):
+        if _projected_tool_results(original, shaped) is None:
             return False
+        if unchanged.get(old - 1) == current_index - 1 and unchanged.get(next_old) == current_index + 1:
+            return True
+        # An edited neighbor can still bound the saved projection. Match the
+        # raw occurrence independently before carrying its projection forward.
         return all(
-            same_snapshot_value({**old_result, "content": result.get("content")}, result)
-            for old_result, result in zip(original[1:], shaped[1:], strict=True)
+            sum(same_snapshot_value(group, original) for group in groups) == 1
+            for groups in (source, current)
         )
 
     def projected_groups() -> Iterator[tuple[int, int, list[list[dict]]]]:
@@ -380,7 +411,13 @@ def _rebase_anthropic_history(state: SessionState) -> tuple[list[dict], set[int]
         start_new = unchanged.get(start)
         # A summary covers its whole source interval, including possible insertions.
         if start_new is None or any(unchanged.get(index) != start_new + index - start for index in range(start, stop)):
-            continue
+            start_new = aligned.get(start)
+            if start_new is None or stop != start + 1 or len(replacement) != 1:
+                continue
+            exchange = _rebase_tool_results(source[start], replacement[0], current[start_new])
+            if exchange is None:
+                continue
+            replacement = [exchange]
         rebased.extend(chain.from_iterable(current[taken:start_new]))
         rebased.extend(chain.from_iterable(replacement))
         taken = start_new + stop - start

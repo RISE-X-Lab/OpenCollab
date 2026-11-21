@@ -628,7 +628,8 @@ def test_edit_in_summary_invalidates_it_even_when_a_later_message_is_identical()
     assert _anthropic_history_input(state) == state.messages
 
 
-def test_disjoint_edits_do_not_reuse_a_projection_for_reused_tool_call_ids():
+@pytest.mark.parametrize("same_result", [False, True])
+def test_disjoint_edits_reuse_a_bracketed_projection_when_the_raw_occurrence_is_unique(same_result):
     call = {
         "role": "assistant", "content": None, "tool_calls": [{
             "id": "read-again", "type": "function",
@@ -639,7 +640,10 @@ def test_disjoint_edits_do_not_reuse_a_projection_for_reused_tool_call_ids():
         {"role": "user", "content": "Read the old archive"},
         call, {"role": "tool", "tool_call_id": "read-again", "content": "Old file data"},
         {"role": "user", "content": "Check the archive again"},
-        copy.deepcopy(call), {"role": "tool", "tool_call_id": "read-again", "content": "Revised file data"},
+        copy.deepcopy(call), {
+            "role": "tool", "tool_call_id": "read-again",
+            "content": "Old file data" if same_result else "Revised file data",
+        },
         {"role": "user", "content": "Summarize what changed"},
     ])
     view = copy.deepcopy(state.messages)
@@ -647,7 +651,10 @@ def test_disjoint_edits_do_not_reuse_a_projection_for_reused_tool_call_ids():
     _remember_anthropic_history(state, view, None)
     state.messages[0]["content"] = "Read the archive entries"
     state.messages[-1]["content"] = "Summarize the latest entries"
-    assert _anthropic_history_input(state) == state.messages
+    expected = copy.deepcopy(state.messages)
+    if not same_result:
+        expected[2] = view[2]
+    assert _anthropic_history_input(state) == expected
 
 
 @pytest.mark.parametrize("checkpoint", [False, True], ids=["journal", "checkpoint"])

@@ -394,40 +394,74 @@ def test_ambiguous_adjacent_reused_calls_rebuild_after_edit(edit):
     assert _anthropic_history_input(state) == state.messages
 
 
+def test_changed_tool_arguments_do_not_reuse_previous_results():
+    calls = [
+        {"id": call_id, "type": "function", "function": {"name": "file_read", "arguments": "{}"}}
+        for call_id in ("left", "right")
+    ]
+    state = SessionState(messages=[
+        {"role": "user", "content": "Read both archived files."},
+        {"role": "assistant", "tool_calls": calls},
+        {"role": "tool", "tool_call_id": "left", "content": "Original left file"},
+        {"role": "tool", "tool_call_id": "right", "content": "Original right file"},
+    ])
+    view = deepcopy(state.messages)
+    for result in view[2:]:
+        result["content"] = "[Old tool result content cleared]"
+    _remember_anthropic_history(state, view, None)
+
+    calls[0]["function"]["arguments"] = '{"path":"revised.txt"}'
+    state.messages[2]["content"] = "Updated left file"
+    assert _anthropic_history_input(state) == state.messages
+
+
 @pytest.mark.parametrize("edit_before_save", [True, False])
-@pytest.mark.parametrize("repeated_leader", [False, True], ids=["different-files", "same-file"])
-async def test_edits_preserve_cleared_results_for_calls_with_reused_ids(
-    tmp_path, monkeypatch, edit_before_save, repeated_leader,
+@pytest.mark.parametrize("scenario", [
+    "different-files", "same-file", "edit-user-neighbor", "edit-assistant-neighbor", "edit-first-result",
+    "edit-second-result",
+])
+async def test_edits_preserve_unchanged_cleared_results(
+    tmp_path, monkeypatch, edit_before_save, scenario,
 ):
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     model = "claude-sonnet-5-5"
     requests = []
-    read_paths = ["archive.txt", "archive.txt", "recent.txt"] if repeated_leader else [
-        "first.txt", "second.txt", "recent.txt",
-    ]
     revisions = ["ARCHIVE_FIRST_REVISION", "ARCHIVE_SECOND_REVISION", "ARCHIVE_LATEST_REVISION"]
-    active_read = None
+    batch = scenario in {"edit-first-result", "edit-second-result"}
+    neighbor = {"edit-user-neighbor": "user", "edit-assistant-neighbor": "assistant"}.get(scenario)
+    edited_result = {"edit-first-result": "toolu_first", "edit-second-result": "toolu_second"}.get(scenario)
+    same_file = scenario == "same-file" or neighbor is not None
+    read_paths = ("archive.txt", "archive.txt", "recent.txt") if same_file else (
+        "first.txt", "second.txt", "recent.txt",
+    )
+    call_ids = ("toolu_first", "toolu_second", "toolu_recent") if batch else (
+        "toolu_archive", "toolu_archive", "toolu_recent",
+    )
+    first, second, recent = zip(read_paths, revisions, call_ids, strict=True)
+    read_rounds = ((first, second), (recent,)) if batch else ((first,), (second,), (recent,))
+    active_reads = ()
     resuming = False
 
     def peer(request):
-        nonlocal active_read
+        nonlocal active_reads
         requests.append(request.content)
         if resuming and len(request.content) > 8_000:
             return http_response(request, 400, json={
                 "type": "error",
                 "error": {"type": "invalid_request_error", "message": "prompt is too long for the context window"},
             })
-        if active_read is None:
+        if not active_reads:
             return completion_http_response(request, text="Recorded.")
-        name, revision = active_read
-        active_read = None
-        (tmp_path / name).write_text((f"{revision} " + "entry " * 20 + "\n") * 35)
-        call_id = "toolu_recent" if name == read_paths[-1] else "toolu_archive"
+        reads, active_reads = active_reads, ()
+        blocks = []
+        for name, revision, call_id in reads:
+            (tmp_path / name).write_text((f"{revision} " + "entry " * 20 + "\n") * 35)
+            blocks.append({
+                "type": "tool_use", "id": call_id, "name": "file_read", "input": {"path": name, "limit": 35},
+            })
         return http_response(request, 200, json={
             "id": f"msg_{revision}", "type": "message", "role": "assistant", "model": model,
-            "content": [{
-                "type": "tool_use", "id": call_id, "name": "file_read", "input": {"path": name, "limit": 35},
-            }],
+            "content": blocks,
             "stop_reason": "tool_use", "stop_sequence": None,
             "usage": {"input_tokens": 5, "output_tokens": 5},
         })
@@ -438,6 +472,13 @@ async def test_edits_preserve_cleared_results_for_calls_with_reused_ids(
                 message["content"] = "Review the archived dates."
             elif message.get("content") == "Compare the archive entries.":
                 message["content"] = "Compare the revised archive entries."
+            elif edited_result is not None and message.get("tool_call_id") == edited_result:
+                message["content"] = "The amount in this archive was corrected."
+        if neighbor is not None:
+            first_result = next(i for i, row in enumerate(session.messages) if row["role"] == "tool")
+            adjacent = session.messages[first_result - 2 if neighbor == "user" else first_result + 1]
+            assert adjacent["role"] == neighbor
+            adjacent["content"] += " Add the page reference."
 
     install_sdk_transport(monkeypatch, "anthropic", peer)
     agent = Agent(name="reader", system_prompt="Review the archives.", model=model, provider="anthropic",
@@ -454,8 +495,8 @@ async def test_edits_preserve_cleared_results_for_calls_with_reused_ids(
             try:
                 await session.add_user_message("Start reviewing the archive.")
                 assert await session.run_loop() == "Recorded."
-                for number, (name, revision) in enumerate(zip(read_paths, revisions, strict=True), 1):
-                    active_read = (name, revision)
+                for number, reads in enumerate(read_rounds, 1):
+                    active_reads = reads
                     await session.add_user_message(f"Open archive revision {number}.")
                     assert await session.run_loop() == "Recorded."
                 await session.add_user_message("Compare the archive entries.")
@@ -477,9 +518,13 @@ async def test_edits_preserve_cleared_results_for_calls_with_reused_ids(
                 sent = len(requests)
                 assert await session.run_loop() == "Recorded."
                 assert len(requests) == sent + 1
-                assert requests[-1].count(b"[Old tool result content cleared]") == 2
+                assert requests[-1].count(b"[Old tool result content cleared]") == (1 if batch else 2)
                 assert b"Review the archived dates." in requests[-1]
                 assert b"Compare the revised archive entries." in requests[-1]
+                if neighbor is not None:
+                    assert b"Add the page reference." in requests[-1]
+                if edited_result is not None:
+                    assert b"The amount in this archive was corrected." in requests[-1]
                 assert revisions[0].encode() not in requests[-1]
                 assert revisions[1].encode() not in requests[-1]
                 assert revisions[2].encode() in requests[-1]
@@ -490,11 +535,11 @@ async def test_edits_preserve_cleared_results_for_calls_with_reused_ids(
                     for block in message["content"]
                     if block["type"] in {"tool_use", "tool_result"}
                 ]
-                assert blocks == [
-                    (kind, call_id)
-                    for call_id in ("toolu_archive", "toolu_archive", "toolu_recent")
-                    for kind in ("tool_use", "tool_result")
-                ]
+                expected = []
+                for reads in read_rounds:
+                    expected.extend((kind, call_id)
+                                    for kind in ("tool_use", "tool_result") for _, _, call_id in reads)
+                assert blocks == expected
             finally:
                 await session.aclose()
     finally:
