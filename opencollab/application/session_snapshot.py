@@ -40,7 +40,8 @@ def _serialize_anthropic_history(state: SessionState) -> dict | None:
             stored.append(message)
     return {"messages": stored, "source_count": count, "tools": history["tools"]}
 
-def _restore_anthropic_history(value: object, messages: list[dict]) -> dict | None:
+def decode_anthropic_history(value: object, messages: list[dict]) -> dict | None:
+    """Resolve native history references without copying nested messages."""
     if not isinstance(value, dict):
         return None
     count = value.get("source_count")
@@ -57,6 +58,10 @@ def _restore_anthropic_history(value: object, messages: list[dict]) -> dict | No
         if count > len(messages):
             return None
         source = messages[:count]
+        # References use runtime messages. Snapshot timestamps are separate metadata.
+        for index, message in enumerate(source):
+            if "timestamp" in message:
+                source[index] = {key: item for key, item in message.items() if key != "timestamp"}
     elif (
         not isinstance(source, list) or len(source) != count
         or not all(isinstance(message, dict) for message in source)
@@ -70,7 +75,10 @@ def _restore_anthropic_history(value: object, messages: list[dict]) -> dict | No
             restored_view.append(source[message])
         else:
             return None
-    return copy.deepcopy({"messages": restored_view, "source_count": count, "tools": tools, "source_messages": source})
+    return {"messages": restored_view, "source_count": count, "tools": tools, "source_messages": source}
+
+def _restore_anthropic_history(value: object, messages: list[dict]) -> dict | None:
+    return copy.deepcopy(decode_anthropic_history(value, messages))
 
 def _restore_phase(raw: object) -> SessionPhase:
     value = str(raw)

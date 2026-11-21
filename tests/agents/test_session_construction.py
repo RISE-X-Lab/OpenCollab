@@ -13,6 +13,7 @@ import pytest
 
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
+from opencollab.application.ports import SnapshotSequenceConflict
 from opencollab.application.scheduler_types import LaunchSpec
 from opencollab.application.session import SessionRuntime
 from opencollab.bootstrap import build_session as Session
@@ -373,6 +374,52 @@ def test_checkpoint_rejects_conflicting_same_sequence(tmp_path, publisher, publi
     assert path.with_suffix(".json.journal").read_bytes() == b""
     store.checkpoint_snapshot(str(path), [*base, conflict], meta=meta, sequence=3)
     assert store.load_snapshot(str(path), "system")["_autosave_sequence"] == 3
+
+@pytest.mark.parametrize("publisher", ["snapshot", "journal"])
+@pytest.mark.parametrize(
+    "change", ["encoding", "transcript", "timestamp", "projection", "source", "tools", "malformed"],
+)
+def test_same_sequence_compares_native_history(tmp_path, publisher, change):
+    path = str(tmp_path / "native-checkpoint.json")
+    store = SessionStore()
+    system = {"role": "system", "content": "system"}
+    user = {"role": "user", "content": "request"}
+    published = [system, {**user, "timestamp": "2026-01-01T00:00:00+00:00"}]
+    legacy = {"messages": [system, user], "source_count": 2, "tools": None}
+    indexed = {**legacy, "messages": [0, 1]}
+    candidate = published.copy()
+    if change == "transcript":
+        candidate[1] = {**published[1], "content": "new request"}
+    elif change == "timestamp":
+        candidate[1] = {**published[1], "timestamp": "2026-01-01T00:00:01+00:00"}
+    elif change == "projection":
+        indexed["messages"] = [0, {**user, "content": "edited projection"}]
+    elif change == "source":
+        indexed.update(messages=[system, user], source_messages=[system, {**user, "content": "old source"}])
+    elif change == "tools":
+        indexed["tools"] = [{"name": "lookup"}]
+    elif change == "malformed":
+        legacy["messages"] = indexed["messages"] = [0, 2]
+
+    meta = {"session_state": {"anthropic_history": legacy}}
+    if publisher == "snapshot":
+        store.checkpoint_snapshot(path, published, meta=meta, sequence=1)
+    else:
+        store.append_snapshot_delta(path, messages=published, meta=meta, sequence=1, replace_from=0)
+    previous = store.load_snapshot(path, "system")
+    updated_meta = {"session_state": {"anthropic_history": indexed}}
+    if change == "encoding":
+        assert not store.append_snapshot_replacement(
+            path, candidate, meta=updated_meta, sequence=1, reject_conflicts=True,
+        )
+        store.checkpoint_snapshot(path, candidate, meta=updated_meta, sequence=1)
+        assert store.load_snapshot(path, "system")["session_state"]["anthropic_history"] == indexed
+    else:
+        with pytest.raises(SnapshotSequenceConflict):
+            store.append_snapshot_replacement(path, candidate, meta=updated_meta, sequence=1, reject_conflicts=True)
+        with pytest.raises(SnapshotSequenceConflict, match=f"conflicts with persisted {publisher} state"):
+            store.checkpoint_snapshot(path, candidate, meta=updated_meta, sequence=1)
+        assert store.load_snapshot(path, "system") == previous
 
 def test_checkpoint_rejects_ambiguous_duplicate_journal_sequence(tmp_path):
     path = str(tmp_path / "duplicate-sequence-checkpoint.json")

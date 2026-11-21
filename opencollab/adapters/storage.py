@@ -21,6 +21,7 @@ from opencollab.adapters.safe_files import (
     write_regular_file_atomic,
 )
 from opencollab.application.ports import SnapshotCapacityError, SnapshotSequenceConflict
+from opencollab.application.session_snapshot import decode_anthropic_history
 from opencollab.domain.session import same_snapshot_value
 
 MAX_SESSION_SNAPSHOT_BYTES = 64 * 1024 * 1024
@@ -751,26 +752,33 @@ class SessionStore:
     def _checkpoint_states_equal(
         persisted: dict[str, Any], candidate: dict[str, Any]
     ) -> bool:
-        """Compare a replayed state with a checkpoint after replay normalization.
-
-        Journal replay materializes ``session_state.seen_result_hashes`` and
-        sorts it, while a caller's full checkpoint payload may omit that empty
-        field or retain insertion order.  Those representations are
-        semantically identical; comparing the raw dictionaries would reject a
-        legitimate idempotent compaction and leave the journal unbounded.
-        """
-
         def normalize(value: dict[str, Any]) -> dict[str, Any]:
             normalized = dict(value)
             raw_state = normalized.get("session_state")
             state = dict(raw_state) if isinstance(raw_state, dict) else {}
+            # Journal replay materializes and sorts the seen-result set.
             seen = state.get("seen_result_hashes", [])
             if isinstance(seen, list) and all(isinstance(item, str) for item in seen):
                 state["seen_result_hashes"] = sorted(set(seen))
             normalized["session_state"] = state
             return normalized
 
-        return same_snapshot_value(normalize(persisted), normalize(candidate))
+        persisted = normalize(persisted)
+        candidate = normalize(candidate)
+        if same_snapshot_value(persisted, candidate):
+            history = persisted["session_state"].get("anthropic_history")
+            return history is None or decode_anthropic_history(history, persisted["messages"]) is not None
+
+        for snapshot in (persisted, candidate):
+            state = snapshot["session_state"]
+            history = state.get("anthropic_history")
+            if history is None:
+                return False
+            decoded = decode_anthropic_history(history, snapshot["messages"])
+            if decoded is None:
+                return False
+            state["anthropic_history"] = {**history, **decoded}
+        return same_snapshot_value(persisted, candidate)
 
     @staticmethod
     def _snapshot_sequence(snapshot: dict[str, Any]) -> int:

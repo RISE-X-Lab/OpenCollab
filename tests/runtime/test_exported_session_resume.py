@@ -8,10 +8,12 @@ import json
 import pytest
 
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.storage import SessionStore
 from opencollab.bootstrap import build_session, load_session
 from opencollab.domain.agent import Agent
 from opencollab.tools import builtin_tools
+from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport
 from tests.support.session_run_test_support import FakeLLM, llm_response, tool_call
 
 
@@ -171,6 +173,50 @@ async def test_export_without_original_autosave_can_start_autosaving(tmp_path, t
     finally:
         await restored.aclose()
         await restored.env.cleanup()
+
+async def test_old_anthropic_export_can_resume_an_existing_autosave_twice(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    install_sdk_transport(monkeypatch, "anthropic", completion_http_response)
+    exported = tmp_path / "exported.json"
+    target = tmp_path / "automatic.json"
+    agent = Agent(name="reviewer", system_prompt="Remember the prior conversation.", model="claude-sonnet-5-5",
+                  provider="anthropic", thinking=False, max_tokens_per_step=1024)
+    environment = LocalEnvironment(str(tmp_path))
+    try:
+        async with LLMClient(model=agent.model, provider="anthropic", max_retries=0,
+                             api_key=__name__, base_url="https://example.invalid/v1") as client:
+            options = {"agent": agent, "llm": client, "env": environment}
+            original = build_session(**options)
+            try:
+                await original.add_user_message("Remember the review deadline.")
+                assert await original.run_loop() == "ok"
+                original.save(str(exported))
+                messages = original.messages.copy()
+            finally:
+                await original.aclose()
+
+            old_export = json.loads(exported.read_text())
+            history = old_export["session_state"]["anthropic_history"]
+            history["messages"] = [messages[row] if type(row) is int else row for row in history["messages"]]
+            exported.write_text(json.dumps(old_export))
+            first = load_session(str(exported), **options, auto_save_path=str(target))
+            await first.aclose()
+
+            old_target = json.loads(target.read_text())
+            assert old_target["_autosave_sequence"] == 1
+            assert "timestamp" in old_target["messages"][1]
+            old_target["session_state"]["anthropic_history"] = history
+            target.write_text(json.dumps(old_target))
+
+            resumed = load_session(str(exported), **options, auto_save_path=str(target))
+            try:
+                assert resumed.messages == messages
+                assert resumed.state.anthropic_history["messages"] == history["messages"]
+                assert json.loads(target.read_text())["_autosave_sequence"] == 1
+            finally:
+                await resumed.aclose()
+    finally:
+        await environment.cleanup()
 
 class SnapshotOnlyStore:
     """Exercise full-snapshot persistence without journal support."""
