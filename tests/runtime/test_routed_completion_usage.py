@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
@@ -242,6 +243,89 @@ async def test_routed_completion_accounts_for_each_provider(
     if failed_primary:
         assert [entry["status"] for entry in ledger] == ["error", "success"]
         assert [event.data["error_type"] for event in usage_events] == ["ResponsesTransientEventError", None]
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("retried", [False, True])
+async def test_manual_usage_copy_is_reconciled_before_the_next_request(tmp_path, monkeypatch, parallel, retried):
+    usage_path = tmp_path / "usage.jsonl"
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(usage_path))
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    monkeypatch.setattr(retry, "extract_retry_after_seconds", lambda _error: 0.0)
+    monkeypatch.setattr(retry.random, "uniform", lambda _lo, _hi: 0.0)
+    requests = []
+    events = []
+    input_tokens, output_tokens = (32, 62) if retried else (2, 55)
+    each_total = input_tokens + output_tokens
+
+    async def handle(request):
+        route = request.url.path.split("/")[1]
+        body = json.loads(request.content)
+        is_primary_retry = route == "primary" and any(earlier == "primary" for earlier, _ in requests)
+        requests.append((route, body.get("max_output_tokens", body.get("max_tokens"))))
+        if route == "primary":
+            spec = {"kind": "failed"} if retried and not is_primary_retry else {"text": "Primary answer.", "usage": {
+                "input_tokens": 2, "output_tokens": 55, "total_tokens": 57,
+                "input_tokens_details": {"cached_tokens": 1},
+            }}
+            content_type, payload = _payload(body, spec)
+            return http_response(request, 200, headers={"content-type": content_type}, content=payload)
+        if route == "followup":
+            return completion_http_response(request, output_tokens=13)
+        payload = completion_http_response(request, text="Other answer.", output_tokens=output_tokens).json()
+        payload["usage"].update(prompt_tokens=input_tokens, total_tokens=each_total)
+        return http_response(request, 200, json=payload)
+
+    class RoutedClient(LLMClient):
+        async def complete(
+            self, messages, *, on_admitted=None, before_request=None, on_attempt_usage=None, on_usage=None, **kwargs,
+        ):
+            controls = dict(on_admitted=on_admitted, before_request=before_request, on_attempt_usage=on_attempt_usage)
+
+            async def primary():
+                return await super(RoutedClient, self).complete(messages, **kwargs, **controls)
+
+            if parallel:
+                response, _ = await asyncio.gather(
+                    primary(), alternate.complete(messages, **kwargs, **controls, on_usage=on_usage),
+                )
+            else:
+                response = await primary()
+                await alternate.complete(messages, **kwargs, **controls, on_usage=on_usage)
+            fields = asdict(response.usage)
+            assert vars(response.usage) == fields
+            public_usage = Usage(**fields)
+            assert public_usage == response.usage == public_usage
+            redacted = replace(response.usage, raw_usage={}, cache_read_tokens=None)
+            assert on_usage is not None
+            on_usage(deepcopy(redacted) if parallel else redacted)
+            await followup.complete(messages, **kwargs, **controls, on_usage=on_usage)
+            return response
+
+    install_sdk_transport(monkeypatch, "openai", handle)
+    options = dict(api_key=__name__, context_window=40_000, request_pool=str(tmp_path), request_capacity=2)
+    async with (
+        RoutedClient(**options, base_url="https://test.invalid/primary/v1", wire_protocol="responses",
+                     max_retries=int(retried)) as client,
+        LLMClient(**options, base_url="https://test.invalid/alternate/v1", max_retries=0) as alternate,
+        LLMClient(**options, base_url="https://test.invalid/followup/v1", max_retries=0) as followup,
+    ):
+        result = await OpenCollab(tmp_path, config={"llm_timeout": 3, "max_output_tokens": 900}).agent(
+            "Give one clear answer.", llm=client, tools=(), budget=1_020, trace=False,
+            run_control=RunControl(on_event=events.append), system_prompt="System.",
+        )
+
+    assert result.status == "completed", result.reason
+    assert result.output == "Primary answer."
+    assert result.tokens == each_total * 2 + 15
+    assert sorted(route for route, _ in requests[:-1]) == ["alternate", *(["primary"] * (1 + retried))]
+    assert requests[-1] == ("followup", requests[0][1] - each_total * 2)
+    ledger = [json.loads(line) for line in usage_path.read_text().splitlines()]
+    assert [entry["usage"]["total_tokens"] for entry in ledger] == [each_total, each_total, 15]
+    usage_events = [event.data for event in events if event.type == "usage"]
+    assert [event["total_tokens"] for event in usage_events] == [each_total, each_total, 15]
+    assert [event["cache_read_tokens"] for event in usage_events].count(None) == 1
 
 
 @pytest.mark.parametrize("cache_read_tokens", [None, 0])

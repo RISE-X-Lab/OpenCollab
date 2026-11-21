@@ -17,10 +17,11 @@ _native_usage_observer: ContextVar[Callable[[Any, BaseException | None, object |
 
 
 @contextmanager
-def _own_native_usage() -> Iterator[None]:
-    token = _native_usage_owner.set(_UsageOrigin())
+def _own_native_usage() -> Iterator[_UsageOrigin | None]:
+    origin = _UsageOrigin()
+    token = _native_usage_owner.set(origin)
     try:
-        yield
+        yield origin if _native_usage_observer.get() is not None else None
     finally:
         _native_usage_owner.reset(token)
 
