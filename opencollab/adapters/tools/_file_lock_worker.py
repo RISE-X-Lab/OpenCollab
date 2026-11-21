@@ -2,17 +2,12 @@
 
 import contextlib
 import json
+import math
 import select
 import sys
 import time
 
 from filelock import FileLock, Timeout
-
-
-def _parent_closed(wait: float | None = 0) -> bool:
-    # The parent sends one setup message, then keeps its pipe open as ownership.
-    readable, _, _ = select.select([sys.stdin.buffer], [], [], wait)
-    return bool(readable)
 
 
 def _reply(status: str, detail: str = "") -> None:
@@ -24,12 +19,14 @@ def main() -> None:
     if not setup:
         return
     paths, timeout, poll = json.loads(setup)
+    owner = select.poll()
+    owner.register(int(sys.argv[1]), select.POLLIN)
     try:
         with contextlib.ExitStack() as held:
             for path, lock_path in paths:
                 lock = FileLock(lock_path, timeout=0)
                 deadline = time.monotonic() + timeout
-                while not _parent_closed():
+                while not owner.poll(0):
                     try:
                         lock.acquire(timeout=0)
                     except Timeout:
@@ -37,7 +34,7 @@ def main() -> None:
                         if remaining <= 0:
                             _reply("timeout", f"timed out acquiring write lock for {path}")
                             return
-                        if _parent_closed(min(poll, remaining)):
+                        if owner.poll(math.ceil(min(poll, remaining) * 1000)):
                             return
                     else:
                         held.callback(lock.release)
@@ -45,7 +42,7 @@ def main() -> None:
                 else:
                     return
             _reply("ready")
-            _parent_closed(None)
+            owner.poll()
     except BrokenPipeError:
         return
     except OSError as exc:

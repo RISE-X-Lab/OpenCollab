@@ -24,8 +24,13 @@ class _ArgumentBoundEnvironment(LocalEnvironment):
         return await super().exec_cmd(command, timeout, **kwargs)
 
 
-@pytest.mark.parametrize("blocked", [False, True])
-@pytest.mark.parametrize("file_count,already_open", [(900, 0), (120, 120)], ids=["bulk", "busy-process"])
+@pytest.mark.parametrize(("blocked", "file_count", "already_open"), [
+    pytest.param(False, 900, 0, id="bulk-False"),
+    pytest.param(True, 900, 0, id="bulk-True"),
+    pytest.param(False, 120, 120, id="busy-process-False"),
+    pytest.param(True, 120, 120, id="busy-process-True"),
+    pytest.param(False, 900, 232, id="near-descriptor-limit"),
+])
 def test_bulk_candidate_adoption_keeps_recovery_below_process_limits(tmp_path, blocked, file_count, already_open):
     soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
     limit = 256 if soft == resource.RLIM_INFINITY else min(soft, 256)

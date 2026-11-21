@@ -10,6 +10,8 @@ import json
 import os
 import posixpath
 import resource
+import socket
+import subprocess
 import sys
 import tempfile
 from collections.abc import AsyncIterator, Sequence
@@ -71,67 +73,84 @@ def _available_local_file_locks(capacity: int) -> int:
         return 0 if exc.errno == errno.EMFILE else capacity
 
 
-async def _close_lock_holder(process: asyncio.subprocess.Process) -> None:
-    assert process.stdin is not None
-    process.stdin.close()
-    try:
-        await asyncio.wait_for(process.wait(), 2)
-    except asyncio.TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            process.kill()
-        await process.wait()
+async def _reap_lock_holders(processes: list[subprocess.Popen]) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 2
+    while pending := [process for process in processes if process.poll() is None]:
+        if loop.time() >= deadline:
+            for process in pending:
+                process.kill()
+            deadline = float("inf")
+        await asyncio.sleep(HOST_WRITE_LOCK_POLL_SECONDS)
 
 
 @contextlib.asynccontextmanager
-async def _hold_lock_group(paths: Sequence[str], env: Any) -> AsyncIterator[None]:
-    process = None
-    monitor = None
+async def _hold_lock_groups(paths: Sequence[str], env: Any, group_size: int) -> AsyncIterator[None]:
+    owner = asyncio.current_task()
+    assert owner is not None
+    processes: list[subprocess.Popen] = []
+    ready = 0
     worker = os.path.join(os.path.dirname(__file__), "_file_lock_worker.py")
 
-    async def spawn() -> None:
-        nonlocal process
-        process = await asyncio.create_subprocess_exec(
-            sys.executable, worker,
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-        )
+    async def watch_exit() -> None:
+        while True:
+            for index in range(ready):
+                returncode = processes[index].poll()
+                if returncode is not None:
+                    owner.cancel(f"local write lock holder exited unexpectedly ({returncode})")
+                    return
+            await asyncio.sleep(HOST_WRITE_LOCK_POLL_SECONDS)
 
+    # Startup sockets close before publication, leaving one descriptor for
+    # the lifetime of all lock holders.
+    read_end, write_end = os.pipe()
+    monitor = asyncio.create_task(watch_exit())
     try:
-        await await_owned_operation(spawn(), propagate_cancellation=True)
-        assert process is not None and process.stdin is not None and process.stdout is not None
-        options = (
-            [(path, _host_lock_path(path, env)) for path in paths],
-            HOST_WRITE_LOCK_TIMEOUT_SECONDS, HOST_WRITE_LOCK_POLL_SECONDS,
-        )
-        process.stdin.write(json.dumps(options).encode() + b"\n")
-        await process.stdin.drain()
-        response = await process.stdout.readline()
-        if not response:
-            raise RuntimeError("local write lock holder exited during acquisition")
-        status, detail = json.loads(response)
-        if status == "timeout":
-            raise TimeoutError(detail)
-        if status != "ready":
-            raise RuntimeError(f"local write lock holder failed: {detail}")
-        owner = asyncio.current_task()
-        assert owner is not None
-
-        async def watch_exit() -> None:
-            returncode = await process.wait()
-            owner.cancel(f"local write lock holder exited unexpectedly ({returncode})")
-
-        monitor = asyncio.create_task(watch_exit())
+        for start in range(0, len(paths), group_size):
+            setup, child = socket.socketpair()
+            with setup, child:
+                # Isolate terminal interrupts and avoid per-child pidfds.
+                processes.append(subprocess.Popen(
+                    [sys.executable, worker, str(read_end)], start_new_session=True,
+                    stdin=child, stdout=child, pass_fds=(read_end,),
+                ))
+                child.close()
+                reader, writer = await asyncio.open_connection(sock=setup)
+                try:
+                    options = (
+                        [(path, _host_lock_path(path, env)) for path in paths[start:start + group_size]],
+                        HOST_WRITE_LOCK_TIMEOUT_SECONDS, HOST_WRITE_LOCK_POLL_SECONDS,
+                    )
+                    writer.write(json.dumps(options).encode() + b"\n")
+                    await writer.drain()
+                    response = await reader.readline()
+                finally:
+                    writer.close()
+                    with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                        await await_owned_operation(writer.wait_closed(), propagate_cancellation=True)
+            if not response:
+                raise RuntimeError("local write lock holder exited during acquisition")
+            status, detail = json.loads(response)
+            if status == "timeout":
+                raise TimeoutError(detail)
+            if status != "ready":
+                raise RuntimeError(f"local write lock holder failed: {detail}")
+            ready += 1
+        os.close(read_end)
+        read_end = -1
         yield
     finally:
-        if monitor is not None:
-            monitor.cancel()
-        if process is not None:
-            await await_owned_operation(_close_lock_holder(process), propagate_cancellation=True)
+        monitor.cancel()
+        if read_end >= 0:
+            os.close(read_end)
+        os.close(write_end)
+        await await_owned_operation(_reap_lock_holders(processes), propagate_cancellation=True)
 
 
 @contextlib.asynccontextmanager
 async def _local_write_locks(paths: Sequence[str], env: Any) -> AsyncIterator[FileLock | None]:
     capacity = _local_file_lock_capacity()
-    if len(paths) <= capacity and len(paths) <= _available_local_file_locks(capacity):
+    if len(paths) == 1 or len(paths) <= _available_local_file_locks(capacity):
         async with contextlib.AsyncExitStack() as locks:
             target = None
             try:
@@ -145,10 +164,7 @@ async def _local_write_locks(paths: Sequence[str], env: Any) -> AsyncIterator[Fi
                 return
     # Every holder uses the same per-path locks. Contention order stays the
     # same across groups, direct callers and older installations.
-    group_size = min(512, capacity)
-    async with contextlib.AsyncExitStack() as locks:
-        for start in range(0, len(paths), group_size):
-            await locks.enter_async_context(_hold_lock_group(paths[start:start + group_size], env))
+    async with _hold_lock_groups(paths, env, min(512, capacity)):
         yield None
 
 

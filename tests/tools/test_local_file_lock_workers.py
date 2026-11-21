@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import sys
 
 import pytest
@@ -77,22 +79,32 @@ import sys
 
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.tools import base
+from opencollab.application.async_timeout import await_owned_operation
 
 
 async def main():
     base._local_file_lock_capacity = lambda: 2
-    env = LocalEnvironment(sys.argv[1])
+    stop, workspace, *paths = sys.argv[1:]
+    env = LocalEnvironment(workspace)
     entered = asyncio.Event()
 
     async def hold():
-        async with base.host_write_locks(sys.argv[2:], env):
+        async with base.host_write_locks(paths, env):
             entered.set()
-            await asyncio.Event().wait()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                if stop == 'terminal':
+                    print('recovering', flush=True)
+                    await await_owned_operation(asyncio.to_thread(sys.stdin.readline))
 
     task = asyncio.create_task(hold())
     try:
         await asyncio.wait_for(entered.wait(), 5)
         print('ready', flush=True)
+        if stop == 'terminal':
+            await task
+            return
         await asyncio.to_thread(sys.stdin.readline)
         task.cancel()
         try:
@@ -106,18 +118,21 @@ async def main():
         await env.cleanup()
 
 
-asyncio.run(main())
+try:
+    asyncio.run(main())
+except KeyboardInterrupt:
+    sys.exit(130)
 """
 
 
-@pytest.mark.parametrize("crash", [False, True])
-async def test_large_group_releases_existing_flocks_after_owner_stops(tmp_path, crash):
+@pytest.mark.parametrize("stop", ["cancel", "crash", "terminal"])
+async def test_large_group_releases_existing_flocks_after_owner_stops(tmp_path, stop):
     paths = ("a.txt", "b.txt", "c.txt")
     env = LocalEnvironment(str(tmp_path))
     old_locks = [FileLock(base._host_lock_path(path, env), timeout=2) for path in paths]
     owner = await asyncio.create_subprocess_exec(
-        sys.executable, "-c", _OWNER, str(tmp_path), *paths,
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        sys.executable, "-c", _OWNER, stop, str(tmp_path), *paths,
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, start_new_session=True,
     )
 
     def confirm_released():
@@ -125,14 +140,25 @@ async def test_large_group_releases_existing_flocks_after_owner_stops(tmp_path, 
             with lock:
                 pass
 
+    def confirm_held_during_recovery():
+        with pytest.raises(Timeout), old_locks[0].acquire(timeout=0.25):
+            pass
+
     try:
         assert await asyncio.wait_for(owner.stdout.readline(), 10) == b"ready\n"
         for lock in old_locks:
             with pytest.raises(Timeout):
                 lock.acquire(timeout=0)
-        if crash:
+        if stop == "crash":
             owner.kill()
             await owner.wait()
+        elif stop == "terminal":
+            os.killpg(owner.pid, signal.SIGINT)
+            assert await asyncio.wait_for(owner.stdout.readline(), 10) == b"recovering\n"
+            await asyncio.to_thread(confirm_held_during_recovery)
+            owner.stdin.write(b"finish\n")
+            await owner.stdin.drain()
+            assert await asyncio.wait_for(owner.wait(), 10) == 130
         else:
             owner.stdin.write(b"cancel\n")
             await owner.stdin.drain()
