@@ -57,14 +57,17 @@ def _normalize_completion_usage(usage: Any) -> tuple[int, int]:
     return input_tokens if context_tokens is None else context_tokens, max(reported_total, input_tokens + output_tokens)
 
 
-def _same_usage_measurements(native: Any, usage: Any) -> bool:
-    # Context estimates and tool-markup annotations do not change provider usage.
+def _same_token_counts(native: Any, usage: Any) -> bool:
     return type(native) is type(usage) and all(
         getattr(native, name) == getattr(usage, name)
-        for name in (
-            "input_tokens", "output_tokens", "total_tokens",
-            "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens",
-        )
+        for name in ("input_tokens", "output_tokens", "total_tokens")
+    )
+
+
+def _same_usage_measurements(native: Any, usage: Any) -> bool:
+    return _same_token_counts(native, usage) and all(
+        getattr(native, name) == getattr(usage, name)
+        for name in ("cache_read_tokens", "cache_creation_tokens", "reasoning_tokens")
     )
 
 
@@ -123,22 +126,21 @@ class _CompletionUsageAccounting:
                 (item for item in self._native_usages if getattr(item[0], "_native_usage_origin", None) is origin),
                 None,
             )
-        if native is None and transport_timing is not None:
-            # The native request's timing object survives replacements of the response and usage.
-            native = next(
-                (item for item in self._native_usages
-                 if item[2] is transport_timing and _same_usage_measurements(item[0], usage)),
-                None,
-            )
         if native is None and origin is not None:
             raw_usage = getattr(usage, "raw_usage", None)
             if raw_usage is not None:
-                # A dataclass replacement normally retains the original provider payload.
+                # The usage payload takes precedence when a router carries timing from another call.
                 native = next(
                     (item for item in self._native_usages
-                     if getattr(item[0], "raw_usage", None) is raw_usage and _same_usage_measurements(item[0], usage)),
+                     if getattr(item[0], "raw_usage", None) is raw_usage and _same_token_counts(item[0], usage)),
                     None,
                 )
+        if native is None and transport_timing is not None:
+            native = next(
+                (item for item in self._native_usages
+                 if item[2] is transport_timing and _same_token_counts(item[0], usage)),
+                None,
+            )
         if usage is not None and native is None:
             native = next((item for item in reversed(self._native_usages) if item[0] == usage), None)
         if native is None and origin is not None:
