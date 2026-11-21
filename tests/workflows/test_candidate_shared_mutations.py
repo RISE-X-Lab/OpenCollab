@@ -93,7 +93,7 @@ def _assert_flatten_recovery(repo: Path, loader: bytes) -> None:
 @pytest.mark.parametrize("tool", ["file_write", "apply_patch"])
 @pytest.mark.parametrize("relation,failure", [
     ("target", False), ("target", True), ("descendant", True),
-    ("unrelated", False), ("unrelated", True),
+    ("unrelated", False), ("unrelated", True), ("null-attributes-sibling", False),
 ])
 async def test_sdk_shared_agent_owns_mutations_through_candidate_publication(
     tmp_path, tool, relation, failure,
@@ -107,7 +107,14 @@ async def test_sdk_shared_agent_owns_mutations_through_candidate_publication(
         (repo / "blocked/__pycache__").mkdir()
         (repo / "blocked/__pycache__/retained.pyc").write_bytes(b"retained ignored bytes")
     environment = _PublicationBarrier(repo)
-    path = "other.py" if relation == "unrelated" else "settings/defaults.py"
+    path = {
+        "unrelated": "other.py",
+        "null-attributes-sibling": "settings/independent.py",
+    }.get(relation, "settings/defaults.py")
+    if relation == "null-attributes-sibling":
+        _git(repo, "config", "--local", "core.attributesFile", "/dev/null")
+        (repo / path).write_text("VALUE = 1\n")
+    independent = relation in {"unrelated", "null-attributes-sibling"}
     model = _WriterModel(tool, path)
     loader = (repo / "loader.py").read_bytes()
     index = (repo / ".git/index").read_bytes()
@@ -135,7 +142,7 @@ async def test_sdk_shared_agent_owns_mutations_through_candidate_publication(
                 isolation="shared", budget=2000, system_prompt="Use the requested file tool",
             ))
             await asyncio.wait_for(model.requested.wait(), 10)
-            if relation == "unrelated":
+            if independent:
                 result = await asyncio.wait_for(asyncio.shield(writer), 10)
                 assert result.status == "completed"
                 assert (repo / path).read_text() == "VALUE = 100\n"
@@ -166,7 +173,7 @@ async def test_sdk_shared_agent_owns_mutations_through_candidate_publication(
         )
         assert result.ok, result.reason
         assert result.output == "retained"
-        assert _run(repo) == ("100\n" if relation != "unrelated" else "1\n" if failure else "42\n")
+        assert _run(repo) == ("100\n" if not independent else "1\n" if failure else "42\n")
         assert (repo / ".git/index").read_bytes() == index
         if not failure:
             assert not list((repo / ".git").glob("candidate-recovery-*"))

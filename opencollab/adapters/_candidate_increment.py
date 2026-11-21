@@ -55,7 +55,7 @@ async def _candidate_write_locks(
         share_ancestors = prefer_shared_ancestors
         if lock_attributes:
             targets.update(_worktree_attributes(workspace, paths))
-            if attributes_file is not None:
+            if attributes_file not in (None, "/dev/null"):
                 configured = posixpath.normpath(attributes_file)
                 if configured.startswith(posixpath.normpath(workspace).rstrip("/") + "/"):
                     targets.add(configured)

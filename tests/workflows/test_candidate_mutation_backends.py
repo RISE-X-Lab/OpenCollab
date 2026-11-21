@@ -18,12 +18,18 @@ from tests.workflows.test_workflow_candidate_workspace import _git
 
 @pytest.mark.parametrize("backend", ["local", "docker"])
 @pytest.mark.parametrize("bridge_entry", [False, True])
-@pytest.mark.parametrize("failure", [False, True])
+@pytest.mark.parametrize(("failure", "attributes_file"), [
+    pytest.param(False, None, id="regular"),
+    pytest.param(False, "/dev/null", id="null-attributes"),
+    pytest.param(True, None, id="structural-failure"),
+])
 async def test_candidate_and_bridge_share_native_mutation_ownership(
-    tmp_path, monkeypatch, backend, bridge_entry, failure,
+    tmp_path, monkeypatch, backend, bridge_entry, failure, attributes_file,
 ):
     monkeypatch.chdir(tmp_path)
     repo = _repository(tmp_path)
+    if attributes_file is not None:
+        _git(repo, "config", "--local", "core.attributesFile", attributes_file)
     _git(repo, "add", "-A")
     _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "test: prepare native publication")
     if failure:
