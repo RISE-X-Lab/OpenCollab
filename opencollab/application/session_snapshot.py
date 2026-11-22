@@ -6,8 +6,10 @@ import copy
 import math
 from typing import Any
 
+from opencollab.application._anthropic_history import _anchor_key, _anthropic_source_changed, _rebase_anthropic_history
+from opencollab.application.shaping.pipeline import _group_spans
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
-from opencollab.domain.session import SessionPhase
+from opencollab.domain.session import SessionPhase, SessionState, same_snapshot_value
 
 # Translate legacy terminals and the removed enqueue phase so old snapshots
 # retain their disposition instead of falling back to IDLE.
@@ -15,19 +17,85 @@ _LEGACY_TERMINAL_PHASES = frozenset(
     {"cancelled", "budget_exceeded", "step_limit_exceeded", "context_overflow"}
 )
 
-def _restore_anthropic_history(value: object, messages: list[dict]) -> dict | None:
+def _serialize_anthropic_history(state: SessionState) -> dict | None:
+    history = state.anthropic_history
+    if history is None:
+        return None
+    source = state.messages
+    count = history["source_count"]
+    view = history["messages"]
+    snipped = history.get("snipped_exchanges", [])
+    if _anthropic_source_changed(state):
+        # Retire the stale projection before restore binds it to the new transcript.
+        view, retained = _rebase_anthropic_history(state)
+        snipped = sorted(retained)
+        count = len(source)
+
+    # Aligned and suffix-aligned entries can reuse the persisted transcript.
+    stored: list[dict | int] = []
+    suffix_offset = count - len(view)
+    for index, message in enumerate(view):
+        for source_index in (index, index + suffix_offset):
+            if 0 <= source_index < count and same_snapshot_value(message, source[source_index]):
+                stored.append(source_index)
+                break
+        else:
+            stored.append(message)
+    result = {"messages": stored, "source_count": count, "tools": history["tools"]}
+    if snipped:
+        result["snipped_exchanges"] = snipped
+    return result
+
+def decode_anthropic_history(value: object, messages: list[dict]) -> dict | None:
+    """Resolve native history references without copying nested messages."""
     if not isinstance(value, dict):
         return None
     count = value.get("source_count")
     view = value.get("messages")
     tools = value.get("tools")
+    source = value.get("source_messages")
     if (
-        isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= len(messages)
-        or not isinstance(view, list) or not all(isinstance(message, dict) for message in view)
+        isinstance(count, bool) or not isinstance(count, int) or count < 0
+        or not isinstance(view, list)
         or (tools is not None and (not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools)))
     ):
         return None
-    return copy.deepcopy({"messages": view, "source_count": count, "tools": tools})
+    if source is None:
+        if count > len(messages):
+            return None
+        source = messages[:count]
+        # References use runtime messages. Snapshot timestamps are separate metadata.
+        for index, message in enumerate(source):
+            if "timestamp" in message:
+                source[index] = {key: item for key, item in message.items() if key != "timestamp"}
+    elif (
+        not isinstance(source, list) or len(source) != count
+        or not all(isinstance(message, dict) for message in source)
+    ):
+        return None
+    restored_view = []
+    for message in view:
+        if isinstance(message, dict):
+            restored_view.append(message)
+        elif type(message) is int and 0 <= message < len(source):
+            restored_view.append(source[message])
+        else:
+            return None
+    result = {"messages": restored_view, "source_count": count, "tools": tools, "source_messages": source}
+    if "snipped_exchanges" in value:
+        snipped = value["snipped_exchanges"]
+        if not isinstance(snipped, list) or any(type(start) is not int for start in snipped):
+            return None
+        exchange_starts = {
+            start for start, stop in _group_spans(source) if _anchor_key(source[start:stop])[0] == "exchange"
+        }
+        if not exchange_starts.issuperset(snipped):
+            return None
+        result["snipped_exchanges"] = snipped
+    return result
+
+def _restore_anthropic_history(value: object, messages: list[dict]) -> dict | None:
+    return copy.deepcopy(decode_anthropic_history(value, messages))
 
 def _restore_phase(raw: object) -> SessionPhase:
     value = str(raw)

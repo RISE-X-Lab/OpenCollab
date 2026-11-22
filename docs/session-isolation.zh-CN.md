@@ -174,3 +174,6 @@ Team 成员之间的通信继续遵循配置中的拓扑。
 省略时继承成员策略。成员使用 `{"action":"launch","source":"generated.py","isolation":"worktree"}`
 可让子 Agent 在自己的 VM 中使用独立工作树。单个子调用可通过 `isolation="vm-session"` 申请另一台来宾。
 [可执行 VM 示例](../examples/vm-authored-workflow/README.zh-CN.md) 从成员写出源码开始，执行到取得原生子运行结果。
+
+`launch` 的 `budget` 是子运行各 Session 共享的总额度。控制端在每个模型请求开始前检查剩余额度，
+子代码使用 `over_budget_ok=True` 的调用也受该额度约束。

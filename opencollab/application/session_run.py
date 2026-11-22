@@ -30,7 +30,7 @@ from opencollab.application._session_run_shared import (
     _TeamBudgetStop,
     _TokenBudgetStop,
 )
-from opencollab.application._session_run_usage import _normalize_completion_usage
+from opencollab.application._session_run_usage import _CompletionUsageAccounting, _normalize_completion_usage
 from opencollab.application.context_pressure import ContextPressure
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
@@ -185,6 +185,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self._late_provider_usage: tuple[int, ...] = ()
         # The session supplies its owned persistence queue after adopting this runner.
         self.late_provider_usage_checkpoint: Callable[[], object] | None = None
+        self._on_completion_tokens: Callable[[int], None] | None = None
 
     def reset_runtime_for_user_turn(self) -> None:
         """Restore agent capabilities narrowed by the previous turn."""
@@ -245,22 +246,22 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         ):
             self.state.budget_reserve_consumed = True
 
+    def _charge_completion_tokens(self, tokens: int) -> None:
+        self.state.add_used_tokens(tokens)
+        if tokens and self._on_completion_tokens is not None:
+            self._on_completion_tokens(tokens)
+
     def _record_late_provider_result(
-        self,
-        task: asyncio.Future[Any],
-        *,
-        protected_call: bool = False,
+        self, task: asyncio.Future[Any], *, protected_call: bool = False,
+        accounting: _CompletionUsageAccounting | None = None,
     ) -> None:
-        """Charge a provider response that survived caller cancellation or timeout."""
         try:
             response = task.result()
-            _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
-            self._late_provider_usage += (total_tokens,)
-            self.state.add_used_tokens(total_tokens)
-            self._record_usage_event(response.usage, total_tokens, purpose="completion", late=True)
-            self._mark_budget_reserve_consumed(protected_call=protected_call)
-            if self.late_provider_usage_checkpoint is not None:
-                self.late_provider_usage_checkpoint()
+            if accounting is None:
+                accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
+                accounting.finish(response.usage, purpose="completion", late=True)
+            else:
+                accounting.record_late()
         except BaseException:
             pass
         finally:
@@ -699,11 +700,8 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self._stop_precheck("team budget exceeded: aggregate spend reached the global cap")
             return
         latency = time.monotonic() - start
-        input_tokens, total_tokens = _normalize_completion_usage(response.usage)
-        self.state.add_used_tokens(total_tokens)
-        self._record_usage_event(response.usage, total_tokens, purpose="completion")
+        input_tokens, _total_tokens = _normalize_completion_usage(response.usage)
         self._run_final_prompt = None
-        self._mark_budget_reserve_consumed()
         self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
         self.state.set_context_tokens(input_tokens)
 

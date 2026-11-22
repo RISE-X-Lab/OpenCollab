@@ -108,7 +108,7 @@ class ApplyPatchTool(Tool):
         if env is None:
             return "Error: no execution environment available."
 
-        path = checked_path(runtime, path)
+        path = checked_path(runtime, path, native_file=True)
 
         try:
             async with host_write_lock(path, env):

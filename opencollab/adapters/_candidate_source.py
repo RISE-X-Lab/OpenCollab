@@ -25,7 +25,6 @@ class _SourceSnapshot:
     index_revision: str
     patch: str
     excluded: tuple[str, ...]
-    untracked_excluded: tuple[str, ...]
     physical_tree: str | None
     modules: tuple[tuple[str, str], ...]
     initialized: tuple[str, ...]
@@ -61,12 +60,13 @@ class _SourceSnapshot:
         ):
             return True
         environment = self.owner._environment
+        untracked_excluded = (*await self.owner._source_untracked_paths(self.root), *self.excluded)
         initialized = await _initialized_submodule_paths(environment, self.root)
         if self._included(initialized) != self._included(self.initialized):
             return True
         current_modules = dict(await _physical_submodule_trees(
             environment, self.root, include_paths=tuple(path for path, _tree in self.modules),
-            exclude_paths=self.untracked_excluded, exclude_tree_paths=self.excluded,
+            exclude_paths=untracked_excluded, exclude_tree_paths=self.excluded,
             module_paths=initialized,
         ))
         original_modules = dict(self.modules)
@@ -85,7 +85,7 @@ class _SourceSnapshot:
                 return True
         if self.physical_tree is None and patch == self.patch and not await _has_worktree_conversions(
             environment, self.root, exclude_paths=self.excluded,
-            exclude_untracked_paths=self.untracked_excluded,
+            exclude_untracked_paths=untracked_excluded,
         ):
             return False
         # A plain source's saved Git patch contains its physical bytes. Build
@@ -93,7 +93,7 @@ class _SourceSnapshot:
         original = self.physical_tree or await self._original_tree()
         current = await _physical_tree(
             environment, self.root, self.revision,
-            exclude_paths=self.untracked_excluded, exclude_tree_paths=self.excluded,
+            exclude_paths=untracked_excluded, exclude_tree_paths=self.excluded,
         )
         return current != original
 
@@ -105,7 +105,7 @@ async def _source_snapshot(owner: Any, patch: str | None, excluded: tuple[str, .
     environment = owner._environment
     revision = await owner.source_revision()
     index_revision = await owner.source_index_revision()
-    untracked_excluded = (*owner._owned_untracked_paths(root), *excluded)
+    untracked_excluded = (*await owner._source_untracked_paths(root), *excluded)
     initialized = await _initialized_submodule_paths(environment, root)
     modules = await _physical_submodule_trees(
         environment, root, exclude_paths=untracked_excluded, exclude_tree_paths=excluded,
@@ -119,6 +119,6 @@ async def _source_snapshot(owner: Any, patch: str | None, excluded: tuple[str, .
             environment, root, revision, exclude_paths=untracked_excluded, exclude_tree_paths=excluded,
         )
     return _SourceSnapshot(
-        owner, root, revision, index_revision, patch, excluded, untracked_excluded,
+        owner, root, revision, index_revision, patch, excluded,
         physical_tree, modules, initialized,
     )

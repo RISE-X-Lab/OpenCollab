@@ -80,11 +80,24 @@ def _positive_cleanup_timeout(value: float) -> float:
     return timeout
 
 async def _wait_for_context_cleanup(ctx: WorkflowContext, *, timeout: float) -> bool:
-    """Wait once for the cleanup tasks currently owned by the context."""
-    pending = set(ctx.pending_cleanup_tasks)
-    if pending:
-        _done, pending = await asyncio.wait(pending, timeout=timeout)
-    return not pending and not ctx.pending_cleanup_tasks
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    saw_empty = False
+    while True:
+        pending = set(ctx.pending_cleanup_tasks)
+        if pending:
+            saw_empty = False
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            _done, unfinished = await asyncio.wait(pending, timeout=remaining)
+            if unfinished:
+                return False
+        elif saw_empty:
+            return True
+        else:
+            saw_empty = True
+        await asyncio.sleep(0)
 
 def _session_environments(ctx: WorkflowContext) -> tuple[Any, ...]:
     environments: list[Any] = []

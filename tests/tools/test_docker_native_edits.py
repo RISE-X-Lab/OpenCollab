@@ -51,6 +51,44 @@ async def test_native_edit_controls(tmp_path, monkeypatch, backend, parallel, se
     if separate:
         assert result["max_real_exec_tracking"] == 2
 
+async def test_native_edit_of_sibling_file_completes_while_first_read_is_paused(tmp_path):
+    directory = (tmp_path / "src").resolve()
+    directory.mkdir()
+    first_path, second_path = directory / "first.py", directory / "second.py"
+    for path in (first_path, second_path):
+        path.write_text("alpha = 1\nbeta = 1\n")
+    paused, release = asyncio.Event(), asyncio.Event()
+
+    class PausedReadTransport(LocalDockerTransport):
+        async def __call__(self, *argv, **kwargs):
+            result = await super().__call__(*argv, **kwargs)
+            if "cat -- " in argv[-1] and str(first_path) in argv[-1]:
+                paused.set()
+                await release.wait()
+            return result
+
+    transport = PausedReadTransport(tmp_path, pair_reads=False)
+    first = docker_environment(tmp_path, transport)
+    second = docker_environment(tmp_path, transport, container_id=first.container_reference)
+
+    async def edit(path, index, environment):
+        tool, params = edit_call("str_replace", str(path), index)
+        return await tool.execute_with_runtime(params, ToolRuntime(environment, None, None))
+
+    first_edit = asyncio.create_task(edit(first_path, 0, first))
+    try:
+        await asyncio.wait_for(paused.wait(), 5)
+        receipt = await asyncio.wait_for(edit(second_path, 1, second), 5)
+        assert receipt.startswith("Replaced")
+        assert not first_edit.done()
+        assert second_path.read_text() == "alpha = 1\nbeta = 2\n"
+    finally:
+        release.set()
+        await asyncio.wait_for(first_edit, 5)
+        await first.cleanup()
+        await second.cleanup()
+    assert first_path.read_text() == "alpha = 2\nbeta = 1\n"
+
 async def test_two_container_views_share_the_normalized_target_lock(tmp_path):
     target = tmp_path / "module.py"
     target.write_text("alpha = 1\nbeta = 1\n")

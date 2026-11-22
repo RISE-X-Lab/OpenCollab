@@ -3,14 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sys
 import threading
 from contextlib import contextmanager
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
+from opencollab.adapters._env_docker import DockerEnvironment
+from opencollab.adapters._env_process import ProcessResult
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.application.event_bus import EventBus
@@ -19,11 +23,13 @@ from opencollab.application.workflow_registry import Registry, WorkflowSpec
 from opencollab.bootstrap import container
 from opencollab.bootstrap.authored_workflow import AuthoredWorkflowTool
 from opencollab.bootstrap.context_builder import SpawnConfig
+from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.bootstrap.team_workflow import TeamWorkflowTool
 from opencollab.bootstrap.workflow_runtime import run_workflow
 from opencollab.domain.agent import Agent
 from opencollab.sdk import OpenCollab
+from tests.support.docker_native_edits_support import RemoteDockerTransport
 from tests.support.environment_test_support import local_environment_factory as local_environment_factory
 from tests.support.paths import REPO_ROOT
 
@@ -201,6 +207,36 @@ async def _wait_file(path):
         while not path.exists():
             await asyncio.sleep(0.02)
     await asyncio.wait_for(wait(), 10)
+
+
+async def test_docker_authored_source_resolves_parent_in_the_runner(tmp_path):
+    class RunnerTransport(RemoteDockerTransport):
+        async def __call__(self, *argv, input_bytes=None, **kwargs):
+            if argv[0] == "cp":
+                source = argv[-2].split(":", 1)[1].replace(self.remote, str(self.workspace))
+                shutil.copyfile(source, argv[-1])
+                return ProcessResult(0, b"", b"")
+            if input_bytes is not None and "opencollab.bootstrap.authored_workflow_runner" in argv[-1]:
+                input_bytes = input_bytes.replace(self.remote.encode(), str(self.workspace).encode())
+            return await super().__call__(*argv, input_bytes=input_bytes, **kwargs)
+
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "authored.py").write_text('async def main(ctx, args):\n    return "WORKFLOW_MARKER"\n')
+    transport = RunnerTransport(tmp_path)
+    environment = DockerEnvironment(
+        workspace=transport.remote, exec_workdir=transport.remote, container_id="b" * 64,
+    )
+    transport.attach(environment)
+    parent, tool, runtime = _manager(environment)
+    runtime = replace(runtime, safety_policy=build_workspace_safety_policy(environment))
+    try:
+        child = await _launch(tool, runtime, source="nested/../authored.py")
+        result = json.loads(await tool.execute_with_runtime({"action": "wait", "id": child["id"]}, runtime))
+        assert result["status"] == "completed", result
+        assert result["result"]["output"] == "WORKFLOW_MARKER"
+    finally:
+        await parent.aclose()
+        await environment.cleanup()
 
 
 @pytest.mark.parametrize("stop", ["explicit", "parent-close", "cancel-wait"])
