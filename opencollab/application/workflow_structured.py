@@ -119,8 +119,11 @@ class WorkflowStructuredMixin:
                 session,
                 seeded_prompt,
                 deadline=deadline,
+                label=label,
                 cancel_event=capture_done,
             )
+            if self._agent_output_filtered(session):
+                return None
             if _schema_satisfied(capture_tool.captured, schema):
                 return capture_tool.captured
             terminal_reason = str(getattr(getattr(session, "state", None), "terminal_reason", "") or "")
@@ -222,6 +225,7 @@ class WorkflowStructuredMixin:
                 session,
                 retry_prompt,
                 deadline=deadline,
+                label=label,
                 cancel_event=capture_done,
             )
         except CallerTimeoutError:

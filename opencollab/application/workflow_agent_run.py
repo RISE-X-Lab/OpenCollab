@@ -137,7 +137,7 @@ class WorkflowAgentRunMixin:
                     self._track_session(session)
                     try:
                         output = await self._run_session_turn(
-                            session, prompt, deadline=self._timeout_deadline(timeout),
+                            session, prompt, deadline=self._timeout_deadline(timeout), label=label,
                         )
                     except CallerTimeoutError:
                         status, reason = "stopped", "timeout"

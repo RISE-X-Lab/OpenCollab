@@ -35,6 +35,7 @@ from contextlib import ExitStack
 from copy import deepcopy
 from typing import Any
 
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
 from opencollab.application.async_timeout import (
     CallerTimeoutError,
 )
@@ -86,6 +87,7 @@ from opencollab.application.workflow_structured import WorkflowStructuredMixin
 from opencollab.application.workflow_structured import (
     _schema_satisfied as _schema_satisfied,
 )
+from opencollab.domain.session import SessionPhase
 from opencollab.domain.tools import validate_unique_tool_names
 
 logger = logging.getLogger(__name__)
@@ -437,6 +439,14 @@ class WorkflowContext(
             record["exception_chain"] = chain
         self._agent_failures.append(record)
 
+    @staticmethod
+    def _agent_output_filtered(session: Any) -> bool:
+        state = getattr(session, "state", None)
+        return (
+            getattr(state, "phase", None) is SessionPhase.STOPPED
+            and getattr(state, "terminal_reason", None) == _FILTERED_OUTPUT_REASON
+        )
+
     async def wait_for_pending_cleanup(self) -> None:
         """Wait until every context-owned call and session task is quiescent.
 
@@ -673,7 +683,7 @@ class WorkflowContext(
             # rather than by the outer ``asyncio.wait_for`` wall. Any tool edits
             # already written to disk before the cancel survive in the env, so the
             # patch is still extractable.
-            return await self._run_session_turn(session, prompt, deadline=deadline)
+            return await self._run_session_turn(session, prompt, deadline=deadline, label=label)
         except CallerTimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
             return None
@@ -688,6 +698,7 @@ class WorkflowContext(
         prompt: str,
         *,
         deadline: float | None,
+        label: str | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> str:
         """Add one user turn and run it within a shared absolute deadline."""
@@ -698,7 +709,16 @@ class WorkflowContext(
         )
         run_timeout = self._remaining_timeout(deadline)
         run_loop = session.run_loop() if cancel_event is None else session.run_loop(cancel_event)
-        return await self._run_with_timeout(run_loop, run_timeout)
+        output = await self._run_with_timeout(run_loop, run_timeout)
+        if self._agent_output_filtered(session):
+            self._agent_failures.append({
+                "label": str(label or "agent")[:240],
+                "exception_type": "AgentStopped",
+                "status_code": None,
+                "provider_error_type": "content_filter",
+            })
+            await self.log(f"agent stopped ({label or 'agent'}): {_FILTERED_OUTPUT_REASON}")
+        return output
 
     def _internal_commit_deadline(self) -> float:
         remaining = self.seconds_left()

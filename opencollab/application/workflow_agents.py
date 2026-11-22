@@ -87,6 +87,7 @@ class WorkflowAgentsMixin:
                 session,
                 prompt,
                 deadline=deadline,
+                label=label,
                 cancel_event=capture_done,
             )
         except CallerTimeoutError:
@@ -107,6 +108,7 @@ class WorkflowAgentsMixin:
         if (
             submit_tool.captured is None
             and ledger
+            and not self._agent_output_filtered(session)
             and not self._active_call_has_pending_cleanup()
         ):
             synthesized = await self._synthesize_dead_scout(
@@ -172,6 +174,7 @@ class WorkflowAgentsMixin:
                 session,
                 prompt,
                 deadline=deadline,
+                label=synth_label,
                 cancel_event=capture_done,
             )
         except Exception as exc:  # noqa: BLE001 — one dead salvage never kills the fleet
@@ -257,6 +260,7 @@ class WorkflowAgentsMixin:
                 session,
                 prompt,
                 deadline=deadline,
+                label=draft_label,
                 cancel_event=capture_done,
             )
         except Exception as exc:  # noqa: BLE001 — one dead draft never kills the fleet
