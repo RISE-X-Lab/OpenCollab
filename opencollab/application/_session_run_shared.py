@@ -57,6 +57,10 @@ _EMPTY_STOP_NUDGE = (
 # Separate consecutive user messages for Anthropic.
 _EMPTY_STOP_PLACEHOLDER = "[no output produced this turn]"
 
+_INCOMPLETE_RESPONSE_REASONS = frozenset({
+    "length", "max_tokens", "model_context_window_exceeded", "content_filter",
+})
+
 def _last_assistant_answer(messages: list[dict[str, Any]], turn_start: int | None) -> str:
     if turn_start is None:
         return ""

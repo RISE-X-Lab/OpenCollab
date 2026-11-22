@@ -12,6 +12,7 @@ from opencollab.application._session_run_completion import _SessionRunCompletion
 from opencollab.application._session_run_shared import (
     _EMPTY_STOP_NUDGE,
     _EMPTY_STOP_PLACEHOLDER,
+    _INCOMPLETE_RESPONSE_REASONS,
     _WIND_DOWN_NUDGE,
     _WIND_DOWN_RETRY,
     DEFAULT_COMMIT_RESERVE,
@@ -762,22 +763,18 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         if has_content:
             await self.event_publisher.emit(self.event_factory.text_delta(response.content))
 
-        if response.finish_reason in {
-            "length",
-            "max_tokens",
-            "model_context_window_exceeded",
-        }:
-            reason = "output truncated: provider reached its generation limit"
-            self.state.append_message(
-                {
-                    "role": "system",
-                    "content": "[Output truncated by the provider. Partial response preserved; session stopped.]",
-                }
-            )
+        if response.finish_reason in _INCOMPLETE_RESPONSE_REASONS:
+            if response.finish_reason == "content_filter":
+                reason = "provider filtered the output"
+                message = "[Output filtered by the provider. Session stopped.]"
+            else:
+                reason = "output truncated: provider reached its generation limit"
+                message = "[Output truncated by the provider. Partial response preserved; session stopped.]"
+            self.state.append_message({"role": "system", "content": message})
             await self.event_publisher.emit(self.event_factory.error(reason))
-            await self.finish_step(pending.latency)
             self.clear_pending_step()
             self.state.transition_to(SessionPhase.STOPPED, reason=reason)
+            await self.finish_step(pending.latency)
             return
 
         if response.tool_calls:

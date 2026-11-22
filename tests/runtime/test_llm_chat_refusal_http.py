@@ -8,9 +8,10 @@ import httpx
 import openai
 import pytest
 
-from opencollab import OpenCollab
+from opencollab import OpenCollab, RunError
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.errors import StreamedUsageUnavailableError
+from opencollab.tools import builtin_tools
 
 _REFUSAL = "I cannot provide that response. I can explain the general principles."
 _ANSWER = "Here are the general principles."
@@ -71,12 +72,12 @@ async def _client(stream, handler):
     )
     return client
 
-async def _run_reply(tmp_path, stream, content, refusal, finish_reason="stop"):
+async def _run_reply(tmp_path, stream, content, refusal, finish_reason="stop", *, tool_calls=None):
     requests = []
 
     async def handler(request):
         requests.append(json.loads(request.content))
-        return _reply(stream, content, refusal, finish_reason)
+        return _reply(stream, content, refusal, finish_reason, tool_calls=tool_calls)
 
     client = await _client(stream, handler)
     artifacts = tmp_path / "artifacts"
@@ -85,7 +86,8 @@ async def _run_reply(tmp_path, stream, content, refusal, finish_reason="stop"):
             tmp_path, model="gpt-4o", provider="openai", api_key="unused",  # pragma: allowlist secret
             config={"thinking": False, "top_p": None},
         ).agent(
-            "Return a brief visible response.", llm=client, tools=(),
+            "Return a brief visible response.", llm=client,
+            tools=builtin_tools("file_read") if tool_calls else (),
             max_steps=3, budget=10_000, timeout=10, cleanup_timeout=1,
             trace=False, artifacts=artifacts,
         )
@@ -118,13 +120,33 @@ async def test_visible_content_keeps_precedence_over_refusal(tmp_path, stream, r
     assert history[-1]["content"] == _ANSWER
 
 @pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
-async def test_empty_content_filter_reply_completes_without_empty_stop_retry(tmp_path, stream):
-    result, requests, _history = await _run_reply(tmp_path, stream, None, None, "content_filter")
+@pytest.mark.parametrize("content", [None, "An unfinished answer"], ids=["empty", "partial"])
+async def test_filtered_reply_stops_without_retry(tmp_path, stream, content):
+    result, requests, history = await _run_reply(tmp_path, stream, content, None, "content_filter")
 
-    assert result.output == ""
-    assert result.status == "completed"
+    assert result.output == (content or "")
+    assert result.status == "stopped"
+    assert not result.ok
+    assert result.reason == "provider filtered the output"
+    with pytest.raises(RunError, match="provider filtered the output"):
+        result.raise_for_status()
     assert result.tokens == 20
     assert len(requests) == 1
+    assert [row["content"] for row in history if row["role"] == "assistant"] == ([content] if content else [])
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
+async def test_filtered_reply_does_not_execute_or_persist_interrupted_tool_call(tmp_path, stream):
+    interrupted = {**_TOOL_CALL, "function": {"name": "file_re", "arguments": '{"path":'}}
+    result, requests, history = await _run_reply(
+        tmp_path, stream, "Partial answer", None, "content_filter", tool_calls=[interrupted],
+    )
+
+    assert result.status == "stopped"
+    assert result.output == "Partial answer"
+    assert result.reason == "provider filtered the output"
+    assert result.tokens == 20
+    assert len(requests) == 1
+    assert not any(row["role"] == "tool" or row.get("tool_calls") for row in history)
 
 @pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
 @pytest.mark.parametrize(
