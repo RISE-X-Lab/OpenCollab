@@ -1,7 +1,6 @@
 """Observe native Bash execution for workflow evidence; preserve its API and output."""
 from __future__ import annotations
 
-import asyncio
 import copy
 import os.path
 import posixpath
@@ -73,7 +72,7 @@ class _WriteObservations:
         if self._delegate is not None:
             self._delegate.record_write(completed=completed, changed=changed, path=path)
         self.pending_path = path if not completed and changed is None else None
-        if completed is True and changed is True:
+        if completed and changed is not False:
             self._owner.record_edit(path)
 
 class _ObservedEdit:
@@ -95,11 +94,10 @@ class _ObservedEdit:
         observed.observations = observations
         try:
             return await self._delegate.execute_with_runtime(params, observed)
-        except asyncio.CancelledError:
-            # An atomic write can publish before cancellation reaches the tool.
+        finally:
+            # Publication can precede an error or cancellation.
             if observations.pending_path is not None:
                 self._owner.record_edit(observations.pending_path)
-            raise
 
 class BashEvidence:
     """Delegate commands unchanged to OC's Bash and retain actual test results."""
