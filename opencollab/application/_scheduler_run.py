@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from opencollab.application._session_run_shared import _last_assistant_answer
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
 from opencollab.application.scheduler_types import SchedulerStalledError, SchedulerTurnError
 from opencollab.domain.pending import RowStatus
 from opencollab.domain.session import SessionPhase
@@ -202,8 +202,12 @@ class SchedulerRunMixin:
         # Limit the answer lookup to messages appended during this invocation.
         # This keeps the public return value free of the worktree diff stored on
         # the SCB and prevents a precheck-only turn from leaking an old answer.
-        partial_answer = _last_assistant_answer(session.state.messages, turn_start)
         phase = scb.state.phase
+        answer_start: int | None = turn_start
+        if phase is SessionPhase.STOPPED and scb.state.terminal_reason == _FILTERED_OUTPUT_REASON:
+            reply_start = scb.state.completed_turn_start_message_index
+            answer_start = max(turn_start, reply_start) if reply_start is not None else None
+        partial_answer = _last_assistant_answer(session.state.messages, answer_start)
         if phase in {SessionPhase.ERROR, SessionPhase.STOPPED}:
             raise SchedulerTurnError(
                 aid,
