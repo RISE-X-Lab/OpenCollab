@@ -110,12 +110,13 @@ are claims to assess. Test records are comparable when their target, runner and
 command agree and their execution remains applicable to the final candidate.
 
 Recognized test execution through Bash creates a record with `applicability="current"`.
-A later completed `file_write` or `apply_patch` operation may change this status.
-When such an operation produces an observed content change, it marks earlier records
-as `applicability="unknown"` and appends the changed path to `post_test_edits` in
-completion order. The original exit code and parser-backed `verified` result remain
-in the history. A new test execution creates a current record alongside the earlier
-records. Failed edits and writes with unchanged contents preserve existing applicability.
+A later native `file_write` or `apply_patch` with changed or uncertain content
+marks earlier records as `applicability="unknown"` and appends the attempted path
+to `post_test_edits`. Content is uncertain when comparison is unavailable or when
+an attempted write ends in an error or cancellation. A confirmed unchanged write
+preserves applicability. The original exit code and parser-backed `verified`
+result remain in the history. A new test execution creates a current record
+alongside the earlier records.
 Custom `CandidateRun` providers whose records omit these optional fields retain their
 existing comparison behavior.
 

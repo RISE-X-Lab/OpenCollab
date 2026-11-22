@@ -21,7 +21,7 @@ from opencollab.builtin_workflows import (
     plan_weave_groups,
     run_weave,
 )
-from opencollab.tools import builtin_tools
+from opencollab.tools import builtin_tools, has_pass_evidence
 from tests.support.installed_weave_smoke import exercise_weave
 
 
@@ -160,6 +160,60 @@ async def test_native_tests_and_expected_output_jointly_verify_delivery(tmp_path
     assert row["matched"] is (expected == "RESOURCE_VERSION=1")
     assert row["ok"] is (passed and row["matched"])
     assert result.output["delivery_ok"] is row["ok"]
+
+@pytest.mark.parametrize(("outer_color", "child_color", "child_passed", "outer_passed", "capture"), [
+    ("no", "no", True, True, True),
+    ("no", "yes", True, True, True),
+    ("yes", "no", True, True, True),
+    ("yes", "yes", True, True, True),
+    ("no", "yes", False, True, True),
+    ("no", "yes", True, False, True),
+    ("no", "yes", True, True, False),
+])
+async def test_named_weave_distinguishes_captured_pytest_from_its_delivery_check(
+    tmp_path, outer_color, child_color, child_passed, outer_passed, capture,
+):
+    (tmp_path / "child_suite.py").write_text(
+        "from pathlib import Path\n"
+        "def test_child():\n"
+        "    print('Checking the generated result.txt')\n"
+        "    assert Path('result.txt').read_text() == 'correct\\n'\n",
+        encoding="utf-8",
+    )
+    child_args = ["-B", "-m", "pytest", "-q", "-rA", f"--color={child_color}",
+                  "-p", "no:cacheprovider", "child_suite.py"]
+    expected_exit = 0 if child_passed == outer_passed else 1
+    (tmp_path / "test_harness.py").write_text(
+        "import subprocess\n"
+        "import sys\n"
+        "def test_harness():\n"
+        f"    result = subprocess.run([sys.executable, *{child_args!r}])\n"
+        f"    assert result.returncode == {expected_exit}\n",
+        encoding="utf-8",
+    )
+    capture_option = "" if capture else "-s "
+    command = (
+        f"PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 {shlex.quote(sys.executable)} -B -m pytest -q "
+        f"{capture_option}--color={outer_color} -p no:cacheprovider test_harness.py"
+    )
+    model = FileModel(initial="correct\n" if child_passed else "wrong\n")
+    result = await _client(tmp_path).workflow(
+        "weave", {
+            "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
+            "check_commands": [command],
+            "config": {"max_steps": 4, "max_repair_rounds": 0},
+        }, llm=model, budget=20_000, limit_mode="explicit", trace=False,
+    )
+    assert result.ok
+    row, = result.output["verification"]["report"]["checks"]
+    assert row["executed"] is True
+    assert row["exit_code"] == (0 if outer_passed else 1)
+    assert row["output"].count("Captured stdout call") == (2 if capture else 1)
+    record, = row["test_records"]
+    verified = outer_passed and capture
+    assert record["verified"] is verified
+    assert result.output["delivery_ok"] is verified
+    assert not has_pass_evidence(row["exit_code"], row["output"], target="child_suite.py::test_child")
 
 @pytest.mark.parametrize("expected", ["no tests ran", "RESOURCE_VERSION=2"])
 async def test_zero_collected_tests_with_expected_text_never_verifies_delivery(tmp_path, expected):
