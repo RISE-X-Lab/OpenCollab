@@ -136,6 +136,8 @@ class WorkflowStructuredMixin:
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"structured agent failed ({label or 'agent'}): {exc}")
+            if self._agent_failure_filtered(exc):
+                return None
             if _schema_satisfied(capture_tool.captured, schema):
                 return capture_tool.captured
 

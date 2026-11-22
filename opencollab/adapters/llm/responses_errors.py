@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from opencollab.adapters.llm.errors import TransientEmptyOutputError, TransientProviderError
+from opencollab.application.ports import ProviderTerminalEventError
 
 _TRANSIENT_RESPONSE_CODES = frozenset(
     {
@@ -28,7 +29,7 @@ _TRANSIENT_RESPONSE_MESSAGES = (
 class ResponsesProtocolError(RuntimeError):
     """The Responses endpoint returned an incomplete or invalid event sequence."""
 
-class ResponsesTerminalEventError(ResponsesProtocolError):
+class ResponsesTerminalEventError(ResponsesProtocolError, ProviderTerminalEventError):
     """A typed terminal event preserved its provider error identity."""
 
     def __init__(

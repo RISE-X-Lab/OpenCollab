@@ -46,6 +46,7 @@ from opencollab.application.isolation import isolation_name
 from opencollab.application.ports import (
     CandidateWorkspacePort,
     EventPublisherPort,
+    ProviderTerminalEventError,
     TracePort,
     WorkflowSessionFactoryPort,
     WorkingTreeProbe,
@@ -423,7 +424,7 @@ class WorkflowContext(
         error = body.get("error") if isinstance(body, dict) else None
         if not isinstance(error, dict):
             error = body if isinstance(body, dict) else {}
-        error_type = error.get("type")
+        error_type = "content_filter" if self._agent_failure_filtered(exc) else error.get("type")
         if not isinstance(error_type, str) or not error_type or len(error_type) > 128:
             error_type = None
         elif any(not (char.isalnum() or char in "._-") for char in error_type):
@@ -438,6 +439,10 @@ class WorkflowContext(
         if len(chain) > 1 or any("errno" in item for item in chain):
             record["exception_chain"] = chain
         self._agent_failures.append(record)
+
+    @staticmethod
+    def _agent_failure_filtered(exc: Exception) -> bool:
+        return isinstance(exc, ProviderTerminalEventError) and exc.code == "content_filter"
 
     @staticmethod
     def _agent_output_filtered(session: Any) -> bool:
