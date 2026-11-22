@@ -13,6 +13,16 @@ from opencollab.bootstrap import (
 )
 from opencollab.bootstrap import programmatic
 from tests.interfaces.test_sdk_runtime import ReplyLLM
+from tests.support.asyncio_test_support import assert_cancel_reason
+
+
+async def _observe_cancellation(operation, observed):
+    # Python 3.10 can omit cancellation metadata when another task awaits it.
+    try:
+        await operation
+    except asyncio.CancelledError as error:
+        observed.append(error)
+        raise
 
 
 @pytest.mark.parametrize(("trace", "failure"), [
@@ -35,21 +45,26 @@ async def test_caller_cancellation_finalizes_proven_workflow_evidence(tmp_path, 
         finally:
             finished.set()
 
-    running = asyncio.create_task(OpenCollab(tmp_path, model="model").workflow(
+    observed = []
+    operation = OpenCollab(tmp_path, model="model").workflow(
         flow, run_id="cancelled-run", artifacts=artifacts, trace=trace, llm=ReplyLLM(),
-    ))
+    )
+    running = asyncio.create_task(_observe_cancellation(operation, observed))
     try:
         await asyncio.wait_for(ready.wait(), 5)
         running.cancel("caller cancelled")
         done, _ = await asyncio.wait({running}, timeout=5)
         assert running in done
-        with pytest.raises(asyncio.CancelledError, match="caller cancelled") as caught:
+        with pytest.raises(asyncio.CancelledError) as caught:
             await running
     finally:
         if not running.done():
             running.cancel()
             await asyncio.gather(running, return_exceptions=True)
 
+    assert_cancel_reason(caught.value, "caller cancelled")
+    cancellation, = observed
+    assert cancellation.args == ("caller cancelled",)
     assert finished.is_set()
     manifest = json.loads((artifacts / "workflow.json").read_text())
     assert manifest["run_id"] == "cancelled-run"
@@ -61,7 +76,7 @@ async def test_caller_cancellation_finalizes_proven_workflow_evidence(tmp_path, 
     assert (artifacts / "orchestration.jsonl").exists() is trace
     if failure is not None:
         expected_note = "trajectory write failed" if failure == "trace" else "run artifact claim"
-        assert any(expected_note in note for note in caught.value.__notes__)
+        assert any(expected_note in note for note in cancellation.__notes__)
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
 async def test_caller_cancellation_waits_for_owned_workflow_manifest_finalization(
@@ -84,9 +99,11 @@ async def test_caller_cancellation_waits_for_owned_workflow_manifest_finalizatio
     async def flow(ctx, _inputs):
         return await ctx.agent("finish once", tools=[])
 
-    running = asyncio.create_task(OpenCollab(tmp_path, model="model").workflow(
+    observed = []
+    operation = OpenCollab(tmp_path, model="model").workflow(
         flow, run_id="completed-run", artifacts=artifacts, trace=False, llm=ReplyLLM(), cleanup_timeout=5,
-    ))
+    )
+    running = asyncio.create_task(_observe_cancellation(operation, observed))
     try:
         await asyncio.wait_for(cleanup_started.wait(), 5)
         manifest_path = artifacts / "workflow.json"
@@ -109,7 +126,9 @@ async def test_caller_cancellation_waits_for_owned_workflow_manifest_finalizatio
             running.cancel()
             await asyncio.gather(running, return_exceptions=True)
 
-    assert caught.value.args == ("caller cancelled",)
+    assert_cancel_reason(caught.value, "caller cancelled")
+    cancellation, = observed
+    assert cancellation.args == ("caller cancelled",)
     after = json.loads(manifest_path.read_text())
     assert after["run_id"] == "completed-run"
     assert after["tokens_spent"] == 6
@@ -117,7 +136,7 @@ async def test_caller_cancellation_waits_for_owned_workflow_manifest_finalizatio
     if cleanup_fails:
         assert after["status"] == "failed"
         assert after["reason"] == "environment_cleanup_failed"
-        assert any("workflow-owned environment cleanup failed" in note for note in caught.value.__notes__)
+        assert any("workflow-owned environment cleanup failed" in note for note in cancellation.__notes__)
     else:
         assert after["status"] == "completed"
         assert after["reason"] is None
