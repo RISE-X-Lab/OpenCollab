@@ -768,6 +768,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         if response.finish_reason in _INCOMPLETE_RESPONSE_REASONS:
             filtered = response.finish_reason == "content_filter"
             if filtered:
+                reply_start = len(self.state.messages) - int(has_content)
                 reason = _FILTERED_OUTPUT_REASON
                 message = "[Output filtered by the provider. Session stopped.]"
             else:
@@ -778,6 +779,8 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             self.clear_pending_step()
             self.state.transition_to(SessionPhase.STOPPED, reason=reason)
             if filtered:
+                self._turn_start_message_index = reply_start
+                self.state.start_active_turn(reply_start)
                 self.state.clear_active_turn(retain_answer=True)
             await self.finish_step(pending.latency)
             return
