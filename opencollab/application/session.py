@@ -524,8 +524,8 @@ class Session:
             self._applied_launch = launch
             self._launch_state = "applied"
 
-    def restore(self, path: str) -> None:
-        """Restore a complete snapshot while accepting legacy message-only stores."""
+    def restore(self, path: str, *, aid: int | None = None) -> None:
+        """Restore a snapshot or legacy transcript, with an optional agent ID override."""
         if self._turn_lock.locked() or self.pending_cleanup_tasks:
             raise SessionBusyError("session cannot be restored while runtime work is active")
         if isinstance(self.store, SnapshotStorePort):
@@ -539,7 +539,7 @@ class Session:
         raw_state = snapshot.get("session_state")
         restored = SessionState(
             messages=[],
-            aid=_snapshot_int(snapshot.get("aid"), default=self.state.aid),
+            aid=aid if aid is not None else _snapshot_int(snapshot.get("aid"), default=self.state.aid),
         )
         restored.replace_messages(messages, restoring=True)
         pending_messages = snapshot.get("pending_messages", [])
