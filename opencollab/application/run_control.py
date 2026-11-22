@@ -7,11 +7,17 @@ import copy
 import inspect
 import logging
 import math
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_request_admission_cancel_signals: ContextVar[tuple[asyncio.Event, ...]] = ContextVar(
+    "request_admission_cancel_signals", default=(),
+)
 
 @dataclass(frozen=True, slots=True)
 class BudgetSnapshot:
@@ -75,6 +81,10 @@ class RunControl:
 class _RunCancelled(Exception):
     """The current turn's explicit cancellation signal was set."""
 
+def _raise_if_request_admission_cancelled() -> None:
+    if any(signal.is_set() for signal in _request_admission_cancel_signals.get()):
+        raise _RunCancelled
+
 class _RunControlPolicyError(ValueError):
     """A host budget policy failed or returned an invalid decision."""
 
@@ -88,6 +98,17 @@ class _SessionRunControlMixin:
     def _raise_if_run_cancelled(self) -> None:
         if self._run_cancellation_requested():
             raise _RunCancelled
+
+    @contextmanager
+    def _observe_request_admission_cancellation(self) -> Iterator[None]:
+        signals = tuple(
+            event for event in (self._run_cancel_event, self.default_cancel_event) if event is not None
+        )
+        token = _request_admission_cancel_signals.set(signals)
+        try:
+            yield
+        finally:
+            _request_admission_cancel_signals.reset(token)
 
     async def _stop_for_run_cancellation(self) -> None:
         await self._stop_precheck("interrupted by user", message="[Session interrupted by user]")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from functools import wraps
 
@@ -221,6 +222,64 @@ async def test_outer_cancellation_removes_the_waiter_before_admission(
         assert session.pending_cleanup_tasks == ()
         assert (await asyncio.wait_for(client.complete([]), 1)).content == "answer"
         await session.aclose()
+
+
+@pytest.mark.parametrize("summary", [False, True], ids=["reply", "summary"])
+@pytest.mark.parametrize("timeout", [None, 1], ids=["unbounded", "timed"])
+@pytest.mark.parametrize("source", ["turn", "session"])
+async def test_cooperative_interrupt_settles_before_the_model_slot_is_released(
+    tmp_path, monkeypatch, local_environment_factory, summary, timeout, source,
+):
+    requests = []
+    waiting = asyncio.Event()
+    interrupted = asyncio.Event()
+    pool = tmp_path / "pool"
+    pool.mkdir()
+
+    @asynccontextmanager
+    async def observe_slot(*args):
+        waiting.set()
+        async with request_slot(*args):
+            yield
+
+    async def serve(request):
+        requests.append(request)
+        return completion_http_response(request, text="answer")
+
+    monkeypatch.setattr(transport, "request_slot", observe_slot)
+    install_sdk_transport(monkeypatch, "openai", serve)
+    async with LLMClient(
+        model="gpt-4o", api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://test-model.invalid/v1", max_retries=0,
+        request_pool=str(pool), request_capacity=1, context_window=40_000,
+    ) as client:
+        session = build_session(
+            agent=Agent(name="waiting", system_prompt="system"), llm=client,
+            env=local_environment_factory(str(tmp_path)), llm_timeout=timeout,
+            default_cancel_event=interrupted if source == "session" else None,
+        )
+        session.messages = history(summary)
+        try:
+            async with request_slot(str(pool), 1):
+                operation = asyncio.create_task(
+                    session.run_loop(interrupted if source == "turn" else None)
+                )
+                try:
+                    await asyncio.wait_for(waiting.wait(), 2)
+                    assert not requests
+                    interrupted.set()
+                    assert await asyncio.wait_for(asyncio.shield(operation), 0.5) == ""
+                    assert session.state.terminal_reason == "interrupted by user"
+                    assert session.used_tokens == 0
+                    assert not requests
+                finally:
+                    if not operation.done():
+                        operation.cancel()
+                    await asyncio.gather(operation, return_exceptions=True)
+            assert (await asyncio.wait_for(client.complete([]), 2)).content == "answer"
+            assert len(requests) == 1
+        finally:
+            await session.aclose()
 
 
 @pytest.mark.parametrize("summary", [False, True])
