@@ -12,6 +12,7 @@ from opencollab.application._session_run_completion import _SessionRunCompletion
 from opencollab.application._session_run_shared import (
     _EMPTY_STOP_NUDGE,
     _EMPTY_STOP_PLACEHOLDER,
+    _FILTERED_OUTPUT_REASON,
     _INCOMPLETE_RESPONSE_REASONS,
     _WIND_DOWN_NUDGE,
     _WIND_DOWN_RETRY,
@@ -318,13 +319,14 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             entry_phase = SessionPhase.IDLE
         if entry_phase is SessionPhase.IDLE:
             self.state.consume_queued_external_user_turn()
+        read_final_answer = entry_phase is SessionPhase.DONE or (
+            entry_phase is SessionPhase.STOPPED and self.state.terminal_reason == _FILTERED_OUTPUT_REASON
+        )
         if entry_phase is SessionPhase.AWAITING_EVENTS:
             self._turn_start_message_index = self.state.active_turn_start_message_index
-        elif entry_phase is SessionPhase.DONE:
-            # Re-entering an already-completed session is a compatibility
-            # read-only query for its final answer, not a restored active turn.
+        elif read_final_answer:
             self._turn_start_message_index = self.state.completed_turn_start_message_index
-            if self._turn_start_message_index is None:
+            if self._turn_start_message_index is None and entry_phase is SessionPhase.DONE:
                 self._turn_start_message_index = 0
         else:
             self._turn_start_message_index = len(self.state.messages)
@@ -332,7 +334,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
 
         if entry_phase is SessionPhase.AWAITING_EVENTS:
             self._resume_from_awaiting()
-        elif entry_phase is not SessionPhase.DONE:
+        elif not read_final_answer:
             self.state.resume_to_idle()
             # Deferred work belongs to the same turn; every other entry starts a
             # fresh once-per-turn empty-response retry allowance.
@@ -764,8 +766,9 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self.event_publisher.emit(self.event_factory.text_delta(response.content))
 
         if response.finish_reason in _INCOMPLETE_RESPONSE_REASONS:
-            if response.finish_reason == "content_filter":
-                reason = "provider filtered the output"
+            filtered = response.finish_reason == "content_filter"
+            if filtered:
+                reason = _FILTERED_OUTPUT_REASON
                 message = "[Output filtered by the provider. Session stopped.]"
             else:
                 reason = "output truncated: provider reached its generation limit"
@@ -774,6 +777,8 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self.event_publisher.emit(self.event_factory.error(reason))
             self.clear_pending_step()
             self.state.transition_to(SessionPhase.STOPPED, reason=reason)
+            if filtered:
+                self.state.clear_active_turn(retain_answer=True)
             await self.finish_step(pending.latency)
             return
 

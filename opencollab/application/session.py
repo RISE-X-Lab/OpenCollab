@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
@@ -712,7 +713,9 @@ class Session:
                 restored.append_message(answer)
             restored.mark_done()
             restored.terminal_reason = "submitted"
-        if restored.phase is SessionPhase.DONE:
+        if restored.phase is SessionPhase.DONE or (
+            restored.phase is SessionPhase.STOPPED and restored.terminal_reason == _FILTERED_OUTPUT_REASON
+        ):
             completed_turn_start = _restore_active_turn_start(
                 raw_state.get("completed_turn_start_message_index"), restored.messages,
             )

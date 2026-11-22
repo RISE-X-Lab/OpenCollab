@@ -9,9 +9,14 @@ import openai
 import pytest
 
 from opencollab import OpenCollab, RunError
+from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.errors import StreamedUsageUnavailableError
+from opencollab.bootstrap import build_session, load_session
+from opencollab.domain.agent import Agent
+from opencollab.domain.session import SessionPhase
 from opencollab.tools import builtin_tools
+from tests.support.session_runtime_test_support import FakeTracer
 
 _REFUSAL = "I cannot provide that response. I can explain the general principles."
 _ANSWER = "Here are the general principles."
@@ -147,6 +152,76 @@ async def test_filtered_reply_does_not_execute_or_persist_interrupted_tool_call(
     assert result.tokens == 20
     assert len(requests) == 1
     assert not any(row["role"] == "tool" or row.get("tool_calls") for row in history)
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
+@pytest.mark.parametrize(("content", "refusal", "expected"), [
+    pytest.param(None, None, "", id="reasoning-only"),
+    pytest.param("Partial answer", None, "Partial answer", id="partial"),
+    pytest.param(None, _REFUSAL, _REFUSAL, id="refusal"),
+])
+async def test_filtered_reply_exposes_only_visible_text_and_reopens_without_a_request(
+    tmp_path, stream, content, refusal, expected,
+):
+    reasoning = "Provider reasoning available in the trace."
+    previous, following = "Answer to the previous question.", "Answer to the next question."
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 2:
+            return _reply(stream, content, refusal, "content_filter", reasoning=reasoning)
+        return _reply(stream, previous if len(requests) == 1 else following, None, "stop")
+
+    client = await _client(stream, handler)
+    path = str(tmp_path / "session.json")
+    agent = Agent(name="assistant", system_prompt="Answer the current question.", model="gpt-4o")
+    env = LocalEnvironment(str(tmp_path))
+    tracer = FakeTracer()
+    events = []
+    source = build_session(
+        agent=agent, llm=client, env=env, auto_save_path=path, tracer=tracer, event_sink=events.append,
+    )
+    restored = None
+    try:
+        await source.add_user_message("Previous question")
+        assert await source.run_loop() == previous
+        events.clear()
+        await source.add_user_message("Filtered question")
+        assert await source.run_loop() == expected
+        assert source.phase is SessionPhase.STOPPED
+        assert source.used_tokens == 40
+        assert [event.data["content"] for event in events if event.type == "text_delta"] == (
+            [expected] if expected else []
+        )
+        assert [message["content"] for message in source.messages if message["role"] == "assistant"] == (
+            [previous, expected] if expected else [previous]
+        )
+        filtered = [step["payload"] for step in tracer.steps if step["step_type"] == "llm_call"][-1]
+        assert filtered["finish_reason"] == "content_filter"
+        assert filtered["reasoning"] == reasoning
+        assert filtered["usage"]["total_tokens"] == 20
+
+        snapshot = OpenCollab.read_session_snapshot(path)["session_state"]
+        assert snapshot["active_turn_start_message_index"] is None
+        assert snapshot["completed_turn_start_message_index"] is not None
+        restored = load_session(path, agent=agent, llm=client, env=env)
+        assert await restored.run_loop() == expected
+        assert restored.phase is SessionPhase.STOPPED
+        assert restored.state.terminal_reason == "provider filtered the output"
+        assert restored.used_tokens == 40
+        assert len(requests) == 2
+
+        await restored.add_user_message("Next question")
+        assert await restored.run_loop() == following
+        assert restored.phase is SessionPhase.DONE
+        assert len(requests) == 3
+        assert reasoning not in json.dumps(requests[-1])
+    finally:
+        if restored is not None:
+            await restored.aclose()
+        await source.aclose()
+        await env.cleanup()
+        await client.close()
 
 @pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
 @pytest.mark.parametrize(
