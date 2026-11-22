@@ -1,15 +1,63 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 
+from opencollab import OpenCollab
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.tools.submit import SubmitTool
 from opencollab.bootstrap import build_session, load_session
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase
 from tests.support.session_characterization_test_support import FakeLLMClient, llm_response, tool_call
+
+
+@pytest.mark.parametrize("expected", ["pear", ""])
+async def test_final_step_autosave_restores_the_completed_answer(tmp_path, expected):
+    path = tmp_path / "automatic.json"
+    agent = Agent(name="assistant", system_prompt="Answer the current question.", tools=[])
+    final_replies = [expected] if expected else [None, None]
+    model = FakeLLMClient([llm_response(content=text) for text in ["apple", *final_replies]])
+    source = build_session(agent=agent, llm=model, env=LocalEnvironment(str(tmp_path)), auto_save_path=str(path))
+    saved, release = asyncio.Event(), asyncio.Event()
+
+    async def hold_final_step(event):
+        if event.type == "step_end" and event.data["step"] == 1 + len(final_replies):
+            await source.enqueue_auto_save()
+            saved.set()
+            await release.wait()
+
+    source.event_bus.subscribe(hold_final_step)
+    restored = running = None
+    try:
+        await source.add_user_message("First question")
+        assert await source.run_loop() == "apple"
+        await source.add_user_message("Second question")
+        running = asyncio.create_task(source.run_loop())
+        await asyncio.wait_for(saved.wait(), timeout=3)
+
+        snapshot = OpenCollab.read_session_snapshot(path)
+        assert snapshot["session_state"]["phase"] == "done"
+        assert snapshot["session_state"]["terminal_reason"] == "completed"
+        assert snapshot["session_state"]["active_turn_start_message_index"] is None
+        resume_model = FakeLLMClient()
+        restored = load_session(str(path), agent=agent, llm=resume_model, env=LocalEnvironment(str(tmp_path)))
+        assert await restored.run_loop() == expected
+        assert restored.used_tokens == source.used_tokens
+        assert resume_model.calls == []
+
+        release.set()
+        assert await running == expected
+    finally:
+        release.set()
+        if running is not None:
+            await asyncio.gather(running, return_exceptions=True)
+        for session in (source, restored):
+            if session is not None:
+                await session.aclose()
+                await session.env.cleanup()
 
 
 @pytest.mark.parametrize("second_texts, expected", [

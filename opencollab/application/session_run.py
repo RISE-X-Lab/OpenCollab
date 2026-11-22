@@ -831,6 +831,8 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             self.state.transition_to(SessionPhase.AUTOSAVING)
             return
 
-        await self.finish_step(pending.latency)
+        # Finalize the turn before step_end triggers autosave.
         self.clear_pending_step()
         self.state.transition_to(SessionPhase.DONE, reason="completed")
+        self.state.clear_active_turn()
+        await self.finish_step(pending.latency)
