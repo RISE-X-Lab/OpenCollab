@@ -432,7 +432,8 @@ async def test_documented_quiet_pytest_verifies_actual_target(tmp_path, target, 
     assert f"PASSED {target}::test_result" in row["output"]
 
 
-async def test_quiet_pytest_preserves_cd_quotes_variables_and_selected_test(tmp_path, monkeypatch):
+@pytest.mark.parametrize("color", ["no", "yes"])
+async def test_quiet_pytest_preserves_cd_quotes_variables_and_selected_test(tmp_path, monkeypatch, color):
     directory = tmp_path / "check directory"
     directory.mkdir()
     (directory / "test result.py").write_text(
@@ -445,14 +446,18 @@ async def test_quiet_pytest_preserves_cd_quotes_variables_and_selected_test(tmp_
         encoding="utf-8",
     )
     monkeypatch.setenv("OC_TEST_SELECTION", "test_selected")
-    command = f"cd -- 'check directory' && {shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider "
-    command += '-k "$OC_TEST_SELECTION" -- "test result.py"'
+    command = (
+        f"cd -- 'check directory' && {shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider "
+        f'--color={color} -k "$OC_TEST_SELECTION" -- "test result.py"'
+    )
     output = await _check(tmp_path, command)
     assert output["ok"] is True
     assert (directory / "selected").read_text() == "yes"
     row = output["report"]["checks"][0]
     assert row["executed_command"] == command.replace('-- "test result.py"', '-rA -- "test result.py"')
-    assert "1 passed, 1 deselected" in row["output"]
+    assert ("\x1b[" in row["output"]) == (color == "yes")
+    if color == "no":
+        assert "1 passed, 1 deselected" in row["output"]
 
 
 @pytest.mark.parametrize("mode", ["passed", "failed", "empty", "help", "collect", "compound", "redirect", "suffix"])

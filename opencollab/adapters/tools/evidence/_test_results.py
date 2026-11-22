@@ -12,6 +12,8 @@ from .django_evidence import django_has_pass_proof, is_django_runner
 
 DEFAULT_RUNNER = "python -m pytest"
 
+_PYTEST_STYLE_RE = re.compile(r"\x1b\[[0-9;:]*m")
+
 # Count tokens pytest prints in its final summary line, e.g.
 # "===== 1 failed, 2 passed, 1 skipped in 0.12s =====".
 _COUNT_RE = re.compile(r"(\d+)\s+(passed|failed|errors?|skipped|xfailed|xpassed|deselected|warnings?)")
@@ -196,8 +198,9 @@ def has_pass_evidence(
         return False
     if is_django_runner(runner):
         return returncode == 0 and django_has_pass_proof(target, output)
-    summaries = _summary_lines(output)
-    if _is_pytest_runner(runner) and len(summaries) != 1:
+    pytest = _is_pytest_runner(runner)
+    summaries = _summary_lines(_PYTEST_STYLE_RE.sub("", output) if pytest else output)
+    if pytest and len(summaries) != 1:
         # One tool invocation represents one pytest session. Multiple result
         # summaries are ambiguous and let an appended passing summary hide an
         # earlier failure; no summary proves no pytest session completed.
@@ -208,7 +211,7 @@ def has_pass_evidence(
         return False
     if returncode != 0:
         return False
-    if _is_pytest_runner(runner):
+    if pytest:
         if counts.get("passed", 0) <= 0:
             return False
         return _target_has_pass_proof(target, _passed_tests(output))
@@ -223,7 +226,7 @@ def _passed_tests(output: str) -> list[str]:
     """Node-ids reported as PASSED in the -rA short summary (default pytest)."""
     passes = []
     for line in output.splitlines():
-        s = line.strip()
+        s = _PYTEST_STYLE_RE.sub("", line).strip()
         if s.startswith("PASSED "):
             passes.append(s)
     return passes
