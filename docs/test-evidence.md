@@ -59,11 +59,13 @@ two properties through its existing tool interface.
 Each execution record starts with `applicability="current"`. A completed native
 edit with an observed content change clears `verified_targets`, marks earlier
 records `applicability="unknown"`, and appends the edited path to
-`post_test_edits`. A Bash command outside the recognized executable test form
-has the same effect and is retained in `post_test_commands`, including commands
-that fail or are interrupted. Unchanged writes and native read-only tools keep
-the prior applicability. A new test execution creates a current record while
-the historical exit code and `verified` value remain available.
+`post_test_edits`. Cancellation during a native write has the same effect
+because the new content may already be visible. A Bash command outside the
+recognized executable test form also clears current evidence and is retained in
+`post_test_commands`, including commands that fail or are interrupted. Writes
+with a confirmed unchanged result and native read-only tools keep the prior
+applicability. A new test execution creates a current record while the historical
+exit code and `verified` value remain available.
 
 `opencollab.tools.BashEvidence` can wrap an explicitly configured Bash tool.
 `opencollab.tools.has_pass_evidence` interprets an already captured test result

@@ -1,6 +1,7 @@
 """Observe native Bash execution for workflow evidence; preserve its API and output."""
 from __future__ import annotations
 
+import asyncio
 import copy
 import os.path
 import posixpath
@@ -63,6 +64,7 @@ class _WriteObservations:
     def __init__(self, delegate: Any, owner: BashEvidence):
         self._delegate = delegate
         self._owner = owner
+        self.pending_path: str | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._delegate, name)
@@ -70,6 +72,7 @@ class _WriteObservations:
     def record_write(self, *, completed: bool, changed: bool | None, path: str | None = None) -> None:
         if self._delegate is not None:
             self._delegate.record_write(completed=completed, changed=changed, path=path)
+        self.pending_path = path if not completed and changed is None else None
         if completed is True and changed is True:
             self._owner.record_edit(path)
 
@@ -88,8 +91,15 @@ class _ObservedEdit:
 
     async def execute_with_runtime(self, params: dict[str, Any], runtime: Any) -> str:
         observed = _ObservedRuntime(runtime, self._owner)
-        observed.observations = _WriteObservations(getattr(runtime, "observations", None), self._owner)
-        return await self._delegate.execute_with_runtime(params, observed)
+        observations = _WriteObservations(getattr(runtime, "observations", None), self._owner)
+        observed.observations = observations
+        try:
+            return await self._delegate.execute_with_runtime(params, observed)
+        except asyncio.CancelledError:
+            # An atomic write can publish before cancellation reaches the tool.
+            if observations.pending_path is not None:
+                self._owner.record_edit(observations.pending_path)
+            raise
 
 class BashEvidence:
     """Delegate commands unchanged to OC's Bash and retain actual test results."""

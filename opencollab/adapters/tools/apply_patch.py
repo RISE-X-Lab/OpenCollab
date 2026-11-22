@@ -142,7 +142,7 @@ class ApplyPatchTool(Tool):
                         f"Error applying patch to {path}: patch produced no changes."
                     )
                 if observations is not None:
-                    observations.record_write(completed=False, changed=None)
+                    observations.record_write(completed=False, changed=None, path=path)
                 await env.write_file(path, updated)
                 if observations is not None:
                     observations.record_write(completed=True, changed=True, path=path)
