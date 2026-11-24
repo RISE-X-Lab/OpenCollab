@@ -16,7 +16,12 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable
 
-from opencollab.application._session_run_shared import GenerationTimeoutError, _TeamBudgetStop, _TokenBudgetStop
+from opencollab.application._session_run_shared import (
+    _INCOMPLETE_RESPONSE_REASONS,
+    GenerationTimeoutError,
+    _TeamBudgetStop,
+    _TokenBudgetStop,
+)
 from opencollab.application.compaction_prompt import (
     build_summary_request,
     format_compact_summary,
@@ -153,8 +158,10 @@ class ReadTimeSummarizer:
 
     async def _complete(self, request: list[dict[str, Any]]) -> str:
         response = await self._acomplete(request)
-        if getattr(response, "finish_reason", None) in {"length", "max_tokens", "model_context_window_exceeded"}:
-            raise ValueError("The model returned a truncated conversation summary")
+        finish_reason = getattr(response, "finish_reason", None)
+        if finish_reason in _INCOMPLETE_RESPONSE_REASONS:
+            interruption = "filtered" if finish_reason == "content_filter" else "truncated"
+            raise ValueError(f"The model returned a {interruption} conversation summary")
         return format_compact_summary(getattr(response, "content", None) or "")
 
     def _fits(self, request: list[dict[str, Any]], *, allow_budget_stop: bool = False) -> bool:

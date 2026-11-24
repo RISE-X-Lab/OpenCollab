@@ -25,15 +25,17 @@ def test_django_rejects_wrong_target_and_nonzero_exit():
     assert not has_pass_evidence(0, PASS, runner=DJANGO_RUNNER, target="auth_tests")
     assert not has_pass_evidence(1, PASS, runner=DJANGO_RUNNER, target="admin_utils")
 
-def test_evidence_rejects_multiple_pytest_result_summaries():
-    from opencollab.tools import has_pass_evidence
-
+@pytest.mark.parametrize("failed_summary, passed_summary", [
+    ("1 failed in 0.01s", "1 passed in 0.01s"),
+    ("\x1b[31m1 failed\x1b[0m in 0.01s", "\x1b[32m1 passed\x1b[0m in 0.01s"),
+], ids=["plain", "colored"])
+def test_evidence_rejects_multiple_pytest_result_summaries(failed_summary, passed_summary):
     target = "tests/test_x.py::test_one"
     output = (
         f"FAILED {target} - assertion failed\n"
-        "1 failed in 0.01s\n"
+        f"{failed_summary}\n"
         f"PASSED {target}\n"
-        "1 passed in 0.01s\n"
+        f"{passed_summary}\n"
     )
 
     assert not has_pass_evidence(0, output, target=target)

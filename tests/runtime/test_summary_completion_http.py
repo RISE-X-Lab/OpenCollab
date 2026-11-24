@@ -17,15 +17,23 @@ from tests.support.responses_provider_test_support import message_item
 REQUIREMENT = "Preserve the SQLite backup before replacing the database."
 
 
-@pytest.mark.parametrize("configuration", [
-    {"provider": "openai", "wire_protocol": "chat_completions", "model": "gpt-4o"},
-    {"provider": "openai", "wire_protocol": "responses", "model": "gpt-4o"},
-    {"provider": "anthropic", "wire_protocol": "chat_completions", "model": "claude-sonnet-4-6"},
-], ids=["chat", "responses", "anthropic"])
-@pytest.mark.parametrize("truncated", [False, True], ids=["complete", "truncated"])
+_CHAT = {"provider": "openai", "wire_protocol": "chat_completions", "model": "gpt-4o"}
+_RESPONSES = {"provider": "openai", "wire_protocol": "responses", "model": "gpt-4o"}
+_ANTHROPIC = {"provider": "anthropic", "wire_protocol": "chat_completions", "model": "claude-sonnet-4-6"}
+
+@pytest.mark.parametrize(("configuration", "interruption"), [
+    pytest.param(_CHAT, None, id="complete-chat"),
+    pytest.param(_CHAT, "length", id="truncated-chat"),
+    pytest.param(_CHAT, "content_filter", id="filtered-chat"),
+    pytest.param(_RESPONSES, None, id="complete-responses"),
+    pytest.param(_RESPONSES, "length", id="truncated-responses"),
+    pytest.param(_ANTHROPIC, None, id="complete-anthropic"),
+    pytest.param(_ANTHROPIC, "length", id="truncated-anthropic"),
+])
 async def test_native_summary_completion_preserves_history_usage_and_cache(
-    tmp_path, monkeypatch, configuration, truncated,
+    tmp_path, monkeypatch, configuration, interruption,
 ):
+    truncated = interruption is not None
     requests = []
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
@@ -66,7 +74,7 @@ async def test_native_summary_completion_preserves_history_usage_and_cache(
         return http_response(request, 200, json={
             "id": "chat_summary", "object": "chat.completion", "created": 1, "model": body["model"],
             "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
-                         "finish_reason": "length" if partial else "stop"}],
+                         "finish_reason": interruption if partial else "stop"}],
             "usage": {"prompt_tokens": 100, "completion_tokens": output_tokens, "total_tokens": 100 + output_tokens},
         })
 

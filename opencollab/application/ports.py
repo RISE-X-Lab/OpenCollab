@@ -528,6 +528,10 @@ _native_completion_controls: ContextVar[_NativeCompletionControls | None] = Cont
 )
 
 
+class ProviderTerminalEventError(RuntimeError):
+    code: str | None = None
+
+
 class LLMPort(Protocol):
     """LLM client surface used by the session run loop and compaction."""
 

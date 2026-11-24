@@ -298,7 +298,7 @@ class FileWriteTool(Tool):
                     "overwrite: true."
                 )
         if observations is not None:
-            observations.record_write(completed=False, changed=None)
+            observations.record_write(completed=False, changed=None, path=path)
         observed_write = getattr(env, "write_file_with_change", None) if overwrite else None
         if callable(observed_write):
             changed = await observed_write(path, content)
@@ -369,7 +369,7 @@ class FileWriteTool(Tool):
                 "content is identical after the replacement."
             )
         if observations is not None:
-            observations.record_write(completed=False, changed=None)
+            observations.record_write(completed=False, changed=None, path=path)
         await env.write_file(path, updated)
         if observations is not None:
             observations.record_write(completed=True, changed=True, path=path)

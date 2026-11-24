@@ -389,7 +389,7 @@ async def _complete_with_error_usage(
     """Charge reported error usage inside the provider owner exactly once."""
     start = time.monotonic()
     try:
-        with usage_accounting.observe_provider_responses():
+        with runner._observe_request_admission_cancellation(), usage_accounting.observe_provider_responses():
             return await complete(*args, **kwargs)
     except BaseException as exc:
         late = asyncio.current_task() in runner._draining_provider_tasks

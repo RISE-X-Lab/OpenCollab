@@ -168,10 +168,8 @@ def _finalize_tool_calls(
         if isinstance(function, dict) and isinstance(function.get("name"), str):
             registered.add(function["name"])
 
-    # A provider-limit finish can interrupt any field, including the tool name
-    # or id. Retain those fragments for usage and tracing; Session stops these
-    # responses before persisting or executing their tool calls.
-    validate = state.finish_reason not in {"length", "max_tokens"}
+    # Interrupted calls may lack fields. Session retains them only in the trace.
+    validate = state.finish_reason not in {"length", "max_tokens", "content_filter"}
     finalized: list[dict[str, Any]] = []
     for index, slot in state.tool_slots.items():
         name = "".join(slot.name_parts)

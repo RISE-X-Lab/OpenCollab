@@ -19,6 +19,7 @@ from opencollab.application._anthropic_history import (
     _strip_anthropic_thinking,
 )
 from opencollab.application._session_run_shared import (
+    _INCOMPLETE_RESPONSE_REASONS,
     _STRUCTURED_OUTPUT_TOOL,
     _WRITE_TOOLS,
     GenerationTimeoutError,
@@ -1101,12 +1102,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             isinstance(response.content, str)
             and bool(response.content.strip())
         )
-        # A provider-limit response may contain an incomplete tool call. Never
-        # persist that structure: a later turn would send an orphaned call back
-        # to the provider, and the run loop must not execute partial arguments.
-        # Preserve only user-visible partial text; the full raw response remains
-        # available in the trace for diagnosis.
-        if response.finish_reason in {"length", "max_tokens", "model_context_window_exceeded"}:
+        # Keep interrupted calls out of the transcript and later tool execution.
+        if response.finish_reason in _INCOMPLETE_RESPONSE_REASONS:
             if has_content:
                 self.state.append_message({"role": "assistant", "content": response.content})
             return

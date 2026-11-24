@@ -7,13 +7,17 @@ import json
 import shlex
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters import _env_local
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.adapters.tools.fs import FileWriteTool
+from opencollab.application import tool_execution_runtime
 from opencollab.tools import evidence_tools
 
 TEST_COMMAND = f"{shlex.quote(sys.executable)} -B -m pytest -q -rA -p no:cacheprovider test_ok.py"
@@ -92,6 +96,168 @@ async def test_public_candidates_reusing_tools_keep_only_their_executed_tests(tm
     )
     assert source.returncode == 1
     assert "1 failed" in source.stdout
+
+async def test_public_candidate_reports_evidence_as_uncertain_after_file_write_timeout(tmp_path, monkeypatch):
+    _files(tmp_path)
+    (tmp_path / "app.py").write_text(PASSING_SOURCE)
+    for args in (
+        ("init", "-q"), ("add", "app.py", "test_ok.py"),
+        ("-c", "user.name=OpenCollab Tests", "-c", "user.email=tests@example.invalid", "commit", "-qm", "base"),
+    ):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    class ControlledModel:
+        calls = 0
+        write_result = ""
+
+        async def complete(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return _response("bash", {"command": TEST_COMMAND})
+            if self.calls == 2:
+                return _write(FAILING_SOURCE)
+            self.write_result = next(message["content"] for message in reversed(messages) if message["role"] == "tool")
+            return _response()
+
+        async def aclose(self):
+            pass
+
+    model = ControlledModel()
+    monkeypatch.setattr("opencollab.bootstrap.container.LLMClient", lambda **kwargs: model)
+    started, release = threading.Event(), threading.Event()
+    native_write = _env_local.write_regular_bytes_atomic
+    cleanup = tool_execution_runtime.ToolExecutionRuntimeMixin._cleanup_timed_out_execution
+
+    def delayed_write(root_fd, workspace, path, payload, **kwargs):
+        if path == "app.py":
+            started.set()
+            assert release.wait(5)
+        return native_write(root_fd, workspace, path, payload, **kwargs)
+
+    async def release_write_after_timeout(executor, task):
+        assert started.is_set()
+        release.set()
+        return await cleanup(executor, task)
+
+    monkeypatch.setattr(_env_local, "write_regular_bytes_atomic", delayed_write)
+    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.0)
+    monkeypatch.setattr(
+        tool_execution_runtime.ToolExecutionRuntimeMixin, "_cleanup_timed_out_execution", release_write_after_timeout,
+    )
+
+    async def flow(ctx, _inputs):
+        bash, = evidence_tools("bash", headless=False)
+        edit = FileWriteTool()
+        edit.default_timeout = 0.5
+        return await ctx.candidate_agent("test then edit", label="repair", tools=(bash, bash.observe_edits(edit)))
+
+    try:
+        result = await OpenCollab(
+            tmp_path, model="controlled", provider="openai",
+            api_key="candidate-evidence-fixture",  # pragma: allowlist secret
+        ).workflow(flow, budget=100_000, trace=False)
+    finally:
+        release.set()
+    assert result.ok, result.reason
+    assert "Tool execution timed out" in model.write_result
+    candidate = result.output
+    assert "+    return False" in candidate.diff
+    assert (tmp_path / "app.py").read_text() == PASSING_SOURCE
+    subprocess.run(
+        ["git", "apply", "-"], cwd=tmp_path, input=candidate.diff, text=True, check=True, capture_output=True,
+    )
+    rerun = subprocess.run(shlex.split(TEST_COMMAND), cwd=tmp_path, capture_output=True, text=True)
+    assert rerun.returncode == 1 and "1 failed" in rerun.stdout
+    record, = candidate.test_records
+    assert (record["exit_code"], record["verified"]) == (0, True)
+    assert record["applicability"] == "unknown"
+    assert record["post_test_edits"] == ["app.py"]
+    assert candidate.verified_targets == ()
+
+@pytest.mark.parametrize(("outcome", "receipt"), [
+    ("os_error", "Tool execution error: OSError: publication result unavailable"),
+    ("permission_error", "Error: publication result unavailable"),
+    ("unknown_comparison", "Created/wrote app.py"),
+    ("unchanged", "content unchanged"),
+])
+async def test_public_candidate_requires_a_confirmed_unchanged_write_to_keep_pass_evidence(
+    tmp_path, monkeypatch, outcome, receipt,
+):
+    _files(tmp_path)
+    (tmp_path / "app.py").write_text(PASSING_SOURCE)
+    for args in (
+        ("init", "-q"), ("add", "app.py", "test_ok.py"),
+        ("-c", "user.name=OpenCollab Tests", "-c", "user.email=tests@example.invalid", "commit", "-qm", "base"),
+    ):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+    command = f"{TEST_COMMAND} --color=yes"
+    unchanged = outcome == "unchanged"
+    next_responses = iter((
+        _response("bash", {"command": command}),
+        _response("file_write", {
+            "path": "app.py", "mode": "create", "overwrite": True,
+            "content": PASSING_SOURCE if unchanged else FAILING_SOURCE,
+        }),
+    ))
+    write_receipts = []
+
+    class ControlledModel:
+        async def complete(self, messages, **kwargs):
+            response = next(next_responses, None)
+            if response is not None:
+                return response
+            write_receipts.append(next(
+                message["content"] for message in reversed(messages) if message["role"] == "tool"
+            ))
+            return _response()
+
+        async def aclose(self):
+            pass
+
+    native_write = _env_local.write_regular_bytes_atomic
+
+    def publish_then_report(root_fd, workspace, path, payload, **kwargs):
+        changed = native_write(root_fd, workspace, path, payload, **kwargs)
+        if path != "app.py":
+            return changed
+        assert changed is (not unchanged)
+        if outcome == "os_error":
+            raise OSError("publication result unavailable")
+        if outcome == "permission_error":
+            raise PermissionError("publication result unavailable")
+        return None if outcome == "unknown_comparison" else changed
+
+    monkeypatch.setattr("opencollab.bootstrap.container.LLMClient", lambda **kwargs: ControlledModel())
+    monkeypatch.setattr(_env_local, "write_regular_bytes_atomic", publish_then_report)
+
+    async def flow(ctx, _inputs):
+        tools = evidence_tools("bash", "file_write", headless=False)
+        return await ctx.candidate_agent("test then edit", label="repair", tools=tools)
+
+    result = await OpenCollab(
+        tmp_path, model="controlled", provider="openai",
+        api_key="candidate-evidence-fixture",  # pragma: allowlist secret
+    ).workflow(flow, budget=100_000, trace=False)
+    assert result.ok, result.reason
+    assert len(write_receipts) == 1 and receipt in write_receipts[0]
+    candidate = result.output
+    record, = candidate.test_records
+    assert (record["exit_code"], record["verified"]) == (0, True)
+    assert (tmp_path / "app.py").read_text() == PASSING_SOURCE
+    if unchanged:
+        assert candidate.diff == ""
+        assert record["applicability"] == "current"
+        assert record["post_test_edits"] == []
+        assert candidate.verified_targets == ("test_ok.py", "test_ok.py::test_ok")
+    else:
+        subprocess.run(
+            ["git", "apply", "-"], cwd=tmp_path, input=candidate.diff, text=True, check=True, capture_output=True,
+        )
+        assert record["applicability"] == "unknown"
+        assert record["post_test_edits"] == ["app.py"]
+        assert candidate.verified_targets == ()
+    rerun = subprocess.run(shlex.split(command), cwd=tmp_path, capture_output=True, text=True)
+    assert rerun.returncode == (0 if unchanged else 1)
 
 @pytest.mark.parametrize("reverse", [False, True])
 async def test_public_candidate_rerun_from_another_directory_clears_the_same_test(tmp_path, monkeypatch, reverse):

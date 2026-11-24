@@ -5,12 +5,20 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from opencollab.application._session_run_shared import _last_assistant_answer
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
 from opencollab.application.scheduler_types import SchedulerStalledError, SchedulerTurnError
 from opencollab.domain.pending import RowStatus
-from opencollab.domain.session import SessionPhase
+from opencollab.domain.session import SessionPhase, SessionState
 
 logger = logging.getLogger(__name__)
+
+def _turn_answer(state: SessionState, turn_start: int) -> str:
+    if state.phase is SessionPhase.STOPPED and state.terminal_reason == _FILTERED_OUTPUT_REASON:
+        reply_start = state.completed_turn_start_message_index
+        if reply_start is None:
+            return ""
+        turn_start = max(turn_start, reply_start)
+    return _last_assistant_answer(state.messages, turn_start)
 
 class SchedulerRunMixin:
     async def run(
@@ -202,8 +210,8 @@ class SchedulerRunMixin:
         # Limit the answer lookup to messages appended during this invocation.
         # This keeps the public return value free of the worktree diff stored on
         # the SCB and prevents a precheck-only turn from leaking an old answer.
-        partial_answer = _last_assistant_answer(session.state.messages, turn_start)
         phase = scb.state.phase
+        partial_answer = _turn_answer(scb.state, turn_start)
         if phase in {SessionPhase.ERROR, SessionPhase.STOPPED}:
             raise SchedulerTurnError(
                 aid,
@@ -256,8 +264,7 @@ class SchedulerRunMixin:
             scb.state.cancel("interrupted by user")
             self._autosave_session(aid)
         if cancellation_requested:
-            session = self._sessions[aid]
-            partial_answer = _last_assistant_answer(session.state.messages, turn_start) or None
+            partial_answer = _turn_answer(scb.state, turn_start) or None
             raise SchedulerTurnError(aid, scb.state.phase, scb.state.terminal_reason, partial_answer)
 
     def _turn_descendant_aids(self, aid: int) -> set[int]:
