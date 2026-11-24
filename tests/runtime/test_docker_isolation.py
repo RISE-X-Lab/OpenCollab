@@ -459,7 +459,9 @@ async def test_docker_imports_external_review_source_and_cancels_owned_command(t
         assert (first.container_reference == review.container_reference) is (scope == "group")
         assert await review.read_file("answer.py") == "answer = 4\n"
         assert await first.read_file("input.txt") == "original\n"
-        assert await first.read_file("/assets/data.txt") == "read-only\n"
+        mounted_file = await first.exec_cmd("cat /assets/data.txt")
+        assert mounted_file.returncode == 0
+        assert mounted_file.stdout == "read-only\n"
         assert (await first.exec_cmd("printf changed > /assets/data.txt")).returncode != 0
         assert (assets / "data.txt").read_text() == "read-only\n"
         running = asyncio.create_task(first.exec_cmd("printf ready > started; sleep 30; printf late > late"))
