@@ -29,8 +29,9 @@ an explicit `goal` in `--args`. Existing JSON-only invocations remain supported.
 The default Git candidate backend provides separate worktrees and workspace-scoped
 file tools. Duo withholds Bash from this backend because its candidates share
 the source execution environment. This holds for worktrees in a local process,
-a shared container, or a shared VM. `allow_unisolated_shell` remains accepted
-as a legacy boolean and cannot override the candidate boundary.
+a shared container, or a shared VM. Duo accepts `allow_unisolated_shell` as a
+legacy boolean and logs a warning when it is `True`. Bash availability depends
+on the candidate sandbox.
 
 To run shell commands in a separate container for each candidate, select
 `--isolation docker-session` in the CLI or `isolation="docker-session"` in the

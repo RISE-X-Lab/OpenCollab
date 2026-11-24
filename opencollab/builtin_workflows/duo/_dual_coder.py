@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
@@ -20,6 +21,8 @@ from ._prompts import (
     WORKING_TREE_SUBMISSION_RULES,
 )
 from ._rules import SHARED_RULES, _complete_goal, coder_role_timeout_seconds, structured_role_timeout_seconds
+
+logger = logging.getLogger(__name__)
 
 
 def _coder_tools() -> list[Any]:
@@ -141,12 +144,18 @@ async def run_dual_coder(
     if not goal:
         return {"status": "error", "error": 'missing "goal" or "description"'}
 
-    if not isinstance(args.get("allow_unisolated_shell", False), bool):
+    allow_unisolated_shell = args.get("allow_unisolated_shell", False)
+    if not isinstance(allow_unisolated_shell, bool):
         raise ValueError("allow_unisolated_shell must be a boolean")
 
     submission_mode = args.get("submission_mode", "task")
     if submission_mode not in ("task", "working_tree"):
         raise ValueError("submission_mode must be task or working_tree")
+    if allow_unisolated_shell:
+        logger.warning(
+            "Duo ignores allow_unisolated_shell=True. "
+            "Candidate Bash requires a dedicated sandbox such as docker-session."
+        )
     if submission_mode == "working_tree":
         role_rules = f"{role_rules}\n\n{WORKING_TREE_SUBMISSION_RULES}"
 

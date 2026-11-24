@@ -18,7 +18,7 @@ opencollab workflow run duo --workspace /path/to/workspace \
 
 `--task` 设置工作流的 `goal` 参数。较长的任务可用 `--task-file task.md` 读取 UTF-8 文件，其他工作流参数继续放在 `--args` 中。两种任务输入方式选择一种，使用快捷参数时将 `goal` 留给它填写。原有纯 JSON 调用方式继续可用。
 
-默认 Git 候选后端提供独立的工作树，文件工具的操作范围限于各自工作区。由于候选与源工作区共用执行环境，Duo 不向该后端的候选提供 Bash。本地进程、同一个容器或同一台虚拟机内的工作树均适用。`allow_unisolated_shell` 仍接受布尔值以兼容旧调用，该选项不能覆盖候选隔离要求。
+默认 Git 候选后端提供独立的工作树，文件工具的操作范围限于各自工作区。由于候选与源工作区共用执行环境，Duo 不向该后端的候选提供 Bash。本地进程、同一个容器或同一台虚拟机内的工作树均适用。Duo 仍接受布尔值 `allow_unisolated_shell` 以兼容旧调用，传入 `True` 时会记录一条警告。候选能否使用 Bash 取决于其沙箱。
 
 需要在独立容器中运行候选的 Shell 命令时，可使用[标准 Docker 提供方](../session-isolation.zh-CN.md#docker-策略)，
 在 CLI 中设置 `--isolation docker-session`，或在 SDK 中传入 `isolation="docker-session"`。

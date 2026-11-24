@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import shlex
 import subprocess
@@ -63,10 +64,10 @@ def _last_tool_result(messages):
     return next(message["content"] for message in reversed(messages) if message["role"] == "tool")
 
 
-@pytest.mark.parametrize("shell_opt_in", [False, True])
+@pytest.mark.parametrize("shell_opt_in", [None, False, True])
 @pytest.mark.parametrize("parent_process_isolated", [False, True])
 async def test_duo_worktree_candidates_keep_file_tools_and_exclude_bash(
-    tmp_path, monkeypatch, shell_opt_in, parent_process_isolated,
+    tmp_path, monkeypatch, caplog, shell_opt_in, parent_process_isolated,
 ):
     # A shared container can be isolated from the host while sharing the source namespace.
     monkeypatch.setattr(LocalEnvironment, "process_isolated", parent_process_isolated)
@@ -91,8 +92,11 @@ async def test_duo_worktree_candidates_keep_file_tools_and_exclude_bash(
             return LLMResponse(content="Candidate ready", usage=Usage(5, 3))
 
     solver = Solver()
+    args = {"goal": "Return 3"}
+    if shell_opt_in is not None:
+        args["allow_unisolated_shell"] = shell_opt_in
     result = await OpenCollab(repo, model="scripted-local-model").workflow(
-        "duo", {"goal": "Return 3", "allow_unisolated_shell": shell_opt_in},
+        "duo", args,
         llm=solver, budget=100_000, max_steps=5, trace=False,
     )
     assert result.ok, result.reason
@@ -101,6 +105,15 @@ async def test_duo_worktree_candidates_keep_file_tools_and_exclude_bash(
     assert result.output["selection_reason"] == "identical-diff"
     assert result.output["adopted"] == "B"
     assert (repo / "source.py").read_text() == "def value():\n    return 3\n"
+    shell_warnings = [
+        record.getMessage() for record in caplog.records
+        if record.levelno == logging.WARNING and "allow_unisolated_shell" in record.getMessage()
+    ]
+    if shell_opt_in:
+        assert len(shell_warnings) == 1
+        assert "docker-session" in shell_warnings[0]
+    else:
+        assert shell_warnings == []
 
 
 class _ScriptedCoder:
