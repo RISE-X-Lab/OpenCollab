@@ -75,18 +75,17 @@ class _CommandProbe(_Proxy):
         self._reporting_tasks = reporting_tasks
 
     async def _prepare_command(self, command: str, environment: Any, remaining: float) -> str:
-        if not self._reporting_tasks or self._reporting_tasks[-1].done():
-            reporting = asyncio.create_task(self._delegate.with_workspace_pass_reporting(
-                command, show_passed_output=self._show_passed_output, environment=environment,
-            ))
-            self._reporting_tasks.append(reporting)
-            try:
-                done, _ = await asyncio.wait({reporting}, timeout=min(0.25, remaining * 0.1))
-                if done:
-                    return reporting.result()
-            finally:
-                if not reporting.done():
-                    reporting.cancel()
+        reporting = asyncio.create_task(self._delegate.with_workspace_pass_reporting(
+            command, show_passed_output=self._show_passed_output, environment=environment,
+        ))
+        self._reporting_tasks.append(reporting)
+        try:
+            done, _ = await asyncio.wait({reporting}, timeout=min(0.25, remaining * 0.1))
+            if done:
+                return reporting.result()
+        finally:
+            if not reporting.done():
+                reporting.cancel()
         return self._delegate.with_pass_reporting(command, show_passed_output=self._show_passed_output)
 
     async def execute_with_runtime(self, params: dict[str, Any], runtime: Any) -> str:

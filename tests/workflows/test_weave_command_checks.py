@@ -526,13 +526,15 @@ async def test_slow_pytest_config_leaves_time_for_the_real_check(tmp_path, monke
                "-c selected.ini -q -p no:cacheprovider test_result.py")
     commands = [command]
     if with_followup:
+        (tmp_path / "followup.ini").write_text("[pytest]\naddopts = -rP\n", encoding="utf-8")
         (tmp_path / "test_followup.py").write_text(
             "from pathlib import Path\n"
             "def test_followup():\n"
-            "    Path('followup-executed').write_text('yes')\n",
+            "    Path('followup-executed').write_text('yes')\n"
+            "    print('Follow-up inventory total')\n",
             encoding="utf-8",
         )
-        commands.append(command.replace("-c selected.ini ", "").replace("test_result.py", "test_followup.py"))
+        commands.append(command.replace("selected.ini", "followup.ini").replace("test_result.py", "test_followup.py"))
     command_finished = asyncio.Event()
     config_cancelled = asyncio.Event()
     config_finished = asyncio.Event()
@@ -578,6 +580,7 @@ async def test_slow_pytest_config_leaves_time_for_the_real_check(tmp_path, monke
     assert config_cancelled.is_set() and config_finished.is_set()
     if with_followup:
         assert (tmp_path / "followup-executed").read_text() == "yes"
+        assert "Follow-up inventory total" in output["report"]["checks"][1]["output"]
 
 
 async def test_expired_verification_deadline_does_not_start_pytest(tmp_path, monkeypatch):
