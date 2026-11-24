@@ -178,6 +178,8 @@ class Scheduler(
         # A public run_turn owner must retain its addressed aid through cleanup:
         # cancelling a child turn must never terminalize the Lead by default.
         self._active_run_tasks: dict[asyncio.Task[Any], int] = {}
+        # An inbox follow-up can replace the addressed session's terminal state.
+        self._completed_public_turn_answers: dict[int, str] = {}
         self._lead_session: Any | None = None
         # child aid -> (parent aid, tool_call_id) for deferred spawns: lets a
         # child's completion fill the exact pending row that suspended its

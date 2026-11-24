@@ -62,7 +62,9 @@ _INCOMPLETE_RESPONSE_REASONS = frozenset({
 })
 _FILTERED_OUTPUT_REASON = "provider filtered the output"
 
-def _last_assistant_answer(messages: list[dict[str, Any]], turn_start: int | None) -> str:
+def _last_assistant_answer(
+    messages: list[dict[str, Any]], turn_start: int | None, *, include_tool_call_text: bool = True,
+) -> str:
     if turn_start is None:
         return ""
     for message in reversed(messages[turn_start:]):
@@ -71,6 +73,7 @@ def _last_assistant_answer(messages: list[dict[str, Any]], turn_start: int | Non
             message["role"] == "assistant"
             and content
             and message.get("_opencollab_placeholder") is not True
+            and (include_tool_call_text or not message.get("tool_calls"))
         ):
             return content
     return ""

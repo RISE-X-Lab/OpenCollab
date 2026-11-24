@@ -167,3 +167,81 @@ async def test_team_lead_returns_only_visible_filtered_text(
 
     assert (result.output, result.status, result.reason, result.tokens) == (output, status, reason, 8)
     assert len(requests) == 2
+
+
+@pytest.mark.parametrize(("initial_answer", "finish_reason", "content", "output"), [
+    pytest.param(_VISIBLE, "stop", "Updated subtotal.", "Updated subtotal.", id="completed-followup"),
+    pytest.param(_VISIBLE, "content_filter", None, _VISIBLE, id="empty-filter"),
+    pytest.param(_VISIBLE, "content_filter", _REFUSAL, _REFUSAL, id="visible-filter"),
+    pytest.param(None, "content_filter", None, None, id="interim-only"),
+])
+async def test_team_keeps_completed_lead_answer_after_empty_filtered_followup(
+    tmp_path, monkeypatch, initial_answer, finish_reason, content, output,
+):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    team = tmp_path / "team.yaml"
+    team.write_text(
+        "entry: lead\nroles:\n"
+        "  lead:\n    model: fixture-lead\n    prompt: Report the inventory.\n    tools: [message_agent]\n"
+        "  worker:\n    model: fixture-worker\n    prompt: Send delivery updates.\n    tools: [message_agent]\n"
+        "topology:\n  lead: [worker]\n  worker: [lead]\n",
+        encoding="utf-8",
+    )
+    notice = "The delivery audit is pending."
+    lead_requests = []
+    worker_requests = []
+
+    def message_call(call_id, to_role, text, interim=None):
+        return {"content": interim, "tool_calls": [{
+            "id": call_id, "type": "function", "function": {"name": "message_agent",
+                "arguments": json.dumps({"to_role": to_role, "summary": "Delivery status", "content": text}),
+            },
+        }]}
+
+    def handler(request):
+        body = json.loads(request.content)
+        model = body["model"]
+        messages = body["messages"]
+        if model == "fixture-worker":
+            worker_requests.append(messages)
+            if len(worker_requests) == 1:
+                return _chat_reply(request, model, 1, "tool_calls", message_call("notify-lead", "lead", notice))
+            assert any("Message queued to aid 0" in row["content"] for row in messages if row["role"] == "tool")
+            return completion_http_response(request, text="Notification sent.")
+        lead_requests.append(messages)
+        if any(notice in row.get("content", "") for row in messages if row["role"] == "user"):
+            return _chat_reply(request, model, len(lead_requests), finish_reason, {"content": content})
+        if len(lead_requests) == 1:
+            return _chat_reply(
+                request, model, 1, "tool_calls",
+                message_call("ask-worker", "worker", "Send a separate delivery update.", interim=_INTERIM),
+            )
+        return _chat_reply(request, model, len(lead_requests), "stop", {"content": initial_answer})
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    app = OpenCollab(
+        tmp_path, model="fixture-lead", provider="openai", api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://fixture.invalid/v1",
+        config={"llm_max_retries": 0, "wire_protocol": "chat_completions", "llm_stream_chat": False},
+    )
+    artifacts = tmp_path / "artifacts"
+    result = await app.team(
+        "Report the verified inventory subtotal.", config=team, artifacts=artifacts, trace=True,
+        use_worktrees=False, prebuild_team=True, serialize_turns=True, budget=100_000, timeout=5,
+    )
+    assert len(lead_requests) == (4 if initial_answer is None else 3)
+    assert len(worker_requests) == 2
+    rows = [json.loads(line) for line in (artifacts / "trajectory.jsonl").read_text(encoding="utf-8").splitlines()]
+    lead_completed = next(
+        row["step"] for row in rows if row["type"] == "agent_completed" and row["payload"]["aid"] == 0
+    )
+    worker_sent = next(
+        row["step"] for row in rows if row["type"] == "message_sent" and row["payload"]["from_aid"] == 1
+    )
+    assert lead_completed < worker_sent
+    filtered = finish_reason == "content_filter"
+    assert (result.output, result.status, result.reason) == (
+        output, "stopped" if filtered else "completed", _FILTER_REASON if filtered else None,
+    )

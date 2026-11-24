@@ -12,12 +12,12 @@ from opencollab.domain.session import SessionPhase, SessionState
 
 logger = logging.getLogger(__name__)
 
-def _turn_answer(state: SessionState, turn_start: int) -> str:
+def _turn_answer(state: SessionState, turn_start: int, *, completed_answer: str = "") -> str:
     if state.phase is SessionPhase.STOPPED and state.terminal_reason == _FILTERED_OUTPUT_REASON:
         reply_start = state.completed_turn_start_message_index
         if reply_start is None:
-            return ""
-        turn_start = max(turn_start, reply_start)
+            return completed_answer
+        return _last_assistant_answer(state.messages, max(turn_start, reply_start)) or completed_answer
     return _last_assistant_answer(state.messages, turn_start)
 
 class SchedulerRunMixin:
@@ -61,6 +61,7 @@ class SchedulerRunMixin:
                 try:
                     return await self._run_turn_exclusive(aid, user_message)
                 finally:
+                    self._completed_public_turn_answers.pop(aid, None)
                     if self._turn_cancel_events.get(aid) is cancel_event:
                         self._turn_cancel_events.pop(aid, None)
         except asyncio.CancelledError:
@@ -158,6 +159,7 @@ class SchedulerRunMixin:
         if self._shutting_down:
             self._release_turn_lease(aid)
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
+        self._completed_public_turn_answers[aid] = ""
         self._start_agent_task(aid, session)
 
         cancel_event = self._turn_cancel_events.get(aid)
@@ -211,7 +213,9 @@ class SchedulerRunMixin:
         # This keeps the public return value free of the worktree diff stored on
         # the SCB and prevents a precheck-only turn from leaking an old answer.
         phase = scb.state.phase
-        partial_answer = _turn_answer(scb.state, turn_start)
+        partial_answer = _turn_answer(
+            scb.state, turn_start, completed_answer=self._completed_public_turn_answers[aid],
+        )
         if phase in {SessionPhase.ERROR, SessionPhase.STOPPED}:
             raise SchedulerTurnError(
                 aid,

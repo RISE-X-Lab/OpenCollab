@@ -12,7 +12,7 @@ import logging
 import time
 from typing import Any
 
-from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
 from opencollab.application.scheduler_types import LaunchSpec
 from opencollab.domain.identity import role_collision_key, validate_role_identity
 from opencollab.domain.pending import PendingRowError, RowStatus
@@ -539,6 +539,13 @@ class LifecycleMixin:
         if self._shutting_down:
             self._finalize_cleanup_failure(aid)
             return
+
+        if scb.answer and aid in self._completed_public_turn_answers:
+            answer = _last_assistant_answer(
+                scb.state.messages, scb.state.completed_turn_start_message_index, include_tool_call_text=False,
+            )
+            if answer:
+                self._completed_public_turn_answers[aid] = answer
 
         # Store the same post-diff artifact that is delivered to the parent so
         # spawn_with_review gives the reviewer the actual implementation diff.
