@@ -7,8 +7,10 @@ import posixpath
 import shlex
 from typing import Any
 
+from opencollab.application.ports import EnvironmentPort
 from opencollab.application.ports import ToolPort as Tool
 
+from ._pytest_reporting import _explicit_report_options, _wants_passed_output, _workspace_wants_passed_output
 from ._test_results import (
     _is_pytest_runner,
     _parts_invoke_pytest,
@@ -26,6 +28,26 @@ def _pytest_target(target: str, workspace: str | None, local_filesystem: bool) -
     path = posixpath.join(workspace or ".", path)
     path = os.path.realpath(path) if local_filesystem else posixpath.normpath(path)
     return path + separator + selector
+
+def _with_report_flag(command: str, report: str) -> str:
+    comment_start = _shell_comment_start(command)
+    lexer = shlex.shlex(command[:comment_start], posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    runner_seen = False
+    while True:
+        start = lexer.instream.tell()
+        token = lexer.get_token()
+        if token is None:
+            if comment_start < len(command):
+                return command[:comment_start] + report + " " + command[comment_start:]
+            return command + " " + report
+        if runner_seen and token == "--":
+            return command[:start] + report + " " + command[start:]
+        if token == "&&":
+            runner_seen = False
+        if token.rsplit("/", 1)[-1] == "pytest":
+            runner_seen = True
 
 class _ExecutionObserver:
     def __init__(self, environment: Any, owner: BashEvidence):
@@ -116,33 +138,20 @@ class BashEvidence:
         spec = parse_test_command(command, None)
         if spec is None or not spec.provable or not _is_pytest_runner(spec.runner):
             return command
-        comment_start = _shell_comment_start(command)
-        lexer = shlex.shlex(command[:comment_start], posix=True)
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        runner_seen = False
-        report = "-rA" if show_passed_output else "-rap"
-        while True:
-            start = lexer.instream.tell()
-            token = lexer.get_token()
-            if token is None:
-                if comment_start < len(command):
-                    return command[:comment_start] + report + " " + command[comment_start:]
-                return command + " " + report
-            if runner_seen and token == "--":
-                return command[:start] + report + " " + command[start:]
-            if runner_seen and token.startswith("-"):
-                # Pytest accepts bundled switches such as -qrA.
-                short_option = token[1:].lstrip("qsvxl")
-                long_option = token.partition("=")[0]
-                if short_option.startswith(("r", "o")) or long_option in {
-                    "--override-ini", "--report-chars", "--show-capture",
-                }:
-                    report = "-rA"
-            if token == "&&":
-                runner_seen = False
-            if token.rsplit("/", 1)[-1] == "pytest":
-                runner_seen = True
+        full = show_passed_output or _wants_passed_output(_explicit_report_options(spec))
+        return _with_report_flag(command, "-rA" if full else "-rap")
+
+    async def with_workspace_pass_reporting(
+        self, command: str, *, show_passed_output: bool, environment: EnvironmentPort | None,
+    ) -> str:
+        if environment is None:
+            return self.with_pass_reporting(command, show_passed_output=show_passed_output)
+        command = _strip_command_padding(command)
+        spec = parse_test_command(command, getattr(environment, "workspace", None))
+        if spec is None or not spec.provable or not _is_pytest_runner(spec.runner):
+            return command
+        full = show_passed_output or await _workspace_wants_passed_output(spec, environment)
+        return _with_report_flag(command, "-rA" if full else "-rap")
 
     def invokes_pytest(self, parts: list[str]) -> bool:
         return _parts_invoke_pytest(parts)

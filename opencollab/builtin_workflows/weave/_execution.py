@@ -62,18 +62,20 @@ class _CaptureEnvironment(_Proxy):
         return result
 
 class _CommandProbe(_Proxy):
-    def __init__(self) -> None:
+    def __init__(self, *, show_passed_output: bool) -> None:
         super().__init__(evidence_tools("bash", headless=False)[0])
         self.results: list[Any] = []
+        self.executed_command: str | None = None
+        self._show_passed_output = show_passed_output
 
     async def execute_with_runtime(self, params: dict[str, Any], runtime: Any) -> str:
         captured = _Proxy(runtime)
         environment = runtime.environment
         captured.environment = _CaptureEnvironment(environment, self.results) if environment is not None else None
-        return await self._delegate.execute_with_runtime(params, captured)
-
-    def prepare_command(self, command: str, *, expected_output: str | None) -> str:
-        return self._delegate.with_pass_reporting(command, show_passed_output=expected_output is not None)
+        self.executed_command = await self._delegate.with_workspace_pass_reporting(
+            params["command"], show_passed_output=self._show_passed_output, environment=environment,
+        )
+        return await self._delegate.execute_with_runtime(params | {"command": self.executed_command}, captured)
 
     def requires_test_evidence(self, command: str) -> bool:
         return any(self._delegate.invokes_pytest(_command_words(shlex.split(segment)))
@@ -309,14 +311,13 @@ async def _verify_commands(ctx: Any, commands: Sequence[Any], seconds: float | N
             row["reason"] = "unverified command or exhausted verification time"
             checks.append(row)
             continue
-        tool = _CommandProbe()
-        executed_command = tool.prepare_command(command, expected_output=expected)
-        if executed_command != command:
-            row["executed_command"] = executed_command
-        params: dict[str, Any] = {"command": executed_command}
+        tool = _CommandProbe(show_passed_output=expected is not None)
+        params: dict[str, Any] = {"command": command}
         if math.isfinite(remaining):
             params["timeout"] = remaining
         row["output"] = await ctx.execute_verification(tool, params)
+        if tool.executed_command is not None and tool.executed_command != command:
+            row["executed_command"] = tool.executed_command
         records = list(tool.verification_records)
         row["test_records"] = records
         if tool.results:
