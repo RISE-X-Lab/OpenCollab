@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 from typer.testing import CliRunner
 
 from opencollab import OpenCollab
 from opencollab.adapters.cli.main import app
+from opencollab.bootstrap.workflow_runtime import run_workflow
 from tests.runtime.test_llm_chat_refusal_http import _reply
 from tests.support.provider_sdk_http import http_response, install_sdk_transport
 from tests.support.responses_provider_test_support import function_item, message_item
+from tests.support.workflow_runtime_test_support import _cfg
 
 _PARTIAL = "The measurement stopped partway through."
 _SUBMIT = {
@@ -124,9 +127,10 @@ def test_named_workflow_corrects_a_normal_missing_capture(tmp_path, named_workfl
         assert result.agent_failures == ()
 
 
-def test_cli_named_workflow_reports_filtered_role_without_a_correction(tmp_path, named_workflow):
+@pytest.mark.parametrize("filtered", [True, False], ids=["filtered", "normal"])
+def test_cli_named_workflow_reports_filtered_role_without_a_correction(tmp_path, named_workflow, filtered):
     requests = named_workflow([
-        (_PARTIAL, None, "content_filter", [_SUBMIT]),
+        (_PARTIAL, None, "content_filter", [_SUBMIT]) if filtered else (None, None, "tool_calls", [_SUBMIT]),
         (None, None, "tool_calls", [_SUBMIT]),
     ])
     result = CliRunner().invoke(app, [
@@ -137,13 +141,66 @@ def test_cli_named_workflow_reports_filtered_role_without_a_correction(tmp_path,
     ])
 
     assert result.exit_code == 0, result.output
-    assert "agent stopped (reviewer): provider filtered the output" in result.output
-    assert json.loads(result.output.splitlines()[-1]) is None
+    notice = "agent stopped (reviewer): provider filtered the output"
+    assert result.output.count(notice) == int(filtered)
+    expected = None if filtered else {"measured": True}
+    json_lines = result.output.splitlines()
+    json_start = next(index for index, line in enumerate(json_lines) if line in {"null", "{"})
+    assert json.loads("\n".join(json_lines[json_start:])) == expected
     manifest_path, = (tmp_path / ".opencollab" / "sessions").glob("*/workflow.json")
     manifest = json.loads(manifest_path.read_text())
     assert len(requests) == manifest["sessions"] == 1
     assert manifest["tokens_spent"] == 20
     assert manifest["evidence_complete"] is True
+
+
+@pytest.mark.parametrize("finish_reason", ["content_filter", "stop"])
+async def test_workflow_progress_sink_does_not_delay_a_queued_role(tmp_path, monkeypatch, finish_reason):
+    first_request_started = asyncio.Event()
+    second_role_queued = asyncio.Event()
+    release_notice = asyncio.Event()
+    requests = []
+
+    class ProgressSink:
+        async def emit(self, event):
+            if getattr(event, "kind", None) == "log" and "provider filtered the output" in event.message:
+                await release_notice.wait()
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            first_request_started.set()
+            await second_role_queued.wait()
+            return _reply(False, _PARTIAL, None, finish_reason)
+        return _reply(False, "Independent measurement completed.", None, "stop")
+
+    async def measurement(ctx, _inputs):
+        async def sibling():
+            await first_request_started.wait()
+            second_role_queued.set()
+            return await ctx.agent("Verify the measurement.", label="sibling", tools=[], budget=10_000)
+
+        return await asyncio.gather(
+            ctx.agent("Record the measurement.", label="reviewer", tools=[], budget=10_000),
+            sibling(),
+        )
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", "")
+    try:
+        result = await run_workflow(
+            measurement, {},
+            cfg=_cfg(provider="openai", model="gpt-4o", thinking=False, llm_max_retries=0),
+            workspace=str(tmp_path), trace=False, return_details=True,
+            max_concurrency=1, event_sink=ProgressSink(), deadline_monotonic=time.monotonic() + 2,
+        )
+    finally:
+        release_notice.set()
+
+    assert result.output == [_PARTIAL, "Independent measurement completed."]
+    assert result.agent_failures == ((_FAILURE,) if finish_reason == "content_filter" else ())
+    assert len(requests) == result.sessions == 2
+    assert result.tokens == 40
 
 
 def test_named_workflow_harvests_filtered_scout_without_a_synthesis_call(tmp_path, named_workflow):

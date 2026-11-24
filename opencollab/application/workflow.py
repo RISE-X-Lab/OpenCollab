@@ -716,13 +716,14 @@ class WorkflowContext(
         run_loop = session.run_loop() if cancel_event is None else session.run_loop(cancel_event)
         output = await self._run_with_timeout(run_loop, run_timeout)
         if self._agent_output_filtered(session):
+            role = str(label or "agent")[:240]
             self._agent_failures.append({
-                "label": str(label or "agent")[:240],
+                "label": role,
                 "exception_type": "AgentStopped",
                 "status_code": None,
                 "provider_error_type": "content_filter",
             })
-            await self.log(f"agent stopped ({label or 'agent'}): {_FILTERED_OUTPUT_REASON}")
+            self._trace_step("workflow_log", {"message": f"agent stopped ({role}): {_FILTERED_OUTPUT_REASON}"})
         return output
 
     def _internal_commit_deadline(self) -> float:
