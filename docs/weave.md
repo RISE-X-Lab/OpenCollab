@@ -73,12 +73,14 @@ test output. An executable probe uses a `command` and its `expected_output`, as
 shown above. Include assertions in the probe so the expected output follows
 the behavior being checked.
 
-Weave adds `-rA` to recognized pytest invocations to retain the executed test
-nodes, including ordinary `python -m pytest test_result.py -q` checks. The
-verification report keeps the supplied `command` and records `executed_command`
-when reporting flags were added. Shell combinations outside the supported test
-parser require an application verifier or an assertion script with
-`expected_output`.
+Weave adds `-rap` to recognized pytest invocations to retain executed test
+nodes and report the captured output of failures. For checks with
+`expected_output` or explicit reporting, capture display, or configuration
+override flags, it adds `-rA`. See [native test evidence](test-evidence.md) for
+tests that launch another pytest process. The verification report keeps the
+supplied `command` and records `executed_command` when reporting flags were
+added. Shell combinations outside the supported test parser require an
+application verifier or an assertion script with `expected_output`.
 
 ## Run through the public SDK
 

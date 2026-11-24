@@ -376,6 +376,7 @@ class WorkflowCandidatesMixin:
                         session,
                         prompt,
                         deadline=self._timeout_deadline(timeout),
+                        label=label,
                     )
                 except CallerTimeoutError:
                     output = None

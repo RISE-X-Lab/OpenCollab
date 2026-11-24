@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
+import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
 
+from opencollab.adapters import _env_local
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.bash import BashTool
@@ -217,3 +221,54 @@ async def test_native_edit_evidence_preserves_tool_api_facts_and_execution_histo
     first, second = bash.verification_records
     assert first["post_test_edits"] == ["module.py", "module.py"]
     assert second["post_test_edits"] == ["module.py"]
+
+@pytest.mark.parametrize(("name", "params"), [
+    ("file_write", {"mode": "create", "content": "def test_case():\n    assert False\n"}),
+    ("file_write", {"mode": "create", "content": "def test_case():\n    assert False\n", "overwrite": True}),
+    ("file_write", {"mode": "str_replace", "old_str": "assert True", "new_str": "assert False"}),
+    ("apply_patch", {"mode": "line_replace", "start_line": 2, "end_line": 2, "new_str": "    assert False\n"}),
+])
+async def test_cancelled_native_write_invalidates_evidence_after_publication(tmp_path, monkeypatch, name, params):
+    path = "test_example.py"
+    target = tmp_path / path
+    target.write_text("def test_case():\n    assert True\n")
+    command = f"{shlex.quote(sys.executable)} -B -m pytest -q -rA -p no:cacheprovider {path}::test_case"
+    bash, edit = evidence_tools("bash", name, headless=False)
+    env = LocalEnvironment(str(tmp_path))
+    observations = ToolFactsCollector()
+    started, release = threading.Event(), threading.Event()
+    native_write = _env_local.write_regular_bytes_atomic
+    task = None
+
+    def delayed_write(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return native_write(*args, **kwargs)
+
+    try:
+        await bash.execute_with_runtime({"command": command}, runtime(env, None))
+        assert bash.verified_targets == {f"{path}::test_case"}
+        monkeypatch.setattr(_env_local, "write_regular_bytes_atomic", delayed_write)
+        task = asyncio.create_task(edit.execute_with_runtime({"path": path, **params}, runtime(env, observations)))
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert target.read_text() == "def test_case():\n    assert False\n"
+        rerun = await env.exec_cmd(command)
+        assert rerun.returncode == 1 and "1 failed" in rerun.stdout
+        facts = observations.close()
+        assert facts.write_completed is False and facts.content_changed is None
+        history, = bash.verification_records
+        assert (history["exit_code"], history["verified"]) == (0, True)
+        assert history["applicability"] == "unknown"
+        assert history["post_test_edits"] == [path]
+        assert bash.verified_targets == set()
+    finally:
+        release.set()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        await env.cleanup()

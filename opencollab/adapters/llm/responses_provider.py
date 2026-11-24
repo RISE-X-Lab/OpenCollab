@@ -358,7 +358,10 @@ def _validate_terminal_response(
     if status == "incomplete":
         reason = incomplete.get("reason") if isinstance(incomplete, dict) else None
         if reason not in {"max_tokens", "max_output_tokens"}:
-            raise ResponsesProtocolError(f"incomplete Responses object has unsupported reason {reason!r}")
+            message = f"incomplete Responses object has unsupported reason {reason!r}"
+            if reason == "content_filter":
+                raise ResponsesTerminalEventError(message, code=reason)
+            raise ResponsesProtocolError(message)
         finish_reason = "max_tokens"
     return _response_model(response), finish_reason
 

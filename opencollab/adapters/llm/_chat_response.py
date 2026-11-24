@@ -180,7 +180,8 @@ def _build_chat_response(
     # chain-of-thought in ``reasoning_content`` and the answer in ``content``.
     # Keep the reasoning for trajectory observability; the shared rescue rung
     # falls back to it only when the turn is otherwise empty.
-    content = rescue_empty_turn(content, tool_calls, reasoning)
+    if finish_reason != "content_filter":
+        content = rescue_empty_turn(content, tool_calls, reasoning)
     return LLMResponse(
         content=content,
         tool_calls=tool_calls,

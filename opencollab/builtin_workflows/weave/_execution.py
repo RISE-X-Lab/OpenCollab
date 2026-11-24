@@ -72,8 +72,8 @@ class _CommandProbe(_Proxy):
         captured.environment = _CaptureEnvironment(environment, self.results) if environment is not None else None
         return await self._delegate.execute_with_runtime(params, captured)
 
-    def prepare_command(self, command: str) -> str:
-        return self._delegate.with_pass_reporting(command)
+    def prepare_command(self, command: str, *, expected_output: str | None) -> str:
+        return self._delegate.with_pass_reporting(command, show_passed_output=expected_output is not None)
 
     def requires_test_evidence(self, command: str) -> bool:
         return any(self._delegate.invokes_pytest(_command_words(shlex.split(segment)))
@@ -310,7 +310,7 @@ async def _verify_commands(ctx: Any, commands: Sequence[Any], seconds: float | N
             checks.append(row)
             continue
         tool = _CommandProbe()
-        executed_command = tool.prepare_command(command)
+        executed_command = tool.prepare_command(command, expected_output=expected)
         if executed_command != command:
             row["executed_command"] = executed_command
         params: dict[str, Any] = {"command": executed_command}
