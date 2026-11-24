@@ -135,14 +135,15 @@ async def test_successful_command_without_behavior_evidence_is_unverified(tmp_pa
 
 @pytest.mark.parametrize("passed", [False, True], ids=["failed-tests", "passed-tests"])
 @pytest.mark.parametrize("expected", ["RESOURCE_VERSION=1", "RESOURCE_VERSION=2"], ids=["matching", "mismatching"])
-async def test_native_tests_and_expected_output_jointly_verify_delivery(tmp_path, passed, expected):
+@pytest.mark.parametrize("capture", ["", "-s "], ids=["captured", "live"])
+async def test_native_tests_and_expected_output_jointly_verify_delivery(tmp_path, passed, expected, capture):
     (tmp_path / "test_result.py").write_text(
         "def test_result():\n"
         "    print('RESOURCE_VERSION=1')\n"
         f"    assert {passed!r}\n",
         encoding="utf-8",
     )
-    command = f"{shlex.quote(sys.executable)} -m pytest -q -s -rA -p no:cacheprovider test_result.py"
+    command = f"{shlex.quote(sys.executable)} -m pytest -q {capture}-rA -p no:cacheprovider test_result.py"
     result = await _client(tmp_path).workflow(
         "weave", {
             "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
@@ -161,27 +162,35 @@ async def test_native_tests_and_expected_output_jointly_verify_delivery(tmp_path
     assert row["ok"] is (passed and row["matched"])
     assert result.output["delivery_ok"] is row["ok"]
 
-@pytest.mark.parametrize(("outer_color", "child_color", "child_passed", "outer_passed", "capture"), [
-    ("no", "no", True, True, True),
-    ("no", "yes", True, True, True),
-    ("yes", "no", True, True, True),
-    ("yes", "yes", True, True, True),
-    ("no", "yes", False, True, True),
-    ("no", "yes", True, False, True),
-    ("no", "yes", True, True, False),
+@pytest.mark.parametrize(("outer_color", "child_color", "child_passed", "outer_passed", "capture", "quiet_child"), [
+    ("no", "no", True, True, "", False),
+    ("no", "yes", True, True, "", False),
+    ("yes", "no", True, True, "", False),
+    ("yes", "yes", True, True, "", False),
+    ("no", "yes", False, True, "", False),
+    ("no", "yes", True, False, "", False),
+    ("no", "yes", True, True, "-s", False),
+    ("no", "no", True, True, "--show-capture=no", False),
+    ("no", "yes", False, True, "--show-capture=no", False),
+    ("yes", "no", True, True, "--show-capture=no", False),
+    ("yes", "yes", True, False, "--show-capture=no", False),
+    ("no", "no", True, True, "", True),
 ])
-async def test_named_weave_distinguishes_captured_pytest_from_its_delivery_check(
-    tmp_path, outer_color, child_color, child_passed, outer_passed, capture,
+async def test_named_weave_requires_one_pytest_result_for_nested_checks(
+    tmp_path, outer_color, child_color, child_passed, outer_passed, capture, quiet_child,
 ):
     (tmp_path / "child_suite.py").write_text(
         "from pathlib import Path\n"
         "def test_child():\n"
         "    print('Checking the generated result.txt')\n"
+        "    Path('child-ran.txt').write_text('yes')\n"
         "    assert Path('result.txt').read_text() == 'correct\\n'\n",
         encoding="utf-8",
     )
     child_args = ["-B", "-m", "pytest", "-q", "-rA", f"--color={child_color}",
                   "-p", "no:cacheprovider", "child_suite.py"]
+    if quiet_child:
+        child_args.append("-q")
     expected_exit = 0 if child_passed == outer_passed else 1
     (tmp_path / "test_harness.py").write_text(
         "import subprocess\n"
@@ -191,7 +200,7 @@ async def test_named_weave_distinguishes_captured_pytest_from_its_delivery_check
         f"    assert result.returncode == {expected_exit}\n",
         encoding="utf-8",
     )
-    capture_option = "" if capture else "-s "
+    capture_option = f"{capture} " if capture else ""
     command = (
         f"PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 {shlex.quote(sys.executable)} -B -m pytest -q "
         f"{capture_option}--color={outer_color} -p no:cacheprovider test_harness.py"
@@ -205,15 +214,65 @@ async def test_named_weave_distinguishes_captured_pytest_from_its_delivery_check
         }, llm=model, budget=20_000, limit_mode="explicit", trace=False,
     )
     assert result.ok
+    assert (tmp_path / "child-ran.txt").read_text() == "yes"
     row, = result.output["verification"]["report"]["checks"]
     assert row["executed"] is True
     assert row["exit_code"] == (0 if outer_passed else 1)
-    assert row["output"].count("Captured stdout call") == (2 if capture else 1)
+    assert row["output"].count("Captured stdout call") == {"": 2, "-s": 1, "--show-capture=no": 0}[capture]
     record, = row["test_records"]
-    verified = outer_passed and capture
+    verified = outer_passed and (capture == "--show-capture=no" or quiet_child)
     assert record["verified"] is verified
     assert result.output["delivery_ok"] is verified
     assert not has_pass_evidence(row["exit_code"], row["output"], target="child_suite.py::test_child")
+
+@pytest.mark.parametrize("capture", ["", "--show-capture=no "], ids=["show-capture", "hide-capture"])
+async def test_named_weave_rejects_a_second_pytest_result_from_a_terminal_hook(tmp_path, capture):
+    (tmp_path / "test_result.py").write_text(
+        "from pathlib import Path\n"
+        "def test_result():\n"
+        "    print('Checking result.txt')\n"
+        "    assert Path('result.txt').read_text() == 'correct\\n'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "child_suite.py").write_text(
+        "from pathlib import Path\n"
+        "def test_secondary():\n"
+        "    assert Path('result.txt').read_text().isupper()\n",
+        encoding="utf-8",
+    )
+    child_args = ["-B", "-m", "pytest", "-q", "-rA", "--color=yes", "-p", "no:cacheprovider", "child_suite.py"]
+    (tmp_path / "conftest.py").write_text(
+        "from pathlib import Path\n"
+        "import subprocess\n"
+        "import sys\n"
+        "def pytest_terminal_summary(config, terminalreporter):\n"
+        "    if config.args == ['test_result.py']:\n"
+        "        terminalreporter.flush()\n"
+        f"        secondary = subprocess.run([sys.executable, *{child_args!r}])\n"
+        "        Path('secondary-exit.txt').write_text(str(secondary.returncode))\n",
+        encoding="utf-8",
+    )
+    command = (
+        f"PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 {shlex.quote(sys.executable)} -B -m pytest -q "
+        f"{capture}--color=no -p no:cacheprovider test_result.py"
+    )
+    result = await _client(tmp_path).workflow(
+        "weave", {
+            "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
+            "check_commands": [command],
+            "config": {"max_steps": 4, "max_repair_rounds": 0},
+        }, llm=FileModel(initial="correct\n"), budget=20_000, limit_mode="explicit", timeout=15, trace=False,
+    )
+    assert result.ok
+    assert (tmp_path / "secondary-exit.txt").read_text() == "1"
+    row, = result.output["verification"]["report"]["checks"]
+    assert row["executed"] is True
+    assert row["exit_code"] == 0
+    assert "PASSED test_result.py::test_result" in row["output"]
+    assert "FAILED" in row["output"] and "test_secondary" in row["output"]
+    record, = row["test_records"]
+    assert record["verified"] is False
+    assert result.output["delivery_ok"] is False
 
 @pytest.mark.parametrize("expected", ["no tests ran", "RESOURCE_VERSION=2"])
 async def test_zero_collected_tests_with_expected_text_never_verifies_delivery(tmp_path, expected):

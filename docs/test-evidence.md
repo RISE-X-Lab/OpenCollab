@@ -33,6 +33,10 @@ package-manager wrappers, `go test -json`, and Django's `python tests/runtests.p
 A leading `cd directory &&` supplies the execution workspace for relative test
 targets. Run pytest with `-rA` to retain its per-test passing results.
 
+Pytest proof requires exactly one complete result summary. When a test launches
+another pytest process, `--show-capture=no` omits its captured output from the
+outer report while keeping pytest's capture behavior.
+
 `BashEvidence.verification_records` returns copies of the observed target,
 runner, command, workspace, exit code and verified state. `verified_targets`
 returns the current passing targets. Pytest paths are relative to the environment's

@@ -15,7 +15,6 @@ DEFAULT_RUNNER = "python -m pytest"
 _PYTEST_STYLE_RE = re.compile(r"\x1b\[[0-9;:]*m")
 _PYTEST_CAPTURE_RE = re.compile(r"-{2,} Captured (?:stdout|stderr|log) (?:setup|call|teardown) -{2,}")
 _PYTEST_SHORT_REPORT_RE = re.compile(r"={2,} short test summary info ={2,}")
-_PYTEST_CAPTURE_BOUNDARY_RE = re.compile(r"_{2,} .+ _{2,}|={2,} (?:XPASSES|warnings summary) ={2,}")
 
 # Count tokens pytest prints in its final summary line, e.g.
 # "===== 1 failed, 2 passed, 1 skipped in 0.12s =====".
@@ -124,26 +123,8 @@ def _result_summary(line: str) -> str | None:
     return None
 
 
-def _pytest_report_lines(output: str) -> list[str]:
-    lines = [line.rstrip() for line in _PYTEST_STYLE_RE.sub("", output).splitlines() if line.strip()]
-    short_report = next(
-        (i for i in range(len(lines) - 1, -1, -1) if _PYTEST_SHORT_REPORT_RE.fullmatch(lines[i])),
-        0,
-    )
-    capture_start = next((i for i in range(short_report) if _PYTEST_CAPTURE_RE.fullmatch(lines[i])), short_report)
-    if capture_start == short_report:
-        return lines
-
-    # Pytest prints captured streams before its own short report. A child
-    # summary ending a captured excerpt belongs to that stream. Keep complete
-    # summaries with ambiguous boundaries for the multiple-result check.
-    ambiguous = [
-        lines[i] for i in range(capture_start + 1, short_report - 1)
-        if _result_summary(lines[i]) is not None
-        and not _PYTEST_CAPTURE_RE.fullmatch(lines[i + 1])
-        and not _PYTEST_CAPTURE_BOUNDARY_RE.fullmatch(lines[i + 1])
-    ]
-    return [*lines[:capture_start], *ambiguous, *lines[short_report:]]
+def _pytest_output_lines(output: str) -> list[str]:
+    return [line.rstrip() for line in _PYTEST_STYLE_RE.sub("", output).splitlines()]
 
 
 def _summary_lines(lines: list[str]) -> list[str]:
@@ -226,8 +207,8 @@ def has_pass_evidence(
     if is_django_runner(runner):
         return returncode == 0 and django_has_pass_proof(target, output)
     pytest = _is_pytest_runner(runner)
-    report_lines = _pytest_report_lines(output) if pytest else output.splitlines()
-    summaries = _summary_lines(report_lines)
+    lines = _pytest_output_lines(output) if pytest else output.splitlines()
+    summaries = _summary_lines(lines)
     if pytest and len(summaries) != 1:
         # One tool invocation represents one pytest session. Multiple result
         # summaries are ambiguous and let an appended passing summary hide an
@@ -242,7 +223,7 @@ def has_pass_evidence(
     if pytest:
         if counts.get("passed", 0) <= 0:
             return False
-        return _target_has_pass_proof(target, _passed_report_tests(report_lines))
+        return _target_has_pass_proof(target, _passed_report_tests(lines))
     if _is_go_runner(runner):
         return _go_has_pass_proof(target, output)
     # Native runners need an explicit, parser-backed proof adapter before their
@@ -251,9 +232,16 @@ def has_pass_evidence(
     return False
 
 def _passed_report_tests(lines: list[str]) -> list[str]:
+    if any(_PYTEST_CAPTURE_RE.fullmatch(line) for line in lines):
+        # Captured streams may contain another session's passing rows.
+        short_report = next(
+            (i for i in range(len(lines) - 1, -1, -1) if _PYTEST_SHORT_REPORT_RE.fullmatch(lines[i])),
+            len(lines),
+        )
+        lines = lines[short_report + 1:]
     return [entry for line in lines if (entry := line.strip()).startswith("PASSED ")]
 
 
 def _passed_tests(output: str) -> list[str]:
-    """Node-ids reported as PASSED in the -rA short summary (default pytest)."""
-    return _passed_report_tests(_pytest_report_lines(output))
+    """Node IDs reported as PASSED by pytest."""
+    return _passed_report_tests(_pytest_output_lines(output))
