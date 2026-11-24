@@ -20,6 +20,7 @@ from tests.support.session_run_loop_test_support import (
     CompletingBeforeReturnToolExecution,
     FakeLLM,
     FakeToolExecutionDeferred,
+    FakeTracer,
     build_runner,
     collect_events,
     llm_response,
@@ -180,7 +181,8 @@ def test_deferred_spawn_suspends_then_resumes_after_fill():
         ]
     )
     te = FakeToolExecutionDeferred(deferred_outcomes={"s1": (7, None)})
-    runner = build_runner(state=state, llm=llm, tool_execution=te)
+    tracer = FakeTracer()
+    runner = build_runner(state=state, llm=llm, tool_execution=te, tracer=tracer)
 
     result = run(runner.run_loop())
     assert state.phase is SessionPhase.AWAITING_EVENTS
@@ -192,6 +194,7 @@ def test_deferred_spawn_suspends_then_resumes_after_fill():
     assert row.ref == 7
     assert row.kind is RowKind.CHILD_AGENT
     assert row.status is RowStatus.PENDING
+    assert all(step["step_type"] != "session_terminal" for step in tracer.steps)
 
     state.pending_events.fill("s1", result="child result")
     result2 = run(runner.run_loop())
@@ -202,6 +205,9 @@ def test_deferred_spawn_suspends_then_resumes_after_fill():
     assert state.pending_events.is_empty()
     second_call_msgs = llm.calls[1]["messages"]
     assert {"role": "tool", "tool_call_id": "s1", "content": "child result"} in second_call_msgs
+    assert [
+        step["payload"]["phase"] for step in tracer.steps if step["step_type"] == "session_terminal"
+    ] == ["done"]
 
 def test_deferred_step_emits_original_nonzero_latency_once_after_resume():
     class DelayedSequenceLLM(FakeLLM):

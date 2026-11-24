@@ -26,6 +26,7 @@ from tests.support.session_characterization_test_support import (
     run,
     tool_call,
 )
+from tests.support.session_run_loop_test_support import FakeLLM
 
 
 def test_event_bus_accepts_sink_and_swallows_sink_exception():
@@ -415,6 +416,38 @@ def test_no_tool_calls_marks_done_and_emits_text_delta(local_environment_factory
         "session_terminal",
     ]
     assert tracer.steps[3]["payload"]["content"] == "plain answer"
+
+@pytest.mark.parametrize(
+    ("output_tokens", "phase", "reason"),
+    [
+        (7, SessionPhase.DONE, "completed"),
+        (4_000, SessionPhase.STOPPED, "budget exceeded after model call: 4006 tokens used"),
+    ],
+)
+async def test_new_user_turn_records_its_terminal_phase(local_environment_factory, output_tokens, phase, reason):
+    llm = FakeLLM([
+        llm_response(content="first answer", input_tokens=2, output_tokens=3),
+        llm_response(content="second answer", output_tokens=output_tokens),
+    ])
+    tracer = FakeTracer()
+    session = Session(
+        env=local_environment_factory(), agent=FakeAgent(), llm=llm,
+        tracer=tracer, max_budget_tokens=2_000,
+    )
+
+    await session.add_user_message("First question")
+    assert await session.run_loop() == "first answer"
+    assert await session.run_loop() == "first answer"
+    await session.add_user_message("Second question")
+    assert await session.run_loop() == "second answer"
+
+    assert session.phase is phase
+    assert len(llm.calls) == 2
+    terminal = [step["payload"] for step in tracer.steps if step["step_type"] == "session_terminal"]
+    assert [(row["phase"], row["terminal_reason"], row["used_tokens"], row["step_count"]) for row in terminal] == [
+        ("done", "completed", 5, 1),
+        (phase.value, reason, 6 + output_tokens, 2),
+    ]
 
 def test_session_event_sink_wires_through_to_runtime(local_environment_factory):
     fake_llm = FakeLLMClient([
