@@ -14,7 +14,13 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
-from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange, _track_shell_command
+from opencollab.adapters._env_base import (
+    Environment,
+    ExecResult,
+    TextFileRange,
+    _public_error_name,
+    _track_shell_command,
+)
 from opencollab.adapters.llm import errors as llm_errors
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.types import LLMResponse, Usage, to_plain_data
@@ -242,7 +248,7 @@ class AuthoredWorkflowBridge:
         except BaseException as exc:
             if not isinstance(exc, (Exception, asyncio.CancelledError)):
                 raise
-            error = {"type": type(exc).__name__, "message": str(exc)}
+            error = {"type": _public_error_name(exc), "message": str(exc)}
             for name in ("usage", "status_code", "code", "param", "body", "reserved_input_tokens",
                          "remaining_budget", "minimum_output_tokens"):
                 value = getattr(exc, name, None)

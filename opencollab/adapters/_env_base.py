@@ -20,6 +20,11 @@ class WriteRejectedValueError(ValueError):
 
     public_error = ValueError
 
+def _public_error_name(error: BaseException) -> str:
+    if isinstance(error, (WriteRejectedWithoutChanges, WriteRejectedValueError)):
+        return error.public_error.__name__
+    return type(error).__name__
+
 @dataclass(slots=True)
 class ExecResult:
     returncode: int
