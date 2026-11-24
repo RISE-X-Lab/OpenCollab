@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from opencollab.adapters._env_base import WriteRejectedWithoutChanges
 from opencollab.adapters.tools._paths import checked_path
 from opencollab.adapters.tools.apply_patch_engine import (
     _apply_line_replace,
@@ -151,6 +152,10 @@ class ApplyPatchTool(Tool):
                     summary += "\nNote: " + ". ".join(notes) + "."
                 return summary
 
+        except WriteRejectedWithoutChanges as e:
+            if observations is not None:
+                observations.record_write(completed=False, changed=False, path=path)
+            raise OSError(*e.args) from e
         except PermissionError as e:
             return f"Error: {e}"
         except UnicodeDecodeError as e:

@@ -10,6 +10,9 @@ from opencollab.adapters._safe_file_common import _normalize_newlines, _split_li
 
 ENV_FILE_WRITE_LIMIT_BYTES = 4 * 1024 * 1024
 
+class WriteRejectedWithoutChanges(OSError):
+    """A native write rejected before it could change the workspace."""
+
 @dataclass(slots=True)
 class ExecResult:
     returncode: int

@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 from opencollab.adapters import safe_anchored_files
-from opencollab.adapters._env_base import ExecResult
+from opencollab.adapters._env_base import ExecResult, WriteRejectedWithoutChanges
 from opencollab.adapters.env import DockerEnvironment, LocalEnvironment
 
 
@@ -154,6 +154,30 @@ async def test_observed_local_write_keeps_path_and_size_restrictions(tmp_path):
             await env.write_file_with_change("link", "x")
         assert not (tmp_path / "too-large").exists()
         assert not (tmp_path / "missing").exists()
+    finally:
+        await env.cleanup()
+
+@pytest.mark.parametrize("create_parent", [False, True])
+async def test_nonregular_target_rejection_accounts_for_parent_creation(tmp_path, monkeypatch, create_parent):
+    parent = tmp_path / "parent"
+    target = parent / "target"
+    if create_parent:
+        mkdir = os.mkdir
+
+        def create_directory_with_target(path, mode=0o777, *, dir_fd=None):
+            mkdir(path, mode, dir_fd=dir_fd)
+            if path == "parent" and dir_fd is not None:
+                mkdir(target)
+
+        monkeypatch.setattr(safe_anchored_files.os, "mkdir", create_directory_with_target)
+    else:
+        target.mkdir(parents=True)
+    env = LocalEnvironment(str(tmp_path))
+    try:
+        with pytest.raises(OSError, match="target is not a regular file") as error:
+            await env.write_file_with_change("parent/target", "payload")
+        assert isinstance(error.value, WriteRejectedWithoutChanges) is not create_parent
+        assert target.is_dir() and not list(target.iterdir())
     finally:
         await env.cleanup()
 

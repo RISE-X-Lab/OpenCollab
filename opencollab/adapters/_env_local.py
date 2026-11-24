@@ -15,6 +15,7 @@ from opencollab.adapters._env_base import (
     Environment,
     ExecResult,
     TextFileRange,
+    WriteRejectedWithoutChanges,
 )
 from opencollab.adapters._env_process import (
     PROCESS_OUTPUT_CAPTURE_BYTES,
@@ -170,7 +171,9 @@ class LocalEnvironment(Environment):
         self._ensure_active()
         payload = content.encode("utf-8")
         if len(payload) > LOCAL_FILE_WRITE_LIMIT_BYTES:
-            raise OSError(f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}")
+            raise WriteRejectedWithoutChanges(
+                f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}"
+            )
         await self._run_file_operation(
             write_regular_bytes_atomic,
             self._root_fd(),
@@ -185,7 +188,9 @@ class LocalEnvironment(Environment):
         self._ensure_active()
         payload = content.encode("utf-8")
         if len(payload) > LOCAL_FILE_WRITE_LIMIT_BYTES:
-            raise OSError(f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}")
+            raise WriteRejectedWithoutChanges(
+                f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}"
+            )
         return await self._run_file_operation(
             write_regular_bytes_atomic,
             self._root_fd(),

@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import BinaryIO
 
-from opencollab.adapters._env_base import TextFileRange
+from opencollab.adapters._env_base import TextFileRange, WriteRejectedWithoutChanges
 from opencollab.adapters._safe_file_common import (
     _RANGE_TOTAL_COUNT_LIMIT_BYTES,
     _READ_CHUNK_BYTES,
@@ -89,6 +89,16 @@ def open_parent_beneath(
     create: bool,
 ) -> tuple[int, str]:
     """Open a target parent without resolving a component by pathname."""
+    parent_fd, name, _ = _open_parent_beneath(root_fd, root_path, path, create=create)
+    return parent_fd, name
+
+def _open_parent_beneath(
+    root_fd: int,
+    root_path: str | os.PathLike[str],
+    path: str | os.PathLike[str],
+    *,
+    create: bool,
+) -> tuple[int, str, bool]:
     _require_anchor_path(root_fd, root_path)
     parents, name = _relative_components(path)
     # A directory followed by .. must exist and keep its parent descriptor open.
@@ -101,6 +111,7 @@ def open_parent_beneath(
             existing_only.add(index)
             parent_steps -= 1
     opened = [os.dup(root_fd)]
+    created_parent = False
     try:
         for index, component in enumerate(parents):
             if component == "..":
@@ -120,6 +131,8 @@ def open_parent_beneath(
                     os.mkdir(component, 0o700, dir_fd=current_fd)
                 except FileExistsError:
                     pass
+                else:
+                    created_parent = True
                 next_fd = os.open(
                     component,
                     _directory_open_flags(),
@@ -128,7 +141,7 @@ def open_parent_beneath(
             if index not in existing_only:
                 os.close(opened.pop())
             opened.append(next_fd)
-        return opened.pop(), name
+        return opened.pop(), name, created_parent
     finally:
         for fd in opened:
             os.close(fd)
@@ -258,13 +271,14 @@ def _current_regular_at(
     name: str,
     *,
     context: str,
+    non_regular_error: type[OSError] = OSError,
 ) -> os.stat_result | None:
     try:
         info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
         return None
     if not stat.S_ISREG(info.st_mode):
-        raise OSError(f"{context} target is not a regular file: {name}")
+        raise non_regular_error(f"{context} target is not a regular file: {name}")
     return info
 
 def _content_identity(info: os.stat_result | None) -> tuple[int, ...] | None:
@@ -340,7 +354,7 @@ def write_regular_file_atomic_at(
 ) -> bool | None:
     """Atomically publish one file beneath a pinned directory descriptor."""
     limit = _require_limit(max_bytes)
-    parent_fd, name = open_parent_beneath(
+    parent_fd, name, created_parent = _open_parent_beneath(
         root_fd,
         root_path,
         path,
@@ -349,7 +363,12 @@ def write_regular_file_atomic_at(
     temporary = f".oc-{uuid.uuid4().hex}.tmp"
     fd = -1
     try:
-        current = _current_regular_at(parent_fd, name, context=context)
+        current = _current_regular_at(
+            parent_fd,
+            name,
+            context=context,
+            non_regular_error=OSError if created_parent else WriteRejectedWithoutChanges,
+        )
         if create_only and current is not None:
             raise FileExistsError(f"{context} target already exists: {path}")
         publish_mode = mode if current is None else stat.S_IMODE(current.st_mode)
