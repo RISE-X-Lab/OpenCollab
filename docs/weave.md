@@ -80,7 +80,8 @@ reads reporting options from the command, its `PYTEST_ADDOPTS` assignment, and
 an explicitly selected INI or CFG file. On Python 3.11 or later it also reads
 selected TOML files. On Python 3.10 an explicit command option can enable passing
 output for a TOML-backed check. When a config read is slow, Weave uses the command
-options and reserves the remaining check time for pytest. See
+options and reserves the remaining check time for pytest. It joins config read
+cleanup after the checks. See
 [native test evidence](test-evidence.md) for tests that launch another pytest
 process. The verification report keeps the supplied `command` and records
 `executed_command` when reporting flags were

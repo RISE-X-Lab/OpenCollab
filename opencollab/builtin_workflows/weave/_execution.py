@@ -64,12 +64,30 @@ class _CaptureEnvironment(_Proxy):
         return result
 
 class _CommandProbe(_Proxy):
-    def __init__(self, *, show_passed_output: bool, deadline: float) -> None:
+    def __init__(
+        self, *, show_passed_output: bool, deadline: float, reporting_tasks: list[asyncio.Task[str]],
+    ) -> None:
         super().__init__(evidence_tools("bash", headless=False)[0])
         self.results: list[Any] = []
         self.executed_command: str | None = None
         self._show_passed_output = show_passed_output
         self._deadline = deadline
+        self._reporting_tasks = reporting_tasks
+
+    async def _prepare_command(self, command: str, environment: Any, remaining: float) -> str:
+        if not self._reporting_tasks or self._reporting_tasks[-1].done():
+            reporting = asyncio.create_task(self._delegate.with_workspace_pass_reporting(
+                command, show_passed_output=self._show_passed_output, environment=environment,
+            ))
+            self._reporting_tasks.append(reporting)
+            try:
+                done, _ = await asyncio.wait({reporting}, timeout=min(0.25, remaining * 0.1))
+                if done:
+                    return reporting.result()
+            finally:
+                if not reporting.done():
+                    reporting.cancel()
+        return self._delegate.with_pass_reporting(command, show_passed_output=self._show_passed_output)
 
     async def execute_with_runtime(self, params: dict[str, Any], runtime: Any) -> str:
         remaining = self._deadline - time.monotonic()
@@ -78,33 +96,15 @@ class _CommandProbe(_Proxy):
         captured = _Proxy(runtime)
         environment = runtime.environment
         captured.environment = _CaptureEnvironment(environment, self.results) if environment is not None else None
-        reporting = asyncio.create_task(self._delegate.with_workspace_pass_reporting(
-            params["command"], show_passed_output=self._show_passed_output, environment=environment,
-        ))
-        fallback = False
-        try:
-            done, _ = await asyncio.wait({reporting}, timeout=min(0.25, remaining * 0.1))
-            fallback = not done
-            if fallback:
-                reporting.cancel()
-                command = self._delegate.with_pass_reporting(
-                    params["command"], show_passed_output=self._show_passed_output,
-                )
-            else:
-                command = reporting.result()
-            remaining = self._deadline - time.monotonic()
-            if remaining <= 0:
-                return "Error: verification time exhausted before command execution."
-            self.executed_command = command
-            params = params | {"command": command}
-            if math.isfinite(remaining):
-                params["timeout"] = remaining
-            return await self._delegate.execute_with_runtime(params, captured)
-        finally:
-            if not fallback and not reporting.done():
-                reporting.cancel()
-            # Start Bash without waiting for cancellation to settle, then join the read before returning.
-            await await_owned_operation(asyncio.gather(reporting, return_exceptions=True), propagate_cancellation=True)
+        command = await self._prepare_command(params["command"], environment, remaining)
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            return "Error: verification time exhausted before command execution."
+        self.executed_command = command
+        params = params | {"command": command}
+        if math.isfinite(remaining):
+            params["timeout"] = remaining
+        return await self._delegate.execute_with_runtime(params, captured)
 
     def requires_test_evidence(self, command: str) -> bool:
         return any(self._delegate.invokes_pytest(_command_words(shlex.split(segment)))
@@ -332,46 +332,56 @@ def _verification_mode(command: str) -> bool:
 async def _verify_commands(ctx: Any, commands: Sequence[Any], seconds: float | None) -> dict[str, Any]:
     deadline = math.inf if seconds is None else time.monotonic() + seconds
     checks = []
-    for value in commands:
-        command, expected = _command_spec(value)
-        row: dict[str, Any] = {"command": command, "ok": False, "executed": False}
-        remaining = deadline - time.monotonic()
-        if not _verification_mode(command) or remaining <= 0:
-            row["reason"] = "unverified command or exhausted verification time"
+    reporting_tasks: list[asyncio.Task[str]] = []
+    try:
+        for value in commands:
+            command, expected = _command_spec(value)
+            row: dict[str, Any] = {"command": command, "ok": False, "executed": False}
+            remaining = deadline - time.monotonic()
+            if not _verification_mode(command) or remaining <= 0:
+                row["reason"] = "unverified command or exhausted verification time"
+                checks.append(row)
+                continue
+            tool = _CommandProbe(
+                show_passed_output=expected is not None, deadline=deadline, reporting_tasks=reporting_tasks,
+            )
+            row["output"] = await ctx.execute_verification(tool, {"command": command})
+            records = list(tool.verification_records)
+            row["test_records"] = records
+            if tool.results:
+                if tool.executed_command != command:
+                    row["executed_command"] = tool.executed_command
+                result = tool.results[-1]
+                row["executed"] = True
+                row["exit_code"] = result.returncode
+                truncated = any(getattr(result, key, False) for key in (
+                    "stdout_truncated", "stderr_truncated", "stdout_dropped_bytes", "stderr_dropped_bytes",
+                ))
+                completed = result.returncode == 0 and not truncated and not getattr(result, "timed_out", False)
+                if records:
+                    row["ok"] = completed and all(record.get("verified") is True for record in records)
+                requires_test_evidence = tool.requires_test_evidence(command)
+                if not records and (expected is None or requires_test_evidence):
+                    row["reason"] = ("pytest command requires per-target test evidence from a supported invocation"
+                                     if requires_test_evidence else
+                                     "command requires parsed test evidence or an explicit expected_output probe")
+                if expected is not None:
+                    output = result.stdout + ("\n" + result.stderr if result.stderr else "")
+                    row["expected_output"] = expected
+                    row["matched"] = expected in output
+                    row["ok"] = (row["ok"] if records else not requires_test_evidence) and completed and row["matched"]
+                    if row["ok"] and not records and _static_printer_supplies(command, expected):
+                        row["ok"] = False
+                        row["reason"] = "expected output is supplied by a static printer"
             checks.append(row)
-            continue
-        tool = _CommandProbe(show_passed_output=expected is not None, deadline=deadline)
-        row["output"] = await ctx.execute_verification(tool, {"command": command})
-        records = list(tool.verification_records)
-        row["test_records"] = records
-        if tool.results:
-            if tool.executed_command != command:
-                row["executed_command"] = tool.executed_command
-            result = tool.results[-1]
-            row["executed"] = True
-            row["exit_code"] = result.returncode
-            truncated = any(getattr(result, key, False) for key in (
-                "stdout_truncated", "stderr_truncated", "stdout_dropped_bytes", "stderr_dropped_bytes",
-            ))
-            completed = result.returncode == 0 and not truncated and not getattr(result, "timed_out", False)
-            if records:
-                row["ok"] = completed and all(record.get("verified") is True for record in records)
-            requires_test_evidence = tool.requires_test_evidence(command)
-            if not records and (expected is None or requires_test_evidence):
-                row["reason"] = ("pytest command requires per-target test evidence from a supported invocation"
-                                 if requires_test_evidence else
-                                 "command requires parsed test evidence or an explicit expected_output probe")
-            if expected is not None:
-                output = result.stdout + ("\n" + result.stderr if result.stderr else "")
-                row["expected_output"] = expected
-                row["matched"] = expected in output
-                row["ok"] = (row["ok"] if records else not requires_test_evidence) and completed and row["matched"]
-                if row["ok"] and not records and _static_printer_supplies(command, expected):
-                    row["ok"] = False
-                    row["reason"] = "expected output is supplied by a static printer"
-        checks.append(row)
-    return {
-        "ok": bool(checks) and all(row["ok"] for row in checks),
-        "executed": bool(checks) and all(row["executed"] for row in checks),
-        "checks": checks,
-    }
+        return {
+            "ok": bool(checks) and all(row["ok"] for row in checks),
+            "executed": bool(checks) and all(row["executed"] for row in checks),
+            "checks": checks,
+        }
+    finally:
+        if reporting_tasks:
+            # A cancelled config read can keep its native owner alive while later checks run.
+            await await_owned_operation(
+                asyncio.gather(*reporting_tasks, return_exceptions=True), propagate_cancellation=True,
+            )
