@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
+import sys
+from types import SimpleNamespace
 
 import pytest
 
 from opencollab.adapters import safe_anchored_files
-from opencollab.adapters._env_base import ExecResult, WriteRejectedWithoutChanges
-from opencollab.adapters.env import DockerEnvironment, LocalEnvironment
+from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES, ExecResult, WriteRejectedWithoutChanges
+from opencollab.adapters.env import DockerEnvironment, LocalEnvironment, VMEnvironment
+from opencollab.adapters.vm_config import VMConnection
+from opencollab.domain.tool_facts import ToolFactsCollector
+from opencollab.tools import evidence_tools
 
 
 def _file_state(target):
@@ -212,6 +218,97 @@ async def test_docker_comparison_uses_one_real_shell_write(monkeypatch, tmp_path
     assert "opencollab-file-parent" in executions[0][0]
     assert "opencollab-write " in executions[1][0]
     assert not list(tmp_path.glob(".*.opencollab-write-*.tmp"))
+
+@pytest.mark.parametrize("backend", ["docker", "vm"])
+@pytest.mark.parametrize("operation", ["overwrite", "patch", "remote-error"])
+async def test_remote_write_evidence_for_size_limits_and_publication_errors(tmp_path, monkeypatch, backend, operation):
+    path = tmp_path / "input.txt"
+    source = "VALUE\n" + "x" * (ENV_FILE_WRITE_LIMIT_BYTES - len("VALUE\n"))
+    path.write_text(source)
+    (tmp_path / "test_input.py").write_text(
+        "from pathlib import Path\ndef test_input():\n    assert Path('input.txt').read_text().startswith('VALUE')\n"
+    )
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    writes = []
+
+    def run_shell(command, payload=None):
+        child = subprocess.run(
+            ["bash", "-c", command], input=payload, capture_output=True, check=False, cwd=tmp_path,
+            env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTEST_ADDOPTS": ""},
+        )
+        return ExecResult(child.returncode, child.stdout.decode(), child.stderr.decode())
+
+    if backend == "docker":
+        environment = DockerEnvironment(workspace=str(tmp_path), container_id="a" * 64)
+        environment._attached_bound = True
+        error_type = OSError
+
+        async def execute(command, *, input_bytes=None, **_kwargs):
+            result = run_shell(command, input_bytes)
+            if input_bytes is None:
+                return result
+            writes.append(input_bytes)
+            assert result.returncode == 0
+            return ExecResult(1, "", "publication receipt unavailable")
+
+        monkeypatch.setattr(environment, "_exec", execute)
+    else:
+        environment = VMEnvironment(VMConnection("guest", "worker"), str(tmp_path),
+                                    state_directory="/var/tmp/oc-test", run_id="evidence-test")
+        environment._identity = {"workspace": environment.workspace}
+        error_type = ValueError
+
+        async def rpc(payload):
+            if payload["method"] == "cancel":
+                return {"status": "cancelled"}
+            assert payload["method"] == "start"
+            request = payload["request"]
+            action, args = request["action"], request["args"]
+            if action == "lock":
+                return {"status": "running", "lock_acquired": True}
+            if action == "exec":
+                result = run_shell(args["cmd"])
+                value = {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr,
+                         "stdout_bytes": None}
+            elif action == "read":
+                value = path.read_text()
+            else:
+                assert action == "write"
+                writes.append(args["content"])
+                path.write_text(args["content"])
+                return {"status": "failed", "error": "ValueError", "message": "VM file exceeds write limit"}
+            return {"status": "completed", "value": value}
+
+        monkeypatch.setattr(environment, "_rpc", rpc)
+
+    bash, file_write, apply_patch = evidence_tools("bash", "file_write", "apply_patch", headless=False)
+    observations = ToolFactsCollector()
+    runtime = SimpleNamespace(environment=environment, observations=observations, safety_policy=None)
+    command = (f"{shlex.quote(sys.executable)} -m pytest -c pytest.ini -q -rA "
+               "-p no:cacheprovider test_input.py::test_input")
+    assert "1 passed" in await bash.execute_with_runtime({"command": command}, runtime)
+    targets = {"test_input.py::test_input"}
+    assert bash.verified_targets == targets
+    if operation == "patch":
+        tool, params = apply_patch, {"path": "input.txt", "mode": "line_replace", "start_line": 1,
+                                     "end_line": 1, "new_str": "LONGER_VALUE"}
+    else:
+        content = "different\n" if operation == "remote-error" else source + "a"
+        tool, params = file_write, {"path": "input.txt", "mode": "create", "content": content, "overwrite": True}
+
+    published = operation == "remote-error"
+    message = "write verification failed" if published and backend == "docker" else "exceeds write limit"
+    with pytest.raises(error_type, match=message) as error:
+        await tool.execute_with_runtime(params, runtime)
+    assert type(error.value) is error_type
+    assert len(writes) == int(published)
+    assert path.read_text() == ("different\n" if published else source)
+    record, = bash.verification_records
+    assert record["applicability"] == ("unknown" if published else "current")
+    assert record["post_test_edits"] == (["input.txt"] if published else [])
+    assert bash.verified_targets == (set() if published else targets)
+    assert observations.close().content_changed is (None if published else False)
+
 
 @pytest.mark.parametrize("comparison", [
     "exit 2",

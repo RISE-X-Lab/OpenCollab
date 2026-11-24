@@ -13,6 +13,13 @@ ENV_FILE_WRITE_LIMIT_BYTES = 4 * 1024 * 1024
 class WriteRejectedWithoutChanges(OSError):
     """A native write rejected before it could change the workspace."""
 
+    public_error = OSError
+
+class WriteRejectedValueError(ValueError):
+    """A native write argument rejected before changing the workspace."""
+
+    public_error = ValueError
+
 @dataclass(slots=True)
 class ExecResult:
     returncode: int

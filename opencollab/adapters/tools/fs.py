@@ -7,7 +7,7 @@ import shlex
 from copy import deepcopy
 from typing import Any
 
-from opencollab.adapters._env_base import TextFileRange, WriteRejectedWithoutChanges
+from opencollab.adapters._env_base import TextFileRange, WriteRejectedValueError, WriteRejectedWithoutChanges
 from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
 from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools._parameters import integer_parameter
@@ -265,10 +265,10 @@ class FileWriteTool(Tool):
                 if mode == "str_replace":
                     return await self._str_replace(env, path, params, observations=observations)
                 return f"Error: unknown mode '{mode}'. Use 'create' or 'str_replace'."
-        except WriteRejectedWithoutChanges as e:
+        except (WriteRejectedWithoutChanges, WriteRejectedValueError) as e:
             if observations is not None:
                 observations.record_write(completed=False, changed=False, path=path)
-            raise OSError(*e.args) from e
+            raise e.public_error(*e.args) from e
         except PermissionError as e:
             return f"Error: {e}"
         except UnicodeDecodeError as e:

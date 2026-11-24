@@ -18,7 +18,13 @@ from pathlib import Path
 from typing import Any
 
 from opencollab import __version__
-from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES, Environment, ExecResult, TextFileRange
+from opencollab.adapters._env_base import (
+    ENV_FILE_WRITE_LIMIT_BYTES,
+    Environment,
+    ExecResult,
+    TextFileRange,
+    WriteRejectedValueError,
+)
 from opencollab.adapters._env_process import (
     ProcessCleanupError,
     ProcessRegistry,
@@ -295,7 +301,7 @@ class VMEnvironment(Environment):
 
     async def write_file_with_change(self, path: str, content: str) -> bool | None:
         if len(content.encode()) > ENV_FILE_WRITE_LIMIT_BYTES:
-            raise ValueError("VM file exceeds write limit")
+            raise WriteRejectedValueError("VM file exceeds write limit")
         return await self._operate("write", {"path": path, "content": content})
 
     async def write_temp_file(self, content: str, *, prefix: str, suffix: str = ".tmp") -> str:
