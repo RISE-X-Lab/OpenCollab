@@ -4,7 +4,7 @@ The complete built-in implementation lives in [`builtin_workflows/duo/`](../open
 
 [Chinese guide](duo/README.zh-CN.md)
 
-Duo V8 produces two isolated solutions to a task, compares their evidence, and
+Duo V8 produces two solutions in separate candidate workspaces, compares their evidence, and
 adopts one result. Its task-oriented role prompts cover source changes,
 configuration, data and other required artifacts. The runtime supplies the
 candidate environments and delivery mechanism.
@@ -18,8 +18,7 @@ available without a caller-defined `workflows/` directory.
 ```bash
 opencollab workflow list --workspace /path/to/workspace
 opencollab workflow run duo --workspace /path/to/workspace \
-  --task 'Complete the task described here.' \
-  --args '{"allow_unisolated_shell":true}'
+  --task 'Complete the task described here.'
 ```
 
 `--task` sets the workflow's `goal` argument. For longer tasks, use
@@ -27,9 +26,16 @@ opencollab workflow run duo --workspace /path/to/workspace \
 in `--args`. These shortcuts are mutually exclusive with each other and with
 an explicit `goal` in `--args`. Existing JSON-only invocations remain supported.
 
-The example explicitly permits shell execution in a trusted local workspace.
-The default shell setting requires process isolation. Container-backed callers
-can retain that default and supply their environment through the public SDK.
+The default Git candidate backend provides separate worktrees and workspace-scoped
+file tools. Duo withholds Bash from this backend because its candidates share
+the source execution environment. This holds for worktrees in a local process,
+a shared container, or a shared VM. `allow_unisolated_shell` remains accepted
+as a legacy boolean and cannot override the candidate boundary.
+
+To run shell commands, pass a `candidate_workspace` backend through the SDK
+that provisions a dedicated process sandbox for each candidate. The backend
+must keep other candidates and the source outside that sandbox, and its
+candidate environment must report `process_isolated=True`.
 
 ```python
 import asyncio
@@ -43,7 +49,6 @@ async def main():
         {
             "goal": "Produce the requested data files and update their configuration.",
             "candidate_evidence_dir": "artifacts/duo-evidence",
-            "allow_unisolated_shell": True,
         },
         budget=1_000_000,
         artifacts="artifacts/duo-run",

@@ -61,9 +61,10 @@ uv run opencollab --workspace .
 
 ```bash
 uv run opencollab workflow run duo --workspace /path/to/repository \
-  --task 'Fix the public issue described here.' \
-  --args '{"allow_unisolated_shell":true}'
+  --task 'Fix the public issue described here.'
 ```
+
+候选执行 Shell 的环境要求见 [Duo 指南](docs/duo/README.zh-CN.md#运行-duo)。
 
 工作流运行选项 `--workspace`、`--model`、`--budget` 应放在 `workflow run NAME` 后。
 列出其他工作区的工作流时，使用 `workflow list --workspace PATH`。

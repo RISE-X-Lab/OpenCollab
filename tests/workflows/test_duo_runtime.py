@@ -12,11 +12,13 @@ from pathlib import Path
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.bootstrap import _workflow_runtime_session as workflow_session
 from opencollab.bootstrap.single2_prompt import SINGLE2_SYSTEM_PROMPT
 from opencollab.bootstrap.workflow_runtime import run_workflow
 from opencollab.builtin_workflows.duo import _dual_coder, _file_selection
+from tests.support.duo_sandbox_test_support import simulate_candidate_sandbox
 
 
 def _git(path, *args):
@@ -53,6 +55,47 @@ def _tool_response(name, arguments, sequence):
 
 def _last_tool_result(messages):
     return next(message["content"] for message in reversed(messages) if message["role"] == "tool")
+
+
+@pytest.mark.parametrize("shell_opt_in", [False, True])
+@pytest.mark.parametrize("parent_process_isolated", [False, True])
+async def test_duo_worktree_candidates_keep_file_tools_and_exclude_bash(
+    tmp_path, monkeypatch, shell_opt_in, parent_process_isolated,
+):
+    # A shared container can be isolated from the host while sharing the source namespace.
+    monkeypatch.setattr(LocalEnvironment, "process_isolated", parent_process_isolated)
+    repo = _repository(tmp_path / "repo", both_pass=False)
+
+    class Solver:
+        calls = 0
+
+        def context_window(self):
+            return 1_048_576
+
+        async def complete(self, messages, tools=None, **kwargs):
+            self.calls += 1
+            names = {tool["function"]["name"] for tool in tools}
+            assert "bash" not in names
+            assert {"file_read", "file_write", "apply_patch", "grep", "git_diff"} <= names
+            if self.calls % 2:
+                return _tool_response("file_write", {
+                    "path": "source.py", "mode": "create", "overwrite": True,
+                    "content": "def value():\n    return 3\n",
+                }, self.calls)
+            return LLMResponse(content="Candidate ready", usage=Usage(5, 3))
+
+    solver = Solver()
+    result = await OpenCollab(repo, model="scripted-local-model").workflow(
+        "duo", {"goal": "Return 3", "allow_unisolated_shell": shell_opt_in},
+        llm=solver, budget=100_000, max_steps=5, trace=False,
+    )
+    assert result.ok, result.reason
+    assert result.agent_failures == ()
+    assert solver.calls == 4
+    assert result.output["selection_reason"] == "identical-diff"
+    assert result.output["adopted"] == "B"
+    assert (repo / "source.py").read_text() == "def value():\n    return 3\n"
+
 
 class _ScriptedCoder:
     def __init__(self, role, command, source):
@@ -129,6 +172,7 @@ def _script_sessions(monkeypatch, source, command):
 async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
     tmp_path, monkeypatch, profile, flow_name, both_pass, file_evidence,
 ):
+    simulate_candidate_sandbox(monkeypatch)
     monkeypatch.delenv("OPENCOLLAB_WORKFLOWS_DIR", raising=False)
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
     if file_evidence:
@@ -207,6 +251,7 @@ async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
     assert "1 passed" in completed.stdout
 
 async def test_duo_role_deadline_uses_resolved_sdk_model_timeout(tmp_path, monkeypatch):
+    simulate_candidate_sandbox(monkeypatch)
     monkeypatch.delenv("OPENCOLLAB_LLM_TIMEOUT", raising=False)
     monkeypatch.delenv("OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET", raising=False)
     repo = _repository(tmp_path / "repo", both_pass=False)
@@ -259,6 +304,7 @@ async def test_runtime_resolves_cli_profile_name_in_composition_root(tmp_path, m
     ("report.csv", "item,count\nready,3\n"),
 ])
 async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monkeypatch, profile, filename, desired):
+    simulate_candidate_sandbox(monkeypatch)
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
     repo = tmp_path / "artifacts"
     repo.mkdir()

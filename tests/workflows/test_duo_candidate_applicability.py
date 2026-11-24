@@ -13,6 +13,7 @@ import pytest
 from opencollab import OpenCollab
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.bootstrap import _workflow_runtime_session as workflow_session
+from tests.support.duo_sandbox_test_support import simulate_candidate_sandbox
 
 
 def _git(path, *args):
@@ -125,6 +126,7 @@ class _ScriptedModel:
     ("shell-read", "A", False),
 ])
 async def test_duo_compares_execution_applicable_to_final_candidate(tmp_path, monkeypatch, case, winner, mechanical):
+    simulate_candidate_sandbox(monkeypatch)
     monkeypatch.delenv("OPENCOLLAB_WORKFLOWS_DIR", raising=False)
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
     repo = tmp_path / "repo"

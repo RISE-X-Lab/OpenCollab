@@ -65,9 +65,10 @@ To run Duo on a Git repository, use this command.
 
 ```bash
 uv run opencollab workflow run duo --workspace /path/to/repository \
-  --task 'Fix the public issue described here.' \
-  --args '{"allow_unisolated_shell":true}'
+  --task 'Fix the public issue described here.'
 ```
+
+See the [Duo guide](docs/duo.md#run-duo) for candidate shell requirements.
 
 Place run options such as `--workspace`, `--model` and `--budget` after
 `workflow run NAME`. To list workflows in another workspace, use

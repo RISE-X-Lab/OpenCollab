@@ -22,10 +22,9 @@ from ._prompts import (
 from ._rules import SHARED_RULES, _complete_goal, coder_role_timeout_seconds, structured_role_timeout_seconds
 
 
-def _coder_tools(*, allow_unisolated_shell: bool = False) -> list[Any]:
+def _coder_tools() -> list[Any]:
     return list(evidence_tools(
         "bash", "file_read", "file_write", "apply_patch", "grep", "git_diff",
-        headless=not allow_unisolated_shell,
     ))
 
 async def _coder_candidate(
@@ -35,10 +34,9 @@ async def _coder_candidate(
     prompt: str,
     goal: str,
     shared_command: str = "",
-    allow_unisolated_shell: bool = False,
     rules: str = SHARED_RULES,
 ) -> CandidateRun:
-    tools = _coder_tools(allow_unisolated_shell=allow_unisolated_shell)
+    tools = _coder_tools()
     raw = await ctx.candidate_agent(
         prompt.format(
             rules=rules,
@@ -47,6 +45,7 @@ async def _coder_candidate(
         ),
         label=label,
         tools=tools,
+        require_isolated_shell=True,
         budget=None,
         timeout=coder_role_timeout_seconds(ctx),
     )
@@ -142,8 +141,7 @@ async def run_dual_coder(
     if not goal:
         return {"status": "error", "error": 'missing "goal" or "description"'}
 
-    allow_unisolated_shell = args.get("allow_unisolated_shell", False)
-    if not isinstance(allow_unisolated_shell, bool):
+    if not isinstance(args.get("allow_unisolated_shell", False), bool):
         raise ValueError("allow_unisolated_shell must be a boolean")
 
     submission_mode = args.get("submission_mode", "task")
@@ -164,7 +162,6 @@ async def run_dual_coder(
         label="dual-coder-contract-a",
         prompt=prompts[0],
         goal=goal,
-        allow_unisolated_shell=allow_unisolated_shell,
         rules=role_rules,
     )
     shared_command = dual._candidate_command(candidate_a)
@@ -176,7 +173,6 @@ async def run_dual_coder(
         prompt=prompts[1],
         goal=goal,
         shared_command=shared_command,
-        allow_unisolated_shell=allow_unisolated_shell,
         rules=role_rules,
     )
 
