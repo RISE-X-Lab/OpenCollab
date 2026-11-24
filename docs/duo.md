@@ -34,14 +34,14 @@ as a legacy boolean and cannot override the candidate boundary.
 
 To run shell commands in a separate container for each candidate, select
 `--isolation docker-session` in the CLI or `isolation="docker-session"` in the
-SDK. This uses the [Docker session strategy](session-isolation.md#docker-strategies)
-to copy the starting workspace into each container and deliver the selected
+SDK with the [standard Docker provider](session-isolation.md#docker-strategies).
+It copies the starting workspace into each container and delivers the selected
 patch back to the source.
 
-An integration can also pass its own `candidate_workspace` backend through the
-SDK. To enable Bash, that backend must keep other candidates and the source
-outside each candidate's sandbox and report `process_isolated=True` on the
-candidate environment.
+An integration with a custom environment provider can pass a separate
+`candidate_workspace` backend through the SDK. To enable Bash, that backend
+must keep other candidates and the source outside each candidate's sandbox and
+report `process_isolated=True` on the candidate environment.
 
 ```python
 import asyncio

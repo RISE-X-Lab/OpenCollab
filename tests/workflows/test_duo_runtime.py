@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shlex
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters.docker_isolation import DockerIsolationPool, _DockerOwner
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.worktree_pool import WorktreePool
@@ -19,6 +22,8 @@ from opencollab.bootstrap import _workflow_runtime_session as workflow_session
 from opencollab.bootstrap.single2_prompt import SINGLE2_SYSTEM_PROMPT
 from opencollab.bootstrap.workflow_runtime import run_workflow
 from opencollab.builtin_workflows.duo import _dual_coder, _file_selection
+from opencollab.environments import DockerOptions, docker_isolation_provider
+from opencollab.sdk.result import RunError
 from tests.support.duo_sandbox_test_support import simulate_candidate_sandbox
 
 
@@ -168,34 +173,131 @@ def _script_sessions(monkeypatch, source, command):
     return sessions
 
 
-async def test_duo_docker_session_uses_dedicated_candidate_leases(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cleanup_failures", [0, 1, 2])
+async def test_duo_docker_session_owns_candidate_leases_until_cleanup(tmp_path, monkeypatch, cleanup_failures):
     repo = _repository(tmp_path / "repo", both_pass=False)
     (repo / "notes.txt").write_text("User work\n")
     command = f"{shlex.quote(sys.executable)} -m pytest -q -rA -p no:cacheprovider test_public.py"
     sessions = _script_sessions(monkeypatch, repo / "source.py", command)
     monkeypatch.setattr(LocalEnvironment, "process_isolated", True)
-    pools = []
+    sandbox_pools = []
+    worktree_pools = []
+
+    class CandidatePool(WorktreePool):
+        release_attempts = 0
+
+        async def release_env(self, env):
+            self.release_attempts += 1
+            if self is worktree_pools[0] and self.release_attempts <= cleanup_failures:
+                raise OSError("injected candidate cleanup failure")
+            await super().release_env(env)
+
+    async def create_owner(pool, _role, source):
+        workspace = tmp_path / f"fixture-{len(sandbox_pools)}"
+        workspace.mkdir()
+        container = LocalEnvironment(str(workspace))
+        worktrees = CandidatePool(
+            str(repo), use_worktrees=True, base_environment=source, enable_adoption=True,
+        )
+        owner = _DockerOwner(container, [], worktrees)
+        pool._owners.append(owner)
+        sandbox_pools.append(pool)
+        worktree_pools.append(worktrees)
+        return owner
+
+    monkeypatch.setattr(DockerIsolationPool, "_create_owner", create_owner)
+    try:
+        expected = (
+            pytest.raises(RunError, match="workflow runtime failed without finalized execution evidence")
+            if cleanup_failures == 2 else nullcontext()
+        )
+        with expected:
+            result = await OpenCollab(
+                repo, model="scripted-local-model",
+                environment_providers={"docker-session": docker_isolation_provider(scope="session")},
+            ).workflow(
+                "duo", {"goal": "value() must return 3"}, isolation="docker-session",
+                budget=100_000, max_steps=8, trace=False,
+            )
+
+        assert len(sessions) == len(sandbox_pools) == 2
+        assert worktree_pools[0].release_attempts == (2 if cleanup_failures else 1)
+        workspaces = [Path(options["env"].workspace) for _, options, _ in sessions]
+        assert len(set(workspaces)) == 2
+        assert not workspaces[1].exists()
+        assert workspaces[0].exists() is (cleanup_failures == 2)
+        assert (repo / "notes.txt").read_text() == "User work\n"
+        assert (repo / "source.py").read_text() == "def value():\n    return 3\n"
+        if cleanup_failures < 2:
+            assert result.metrics["cleanup_quiesced"] is True
+            assert result.ok, result.reason
+            assert result.output["adopted"] == "B"
+            assert result.output["selection_reason"] == "same-command-public-red"
+    finally:
+        for pool in sandbox_pools:
+            await pool.release()
+
+
+async def test_custom_docker_session_provider_keeps_existing_candidate_workspace(tmp_path, monkeypatch):
+    repo = _repository(tmp_path / "repo", both_pass=False)
+    seen = []
+    original = workflow_session.build_session
+
+    def build(**kwargs):
+        seen.append(kwargs["env"])
+        return original(**kwargs, llm=_ScriptedJudge(file_evidence=False))
+
+    monkeypatch.setattr(workflow_session, "build_session", build)
 
     def provider(**options):
-        pool = WorktreePool(use_worktrees=True, **{**options, "enable_adoption": True})
-        pools.append(pool)
-        return pool
+        return WorktreePool(use_worktrees=True, **options)
+
+    async def workflow(ctx, _inputs):
+        plain = await ctx.agent("Inspect the task", tools=[])
+        candidate = await ctx.candidate_agent("Inspect the task", tools=[], label="inspect")
+        return {"plain": plain, "candidate": candidate.output}
 
     result = await OpenCollab(
         repo, model="scripted-local-model", environment_providers={"docker-session": provider},
+    ).workflow(workflow, isolation="docker-session", budget=100_000, max_steps=8, trace=False)
+
+    assert result.ok, result.reason
+    assert result.output == {"plain": "Role context received", "candidate": "Role context received"}
+    assert len(seen) == 2
+    assert seen[0].workspace != seen[1].workspace
+    assert all(not Path(env.workspace).exists() for env in seen)
+
+
+async def test_duo_docker_session_delivers_and_removes_real_candidates(tmp_path, monkeypatch):
+    image = os.environ.get("OPENCOLLAB_DOCKER_TEST_IMAGE")
+    if not image:
+        pytest.skip("OPENCOLLAB_DOCKER_TEST_IMAGE selects a local image with Bash, Git and Python")
+    repo = _repository(tmp_path / "repo", both_pass=False)
+    (repo / "notes.txt").write_text("User work\n")
+    command = "python -B -c 'from source import value; print(value())'"
+    sessions = _script_sessions(monkeypatch, repo / "source.py", command)
+    result = await OpenCollab(
+        repo, model="scripted-local-model", environment_providers={
+            "docker-session": docker_isolation_provider(DockerOptions(image=image), scope="session"),
+        },
     ).workflow(
         "duo", {"goal": "value() must return 3"}, isolation="docker-session",
-        budget=100_000, max_steps=8, trace=False,
+        budget=100_000, max_steps=8, trace=False, cleanup_timeout=30,
     )
 
     assert result.ok, result.reason
+    assert result.metrics["cleanup_quiesced"] is True
     assert result.output["adopted"] == "B"
-    assert result.output["selection_reason"] == "same-command-public-red"
-    assert len(sessions) == len(pools) == 2
-    assert all(not pool._envs for pool in pools)
-    workspaces = [Path(options["env"].workspace) for _, options, _ in sessions]
-    assert len(set(workspaces)) == 2
-    assert all(not workspace.exists() for workspace in workspaces)
+    assert len(sessions) == 3
+    containers = [options["env"].container_reference for _, options, _ in sessions]
+    assert all(len(container) == 64 for container in containers)
+    assert len(set(containers)) == 3
+    for expected, (_, _, solver) in zip((2, 3), sessions[:2], strict=True):
+        assert f"stdout:\n{expected}" in _last_tool_result(solver.calls[-1])
+    remaining = subprocess.check_output(
+        ["docker", "container", "ls", "-aq", "--no-trunc"], text=True,
+    ).splitlines()
+    assert not set(containers).intersection(remaining)
     assert (repo / "notes.txt").read_text() == "User work\n"
     assert (repo / "source.py").read_text() == "def value():\n    return 3\n"
 
