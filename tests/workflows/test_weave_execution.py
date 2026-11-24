@@ -143,7 +143,7 @@ async def test_native_tests_and_expected_output_jointly_verify_delivery(tmp_path
         f"    assert {passed!r}\n",
         encoding="utf-8",
     )
-    command = f"{shlex.quote(sys.executable)} -m pytest -q {capture}-rA -p no:cacheprovider test_result.py"
+    command = f"{shlex.quote(sys.executable)} -m pytest -q {capture}-p no:cacheprovider test_result.py"
     result = await _client(tmp_path).workflow(
         "weave", {
             "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
@@ -170,11 +170,14 @@ async def test_native_tests_and_expected_output_jointly_verify_delivery(tmp_path
     ("no", "yes", False, True, "", False),
     ("no", "yes", True, False, "", False),
     ("no", "yes", True, True, "-s", False),
+    ("no", "yes", False, True, "-rA", False),
+    ("no", "yes", False, True, "-qrA", False),
+    ("no", "no", True, True, "--show-capture=all", False),
     ("no", "no", True, True, "--show-capture=no", False),
     ("no", "yes", False, True, "--show-capture=no", False),
     ("yes", "no", True, True, "--show-capture=no", False),
     ("yes", "yes", True, False, "--show-capture=no", False),
-    ("no", "no", True, True, "", True),
+    ("no", "no", True, True, "-rA", True),
 ])
 async def test_named_weave_requires_one_pytest_result_for_nested_checks(
     tmp_path, outer_color, child_color, child_passed, outer_passed, capture, quiet_child,
@@ -218,14 +221,16 @@ async def test_named_weave_requires_one_pytest_result_for_nested_checks(
     row, = result.output["verification"]["report"]["checks"]
     assert row["executed"] is True
     assert row["exit_code"] == (0 if outer_passed else 1)
-    assert row["output"].count("Captured stdout call") == {"": 2, "-s": 1, "--show-capture=no": 0}[capture]
+    expected_captures = {"": 0 if outer_passed else 2, "-s": 1, "-rA": 2, "-qrA": 2,
+                         "--show-capture=all": 2, "--show-capture=no": 0}
+    assert row["output"].count("Captured stdout call") == expected_captures[capture]
     record, = row["test_records"]
-    verified = outer_passed and (capture == "--show-capture=no" or quiet_child)
+    verified = outer_passed and (capture in {"", "--show-capture=no"} or quiet_child)
     assert record["verified"] is verified
     assert result.output["delivery_ok"] is verified
     assert not has_pass_evidence(row["exit_code"], row["output"], target="child_suite.py::test_child")
 
-@pytest.mark.parametrize("capture", ["", "--show-capture=no "], ids=["show-capture", "hide-capture"])
+@pytest.mark.parametrize("capture", ["", "-rA ", "--show-capture=no "], ids=["default", "show-capture", "hide-capture"])
 async def test_named_weave_rejects_a_second_pytest_result_from_a_terminal_hook(tmp_path, capture):
     (tmp_path / "test_result.py").write_text(
         "from pathlib import Path\n"

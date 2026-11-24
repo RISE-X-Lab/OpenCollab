@@ -111,7 +111,7 @@ class BashEvidence:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._delegate, name)
 
-    def with_pass_reporting(self, command: str) -> str:
+    def with_pass_reporting(self, command: str, *, show_passed_output: bool = True) -> str:
         command = _strip_command_padding(command)
         spec = parse_test_command(command, None)
         if spec is None or not spec.provable or not _is_pytest_runner(spec.runner):
@@ -121,15 +121,21 @@ class BashEvidence:
         lexer.whitespace_split = True
         lexer.commenters = ""
         runner_seen = False
+        report = "-rA" if show_passed_output else "-rap"
         while True:
             start = lexer.instream.tell()
             token = lexer.get_token()
             if token is None:
                 if comment_start < len(command):
-                    return command[:comment_start] + "-rA " + command[comment_start:]
-                return command + " -rA"
+                    return command[:comment_start] + report + " " + command[comment_start:]
+                return command + " " + report
             if runner_seen and token == "--":
-                return command[:start] + "-rA " + command[start:]
+                return command[:start] + report + " " + command[start:]
+            if runner_seen and token.startswith("-"):
+                # Pytest accepts bundled switches such as -qrA.
+                short_report = token[1:].lstrip("qsvxl").startswith("r")
+                if short_report or token.partition("=")[0] in {"--report-chars", "--show-capture"}:
+                    report = "-rA"
             if token == "&&":
                 runner_seen = False
             if token.rsplit("/", 1)[-1] == "pytest":
