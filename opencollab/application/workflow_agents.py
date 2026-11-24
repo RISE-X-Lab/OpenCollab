@@ -82,16 +82,19 @@ class WorkflowAgentsMixin:
             session, enforcement_strength, commit_reserve
         )
         text: str | None = None
+        filtered_failure = False
         try:
             text = await self._run_session_turn(
                 session,
                 prompt,
                 deadline=deadline,
+                label=label,
                 cancel_event=capture_done,
             )
         except CallerTimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
+            filtered_failure = self._agent_failure_filtered(exc)
             self._record_agent_failure(label, exc)
             await self.log(f"agent failed ({label or 'agent'}): {exc}")
 
@@ -107,6 +110,8 @@ class WorkflowAgentsMixin:
         if (
             submit_tool.captured is None
             and ledger
+            and not filtered_failure
+            and not self._agent_output_filtered(session)
             and not self._active_call_has_pending_cleanup()
         ):
             synthesized = await self._synthesize_dead_scout(
@@ -172,6 +177,7 @@ class WorkflowAgentsMixin:
                 session,
                 prompt,
                 deadline=deadline,
+                label=synth_label,
                 cancel_event=capture_done,
             )
         except Exception as exc:  # noqa: BLE001 — one dead salvage never kills the fleet
@@ -257,6 +263,7 @@ class WorkflowAgentsMixin:
                 session,
                 prompt,
                 deadline=deadline,
+                label=draft_label,
                 cancel_event=capture_done,
             )
         except Exception as exc:  # noqa: BLE001 — one dead draft never kills the fleet

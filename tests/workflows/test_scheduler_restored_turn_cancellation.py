@@ -69,12 +69,12 @@ async def wait_redelegation(session):
     await asyncio.wait_for(until(), 2)
     await asyncio.gather(*session.pending_cleanup_tasks)
 
-async def saved_recovery(workspace, kind):
+async def saved_recovery(workspace, kind, *, interim_answer=None):
     team, factory = make_scheduler(workspace)
     path = workspace / "source.json"
     calls = [tool_call("old-child", "spawn_agent", '{"role":"worker","task":"old child"}')]
     model = (
-        FakeLLMClient([llm_response(tool_calls=calls), llm_response(content="old answer")])
+        FakeLLMClient([llm_response(content=interim_answer, tool_calls=calls), llm_response(content="old answer")])
         if kind == "awaiting" else HeldClient()
     )
     source = build_session(
@@ -91,6 +91,8 @@ async def saved_recovery(workspace, kind):
             sender = await team.spawn(0, "sender", "prepare update")
         active = asyncio.create_task(team.run("old request"))
         await wait_phase(source, SessionPhase.AWAITING_EVENTS if kind == "awaiting" else SessionPhase.CALLING_LLM)
+        if kind == "awaiting":
+            await source.enqueue_auto_save()
         if kind == "inbox":
             assert await team.send_message(sender, 0, "update", "recover this message") == "Message queued to aid 0."
             await asyncio.gather(*source.event_bus.pending_tasks)
@@ -218,6 +220,54 @@ async def test_cancellation_at_recovery_completion_leaves_new_request_unaccepted
         await asyncio.gather(*restored.pending_cleanup_tasks)
         snapshot = SessionStore().load_snapshot(restored.auto_save_path, restored.agent.system_prompt)
         assert snapshot["session_state"]["phase"] == "stopped"
+    finally:
+        await team.cleanup()
+        await close_original(original, old_factory, old_model, old_active)
+
+@pytest.mark.parametrize(
+    ("finish_reason", "content", "reason", "expected_answer"),
+    [
+        pytest.param("content_filter", None, "provider filtered the output", None, id="filtered-empty"),
+        pytest.param(
+            "content_filter", "visible reply", "provider filtered the output", "visible reply", id="filtered-visible",
+        ),
+        pytest.param("stop", "final reply", "interrupted by user", "final reply", id="completed"),
+        pytest.param(
+            "length", None, "output truncated: provider reached its generation limit",
+            "interim planning text", id="truncated",
+        ),
+    ],
+)
+async def test_cancellation_at_waiting_recovery_completion_reports_the_turn_answer(
+    tmp_path, finish_reason, content, reason, expected_answer,
+):
+    path, original, old_factory, old_model, old_active = await saved_recovery(
+        tmp_path, "awaiting", interim_answer="interim planning text",
+    )
+    cancel_event = asyncio.Event()
+
+    def cancel_at_completion(event):
+        if event.type in {"agent_completed", "agent_failed"} and event.data["aid"] == 0:
+            cancel_event.set()
+
+    team = Scheduler(
+        session_factory=old_factory, worktree_pool=Pool(tmp_path), event_sink=EventBus(cancel_at_completion),
+    )
+    model = FakeLLMClient([llm_response(content=content, finish_reason=finish_reason)])
+    restored = load_session(
+        str(path), agent=Agent(name="lead", system_prompt="Finish the task."),
+        llm=model, env=LocalEnvironment(str(tmp_path)), auto_save_path=str(tmp_path / "restored-waiting.json"),
+    )
+    team.register_lead(restored)
+    try:
+        assert restored.phase is SessionPhase.AWAITING_EVENTS
+        with pytest.raises(SchedulerTurnError) as caught:
+            await asyncio.wait_for(team.run("new request", cancel_event=cancel_event), 3)
+        assert caught.value.terminal_reason == reason
+        assert caught.value.partial_answer == expected_answer
+        assert len(model.calls) == 1
+        assert any(message["role"] == "tool" for message in model.calls[0]["messages"])
+        assert all(message.get("content") != "new request" for message in restored.messages)
     finally:
         await team.cleanup()
         await close_original(original, old_factory, old_model, old_active)

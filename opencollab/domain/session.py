@@ -299,9 +299,9 @@ class SessionState:
         self.active_turn_start_message_index = message_index
         self.completed_turn_start_message_index = None
 
-    def clear_active_turn(self) -> None:
-        """Clear suspended work and retain a completed turn's answer boundary."""
-        if self.phase is SessionPhase.DONE and self.active_turn_start_message_index is not None:
+    def clear_active_turn(self, *, retain_answer: bool = False) -> None:
+        """Clear suspended work and retain the answer boundary for a final turn."""
+        if (self.phase is SessionPhase.DONE or retain_answer) and self.active_turn_start_message_index is not None:
             self.completed_turn_start_message_index = self.active_turn_start_message_index
         self.active_turn_start_message_index = None
         self.pending_step_latency = None

@@ -12,6 +12,7 @@ import logging
 import time
 from typing import Any
 
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
 from opencollab.application.scheduler_types import LaunchSpec
 from opencollab.domain.identity import role_collision_key, validate_role_identity
 from opencollab.domain.pending import PendingRowError, RowStatus
@@ -490,7 +491,10 @@ class LifecycleMixin:
 
         terminal_failure = self._terminal_failure_result(scb, result)
         if terminal_failure is not None:
-            result = await self._append_partial_worktree_diff(aid, scb, session, terminal_failure)
+            failure_result = terminal_failure
+            if scb.state.terminal_reason == _FILTERED_OUTPUT_REASON and result:
+                failure_result = f"{terminal_failure}\n\n[Partial response]\n{result}"
+            result = await self._append_partial_worktree_diff(aid, scb, session, failure_result)
             scb.result = result
             await self._safe_emit_scheduler_event(
                 self._events.agent_failed(aid, scb.agent.name, terminal_failure)

@@ -259,6 +259,12 @@ def _settle_programmatic_workflow_manifest(
         return exc
     return None
 
+def _finalize_programmatic_workflow_manifest(artifacts: Path | None) -> None:
+    _verify_artifact_claim(artifacts)
+    failure = _settle_programmatic_workflow_manifest(artifacts, cleanup_succeeded=True)
+    if failure is not None:
+        raise ProgrammaticLifecycleError("workflow manifest finalization failed") from failure
+
 def _require_agent_evidence(
     result: AgentRuntimeResult,
     artifacts: Path | None,
@@ -536,6 +542,23 @@ async def run_workflow(
     bootstrap_stopped_environment = False
     environment_cleanup_quiesced: bool | None = None
     environment_quiesced: bool | None = None
+
+    async def cleanup_owned_environment() -> None:
+        cleaned = await run_environment_hook(resolved_environment, "cleanup", timeout=cleanup_timeout)
+        if cleaned:
+            if details is not None and details.evidence_complete:
+                _finalize_programmatic_workflow_manifest(artifacts)
+            return
+        manifest_failure = _settle_programmatic_workflow_manifest(artifacts, cleanup_succeeded=False)
+        failure = ProgrammaticLifecycleError("workflow-owned environment cleanup failed")
+        if manifest_failure is not None:
+            add_exception_note(
+                failure,
+                "workflow manifest downgrade also failed: "
+                f"{type(manifest_failure).__name__}: {manifest_failure}",
+            )
+        raise failure from manifest_failure
+
     try:
         try:
             details = await _run_workflow(
@@ -571,59 +594,36 @@ async def run_workflow(
             stopped_error = exc
         except WorkflowLifecycleError as exc:
             raise ProgrammaticLifecycleError(str(exc)) from exc
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancellation:
             bootstrap_stopped_environment = True
+            details = getattr(cancellation, "runtime_result", None)
+            if owned_environment and details is not None and details.evidence_complete:
+                try:
+                    _finalize_programmatic_workflow_manifest(artifacts)
+                except Exception as failure:
+                    add_exception_note(
+                        cancellation,
+                        f"workflow manifest also failed: {type(failure).__name__}: {failure}",
+                    )
             raise
         except Exception as exc:
-            runtime_result = getattr(exc, "runtime_result", None)
-            if (
-                runtime_result is None
-                or not runtime_result.evidence_complete
-            ):
+            details = getattr(exc, "runtime_result", None)
+            if details is None or not details.evidence_complete:
                 raise ProgrammaticLifecycleError(
                     "workflow runtime failed without finalized execution evidence"
                 ) from exc
             failed_error = exc
     finally:
         if owned_environment and not bootstrap_stopped_environment:
-            cleaned = await await_owned_operation(
-                run_environment_hook(
-                    resolved_environment,
-                    "cleanup",
-                    timeout=cleanup_timeout,
-                ),
-                propagate_cancellation=True,
-            )
-            if not cleaned:
-                manifest_failure = _settle_programmatic_workflow_manifest(
-                    artifacts,
-                    cleanup_succeeded=False,
-                )
-                failure = ProgrammaticLifecycleError(
-                    "workflow-owned environment cleanup failed"
-                )
-                if manifest_failure is not None:
-                    add_exception_note(
-                        failure,
-                        "workflow manifest downgrade also failed: "
-                        f"{type(manifest_failure).__name__}: {manifest_failure}",
-                    )
-                    raise failure from manifest_failure
-                raise failure
+            await await_owned_operation(cleanup_owned_environment(), propagate_cancellation=True)
             environment_cleanup_quiesced = True
             environment_quiesced = True
 
-    _verify_artifact_claim(artifacts)
-    if owned_environment and artifacts is not None:
-        manifest_failure = _settle_programmatic_workflow_manifest(
-            artifacts,
-            cleanup_succeeded=True,
-        )
-        if manifest_failure is not None:
-            raise ProgrammaticLifecycleError(
-                "workflow manifest finalization failed"
-            ) from manifest_failure
+    if not owned_environment:
+        _verify_artifact_claim(artifacts)
     if stopped_error is not None:
+        if owned_environment:
+            _finalize_programmatic_workflow_manifest(artifacts)
         details = stopped_error.result
         metrics = _workflow_metrics(
             details,
@@ -648,7 +648,6 @@ async def run_workflow(
             agent_failures=() if details is None else details.agent_failures,
         )
     if failed_error is not None:
-        details = getattr(failed_error, "runtime_result", None)
         return ProgrammaticResult(
             output=None,
             status="failed",

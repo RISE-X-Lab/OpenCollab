@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
@@ -524,8 +525,8 @@ class Session:
             self._applied_launch = launch
             self._launch_state = "applied"
 
-    def restore(self, path: str) -> None:
-        """Restore a complete snapshot while accepting legacy message-only stores."""
+    def restore(self, path: str, *, aid: int | None = None) -> None:
+        """Restore a snapshot or legacy transcript, with an optional agent ID override."""
         if self._turn_lock.locked() or self.pending_cleanup_tasks:
             raise SessionBusyError("session cannot be restored while runtime work is active")
         if isinstance(self.store, SnapshotStorePort):
@@ -539,7 +540,7 @@ class Session:
         raw_state = snapshot.get("session_state")
         restored = SessionState(
             messages=[],
-            aid=_snapshot_int(snapshot.get("aid"), default=self.state.aid),
+            aid=aid if aid is not None else _snapshot_int(snapshot.get("aid"), default=self.state.aid),
         )
         restored.replace_messages(messages, restoring=True)
         pending_messages = snapshot.get("pending_messages", [])
@@ -712,7 +713,9 @@ class Session:
                 restored.append_message(answer)
             restored.mark_done()
             restored.terminal_reason = "submitted"
-        if restored.phase is SessionPhase.DONE:
+        if restored.phase is SessionPhase.DONE or (
+            restored.phase is SessionPhase.STOPPED and restored.terminal_reason == _FILTERED_OUTPUT_REASON
+        ):
             completed_turn_start = _restore_active_turn_start(
                 raw_state.get("completed_turn_start_message_index"), restored.messages,
             )

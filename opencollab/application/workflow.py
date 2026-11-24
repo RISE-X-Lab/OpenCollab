@@ -35,6 +35,7 @@ from contextlib import ExitStack
 from copy import deepcopy
 from typing import Any
 
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
 from opencollab.application.async_timeout import (
     CallerTimeoutError,
 )
@@ -45,6 +46,7 @@ from opencollab.application.isolation import isolation_name
 from opencollab.application.ports import (
     CandidateWorkspacePort,
     EventPublisherPort,
+    ProviderTerminalEventError,
     TracePort,
     WorkflowSessionFactoryPort,
     WorkingTreeProbe,
@@ -86,6 +88,7 @@ from opencollab.application.workflow_structured import WorkflowStructuredMixin
 from opencollab.application.workflow_structured import (
     _schema_satisfied as _schema_satisfied,
 )
+from opencollab.domain.session import SessionPhase
 from opencollab.domain.tools import validate_unique_tool_names
 
 logger = logging.getLogger(__name__)
@@ -421,7 +424,7 @@ class WorkflowContext(
         error = body.get("error") if isinstance(body, dict) else None
         if not isinstance(error, dict):
             error = body if isinstance(body, dict) else {}
-        error_type = error.get("type")
+        error_type = "content_filter" if self._agent_failure_filtered(exc) else error.get("type")
         if not isinstance(error_type, str) or not error_type or len(error_type) > 128:
             error_type = None
         elif any(not (char.isalnum() or char in "._-") for char in error_type):
@@ -436,6 +439,18 @@ class WorkflowContext(
         if len(chain) > 1 or any("errno" in item for item in chain):
             record["exception_chain"] = chain
         self._agent_failures.append(record)
+
+    @staticmethod
+    def _agent_failure_filtered(exc: Exception) -> bool:
+        return isinstance(exc, ProviderTerminalEventError) and exc.code == "content_filter"
+
+    @staticmethod
+    def _agent_output_filtered(session: Any) -> bool:
+        state = getattr(session, "state", None)
+        return (
+            getattr(state, "phase", None) is SessionPhase.STOPPED
+            and getattr(state, "terminal_reason", None) == _FILTERED_OUTPUT_REASON
+        )
 
     async def wait_for_pending_cleanup(self) -> None:
         """Wait until every context-owned call and session task is quiescent.
@@ -673,7 +688,7 @@ class WorkflowContext(
             # rather than by the outer ``asyncio.wait_for`` wall. Any tool edits
             # already written to disk before the cancel survive in the env, so the
             # patch is still extractable.
-            return await self._run_session_turn(session, prompt, deadline=deadline)
+            return await self._run_session_turn(session, prompt, deadline=deadline, label=label)
         except CallerTimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
             return None
@@ -688,6 +703,7 @@ class WorkflowContext(
         prompt: str,
         *,
         deadline: float | None,
+        label: str | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> str:
         """Add one user turn and run it within a shared absolute deadline."""
@@ -698,7 +714,17 @@ class WorkflowContext(
         )
         run_timeout = self._remaining_timeout(deadline)
         run_loop = session.run_loop() if cancel_event is None else session.run_loop(cancel_event)
-        return await self._run_with_timeout(run_loop, run_timeout)
+        output = await self._run_with_timeout(run_loop, run_timeout)
+        if self._agent_output_filtered(session):
+            role = str(label or "agent")[:240]
+            self._agent_failures.append({
+                "label": role,
+                "exception_type": "AgentStopped",
+                "status_code": None,
+                "provider_error_type": "content_filter",
+            })
+            self._trace_step("workflow_log", {"message": f"agent stopped ({role}): {_FILTERED_OUTPUT_REASON}"})
+        return output
 
     def _internal_commit_deadline(self) -> float:
         remaining = self.seconds_left()

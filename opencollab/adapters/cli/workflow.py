@@ -23,6 +23,7 @@ from opencollab.adapters.cli.config_resolve import (
     resolve_model_route,
 )
 from opencollab.adapters.cli.text_input import resolve_text_input
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
 from opencollab.application.async_timeout import run_with_bounded_shutdown
 from opencollab.application.ports import EventPublisherPort
 from opencollab.application.workflow_registry import Registry
@@ -186,6 +187,10 @@ def run_cmd(
         shutdown_timeout=(cleanup_timeout if cleanup_timeout is not None else
                           (cfg.get("vm") or {}).get("cleanup_timeout", 2.0)),
     )
+    for failure in getattr(result, "agent_failures", ()):
+        if (failure["exception_type"], failure["provider_error_type"]) == ("AgentStopped", "content_filter"):
+            message = f"-- agent stopped ({failure['label']}): {_FILTERED_OUTPUT_REASON}"
+            console.print(Text(message, style="dim"))
     if save_dir is not None:
         console.print(f"[dim]== sessions saved to {save_dir}[/dim]")
         if trace:
