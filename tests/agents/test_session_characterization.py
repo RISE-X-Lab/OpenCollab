@@ -449,6 +449,30 @@ async def test_new_user_turn_records_its_terminal_phase(local_environment_factor
         (phase.value, reason, 6 + output_tokens, 2),
     ]
 
+async def test_filtered_reply_rereads_share_one_terminal_trace_per_turn(local_environment_factory):
+    llm = FakeLLMClient([
+        llm_response(content="first partial answer", finish_reason="content_filter"),
+        llm_response(content="second partial answer", finish_reason="content_filter"),
+    ])
+    tracer = FakeTracer()
+    session = Session(env=local_environment_factory(), agent=FakeAgent(), llm=llm, tracer=tracer)
+
+    await session.add_user_message("First question")
+    assert await session.run_loop() == "first partial answer"
+    assert await session.run_loop() == "first partial answer"
+    assert len(llm.calls) == 1
+
+    await session.add_user_message("Second question")
+    assert await session.run_loop() == "second partial answer"
+    assert await session.run_loop() == "second partial answer"
+    assert len(llm.calls) == 2
+
+    terminal = [step["payload"] for step in tracer.steps if step["step_type"] == "session_terminal"]
+    assert [(row["phase"], row["terminal_reason"], row["step_count"]) for row in terminal] == [
+        ("stopped", "provider filtered the output", 1),
+        ("stopped", "provider filtered the output", 2),
+    ]
+
 def test_session_event_sink_wires_through_to_runtime(local_environment_factory):
     fake_llm = FakeLLMClient([
         llm_response(content="event sink answer"),

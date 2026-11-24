@@ -314,13 +314,13 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         if self.state.pending_external_user_turn is not None and entry_phase.is_terminal():
             self.state.resume_to_idle()
             entry_phase = SessionPhase.IDLE
-        if entry_phase is not SessionPhase.DONE:
-            self._session_terminal_traced = False
         if entry_phase is SessionPhase.IDLE:
             self.state.consume_queued_external_user_turn()
         read_final_answer = entry_phase is SessionPhase.DONE or (
             entry_phase is SessionPhase.STOPPED and self.state.terminal_reason == _FILTERED_OUTPUT_REASON
         )
+        if not read_final_answer:
+            self._session_terminal_traced = False
         if entry_phase is SessionPhase.AWAITING_EVENTS:
             self._turn_start_message_index = self.state.active_turn_start_message_index
         elif read_final_answer:
