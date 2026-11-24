@@ -172,6 +172,8 @@ async def test_native_tests_and_expected_output_jointly_verify_delivery(tmp_path
     ("no", "yes", True, True, "-s", False),
     ("no", "yes", False, True, "-rA", False),
     ("no", "yes", False, True, "-qrA", False),
+    ("no", "yes", False, True, "-o addopts=-rA", False),
+    ("no", "yes", False, True, "--override-ini=addopts=-rA", False),
     ("no", "no", True, True, "--show-capture=all", False),
     ("no", "no", True, True, "--show-capture=no", False),
     ("no", "yes", False, True, "--show-capture=no", False),
@@ -221,9 +223,12 @@ async def test_named_weave_requires_one_pytest_result_for_nested_checks(
     row, = result.output["verification"]["report"]["checks"]
     assert row["executed"] is True
     assert row["exit_code"] == (0 if outer_passed else 1)
-    expected_captures = {"": 0 if outer_passed else 2, "-s": 1, "-rA": 2, "-qrA": 2,
-                         "--show-capture=all": 2, "--show-capture=no": 0}
-    assert row["output"].count("Captured stdout call") == expected_captures[capture]
+    expected_captures = {
+        "": 0 if outer_passed else 2,
+        "-s": 1,
+        "--show-capture=no": 0,
+    }.get(capture, 2)
+    assert row["output"].count("Captured stdout call") == expected_captures
     record, = row["test_records"]
     verified = outer_passed and (capture in {"", "--show-capture=no"} or quiet_child)
     assert record["verified"] is verified

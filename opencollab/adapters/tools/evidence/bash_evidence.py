@@ -133,8 +133,11 @@ class BashEvidence:
                 return command[:start] + report + " " + command[start:]
             if runner_seen and token.startswith("-"):
                 # Pytest accepts bundled switches such as -qrA.
-                short_report = token[1:].lstrip("qsvxl").startswith("r")
-                if short_report or token.partition("=")[0] in {"--report-chars", "--show-capture"}:
+                short_option = token[1:].lstrip("qsvxl")
+                long_option = token.partition("=")[0]
+                if short_option.startswith(("r", "o")) or long_option in {
+                    "--override-ini", "--report-chars", "--show-capture",
+                }:
                     report = "-rA"
             if token == "&&":
                 runner_seen = False
