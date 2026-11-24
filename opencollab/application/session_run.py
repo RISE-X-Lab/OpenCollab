@@ -762,26 +762,35 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             isinstance(response.content, str)
             and bool(response.content.strip())
         )
+        if response.finish_reason == "content_filter":
+            # Settle the filtered reply before observers can suspend the turn.
+            reply_start = len(self.state.messages) - int(has_content)
+            self.state.append_message({
+                "role": "system", "content": "[Output filtered by the provider. Session stopped.]",
+            })
+            self.clear_pending_step()
+            self.state.transition_to(SessionPhase.STOPPED, reason=_FILTERED_OUTPUT_REASON)
+            self._turn_start_message_index = reply_start
+            self.state.start_active_turn(reply_start)
+            self.state.clear_active_turn(retain_answer=True)
+            self._trace_session_terminal()
+            if has_content:
+                await self.event_publisher.emit(self.event_factory.text_delta(response.content))
+            await self.finish_step(pending.latency)
+            return
+
         if has_content:
             await self.event_publisher.emit(self.event_factory.text_delta(response.content))
 
         if response.finish_reason in _INCOMPLETE_RESPONSE_REASONS:
-            filtered = response.finish_reason == "content_filter"
-            if filtered:
-                reply_start = len(self.state.messages) - int(has_content)
-                reason = _FILTERED_OUTPUT_REASON
-                message = "[Output filtered by the provider. Session stopped.]"
-            else:
-                reason = "output truncated: provider reached its generation limit"
-                message = "[Output truncated by the provider. Partial response preserved; session stopped.]"
-            self.state.append_message({"role": "system", "content": message})
+            reason = "output truncated: provider reached its generation limit"
+            self.state.append_message({
+                "role": "system",
+                "content": "[Output truncated by the provider. Partial response preserved; session stopped.]",
+            })
             await self.event_publisher.emit(self.event_factory.error(reason))
             self.clear_pending_step()
             self.state.transition_to(SessionPhase.STOPPED, reason=reason)
-            if filtered:
-                self._turn_start_message_index = reply_start
-                self.state.start_active_turn(reply_start)
-                self.state.clear_active_turn(retain_answer=True)
             await self.finish_step(pending.latency)
             return
 

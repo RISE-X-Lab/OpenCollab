@@ -7,10 +7,13 @@ import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.tools.fs import FileReadTool
 from opencollab.adapters.tools.submit import SubmitTool
+from opencollab.adapters.trace import Tracer
 from opencollab.bootstrap import build_session, load_session
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase
+from tests.support.asyncio_test_support import assert_cancel_reason
 from tests.support.session_characterization_test_support import FakeLLMClient, llm_response, tool_call
 
 
@@ -58,6 +61,74 @@ async def test_final_step_autosave_restores_the_completed_answer(tmp_path, expec
             if session is not None:
                 await session.aclose()
                 await session.env.cleanup()
+
+
+@pytest.mark.parametrize(("boundary", "text"), [
+    ("text_delta", "visible subtotal"),
+    ("step_end", "visible subtotal"),
+    ("step_end", None),
+])
+async def test_cancellation_during_filtered_reply_observation_preserves_its_snapshot(tmp_path, boundary, text):
+    path = tmp_path / "filtered.json"
+    trace = tmp_path / "trajectory.jsonl"
+    (tmp_path / "inventory.txt").write_text("apples: 42\n", encoding="utf-8")
+    tracer = Tracer("filtered", output_dir=str(tmp_path), filename=trace.name)
+    env = LocalEnvironment(str(tmp_path))
+    agent = Agent(name="assistant", system_prompt="Count the inventory.", tools=[FileReadTool()])
+    model = FakeLLMClient([
+        llm_response(content="I'll read the inventory.", tool_calls=[
+            tool_call("read", "file_read", '{"path":"inventory.txt"}'),
+        ]),
+        llm_response(content=text, finish_reason="content_filter"),
+    ])
+    source = build_session(agent=agent, llm=model, env=env, auto_save_path=str(path), tracer=tracer)
+    observed, release = asyncio.Event(), asyncio.Event()
+
+    async def hold_observation(event):
+        final_text = event.type == "text_delta" and event.data["content"] == text
+        final_step = event.type == "step_end" and event.data["step"] == 2
+        if event.type == boundary and (final_text or final_step):
+            observed.set()
+            await release.wait()
+
+    running = restored = None
+    try:
+        await source.add_user_message("What is the inventory subtotal?")
+        source.event_bus.subscribe(hold_observation)
+        running = asyncio.create_task(source.run_loop())
+        await asyncio.wait_for(observed.wait(), timeout=3)
+        assert source.state.phase is SessionPhase.STOPPED
+        running.cancel("observer interrupted")
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await running
+        assert_cancel_reason(caught.value, "observer interrupted")
+        assert len(model.calls) == 2
+
+        state = OpenCollab.read_session_snapshot(path)["session_state"]
+        assert state["phase"] == "stopped"
+        assert state["terminal_reason"] == "provider filtered the output"
+        assert state["active_turn_start_message_index"] is None
+        assert state["completed_turn_start_message_index"] is not None
+        tracer.flush()
+        rows = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+        assert sum(
+            row["type"] == "session_terminal"
+            and row["payload"]["terminal_reason"] == "provider filtered the output"
+            for row in rows
+        ) == 1
+        resume_model = FakeLLMClient()
+        restored = load_session(str(path), agent=agent, llm=resume_model, env=env)
+        assert await restored.run_loop() == (text or "")
+        assert resume_model.calls == []
+    finally:
+        release.set()
+        if running is not None:
+            await asyncio.gather(running, return_exceptions=True)
+        if restored is not None:
+            await restored.aclose()
+        await source.aclose()
+        tracer.close()
+        await env.cleanup()
 
 
 @pytest.mark.parametrize("second_texts, expected", [

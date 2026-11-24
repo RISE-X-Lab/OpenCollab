@@ -143,6 +143,7 @@ def test_cli_named_workflow_reports_filtered_role_without_a_correction(tmp_path,
     assert result.exit_code == 0, result.output
     notice = "agent stopped (reviewer): provider filtered the output"
     assert result.output.count(notice) == int(filtered)
+    assert "data={'reason': 'provider filtered" not in result.output
     expected = None if filtered else {"measured": True}
     json_lines = result.output.splitlines()
     json_start = next(index for index, line in enumerate(json_lines) if line in {"null", "{"})
@@ -163,7 +164,8 @@ async def test_workflow_progress_sink_does_not_delay_a_queued_role(tmp_path, mon
 
     class ProgressSink:
         async def emit(self, event):
-            if getattr(event, "kind", None) == "log" and "provider filtered the output" in event.message:
+            message = getattr(event, "message", str(event))
+            if "provider filtered the output" in message:
                 await release_notice.wait()
 
     async def handler(request):
