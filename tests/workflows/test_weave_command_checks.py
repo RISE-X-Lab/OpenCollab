@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shlex
 import shutil
 import sys
@@ -9,6 +10,8 @@ import sys
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters.env import LocalEnvironment
+from opencollab.application.workflow import WorkflowContext
 from opencollab.builtin_workflows import WeaveAdapter
 from opencollab.builtin_workflows.weave._execution import _static_printer_supplies, _verification_mode
 from tests.workflows.test_weave_execution import FileModel
@@ -506,6 +509,80 @@ async def test_timed_out_behavior_probe_retains_execution_without_passing(tmp_pa
     assert not (tmp_path / "late").exists()
     assert output["executed"] is True and output["ok"] is False
     assert output["report"]["checks"][0]["exit_code"] != 0
+
+
+async def test_slow_pytest_config_leaves_time_for_the_real_check(tmp_path, monkeypatch):
+    (tmp_path / "selected.ini").write_text("[pytest]\naddopts = -rP\n", encoding="utf-8")
+    (tmp_path / "test_result.py").write_text(
+        "from pathlib import Path\n"
+        "def test_result():\n"
+        "    Path('test-executed').write_text('yes')\n"
+        "    print('Captured inventory total')\n",
+        encoding="utf-8",
+    )
+    command = (f"PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 {shlex.quote(sys.executable)} -m pytest "
+               "-c selected.ini -q -p no:cacheprovider test_result.py")
+    command_finished = asyncio.Event()
+    config_cancelled = asyncio.Event()
+    config_finished = asyncio.Event()
+    read_file = LocalEnvironment.read_file
+    exec_cmd = LocalEnvironment.exec_cmd
+    executed = []
+
+    async def slow_config(environment, path):
+        if not path.endswith("/selected.ini"):
+            return await read_file(environment, path)
+        try:
+            await asyncio.sleep(2)
+            return await read_file(environment, path)
+        except asyncio.CancelledError:
+            config_cancelled.set()
+            await asyncio.wait_for(command_finished.wait(), timeout=3)
+            raise
+        finally:
+            config_finished.set()
+
+    async def record_execution(environment, cmd, timeout=120.0, **kwargs):
+        if cmd.startswith(command):
+            executed.append((cmd, timeout))
+        try:
+            return await exec_cmd(environment, cmd, timeout=timeout, **kwargs)
+        finally:
+            if cmd.startswith(command):
+                command_finished.set()
+
+    monkeypatch.setattr(LocalEnvironment, "read_file", slow_config)
+    monkeypatch.setattr(LocalEnvironment, "exec_cmd", record_execution)
+    output = await _check(tmp_path, command, seconds=1)
+    row, = output["report"]["checks"]
+    (actual_command, actual_timeout), = executed
+    assert 0 < actual_timeout < 0.95
+    assert row["command"] == command
+    assert row["executed_command"] == actual_command == command + " -rap"
+    assert row["test_records"][0]["command"] == actual_command
+    assert output["executed"] and output["ok"]
+    assert (tmp_path / "test-executed").read_text() == "yes"
+    assert "Captured inventory total" not in row["output"]
+    assert config_cancelled.is_set() and config_finished.is_set()
+
+
+async def test_expired_verification_deadline_does_not_start_pytest(tmp_path, monkeypatch):
+    (tmp_path / "test_result.py").write_text("def test_result():\n    assert True\n", encoding="utf-8")
+    command = (f"PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 {shlex.quote(sys.executable)} -m pytest "
+               "-q -p no:cacheprovider test_result.py")
+    execute_verification = WorkflowContext.execute_verification
+
+    async def delay_verification(context, tool, params):
+        await asyncio.sleep(0.15)
+        return await execute_verification(context, tool, params)
+
+    monkeypatch.setattr(WorkflowContext, "execute_verification", delay_verification)
+    output = await _check(tmp_path, command, seconds=0.1)
+    row, = output["report"]["checks"]
+    assert not output["executed"] and not output["ok"]
+    assert row["command"] == command
+    assert "executed_command" not in row
+    assert "verification time exhausted" in row["output"]
 
 
 async def test_truncated_pytest_output_retains_failed_evidence(tmp_path, monkeypatch):

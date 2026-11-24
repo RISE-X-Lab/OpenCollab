@@ -168,6 +168,10 @@ async def test_native_tests_and_expected_output_jointly_verify_delivery(tmp_path
         pytest.param("pytest.ini", "[pytest]\n", "", "", False, id="default"),
         pytest.param("selected.ini", "[pytest]\naddopts = -rA\n", "", "-c selected.ini", True, id="ini"),
         pytest.param(
+            "selected.ini", "[pytest] # options [shared]\naddopts = -rP\n", "", "-c selected.ini", True,
+            id="ini-section-comment",
+        ),
+        pytest.param(
             "setup.cfg", "[tool:pytest]\naddopts = -rP\n", "", "--config-file=setup.cfg", True, id="cfg",
         ),
         pytest.param(

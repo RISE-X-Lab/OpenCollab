@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import posixpath
+import re
 import shlex
 import sys
 
@@ -20,6 +21,7 @@ _OPTIONS = {
     "-r": "report", "--report-chars": "report",
     "--show-capture": "capture",
 }
+_INI_SECTION = re.compile(r"\[(?P<header>[^#;]+)\]\s*(?:[#;].*)?$")
 
 
 def _split_addopts(value: str) -> tuple[str, ...]:
@@ -97,6 +99,7 @@ async def _selected_config_addopts(path: str, environment: EnvironmentPort) -> t
             return tuple(value) if isinstance(value, list) and all(isinstance(flag, str) for flag in value) else ()
         parser = configparser.ConfigParser(interpolation=None, default_section="")
         parser.optionxform = str
+        parser.SECTCRE = _INI_SECTION
         parser.read_string(content)
         section = "tool:pytest" if suffix == ".cfg" else "pytest"
         return _split_addopts(parser.get(section, "addopts", fallback=""))

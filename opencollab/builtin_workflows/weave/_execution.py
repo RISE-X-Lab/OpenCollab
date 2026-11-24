@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 import shlex
@@ -9,6 +10,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from opencollab.application.async_timeout import await_owned_operation
 from opencollab.tools import evidence_tools, profile_tool_limits, profile_tool_names
 
 
@@ -62,20 +64,47 @@ class _CaptureEnvironment(_Proxy):
         return result
 
 class _CommandProbe(_Proxy):
-    def __init__(self, *, show_passed_output: bool) -> None:
+    def __init__(self, *, show_passed_output: bool, deadline: float) -> None:
         super().__init__(evidence_tools("bash", headless=False)[0])
         self.results: list[Any] = []
         self.executed_command: str | None = None
         self._show_passed_output = show_passed_output
+        self._deadline = deadline
 
     async def execute_with_runtime(self, params: dict[str, Any], runtime: Any) -> str:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            return "Error: verification time exhausted before command execution."
         captured = _Proxy(runtime)
         environment = runtime.environment
         captured.environment = _CaptureEnvironment(environment, self.results) if environment is not None else None
-        self.executed_command = await self._delegate.with_workspace_pass_reporting(
+        reporting = asyncio.create_task(self._delegate.with_workspace_pass_reporting(
             params["command"], show_passed_output=self._show_passed_output, environment=environment,
-        )
-        return await self._delegate.execute_with_runtime(params | {"command": self.executed_command}, captured)
+        ))
+        fallback = False
+        try:
+            done, _ = await asyncio.wait({reporting}, timeout=min(0.25, remaining * 0.1))
+            fallback = not done
+            if fallback:
+                reporting.cancel()
+                command = self._delegate.with_pass_reporting(
+                    params["command"], show_passed_output=self._show_passed_output,
+                )
+            else:
+                command = reporting.result()
+            remaining = self._deadline - time.monotonic()
+            if remaining <= 0:
+                return "Error: verification time exhausted before command execution."
+            self.executed_command = command
+            params = params | {"command": command}
+            if math.isfinite(remaining):
+                params["timeout"] = remaining
+            return await self._delegate.execute_with_runtime(params, captured)
+        finally:
+            if not fallback and not reporting.done():
+                reporting.cancel()
+            # Start Bash without waiting for cancellation to settle, then join the read before returning.
+            await await_owned_operation(asyncio.gather(reporting, return_exceptions=True), propagate_cancellation=True)
 
     def requires_test_evidence(self, command: str) -> bool:
         return any(self._delegate.invokes_pytest(_command_words(shlex.split(segment)))
@@ -311,16 +340,13 @@ async def _verify_commands(ctx: Any, commands: Sequence[Any], seconds: float | N
             row["reason"] = "unverified command or exhausted verification time"
             checks.append(row)
             continue
-        tool = _CommandProbe(show_passed_output=expected is not None)
-        params: dict[str, Any] = {"command": command}
-        if math.isfinite(remaining):
-            params["timeout"] = remaining
-        row["output"] = await ctx.execute_verification(tool, params)
-        if tool.executed_command is not None and tool.executed_command != command:
-            row["executed_command"] = tool.executed_command
+        tool = _CommandProbe(show_passed_output=expected is not None, deadline=deadline)
+        row["output"] = await ctx.execute_verification(tool, {"command": command})
         records = list(tool.verification_records)
         row["test_records"] = records
         if tool.results:
+            if tool.executed_command != command:
+                row["executed_command"] = tool.executed_command
             result = tool.results[-1]
             row["executed"] = True
             row["exit_code"] = result.returncode
