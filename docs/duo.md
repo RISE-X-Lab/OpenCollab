@@ -36,7 +36,9 @@ To run shell commands in a separate container for each candidate, select
 `--isolation docker-session` in the CLI or `isolation="docker-session"` in the
 SDK with the [standard Docker provider](session-isolation.md#docker-strategies).
 It copies the starting workspace into each container and delivers the selected
-patch back to the source.
+patch back to the source. Each candidate uses the standard Docker Git import
+checks. For example, a repository-local `core.excludesFile` setting stops
+the import before model execution.
 
 An integration with a custom environment provider can pass a separate
 `candidate_workspace` backend through the SDK. To enable Bash, that backend

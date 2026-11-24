@@ -23,6 +23,7 @@ opencollab workflow run duo --workspace /path/to/workspace \
 需要在独立容器中运行候选的 Shell 命令时，可使用[标准 Docker 提供方](../session-isolation.zh-CN.md#docker-策略)，
 在 CLI 中设置 `--isolation docker-session`，或在 SDK 中传入 `isolation="docker-session"`。
 该策略将起始工作区复制到每个容器，再把选中的补丁交付到源工作区。
+每个候选沿用 Docker 的 Git 导入检查。仓库本地配置中的 `core.excludesFile` 会使导入在调用模型前报错。
 
 使用自定义环境提供方的集成可通过 SDK 单独传入 `candidate_workspace` 后端。
 要启用 Bash，该后端须将源工作区和其他候选放在每个候选沙箱之外，并在候选环境中声明 `process_isolated=True`。
