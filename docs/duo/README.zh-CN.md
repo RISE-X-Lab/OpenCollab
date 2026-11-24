@@ -20,7 +20,11 @@ opencollab workflow run duo --workspace /path/to/workspace \
 
 默认 Git 候选后端提供独立的工作树，文件工具的操作范围限于各自工作区。由于候选与源工作区共用执行环境，Duo 不向该后端的候选提供 Bash。本地进程、同一个容器或同一台虚拟机内的工作树均适用。`allow_unisolated_shell` 仍接受布尔值以兼容旧调用，该选项不能覆盖候选隔离要求。
 
-需要执行 Shell 命令时，请通过 SDK 传入 `candidate_workspace` 后端，为每个候选分配单独的进程沙箱。源工作区和其他候选须位于沙箱之外，候选环境须声明 `process_isolated=True`。
+需要在独立容器中运行候选的 Shell 命令时，可在 CLI 中使用
+`--isolation docker-session`，或在 SDK 中传入 `isolation="docker-session"`。
+[Docker 会话策略](../session-isolation.zh-CN.md#docker-策略) 会将起始工作区复制到每个候选的容器，并把选中的补丁交付到源工作区。
+
+集成方也可通过 SDK 提供自己的 `candidate_workspace` 后端。要启用 Bash，该后端须将源工作区和其他候选放在每个候选沙箱之外，并在候选环境中声明 `process_isolated=True`。
 
 ```python
 import asyncio

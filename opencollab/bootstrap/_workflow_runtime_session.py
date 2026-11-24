@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
+from opencollab.adapters.docker_candidate_workspace import DockerCandidateWorkspace
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.providers import RESPONSES
 from opencollab.adapters.llm.retry import RetryTimeBudget
@@ -595,12 +596,16 @@ def build_workflow_context(
         if candidate_workspace is not None
         else EnvWorkingTreeProbe(probe_env)
     )
-    if candidate_workspace is None:
-        candidate_workspace = (
-            EnvCandidateWorkspace(probe_env, workspace=candidate_root, owned_save_dir=save_dir)
-            if isinstance(candidate_root, str) and candidate_root
-            else None
-        )
+    if candidate_workspace is None and isinstance(candidate_root, str) and candidate_root:
+        if factory.default_isolation == "docker-session":
+            candidate_workspace = DockerCandidateWorkspace(
+                probe_env, workspace=candidate_root, owned_save_dir=save_dir,
+                providers=environment_providers,
+            )
+        else:
+            candidate_workspace = EnvCandidateWorkspace(
+                probe_env, workspace=candidate_root, owned_save_dir=save_dir,
+            )
         if save_dir is not None and isinstance(probe_env, LocalEnvironment) and candidate_workspace is not None:
             # Source evidence and candidate tracking share the run-record filter.
             tree_probe = _CandidateSourceTreeProbe(

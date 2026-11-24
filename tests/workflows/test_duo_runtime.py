@@ -14,6 +14,7 @@ import pytest
 from opencollab import OpenCollab
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.bootstrap import _workflow_runtime_session as workflow_session
 from opencollab.bootstrap.single2_prompt import SINGLE2_SYSTEM_PROMPT
 from opencollab.bootstrap.workflow_runtime import run_workflow
@@ -165,6 +166,39 @@ def _script_sessions(monkeypatch, source, command):
 
     monkeypatch.setattr(workflow_session, "build_session", build)
     return sessions
+
+
+async def test_duo_docker_session_uses_dedicated_candidate_leases(tmp_path, monkeypatch):
+    repo = _repository(tmp_path / "repo", both_pass=False)
+    (repo / "notes.txt").write_text("User work\n")
+    command = f"{shlex.quote(sys.executable)} -m pytest -q -rA -p no:cacheprovider test_public.py"
+    sessions = _script_sessions(monkeypatch, repo / "source.py", command)
+    monkeypatch.setattr(LocalEnvironment, "process_isolated", True)
+    pools = []
+
+    def provider(**options):
+        pool = WorktreePool(use_worktrees=True, **{**options, "enable_adoption": True})
+        pools.append(pool)
+        return pool
+
+    result = await OpenCollab(
+        repo, model="scripted-local-model", environment_providers={"docker-session": provider},
+    ).workflow(
+        "duo", {"goal": "value() must return 3"}, isolation="docker-session",
+        budget=100_000, max_steps=8, trace=False,
+    )
+
+    assert result.ok, result.reason
+    assert result.output["adopted"] == "B"
+    assert result.output["selection_reason"] == "same-command-public-red"
+    assert len(sessions) == len(pools) == 2
+    assert all(not pool._envs for pool in pools)
+    workspaces = [Path(options["env"].workspace) for _, options, _ in sessions]
+    assert len(set(workspaces)) == 2
+    assert all(not workspace.exists() for workspace in workspaces)
+    assert (repo / "notes.txt").read_text() == "User work\n"
+    assert (repo / "source.py").read_text() == "def value():\n    return 3\n"
+
 
 @pytest.mark.parametrize("profile", [None, "single2"])
 @pytest.mark.parametrize("flow_name,both_pass", [("duo", False), ("duo", True)])
