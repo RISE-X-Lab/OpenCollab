@@ -252,11 +252,21 @@ def extract_retry_after_seconds(
     *,
     now: datetime | None = None,
 ) -> float | None:
-    """The Retry-After header value from ``error``'s response, if present."""
+    """Read the provider's retry delay in seconds."""
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", None) if response is not None else None
     if not headers:
         return None
+
+    milliseconds = headers.get("Retry-After-Ms") or headers.get("retry-after-ms")
+    if milliseconds is not None:
+        try:
+            seconds = float(milliseconds) / 1000
+        except (TypeError, ValueError, OverflowError):
+            pass
+        else:
+            if math.isfinite(seconds) and seconds >= 0:
+                return min(seconds, MAX_RETRY_AFTER_SECONDS)
 
     value = headers.get("Retry-After") or headers.get("retry-after")
     if value is None:
