@@ -272,6 +272,8 @@ async def _wait_for_transport(
         return await asyncio.wait_for(asyncio.shield(task), timeout)
     except (asyncio.CancelledError, asyncio.TimeoutError) as interruption:
         if task.done():
+            if on_interrupt is not None and isinstance(interruption, asyncio.CancelledError) and not task.cancelled():
+                on_interrupt(interruption)
             return task.result()
         if on_interrupt is not None:
             on_interrupt(interruption)
@@ -724,6 +726,7 @@ async def complete_responses(
     stream: bool = True,
     before_attempt: Callable[[], int | None] | None = None,
     on_attempt_usage: Callable[[Usage], None] | None = None,
+    on_cancelled_result: Callable[[asyncio.CancelledError], None] | None = None,
 ) -> LLMResponse:
     """Run one locally replayable Responses request and require typed completion."""
     external_isolation = os.environ.get("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION") == "1"
@@ -851,4 +854,6 @@ async def complete_responses(
         raise
     if failed_usages:
         response.usage = _combine_responses_usage([*failed_usages, response.usage])
+    if on_cancelled_result is not None and isinstance(round_interruption, asyncio.CancelledError):
+        on_cancelled_result(round_interruption)
     return response

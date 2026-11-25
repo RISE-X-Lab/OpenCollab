@@ -17,6 +17,7 @@ from opencollab.adapters.llm import client as client_module
 from opencollab.adapters.llm import retry
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.responses_errors import ResponsesProtocolError
+from opencollab.adapters.llm.responses_provider import _wait_for_transport
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.trace import Tracer
 from opencollab.application.session_run import GenerationTimeoutError
@@ -389,6 +390,86 @@ async def _drain(session):
     while session.pending_cleanup_tasks:
         await asyncio.gather(*session.pending_cleanup_tasks, return_exceptions=True)
         await asyncio.sleep(0)
+
+@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("retry_budget", [0.0, 15.0])
+async def test_direct_responses_completion_cancellation_keeps_reported_usage(
+    monkeypatch, tmp_path, usage_log, cancel, retry_budget,
+):
+    started = asyncio.Event()
+    interrupted = asyncio.Event()
+    release = asyncio.Event()
+    requests, reported = [], []
+    cancellations = []
+
+    async def handler(request):
+        requests.append(request.url.path)
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                interrupted.set()
+        content_type, payload = _payload(json.loads(request.content), {"text": "completed response"})
+        return http_response(request, 200, headers={"content-type": content_type}, content=payload)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    oc = OpenCollab(
+        tmp_path, model="gpt-4o", provider="openai", api_key=tmp_path.name, base_url="https://offline.invalid/v1",
+        config={
+            "wire_protocol": "responses",
+            "llm_timeout": 8.0,
+            "llm_max_retries": 0,
+            "provider_error_time_budget": retry_budget,
+        },
+    )
+    async with oc.create_model_client() as client:
+        messages = [{"role": "user", "content": "Reply briefly"}]
+
+        async def invoke():
+            try:
+                return await client.complete(messages, on_usage=reported.append)
+            except asyncio.CancelledError as exc:
+                cancellations.append((exc.args, exc.usage.total_tokens))
+                raise
+
+        call = asyncio.create_task(invoke())
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            if cancel:
+                call.cancel("caller moved on")
+                await asyncio.wait_for(interrupted.wait(), 5)
+            release.set()
+            done, _ = await asyncio.wait({call}, timeout=5)
+            assert call in done
+            if cancel:
+                with pytest.raises(asyncio.CancelledError):
+                    await call
+            else:
+                assert (await call).content == "completed response"
+        finally:
+            release.set()
+            await asyncio.gather(call, return_exceptions=True)
+
+    assert requests == ["/v1/responses"]
+    assert cancellations == ([(("caller moved on",), 37)] if cancel else [])
+    assert [usage.total_tokens for usage in reported] == [37]
+    record, = _records(usage_log)
+    assert record["status"] == "success"
+    assert record["usage"]["total_tokens"] == 37
+
+async def test_completed_transport_reports_simultaneous_caller_cancellation():
+    interruptions = []
+
+    async def transport():
+        call.cancel("caller moved on")
+        return "completed"
+
+    call = asyncio.create_task(_wait_for_transport(transport(), None, on_interrupt=interruptions.append))
+    assert await call == "completed"
+    interruption, = interruptions
+    assert isinstance(interruption, asyncio.CancelledError)
+    assert interruption.args == ("caller moved on",)
 
 @pytest.mark.parametrize("summary", [False, True])
 @pytest.mark.parametrize(("trigger", "session_timeout"), [
