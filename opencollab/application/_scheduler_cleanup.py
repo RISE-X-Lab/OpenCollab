@@ -16,8 +16,10 @@ from opencollab.application.async_timeout import (
 )
 from opencollab.application.session_lifecycle import close_session_resources
 from opencollab.domain.pending import PendingRowError, RowStatus
+from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
+_CLEANUP_CANCELLED_WORK = "Error: scheduler cleanup cancelled delegated work"
 
 
 class _CleanupTimeout(Enum):
@@ -76,6 +78,10 @@ class SchedulerCleanupMixin:
         persistence_sessions = tuple(self._sessions.values())
         startup_aids = set(self._startup_tasks)
         origins = {**self._startup_origin, **self._spawn_origin}
+        suspended_aids = {
+            aid for aid, scb in self.table.entries.items()
+            if scb.state.phase is SessionPhase.AWAITING_EVENTS
+        }
         interrupted_deliveries = set(self._message_delivery_tasks)
         public_run_tasks = _unique_task_owners(
             ((aid, task) for task, aid in self._active_run_tasks.items()),
@@ -127,6 +133,25 @@ class SchedulerCleanupMixin:
             self._locks.pop(aid, None)
             self._run_locks.pop(aid, None)
             self._message_inbox.pop(aid, None)
+
+        # Suspended turns have no running driver for cleanup to cancel.
+        # Settle them before saving so restore cannot resume a stopped turn.
+        suspended = [
+            (aid, scb) for aid, scb in self.table.entries.items()
+            if scb.state.phase is SessionPhase.AWAITING_EVENTS
+            or (aid in suspended_aids and not scb.state.pending_events.is_empty())
+        ]
+        for aid, _scb in suspended:
+            self._finalize_cleanup_failure(aid, origin_override=origins.get(aid))
+        for _aid, scb in suspended:
+            pending_events = scb.state.pending_events
+            for tool_call_id, row in tuple(pending_events.rows.items()):
+                if row.status is RowStatus.PENDING:
+                    pending_events.fill(
+                        tool_call_id, result=_CLEANUP_CANCELLED_WORK,
+                        status=RowStatus.FAILED, error=_CLEANUP_CANCELLED_WORK,
+                    )
+            scb.state.clear_active_turn()
 
         self._startup_tasks.clear()
         self._startup_envs.clear()
@@ -270,7 +295,7 @@ class SchedulerCleanupMixin:
         *,
         origin_override: tuple[int, str] | None = None,
     ) -> None:
-        reason = "Error: scheduler cleanup cancelled delegated work"
+        reason = _CLEANUP_CANCELLED_WORK
         self._release_leases(aid)
         if aid in self._delivery_committed:
             return
