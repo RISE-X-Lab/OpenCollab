@@ -145,11 +145,14 @@ class WorkflowCollectionsMixin:
 
         parent_share = self._active_collection_budget.get()
         planned_budget: int | None = None
+        starting_balance = self.budget.remaining()
+        available_at_entry = int(starting_balance) if 0 < starting_balance < float("inf") else 0
 
         def budget_share(available: int) -> int:
             nonlocal planned_budget
             if planned_budget is None:
-                # Plan on first admission so setup can return unused reservations.
+                # A competing reservation can start or settle during preparation.
+                available = max(available_at_entry, available)
                 if parent_share is not None:
                     available = min(available, parent_share(available))
                 planned_budget = max(1, available // size)

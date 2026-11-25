@@ -265,17 +265,14 @@ class WorkflowBudgetMixin:
                     total = max(0, cap) if cap is not None else UNBOUNDED_SESSION_BUDGET
                     return _BudgetLease(total=total, reserved=0, sessions=[])
 
-                if cap is None:
-                    collection_share = self._active_collection_budget.get()
-                    if collection_share is not None:
-                        total = min(collection_share(available), available)
-                    else:
-                        total = max(
-                            1,
-                            available // max(1, self._budget_waiters),
-                        )
+                collection_share = self._active_collection_budget.get()
+                share = collection_share(available) if collection_share is not None else None
+                if cap is not None:
+                    total = min(cap, available)
+                elif share is not None:
+                    total = min(share, available)
                 else:
-                    total = min(max(0, cap), available)
+                    total = max(1, available // max(1, self._budget_waiters))
                 lease = _BudgetLease(total=total, reserved=total, sessions=[])
                 self.budget.reserve(lease)
                 return lease
