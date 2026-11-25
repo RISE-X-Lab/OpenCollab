@@ -76,11 +76,13 @@ def test_anthropic_requirement_keeps_the_supported_sdk_range() -> None:
     assert "0.78.0" in requirement.specifier
     assert "0.102.0" in requirement.specifier
     assert "0.125.0" in requirement.specifier
-    # Sampling stays explicit on 0.x and travels through extra_body on 1.x.
+    # The adapter sends sampling through extra_body when typed fields are unavailable.
     assert "1.0.0" in requirement.specifier
     assert "1.9.0" in requirement.specifier
     assert "1.12.1" in requirement.specifier
-    assert "2.0.0" not in requirement.specifier
+    assert "2.0.0" in requirement.specifier
+    assert "2.14.0" in requirement.specifier
+    assert "3.0.0" not in requirement.specifier
 
 def test_typer_requirement_starts_with_click_83_boolean_flag_support() -> None:
     pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")

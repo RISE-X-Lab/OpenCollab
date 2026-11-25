@@ -551,7 +551,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.78,<2" },
+    { name = "anthropic", specifier = ">=0.78,<3" },
     { name = "deptry", marker = "extra == 'dev'", specifier = ">=0.20" },
     { name = "filelock", specifier = ">=3.15" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.7" },
