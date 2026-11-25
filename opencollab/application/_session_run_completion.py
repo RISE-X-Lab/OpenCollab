@@ -1062,14 +1062,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             })
 
         def account_response(response: CompletionResponse) -> None:
-            input_tokens, _total_tokens = _normalize_completion_usage(response.usage)
             usage_accounting.finish(
                 response.usage, purpose="summary", late=abandoned,
                 response=response,
             )
             self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
-            self.state.set_context_tokens(input_tokens)
-            self.record_llm_trace(response, time.monotonic() - start, purpose="summary", thinking=thinking)
+            self.record_llm_trace(
+                response, time.monotonic() - start, purpose="summary", thinking=thinking, late=abandoned,
+            )
 
         async def complete_owned() -> CompletionResponse:
             try:
@@ -1091,13 +1091,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         try:
             if self._per_call_timeout is None:
                 await asyncio.wait({owner})
-                return owner.result()
-            return await abandon_on_timeout(
-                owner, self._per_call_timeout,
-                late_task_tracker=self._mark_provider_task_draining,
-                late_result_handler=self._provider_task_done,
-                start_event=admitted,
-            )
+                response = owner.result()
+            else:
+                response = await abandon_on_timeout(
+                    owner, self._per_call_timeout,
+                    late_task_tracker=self._mark_provider_task_draining,
+                    late_result_handler=self._provider_task_done,
+                    start_event=admitted,
+                )
         except CallerTimeoutError as exc:
             abandoned = True
             raise GenerationTimeoutError(
@@ -1110,6 +1111,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                     owner.cancel()
                 self._mark_provider_task_draining(owner)
             raise
+        input_tokens, _total_tokens = _normalize_completion_usage(response.usage)
+        self.state.set_context_tokens(input_tokens)
+        return response
 
     async def _invoke_llm(
         self, *, max_output_tokens: int, required_output_tokens: int = 0, **kwargs: Any,

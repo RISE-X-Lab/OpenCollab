@@ -70,6 +70,7 @@ def test_summary_usage_and_native_trace_fields_are_recorded(local_environment_fa
     assert len(calls) == 2
     summary = next(row for row in calls if row["payload"].get("purpose") == "summary")
     assert summary["metrics"]["tokens"] == 7_600
+    assert not summary["payload"].get("late")
     assert summary["payload"]["usage"]["input_tokens"] == 7_598
     assert summary["payload"]["usage"]["cache_read_tokens"] == 20
     assert summary["payload"]["usage"]["raw_usage"] == {"provider_input": 7_598}
@@ -123,6 +124,7 @@ def test_successful_summary_cache_reuse_charges_once(local_environment_factory):
         second = await session.runner._shape_and_trace(session.messages)
         assert first == second
         assert session.used_tokens == 7_600
+        assert session.state.context_tokens == 7_598
         assert await session.run_loop() == "answer"
 
     asyncio.run(scenario())
