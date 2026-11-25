@@ -131,8 +131,10 @@ class WorkflowStructuredMixin:
                 await self.log(f"structured agent input exceeded provider limits ({label or 'agent'})")
                 return None
         except CallerTimeoutError:
+            # The deadline can expire during persistence after the tool captured a result.
+            captured = None if self._agent_output_filtered(session) else capture_tool.captured
             await self.log(f"structured agent timed out ({label or 'agent'}) after {timeout}s")
-            return None
+            return captured if _schema_satisfied(captured, schema) else None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"structured agent failed ({label or 'agent'}): {exc}")
@@ -231,8 +233,9 @@ class WorkflowStructuredMixin:
                 cancel_event=capture_done,
             )
         except CallerTimeoutError:
+            captured = None if self._agent_output_filtered(session) else capture_tool.captured
             await self.log(f"structured retry timed out ({label or 'agent'}) after {timeout}s")
-            return None
+            return captured if _schema_satisfied(captured, schema) else None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"structured retry failed ({label or 'agent'}): {exc}")
