@@ -149,15 +149,12 @@ class WorkflowCollectionsMixin:
         def budget_share(available: int) -> int:
             nonlocal planned_budget
             if planned_budget is None:
+                # Plan on first admission so setup can return unused reservations.
                 if parent_share is not None:
                     available = min(available, parent_share(available))
                 planned_budget = max(1, available // size)
             return planned_budget
 
-        # A fully reserved pool can regain tokens before the first agent call.
-        remaining = self.budget.remaining()
-        if 0 < remaining < float("inf"):
-            budget_share(int(remaining))
         results: list[Any] = [None] * size
         next_index = iter(range(size))
         errors: dict[int, BaseException] = {}

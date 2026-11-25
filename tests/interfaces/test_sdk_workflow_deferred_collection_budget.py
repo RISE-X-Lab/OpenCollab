@@ -10,7 +10,8 @@ from opencollab.adapters.llm.types import LLMResponse, Usage
 
 @pytest.mark.parametrize("kind", ["parallel", "pipeline", "nested"])
 @pytest.mark.parametrize("start", ["overlap", "after", "explicit"])
-async def test_collection_can_spend_budget_released_during_preparation(tmp_path, kind, start):
+@pytest.mark.parametrize("first_reservation", [20000, 19999])
+async def test_collection_can_spend_budget_released_during_preparation(tmp_path, kind, start, first_reservation):
     first_started, release_first = asyncio.Event(), asyncio.Event()
     prepared, budget_released = asyncio.Event(), asyncio.Event()
     calls, rows = [], []
@@ -49,11 +50,11 @@ async def test_collection_can_spend_budget_released_during_preparation(tmp_path,
                 lambda: summarize("second.txt"),
             ])
 
-        first = asyncio.create_task(ctx.agent_run("prepare source", tools=[], budget=20000))
+        first = asyncio.create_task(ctx.agent_run("prepare source", tools=[], budget=first_reservation))
         collection = None
         try:
             await first_started.wait()
-            assert ctx.tokens_remaining() == 0
+            assert ctx.tokens_remaining() == 20000 - first_reservation
             if start != "after":
                 collection = asyncio.create_task(collect())
                 await prepared.wait()
