@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.abc
 import importlib.machinery
 import importlib.util
@@ -14,6 +15,7 @@ from functools import wraps
 from types import ModuleType
 
 from opencollab.adapters.safe_files import read_regular_bytes
+from opencollab.application.workflow import WorkflowContext
 from opencollab.application.workflow_registry import Registry, WorkflowSpec
 from opencollab.bootstrap._workflow_runtime_state import (
     MAX_WORKFLOW_DIRECTORY_ENTRIES,
@@ -158,16 +160,67 @@ class _WorkflowModuleOwner:
                 self.capture_modules()
                 _remove_workflow_package(self.package_name)
 
+    def release_after_cleanup(self, ctx: object, *, finalized: bool = False) -> None:
+        if not isinstance(ctx, WorkflowContext):
+            self.release()
+            return
+        caller = asyncio.current_task()
+
+        def pending_tasks():
+            return {task for task in getattr(ctx, "pending_cleanup_tasks", ()) if task is not caller}
+
+        if finalized and not pending_tasks():
+            self.release()
+            return
+
+        loop = asyncio.get_running_loop()
+        watched = set()
+        scheduled = False
+        saw_empty = False
+        released = False
+
+        def schedule(_task=None) -> None:
+            nonlocal scheduled
+            if not scheduled and not released:
+                scheduled = True
+                loop.call_soon(observe)
+
+        def observe() -> None:
+            nonlocal scheduled, saw_empty, released
+            if released:
+                return
+            scheduled = False
+            pending = pending_tasks()
+            watched.intersection_update(pending)
+            if pending:
+                saw_empty = False
+                for task in pending - watched:
+                    watched.add(task)
+                    task.add_done_callback(schedule)
+            elif saw_empty:
+                released = True
+                self.release()
+            else:
+                # Finishing task callbacks may register another cleanup task.
+                saw_empty = True
+                schedule()
+
+        observe()
+
 def _bind_runtime_package(spec: WorkflowSpec, owner: _WorkflowModuleOwner) -> WorkflowSpec:
     original = spec.fn
 
     @wraps(original)
     async def run(ctx, args):
         owner.acquire()
+        imports = ctx._workflow_imports if isinstance(ctx, WorkflowContext) else None
+        if imports is not None:
+            imports.callback(owner.release_after_cleanup, ctx, finalized=True)
+            return await original(ctx, args)
         try:
             return await original(ctx, args)
         finally:
-            owner.release()
+            owner.release_after_cleanup(ctx)
 
     bound = WorkflowSpec(
         name=spec.name,

@@ -12,6 +12,10 @@ from .django_evidence import django_has_pass_proof, is_django_runner
 
 DEFAULT_RUNNER = "python -m pytest"
 
+_PYTEST_STYLE_RE = re.compile(r"\x1b\[[0-9;:]*m")
+_PYTEST_CAPTURE_RE = re.compile(r"-{2,} Captured (?:stdout|stderr|log) (?:setup|call|teardown) -{2,}")
+_PYTEST_SHORT_REPORT_RE = re.compile(r"={2,} short test summary info ={2,}")
+
 # Count tokens pytest prints in its final summary line, e.g.
 # "===== 1 failed, 2 passed, 1 skipped in 0.12s =====".
 _COUNT_RE = re.compile(r"(\d+)\s+(passed|failed|errors?|skipped|xfailed|xpassed|deselected|warnings?)")
@@ -112,18 +116,24 @@ def _pytest_no_tests(returncode: int, output: str) -> bool:
     """Whether pytest ran successfully enough to report an empty selection."""
     return returncode == 5 and "no tests ran" in output.lower()
 
-def _summary_lines(output: str) -> list[str]:
+def _result_summary(line: str) -> str | None:
+    candidate = line.strip().strip("= ").strip()
+    if _PYTEST_SUMMARY_RE.fullmatch(candidate) or _PYTEST_NO_TESTS_RE.fullmatch(candidate):
+        return candidate
+    return None
+
+
+def _pytest_output_lines(output: str) -> list[str]:
+    return [line.rstrip() for line in _PYTEST_STYLE_RE.sub("", output).splitlines()]
+
+
+def _summary_lines(lines: list[str]) -> list[str]:
     """Return every complete pytest result summary in emission order."""
-    summaries = []
-    for line in output.splitlines():
-        candidate = line.strip().strip("= ").strip()
-        if _PYTEST_SUMMARY_RE.fullmatch(candidate) or _PYTEST_NO_TESTS_RE.fullmatch(candidate):
-            summaries.append(candidate)
-    return summaries
+    return [summary for line in lines if (summary := _result_summary(line)) is not None]
 
 def _summary_line(output: str) -> str | None:
     """The last complete pytest result summary, with or without ``====``."""
-    summaries = _summary_lines(output)
+    summaries = _summary_lines(output.splitlines())
     return summaries[-1] if summaries else None
 
 def _parse_counts(summary: str | None) -> tuple[dict[str, int], int]:
@@ -196,8 +206,10 @@ def has_pass_evidence(
         return False
     if is_django_runner(runner):
         return returncode == 0 and django_has_pass_proof(target, output)
-    summaries = _summary_lines(output)
-    if _is_pytest_runner(runner) and len(summaries) != 1:
+    pytest = _is_pytest_runner(runner)
+    lines = _pytest_output_lines(output) if pytest else output.splitlines()
+    summaries = _summary_lines(lines)
+    if pytest and len(summaries) != 1:
         # One tool invocation represents one pytest session. Multiple result
         # summaries are ambiguous and let an appended passing summary hide an
         # earlier failure; no summary proves no pytest session completed.
@@ -208,10 +220,10 @@ def has_pass_evidence(
         return False
     if returncode != 0:
         return False
-    if _is_pytest_runner(runner):
+    if pytest:
         if counts.get("passed", 0) <= 0:
             return False
-        return _target_has_pass_proof(target, _passed_tests(output))
+        return _target_has_pass_proof(target, _passed_report_tests(lines))
     if _is_go_runner(runner):
         return _go_has_pass_proof(target, output)
     # Native runners need an explicit, parser-backed proof adapter before their
@@ -219,11 +231,17 @@ def has_pass_evidence(
     # no-op commands and zero-test modes.
     return False
 
+def _passed_report_tests(lines: list[str]) -> list[str]:
+    if any(_PYTEST_CAPTURE_RE.fullmatch(line) for line in lines):
+        # Captured streams may contain another session's passing rows.
+        short_report = next(
+            (i for i in range(len(lines) - 1, -1, -1) if _PYTEST_SHORT_REPORT_RE.fullmatch(lines[i])),
+            len(lines),
+        )
+        lines = lines[short_report + 1:]
+    return [entry for line in lines if (entry := line.strip()).startswith("PASSED ")]
+
+
 def _passed_tests(output: str) -> list[str]:
-    """Node-ids reported as PASSED in the -rA short summary (default pytest)."""
-    passes = []
-    for line in output.splitlines():
-        s = line.strip()
-        if s.startswith("PASSED "):
-            passes.append(s)
-    return passes
+    """Node IDs reported as PASSED by pytest."""
+    return _passed_report_tests(_pytest_output_lines(output))

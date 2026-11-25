@@ -85,7 +85,6 @@ class TeamWorkflowTool(Tool):
 
             def on_event(event: RunEvent) -> None:
                 if event.type == "usage":
-                    parent.state.add_used_tokens(event.data["total_tokens"])
                     parent.enqueue_auto_save()
                 if control.on_event is not None:
                     control.on_event(event)
@@ -97,7 +96,9 @@ class TeamWorkflowTool(Tool):
                 runtime.safety_policy if kwargs["env"] is runtime.environment
                 else build_workspace_safety_policy(kwargs["env"])
             )
-            return build_session(**kwargs)
+            session = build_session(**kwargs)
+            session.runner._on_completion_tokens = parent.runner._charge_completion_tokens
+            return session
 
         save_dir = (
             tempfile.mkdtemp(prefix=f"workflow-agent-{runtime.aid}-", dir=self._save_dir)

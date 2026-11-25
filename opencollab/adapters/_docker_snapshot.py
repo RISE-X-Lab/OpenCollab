@@ -44,12 +44,6 @@ async def _copy_to_host(environment: Any, source: str, target: Path, *, director
 
 
 async def _copy_artifact_to_host(environment: Any, source: str, target: Path) -> None:
-    relative = (
-        posixpath.relpath(source, environment.workspace) if posixpath.isabs(source) else posixpath.normpath(source)
-    )
-    if relative == ".." or relative.startswith("../"):
-        raise PermissionError("artifact path escapes workspace")
-    source = posixpath.join(environment.workspace, relative)
     delegate = environment._delegate if isinstance(environment, _TeamCandidateEnvironment) else environment
     if isinstance(delegate, WorktreeEnvironment):
         delegate._ensure_active()
@@ -65,6 +59,12 @@ async def _copy_artifact_to_host(environment: Any, source: str, target: Path) ->
 
         await delegate._run_file_operation(copy)
         return
+    relative = (
+        posixpath.relpath(source, environment.workspace) if posixpath.isabs(source) else posixpath.normpath(source)
+    )
+    if relative == ".." or relative.startswith("../"):
+        raise PermissionError("artifact path escapes workspace")
+    source = posixpath.join(environment.workspace, source)
     if isinstance(delegate, DockerEnvironment):
         source = await delegate._contained_file_path(source)
     if isinstance(delegate, (DockerEnvironment, VMEnvironment)):

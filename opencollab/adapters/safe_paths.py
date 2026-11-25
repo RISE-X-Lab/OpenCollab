@@ -28,4 +28,4 @@ def canonicalize_system_path(path: str | os.PathLike[str]) -> Path:
     value = os.fspath(path)
     if not value or "\0" in value:
         raise ValueError("path must be non-empty text without NUL bytes")
-    return _canonicalize_system_alias(Path(os.path.abspath(value)))
+    return _canonicalize_system_alias(Path(value).absolute())

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 
 from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
@@ -28,6 +30,26 @@ class TextFileRange:
     has_more: bool
     chars_truncated: bool = False
 
+class _ShellCommands:
+    def __init__(self) -> None:
+        self.active = 0
+        self.last_started: object | None = None
+
+    @contextmanager
+    def running(self) -> Iterator[None]:
+        self.active += 1
+        self.last_started = object()
+        try:
+            yield
+        finally:
+            self.active -= 1
+
+
+def _track_shell_command(environment: object) -> AbstractContextManager[None]:
+    commands = getattr(environment, "_shell_commands", None)
+    return commands.running() if commands is not None else nullcontext()
+
+
 class Environment:
     """Abstract execution environment used by tools and workflows."""
 
@@ -39,6 +61,7 @@ class Environment:
 
     def __init__(self) -> None:
         self._aborted = False
+        self._shell_commands = _ShellCommands()
 
     @property
     def revoked(self) -> bool:

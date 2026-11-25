@@ -241,3 +241,7 @@ to run its child agents in independent worktrees inside its own VM. Individual
 child calls can select `isolation="vm-session"` to request another guest. The
 [executable VM example](../examples/vm-authored-workflow/README.md) starts with a
 member writing source and finishes by collecting the native child result.
+
+The `budget` on `launch` is the child's total token allowance, shared across its
+sessions. The host checks the remaining allowance before each model request,
+including calls made with `over_budget_ok=True` inside the child.

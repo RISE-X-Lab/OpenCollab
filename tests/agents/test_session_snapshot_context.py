@@ -299,7 +299,12 @@ async def test_submitted_snapshot_finishes_without_another_model_call(tmp_path, 
         restored = load_session(
             str(saved), agent=agent, env=LocalEnvironment(str(restored_workspace)),
             llm=model, max_steps=max_steps,
+            auto_save_path=str(tmp_path / "restored-autosave.json") if event_type == "tool_end" else None,
         )
+        if event_type == "tool_end":
+            recovered_messages = restored.state.enriched_messages()
+            restored.restore(str(saved))
+            assert restored.state.enriched_messages() == recovered_messages
         for session in (branch, restored):
             assert await session.run_loop() == summary
             assert session.phase is SessionPhase.DONE

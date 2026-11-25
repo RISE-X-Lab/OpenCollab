@@ -275,10 +275,11 @@ def load_session(
     Omitted ``aid`` and ``run_id`` values come from the snapshot, so records
     written during construction and later turns retain the saved identity.
     """
+    explicit_aid = kwargs.get("aid")
     if "aid" not in kwargs or "run_id" not in kwargs:
         kwargs = {**_snapshot_identity(path, agent, kwargs.get("store")), **kwargs}
     session = build_session(agent=agent, **kwargs)
-    session.restore(path)
+    session.restore(path, aid=explicit_aid)
     return session
 
 def _snapshot_identity(path: str, agent: Agent, store: SessionStorePort | None) -> dict[str, Any]:

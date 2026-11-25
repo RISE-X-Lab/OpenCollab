@@ -246,16 +246,23 @@ async def run_workflow(
             ) from cancellation
         if owner.done():
             try:
-                owner.result()
+                late_result = owner.result()
+                if isinstance(late_result, WorkflowRuntimeResult):
+                    cancelled_result = late_result
             except asyncio.CancelledError as inner:
-                for note in getattr(inner, "__notes__", ()):
+                for note in cancelled_notes or getattr(inner, "__notes__", ()):
                     add_exception_note(cancellation, note)
             except BaseException as inner:
+                attached = getattr(inner, "runtime_result", None)
+                if isinstance(attached, WorkflowRuntimeResult):
+                    cancelled_result = attached
                 add_exception_note(
                     cancellation,
                     "workflow owner also failed during cancellation: "
                     f"{type(inner).__name__}: {inner}"
                 )
+        if cancelled_result is not None:
+            cancellation.runtime_result = cancelled_result  # type: ignore[attr-defined]
         raise cancellation
     finally:
         _WORKFLOW_ENV_OVERRIDE.reset(token)

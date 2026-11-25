@@ -174,6 +174,7 @@ async def test_cancelling_chat_retry_backoff_retains_reported_usage(local_enviro
         await session.add_user_message("Reply ok.")
         run = asyncio.create_task(session.run_loop())
         await asyncio.wait_for(entered_backoff.wait(), 1)
+        assert session.used_tokens == 27
         run.cancel()
         with pytest.raises(asyncio.CancelledError):
             await run

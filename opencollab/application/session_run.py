@@ -12,6 +12,8 @@ from opencollab.application._session_run_completion import _SessionRunCompletion
 from opencollab.application._session_run_shared import (
     _EMPTY_STOP_NUDGE,
     _EMPTY_STOP_PLACEHOLDER,
+    _FILTERED_OUTPUT_REASON,
+    _INCOMPLETE_RESPONSE_REASONS,
     _WIND_DOWN_NUDGE,
     _WIND_DOWN_RETRY,
     DEFAULT_COMMIT_RESERVE,
@@ -30,7 +32,7 @@ from opencollab.application._session_run_shared import (
     _TeamBudgetStop,
     _TokenBudgetStop,
 )
-from opencollab.application._session_run_usage import _normalize_completion_usage
+from opencollab.application._session_run_usage import _CompletionUsageAccounting, _normalize_completion_usage
 from opencollab.application.context_pressure import ContextPressure
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
@@ -154,9 +156,6 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         # Previous steering spend drives threshold crossings. ``None`` makes
         # the first build compare spend against itself, including after restore.
         self._steering_prev_used_tokens: int | None = None
-        # One ``session_terminal`` row per session, not per turn: ``run_loop``
-        # can be re-entered on an already-finished session as a read-only query
-        # for its answer, and that must not add a second disposition.
         self._session_terminal_traced = False
         # The protected submit reserve is carved from the token cap.
         # Wind-down runs only when enforcement is enabled.
@@ -185,6 +184,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self._late_provider_usage: tuple[int, ...] = ()
         # The session supplies its owned persistence queue after adopting this runner.
         self.late_provider_usage_checkpoint: Callable[[], object] | None = None
+        self._on_completion_tokens: Callable[[int], None] | None = None
 
     def reset_runtime_for_user_turn(self) -> None:
         """Restore agent capabilities narrowed by the previous turn."""
@@ -245,22 +245,22 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         ):
             self.state.budget_reserve_consumed = True
 
+    def _charge_completion_tokens(self, tokens: int) -> None:
+        self.state.add_used_tokens(tokens)
+        if tokens and self._on_completion_tokens is not None:
+            self._on_completion_tokens(tokens)
+
     def _record_late_provider_result(
-        self,
-        task: asyncio.Future[Any],
-        *,
-        protected_call: bool = False,
+        self, task: asyncio.Future[Any], *, protected_call: bool = False,
+        accounting: _CompletionUsageAccounting | None = None,
     ) -> None:
-        """Charge a provider response that survived caller cancellation or timeout."""
         try:
             response = task.result()
-            _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
-            self._late_provider_usage += (total_tokens,)
-            self.state.add_used_tokens(total_tokens)
-            self._record_usage_event(response.usage, total_tokens, purpose="completion", late=True)
-            self._mark_budget_reserve_consumed(protected_call=protected_call)
-            if self.late_provider_usage_checkpoint is not None:
-                self.late_provider_usage_checkpoint()
+            if accounting is None:
+                accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
+                accounting.finish(response.usage, purpose="completion", late=True)
+            else:
+                accounting.record_late()
         except BaseException:
             pass
         finally:
@@ -316,13 +316,16 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             entry_phase = SessionPhase.IDLE
         if entry_phase is SessionPhase.IDLE:
             self.state.consume_queued_external_user_turn()
+        read_final_answer = entry_phase is SessionPhase.DONE or (
+            entry_phase is SessionPhase.STOPPED and self.state.terminal_reason == _FILTERED_OUTPUT_REASON
+        )
+        if not read_final_answer:
+            self._session_terminal_traced = False
         if entry_phase is SessionPhase.AWAITING_EVENTS:
             self._turn_start_message_index = self.state.active_turn_start_message_index
-        elif entry_phase is SessionPhase.DONE:
-            # Re-entering an already-completed session is a compatibility
-            # read-only query for its final answer, not a restored active turn.
+        elif read_final_answer:
             self._turn_start_message_index = self.state.completed_turn_start_message_index
-            if self._turn_start_message_index is None:
+            if self._turn_start_message_index is None and entry_phase is SessionPhase.DONE:
                 self._turn_start_message_index = 0
         else:
             self._turn_start_message_index = len(self.state.messages)
@@ -330,7 +333,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
 
         if entry_phase is SessionPhase.AWAITING_EVENTS:
             self._resume_from_awaiting()
-        elif entry_phase is not SessionPhase.DONE:
+        elif not read_final_answer:
             self.state.resume_to_idle()
             # Deferred work belongs to the same turn; every other entry starts a
             # fresh once-per-turn empty-response retry allowance.
@@ -699,11 +702,8 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self._stop_precheck("team budget exceeded: aggregate spend reached the global cap")
             return
         latency = time.monotonic() - start
-        input_tokens, total_tokens = _normalize_completion_usage(response.usage)
-        self.state.add_used_tokens(total_tokens)
-        self._record_usage_event(response.usage, total_tokens, purpose="completion")
+        input_tokens, _total_tokens = _normalize_completion_usage(response.usage)
         self._run_final_prompt = None
-        self._mark_budget_reserve_consumed()
         self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
         self.state.set_context_tokens(input_tokens)
 
@@ -761,25 +761,36 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             isinstance(response.content, str)
             and bool(response.content.strip())
         )
+        if response.finish_reason == "content_filter":
+            # Settle the filtered reply before observers can suspend the turn.
+            reply_start = len(self.state.messages) - int(has_content)
+            self.state.append_message({
+                "role": "system", "content": "[Output filtered by the provider. Session stopped.]",
+            })
+            self.clear_pending_step()
+            self.state.transition_to(SessionPhase.STOPPED, reason=_FILTERED_OUTPUT_REASON)
+            self._turn_start_message_index = reply_start
+            self.state.start_active_turn(reply_start)
+            self.state.clear_active_turn(retain_answer=True)
+            self._trace_session_terminal()
+            if has_content:
+                await self.event_publisher.emit(self.event_factory.text_delta(response.content))
+            await self.finish_step(pending.latency)
+            return
+
         if has_content:
             await self.event_publisher.emit(self.event_factory.text_delta(response.content))
 
-        if response.finish_reason in {
-            "length",
-            "max_tokens",
-            "model_context_window_exceeded",
-        }:
+        if response.finish_reason in _INCOMPLETE_RESPONSE_REASONS:
             reason = "output truncated: provider reached its generation limit"
-            self.state.append_message(
-                {
-                    "role": "system",
-                    "content": "[Output truncated by the provider. Partial response preserved; session stopped.]",
-                }
-            )
+            self.state.append_message({
+                "role": "system",
+                "content": "[Output truncated by the provider. Partial response preserved; session stopped.]",
+            })
             await self.event_publisher.emit(self.event_factory.error(reason))
-            await self.finish_step(pending.latency)
             self.clear_pending_step()
             self.state.transition_to(SessionPhase.STOPPED, reason=reason)
+            await self.finish_step(pending.latency)
             return
 
         if response.tool_calls:
@@ -836,6 +847,8 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             self.state.transition_to(SessionPhase.AUTOSAVING)
             return
 
-        await self.finish_step(pending.latency)
+        # Finalize the turn before step_end triggers autosave.
         self.clear_pending_step()
         self.state.transition_to(SessionPhase.DONE, reason="completed")
+        self.state.clear_active_turn()
+        await self.finish_step(pending.latency)

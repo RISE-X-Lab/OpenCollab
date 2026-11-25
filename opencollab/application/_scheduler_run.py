@@ -5,12 +5,20 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from opencollab.application._session_run_shared import _last_assistant_answer
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
 from opencollab.application.scheduler_types import SchedulerStalledError, SchedulerTurnError
 from opencollab.domain.pending import RowStatus
-from opencollab.domain.session import SessionPhase
+from opencollab.domain.session import SessionPhase, SessionState
 
 logger = logging.getLogger(__name__)
+
+def _turn_answer(state: SessionState, turn_start: int) -> str:
+    if state.phase is SessionPhase.STOPPED and state.terminal_reason == _FILTERED_OUTPUT_REASON:
+        reply_start = state.completed_turn_start_message_index
+        if reply_start is None:
+            return ""
+        turn_start = max(turn_start, reply_start)
+    return _last_assistant_answer(state.messages, turn_start)
 
 class SchedulerRunMixin:
     async def run(
@@ -191,13 +199,7 @@ class SchedulerRunMixin:
                         break
                     await self._wait_for_scheduler_progress(aid)
                     continue
-                # The waiter joins the wait, never the liveness question: it
-                # never completes on its own, so counting it as pending work
-                # would keep a quiescent team's turn running until someone
-                # cancelled it.
-                if cancel_waiter is not None:
-                    pending.add(cancel_waiter)
-                await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                await self._wait_for_active_scheduler_tasks(pending, cancel_waiter)
         finally:
             if cancel_waiter is not None:
                 cancel_waiter.cancel()
@@ -208,8 +210,8 @@ class SchedulerRunMixin:
         # Limit the answer lookup to messages appended during this invocation.
         # This keeps the public return value free of the worktree diff stored on
         # the SCB and prevents a precheck-only turn from leaking an old answer.
-        partial_answer = _last_assistant_answer(session.state.messages, turn_start)
         phase = scb.state.phase
+        partial_answer = _turn_answer(scb.state, turn_start)
         if phase in {SessionPhase.ERROR, SessionPhase.STOPPED}:
             raise SchedulerTurnError(
                 aid,
@@ -244,9 +246,7 @@ class SchedulerRunMixin:
                 if not pending:
                     await self._wait_for_scheduler_progress(aid)
                     continue
-                if cancel_waiter is not None:
-                    pending.add(cancel_waiter)
-                await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                await self._wait_for_active_scheduler_tasks(pending, cancel_waiter)
         except asyncio.CancelledError:
             # The public caller performs bounded team cleanup after propagating
             # cancellation. A suspended recovery driver has already returned,
@@ -264,8 +264,7 @@ class SchedulerRunMixin:
             scb.state.cancel("interrupted by user")
             self._autosave_session(aid)
         if cancellation_requested:
-            session = self._sessions[aid]
-            partial_answer = _last_assistant_answer(session.state.messages, turn_start) or None
+            partial_answer = _turn_answer(scb.state, turn_start) or None
             raise SchedulerTurnError(aid, scb.state.phase, scb.state.terminal_reason, partial_answer)
 
     def _turn_descendant_aids(self, aid: int) -> set[int]:
@@ -381,6 +380,19 @@ class SchedulerRunMixin:
         )
         self._write_manifest()
 
+    def _message_budget_cleanup_tasks(self) -> set[asyncio.Task]:
+        if not any(
+            inbox and aid not in self._cancelled_turn_inbox_holds
+            for aid, inbox in self._message_inbox.items()
+        ):
+            return set()
+        # Any member's deferred grant can hold the shared budget an inbox needs.
+        return {
+            task
+            for _aid, _grant, _baseline, tasks, finished in self._pending_provider_budget_leases.values()
+            for task in tasks - finished
+        }
+
     def _active_scheduler_tasks(self) -> set[asyncio.Task]:
         """Return live scheduler-owned producers, excluding the current waiter."""
         current = asyncio.current_task()
@@ -401,20 +413,54 @@ class SchedulerRunMixin:
                 *self._startup_tasks.values(),
                 *self._message_delivery_tasks.values(),
                 *message_cleanup,
+                *self._message_budget_cleanup_tasks(),
             )
             if not task.done() and task is not current
         }
 
+    async def _wait_for_active_scheduler_tasks(
+        self, pending: set[asyncio.Task], cancel_waiter: asyncio.Task | None = None,
+    ) -> None:
+        budget_owners = self._message_budget_cleanup_tasks()
+        budget_owners.discard(asyncio.current_task())
+        waiting = pending | budget_owners
+        if cancel_waiter is not None:
+            waiting.add(cancel_waiter)
+        done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+        if done & budget_owners:
+            await self._drain_ready_message_inboxes()
+
     async def _wait_for_scheduler_progress(self, aid: int) -> None:
         """Block for a producer completion or report a state with no producer."""
-        await self._drain_ready_message_inboxes()
-        scb = self.table.get(aid)
-        if scb is not None and scb.state.phase.is_terminal() and self._quiescent():
-            return
-        producers = self._active_scheduler_tasks()
-        if not producers:
-            raise SchedulerStalledError(aid)
-        await asyncio.wait(producers, return_when=asyncio.FIRST_COMPLETED)
+        settled_budget_owners: set[asyncio.Task] = set()
+        while True:
+            budget_owners = self._message_budget_cleanup_tasks()
+            await self._drain_ready_message_inboxes()
+            scb = self.table.get(aid)
+            if scb is not None and scb.state.phase.is_terminal() and self._quiescent():
+                return
+            producers = self._active_scheduler_tasks()
+            if producers:
+                await self._wait_for_active_scheduler_tasks(producers)
+                return
+            budget_owners.update(self._message_budget_cleanup_tasks())
+            callbacks = budget_owners - settled_budget_owners
+            if not callbacks:
+                raise SchedulerStalledError(aid)
+            # A done task can still hold its grant until the registered usage
+            # and reservation callbacks run. Follow them with an owned callback.
+            callback_tail = asyncio.get_running_loop().create_future()
+            remaining = set(callbacks)
+
+            def after_budget_callback(task: asyncio.Task) -> None:
+                remaining.discard(task)
+                if not remaining and not callback_tail.done():
+                    callback_tail.set_result(None)
+
+            for task in callbacks:
+                task.add_done_callback(after_budget_callback)
+            await callback_tail
+            settled_budget_owners.update(callbacks)
 
     def _quiescent(self) -> bool:
         """True when no session is mid-flight: none is awaiting events, none has

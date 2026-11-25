@@ -120,7 +120,14 @@ async def test_recovery_preserves_completed_output_and_interrupts_remaining_call
             source.save(str(saved))
             restored_workspace = tmp_path / "restored"
             shutil.copytree(workspace, restored_workspace)
-            recovered = load_session(str(saved), agent=agent, env=LocalEnvironment(str(restored_workspace)), llm=model)
+            recovered = load_session(
+                str(saved), agent=agent, env=LocalEnvironment(str(restored_workspace)),
+                llm=model, auto_save_path=str(tmp_path / "restored-autosave.json") if deferred else None,
+            )
+            if deferred:
+                recovered_messages = recovered.state.enriched_messages()
+                recovered.restore(str(saved))
+                assert recovered.state.enriched_messages() == recovered_messages
 
         tool_messages = [row for row in recovered.messages if row["role"] == "tool"]
         assert [row["tool_call_id"] for row in tool_messages] == [

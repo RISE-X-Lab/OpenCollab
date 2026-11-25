@@ -54,7 +54,7 @@ class LocalEnvironment(Environment):
 
     def __init__(self, workspace: str = ".") -> None:
         super().__init__()
-        self.workspace = os.path.realpath(os.path.abspath(workspace))
+        self.workspace = os.path.realpath(workspace)
         if not os.path.isdir(self.workspace):
             raise NotADirectoryError(self.workspace)
         self._workspace_fd: int | None = open_directory_anchor(self.workspace)
@@ -72,17 +72,12 @@ class LocalEnvironment(Environment):
             candidate = canonicalize_system_path(path)
             workspace = canonicalize_system_path(self.workspace)
             try:
-                inside = os.path.commonpath((workspace, candidate)) == os.fspath(workspace)
-            except ValueError:
-                inside = False
-            if not inside:
-                raise PermissionError(f"path escapes local workspace: {path}")
-            normalized = os.path.relpath(candidate, workspace)
+                relative = os.fspath(candidate.relative_to(workspace))
+            except ValueError as exc:
+                raise PermissionError(f"path escapes local workspace: {path}") from exc
         else:
-            normalized = os.path.normpath(path)
-        if normalized == ".." or normalized.startswith(f"..{os.sep}"):
-            raise PermissionError(f"relative path escapes local workspace: {path}")
-        return normalized
+            relative = path
+        return relative
 
     def _root_fd(self) -> int:
         if self._workspace_fd is None:
@@ -229,7 +224,8 @@ class LocalEnvironment(Environment):
     async def remove_file(self, path: str) -> None:
         self._ensure_active()
         target = self._relative_path(path)
-        if target not in self._temporary_files:
+        owned_target = os.path.normpath(target)
+        if owned_target not in self._temporary_files:
             raise OSError(f"refusing to remove unowned local temporary file: {path}")
         await self._run_file_operation(
             unlink_regular_file_durable_at,
@@ -237,7 +233,7 @@ class LocalEnvironment(Environment):
             self.workspace,
             target,
         )
-        self._temporary_files.discard(target)
+        self._temporary_files.discard(owned_target)
 
     async def _cleanup_files(self) -> None:
         while self._file_operations:

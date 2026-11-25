@@ -57,6 +57,8 @@ class VMEnvironment(Environment):
     """
 
     process_isolated = True
+    remote_filesystem = True
+    file_write_lock_scope = "workspace"
 
     def __init__(self, connection: VMConnection, workspace: str, *, state_directory: str, run_id: str | None = None):
         super().__init__()
@@ -280,6 +282,9 @@ class VMEnvironment(Environment):
 
     async def read_file(self, path: str) -> str:
         return await self._operate("read", {"path": path})
+
+    async def resolve_search_path(self, path: str) -> str:
+        return await self._operate("resolve_search_path", {"path": path})
 
     async def read_text_range(self, path: str, *, offset: int, limit: int, max_chars: int) -> TextFileRange:
         return TextFileRange(**await self._operate("range", {"path": path, "offset": offset, "limit": limit,

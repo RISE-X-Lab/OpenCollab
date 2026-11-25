@@ -63,6 +63,7 @@ class _WriteObservations:
     def __init__(self, delegate: Any, owner: BashEvidence):
         self._delegate = delegate
         self._owner = owner
+        self.pending_path: str | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._delegate, name)
@@ -70,7 +71,8 @@ class _WriteObservations:
     def record_write(self, *, completed: bool, changed: bool | None, path: str | None = None) -> None:
         if self._delegate is not None:
             self._delegate.record_write(completed=completed, changed=changed, path=path)
-        if completed is True and changed is True:
+        self.pending_path = path if not completed and changed is None else None
+        if completed and changed is not False:
             self._owner.record_edit(path)
 
 class _ObservedEdit:
@@ -88,8 +90,14 @@ class _ObservedEdit:
 
     async def execute_with_runtime(self, params: dict[str, Any], runtime: Any) -> str:
         observed = _ObservedRuntime(runtime, self._owner)
-        observed.observations = _WriteObservations(getattr(runtime, "observations", None), self._owner)
-        return await self._delegate.execute_with_runtime(params, observed)
+        observations = _WriteObservations(getattr(runtime, "observations", None), self._owner)
+        observed.observations = observations
+        try:
+            return await self._delegate.execute_with_runtime(params, observed)
+        finally:
+            # Publication can precede an error or cancellation.
+            if observations.pending_path is not None:
+                self._owner.record_edit(observations.pending_path)
 
 class BashEvidence:
     """Delegate commands unchanged to OC's Bash and retain actual test results."""
@@ -103,7 +111,7 @@ class BashEvidence:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._delegate, name)
 
-    def with_pass_reporting(self, command: str) -> str:
+    def with_pass_reporting(self, command: str, *, show_passed_output: bool = True) -> str:
         command = _strip_command_padding(command)
         spec = parse_test_command(command, None)
         if spec is None or not spec.provable or not _is_pytest_runner(spec.runner):
@@ -113,15 +121,24 @@ class BashEvidence:
         lexer.whitespace_split = True
         lexer.commenters = ""
         runner_seen = False
+        report = "-rA" if show_passed_output else "-rap"
         while True:
             start = lexer.instream.tell()
             token = lexer.get_token()
             if token is None:
                 if comment_start < len(command):
-                    return command[:comment_start] + "-rA " + command[comment_start:]
-                return command + " -rA"
+                    return command[:comment_start] + report + " " + command[comment_start:]
+                return command + " " + report
             if runner_seen and token == "--":
-                return command[:start] + "-rA " + command[start:]
+                return command[:start] + report + " " + command[start:]
+            if runner_seen and token.startswith("-"):
+                # Pytest accepts bundled switches such as -qrA.
+                short_option = token[1:].lstrip("qsvxl")
+                long_option = token.partition("=")[0]
+                if short_option.startswith(("r", "o")) or long_option in {
+                    "--override-ini", "--report-chars", "--show-capture",
+                }:
+                    report = "-rA"
             if token == "&&":
                 runner_seen = False
             if token.rsplit("/", 1)[-1] == "pytest":

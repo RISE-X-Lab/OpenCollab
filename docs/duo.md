@@ -110,12 +110,13 @@ are claims to assess. Test records are comparable when their target, runner and
 command agree and their execution remains applicable to the final candidate.
 
 Recognized test execution through Bash creates a record with `applicability="current"`.
-A later completed `file_write` or `apply_patch` operation may change this status.
-When such an operation produces an observed content change, it marks earlier records
-as `applicability="unknown"` and appends the changed path to `post_test_edits` in
-completion order. The original exit code and parser-backed `verified` result remain
-in the history. A new test execution creates a current record alongside the earlier
-records. Failed edits and writes with unchanged contents preserve existing applicability.
+A later native `file_write` or `apply_patch` with changed or uncertain content
+marks earlier records as `applicability="unknown"` and appends the attempted path
+to `post_test_edits`. Content is uncertain when comparison is unavailable or when
+an attempted write ends in an error or cancellation. A confirmed unchanged write
+preserves applicability. The original exit code and parser-backed `verified`
+result remain in the history. A new test execution creates a current record
+alongside the earlier records.
 Custom `CandidateRun` providers whose records omit these optional fields retain their
 existing comparison behavior.
 
@@ -204,6 +205,15 @@ Git candidates start with the source's current tracked files and untracked files
 that aren't ignored. Their delivered patches describe the subsequent candidate edits.
 Adoption applies that increment to the current source files and preserves independent
 user edits and the source index. A conflicting patch leaves the current source in place.
+If a partially applied patch is rolled back, OpenCollab retains detached files that
+another process may still be writing to. The error or warning gives the
+`candidate-recovery-*` directory, typically in the common Git directory.
+When shared Git metadata is read-only, OpenCollab prefers a writable location
+on the same filesystem outside the worktree so the files survive worktree removal.
+When present, `volumes/` records list additional recovery directories on affected
+mounts. The adjacent `path` or `.path` record identifies each file's original
+location. Close the writers and recover their data before removing the recovery
+directories or worktree.
 Changes to ignore rules preserve files copied from the source and files added to
 the candidate index or commits. Newly created ignored files join delivery when
 explicitly added with `git add --force`.

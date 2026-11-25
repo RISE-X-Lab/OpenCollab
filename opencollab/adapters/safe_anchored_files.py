@@ -71,12 +71,14 @@ def _relative_components(
     value = os.fspath(path)
     if not value or "\0" in value or os.path.isabs(value):
         raise ValueError("descriptor-relative path must be non-empty relative text")
-    normalized = os.path.normpath(value)
-    if normalized in {"", ".", ".."} or normalized.startswith(f"..{os.sep}"):
+    parts = [part for part in value.split(os.sep) if part not in {"", "."}]
+    if not parts or parts[-1] == "..":
         raise PermissionError(f"path escapes anchored directory: {value}")
-    parts = normalized.split(os.sep)
-    if any(part in {"", ".", ".."} for part in parts):
-        raise PermissionError(f"path escapes anchored directory: {value}")
+    depth = 0
+    for part in parts[:-1]:
+        depth += -1 if part == ".." else 1
+        if depth < 0:
+            raise PermissionError(f"path escapes anchored directory: {value}")
     return parts[:-1], parts[-1]
 
 def open_parent_beneath(
@@ -89,9 +91,22 @@ def open_parent_beneath(
     """Open a target parent without resolving a component by pathname."""
     _require_anchor_path(root_fd, root_path)
     parents, name = _relative_components(path)
-    current_fd = os.dup(root_fd)
+    # A directory followed by .. must exist and keep its parent descriptor open.
+    existing_only: set[int] = set()
+    parent_steps = 0
+    for index in range(len(parents) - 1, -1, -1):
+        if parents[index] == "..":
+            parent_steps += 1
+        elif parent_steps:
+            existing_only.add(index)
+            parent_steps -= 1
+    opened = [os.dup(root_fd)]
     try:
-        for component in parents:
+        for index, component in enumerate(parents):
+            if component == "..":
+                os.close(opened.pop())
+                continue
+            current_fd = opened[-1]
             try:
                 next_fd = os.open(
                     component,
@@ -99,7 +114,7 @@ def open_parent_beneath(
                     dir_fd=current_fd,
                 )
             except FileNotFoundError:
-                if not create:
+                if not create or index in existing_only:
                     raise
                 try:
                     os.mkdir(component, 0o700, dir_fd=current_fd)
@@ -110,12 +125,13 @@ def open_parent_beneath(
                     _directory_open_flags(),
                     dir_fd=current_fd,
                 )
-            os.close(current_fd)
-            current_fd = next_fd
-        return current_fd, name
-    except BaseException:
-        os.close(current_fd)
-        raise
+            if index not in existing_only:
+                os.close(opened.pop())
+            opened.append(next_fd)
+        return opened.pop(), name
+    finally:
+        for fd in opened:
+            os.close(fd)
 
 @contextmanager
 def open_regular_read_at(

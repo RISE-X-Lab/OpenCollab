@@ -529,6 +529,7 @@ async def test_cancellation_during_retry_retains_previous_terminal_usage(
         await session.add_user_message("Give a short answer")
         turn = asyncio.create_task(session.run_loop())
         await asyncio.wait_for(backoff_started.wait(), 1)
+        assert session.used_tokens == 37
         turn.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(turn, 1)

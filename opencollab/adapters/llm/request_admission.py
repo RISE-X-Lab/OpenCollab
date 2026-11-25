@@ -14,11 +14,13 @@ from opencollab.adapters.safe_files import (
     ensure_directory_no_symlinks,
     read_regular_text,
 )
+from opencollab.application.run_control import _raise_if_request_admission_cancelled
 
 
 @asynccontextmanager
 async def _locked(lock: FileLock) -> AsyncIterator[None]:
     while True:
+        _raise_if_request_admission_cancelled()
         try:
             lock.acquire(timeout=0)
             break
@@ -52,6 +54,7 @@ async def request_slot(pool: str | None, capacity: int | None) -> AsyncIterator[
             if configured_capacity != capacity:
                 raise ValueError(f"request pool {pool!r} already has capacity {configured_capacity}, got {capacity}")
     while True:
+        _raise_if_request_admission_cancelled()
         for index in range(capacity):
             lock = FileLock(str(directory / f"slot-{index}.lock"))
             try:

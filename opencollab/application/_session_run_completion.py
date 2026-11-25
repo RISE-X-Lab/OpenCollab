@@ -12,12 +12,14 @@ from typing import Any, Awaitable, Callable
 
 from opencollab.application._anthropic_history import (
     _anthropic_history_input,
+    _capture_anthropic_snips,
     _edited_anthropic_history,
     _recover_anthropic_history,
     _remember_anthropic_history,
     _strip_anthropic_thinking,
 )
 from opencollab.application._session_run_shared import (
+    _INCOMPLETE_RESPONSE_REASONS,
     _STRUCTURED_OUTPUT_TOOL,
     _WRITE_TOOLS,
     GenerationTimeoutError,
@@ -28,15 +30,23 @@ from opencollab.application._session_run_shared import (
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_trace import _SessionRunTraceMixin
-from opencollab.application._session_run_usage import _complete_with_error_usage, _normalize_completion_usage
+from opencollab.application._session_run_usage import (
+    _complete_with_error_usage,
+    _CompletionUsageAccounting,
+    _normalize_completion_usage,
+)
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import (
+    _NATIVE_COMPLETION_CAPABILITY,
+    _NATIVE_REQUEST_ADMISSION,
     CompletionResponse,
     ContextTokenEstimatorPort,
     RequestOutputRequirementPort,
     RequestTokenEstimatorPort,
     ThinkingPrefixPort,
+    _native_completion_controls,
+    _NativeCompletionControls,
 )
 from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.shaping.pipeline import context_token_estimator
@@ -54,6 +64,49 @@ from opencollab.domain.token_estimation import estimate_request_message_tokens, 
 from opencollab.domain.tools import ToolProcessingResult, tool_name_collision_key
 
 logger = logging.getLogger(__name__)
+
+async def _with_native_completion_controls(
+    operation: Awaitable[CompletionResponse],
+    scope: _NativeCompletionControls | None,
+) -> CompletionResponse:
+    token = _native_completion_controls.set(scope)
+    try:
+        return await operation
+    finally:
+        if scope is not None:
+            scope.callbacks.clear()
+        _native_completion_controls.reset(token)
+
+def _completion_keyword_parameters(
+    complete: Callable[..., Awaitable[Any]],
+) -> tuple[set[str] | None, bool, set[str], Callable[..., Any]]:
+    keywords: set[str] = set()
+    outer_accepts_kwargs = False
+    outer_keywords: set[str] = set()
+    target = complete
+
+    def has_fixed_keywords(target: Callable[..., Any]) -> bool:
+        nonlocal outer_accepts_kwargs
+        parameters = inspect.signature(target, follow_wrapped=False).parameters.values()
+        names = {
+            parameter.name for parameter in parameters
+            if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        }
+        keywords.update(names)
+        accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+        if target is complete:
+            outer_accepts_kwargs = accepts_kwargs
+            outer_keywords.update(names)
+        return not accepts_kwargs
+
+    # Follow variadic decorators through to the first fixed signature.
+    try:
+        target = inspect.unwrap(complete, stop=has_fixed_keywords)
+        if not hasattr(target, "__wrapped__") and not has_fixed_keywords(target):
+            return None, outer_accepts_kwargs, outer_keywords, target
+    except (TypeError, ValueError):
+        pass
+    return keywords, outer_accepts_kwargs, outer_keywords, target
 
 def _selector_names_tool_choice(selector: Any) -> bool:
     """Return whether a structured error selector targets ``tool_choice``."""
@@ -503,9 +556,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
         elif steering is not None and self._requires_thinking_prefix():
             self.state.append_message(steering)
+        preserve_history = self._requires_thinking_prefix()
         history = _anthropic_history_input(self.state)
-        messages = await self._shape_and_trace(history)
-        if self._requires_thinking_prefix():
+        with _capture_anthropic_snips(self.state if preserve_history else None) as adopted_snips:
+            messages = await self._shape_and_trace(history)
+            snipped = adopted_snips(history, messages)
+        if preserve_history:
             messages = _edited_anthropic_history(history, messages)
         elif steering is not None and not persisted:
             messages = [*messages, steering]
@@ -519,19 +575,23 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             self._pending_tool_gate_label = None
 
         try:
-            return await self._complete(messages, tools, tool_choice_override)
+            return await self._complete(messages, tools, tool_choice_override, snipped_exchanges=snipped)
         except Exception as exc:
             if not self._is_context_overflow(exc):
                 raise
 
         # First overflow: force a maximal compaction pass and retry once.
-        with context_token_estimator(self._context_pressure):
+        with (
+            context_token_estimator(self._context_pressure),
+            _capture_anthropic_snips(self.state if preserve_history else None) as adopted_snips,
+        ):
             history = _anthropic_history_input(self.state)
             forced = (
                 await ShaperPipeline((self.shaper,)).ashape(history, force=True)
                 if self.shaper is not None else history
             )
-        if self._requires_thinking_prefix():
+            emergency_snipped = adopted_snips(history, forced)
+        if preserve_history:
             forced = _edited_anthropic_history(history, forced)
         # No FRESH steering on the emergency-shrink retry: this path is fighting
         # for token space. Any budget folded into a trailing user turn already
@@ -550,6 +610,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 forced,
                 tools,
                 tool_choice_override,
+                snipped_exchanges=emergency_snipped,
             )
         except Exception as exc:
             if self._is_context_overflow(exc):
@@ -561,12 +622,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         messages: list[dict],
         tools: list[dict] | None,
         tool_choice_override: Any | None = None,
+        *,
+        snipped_exchanges: set[int] | None = None,
     ) -> CompletionResponse:
         # Duck-typed agents may omit tool_choice. A steering override takes precedence,
         # and unsupported forced choices get one retry with "auto".
         tool_choice = tool_choice_override or getattr(self.agent, "tool_choice", None)
         try:
-            return await self._complete_with_choice(messages, tools, tool_choice)
+            return await self._complete_with_choice(messages, tools, tool_choice, snipped_exchanges)
         except Exception as exc:
             forced_choice = tool_choice == "required" or (
                 isinstance(tool_choice, dict)
@@ -585,7 +648,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 type(exc).__name__,
             )
             try:
-                return await self._complete_with_choice(messages, tools, "auto")
+                return await self._complete_with_choice(messages, tools, "auto", snipped_exchanges)
             except Exception as fallback_exc:
                 if hasattr(exc, "add_note"):
                     exc.add_note(
@@ -595,7 +658,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 raise exc from fallback_exc
 
     async def _complete_with_choice(
-        self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None
+        self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None,
+        snipped_exchanges: set[int] | None = None,
     ) -> CompletionResponse:
         # Capture the application-stage request after steering and fallback, before
         # provider conversion, for record_llm_trace. These fields only serve tracing.
@@ -619,12 +683,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             params = None
         await self._prepare_request_budget(messages, tools, thinking=thinking, thinking_params=params)
         if self._requires_thinking_prefix():
-            messages = _remember_anthropic_history(self.state, messages, tools)
+            messages = _remember_anthropic_history(self.state, messages, tools, snipped_exchanges)
         max_output_tokens = self._request_output_limit(
             messages, tools, thinking=thinking, thinking_params=params,
         )
-        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
-            extra["max_output_tokens"] = max_output_tokens
         reasoning_effort = getattr(self.agent, "reasoning_effort", None)
         if reasoning_effort is not None:
             extra["reasoning_effort"] = reasoning_effort
@@ -635,6 +697,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 messages=messages,
                 tools=tools,
                 temperature=self.agent.temperature,
+                max_output_tokens=max_output_tokens,
                 **extra,
             )
         except Exception as exc:
@@ -651,8 +714,6 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         max_output_tokens = self._request_output_limit(
             messages, tools, thinking=thinking, thinking_params=params,
         )
-        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
-            extra["max_output_tokens"] = max_output_tokens
         payload = {
             "reason": "prefix_binding_mismatch", "removed_blocks": removed, "retry": 1,
             "error_type": rejected_by, "status_code": 400,
@@ -671,6 +732,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             messages=messages,
             tools=tools,
             temperature=self.agent.temperature,
+            max_output_tokens=max_output_tokens,
             **extra,
         )
 
@@ -759,22 +821,85 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             return None
         return min(finite) - int(self.state.used_tokens) - sum(reserve() for reserve in self.budget_reservations)
 
-    def _completion_accepts_output_limit(self) -> bool:
-        """Include the default limit when the injected completion accepts it."""
-        try:
-            parameters = inspect.signature(self.llm.complete).parameters.values()
-        except (TypeError, ValueError):
+    def _add_completion_controls(
+        self,
+        complete: Callable[..., Awaitable[CompletionResponse]],
+        kwargs: dict[str, Any],
+        *,
+        max_output_tokens: int,
+        usage_accounting: _CompletionUsageAccounting,
+        revalidate: Callable[[], int],
+    ) -> tuple[asyncio.Event | None, _NativeCompletionControls | None]:
+        keywords, outer_accepts_kwargs, outer_keywords, wrapped = _completion_keyword_parameters(complete)
+        owner = getattr(complete, "__self__", None)
+        wraps_base_method = owner is not None and any(
+            vars(base).get("complete") is wrapped for base in type(owner).__mro__[1:]
+        )
+        # A metadata-only signature leaves admission on the outer router's kwargs.
+        accepts_admission = outer_accepts_kwargs and not wraps_base_method
+        scoped: dict[str, Callable[..., Any]] = {}
+
+        def accepts(name: str) -> bool:
+            return keywords is None or name in keywords
+
+        def add_control(
+            name: str,
+            capability: str,
+            callback: Callable[..., Any],
+            *,
+            native_support: object = _NATIVE_COMPLETION_CAPABILITY,
+            allow_scope: bool = True,
+        ) -> bool:
+            supported = getattr(self.llm, capability, False)
+            if not supported:
+                return False
+            if name in outer_keywords or (name == "on_admitted" and (accepts(name) or accepts_admission)):
+                kwargs[name] = callback
+                return True
+            # A native marker also appears on subclasses whose wrappers forward
+            # only legacy parameters. Supply their controls at native dispatch.
+            inherited = inspect.getattr_static(owner, capability, None)
+            declared = inspect.getattr_static(self.llm, capability, inherited)
+            if declared is native_support:
+                if allow_scope and inherited is native_support:
+                    scoped[name] = callback
+                    return True
+                return False
+            if declared is None and native_support is _NATIVE_COMPLETION_CAPABILITY:
+                if keywords is None or name not in keywords:
+                    return False
+            # Explicit middleware opt-ins can consume controls before forwarding.
+            if accepts(name) or (outer_accepts_kwargs and (supported is True or name == "on_admitted")):
+                kwargs[name] = callback
+                return True
             return False
-        return any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD
-            or (
-                parameter.name == "max_output_tokens"
-                and parameter.kind in {
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    inspect.Parameter.KEYWORD_ONLY,
-                }
-            )
-            for parameter in parameters
+
+        def revalidate_budget() -> int:
+            limit = revalidate()
+            usage_accounting.mark_request_revalidated()
+            return limit
+
+        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or accepts("max_output_tokens"):
+            kwargs["max_output_tokens"] = max_output_tokens
+        add_control("on_attempt_usage", "supports_attempt_usage", usage_accounting.record_attempt)
+        add_control("on_usage", "supports_usage_settlement", usage_accounting.settle_provider)
+        add_control("before_request", "supports_request_revalidation", revalidate_budget)
+        admitted = asyncio.Event()
+        has_admission = add_control(
+            "on_admitted", "supports_request_admission", admitted.set,
+            native_support=_NATIVE_REQUEST_ADMISSION,
+            allow_scope=self._per_call_timeout is not None and outer_accepts_kwargs,
+        )
+        scope = _NativeCompletionControls(kwargs.get("on_admitted"), scoped) if scoped else None
+        return admitted if has_admission else None, scope
+
+    def _revalidate_request(
+        self, messages: list[dict], tools: list[dict] | None, *, thinking: bool = False,
+        thinking_params: dict[str, Any] | None = None,
+    ) -> int:
+        self._raise_if_run_cancelled()
+        return self._request_output_limit(
+            messages, tools, thinking=thinking, thinking_params=thinking_params,
         )
 
     async def _invoke_summary(
@@ -792,13 +917,22 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         )
         if _summary_output_limit is not None:
             max_output_tokens = min(max_output_tokens, _summary_output_limit(messages))
-        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
-            kwargs["max_output_tokens"] = max_output_tokens
         start = time.monotonic()
         protected_call = self.state.wind_down_done
-        admitted = asyncio.Event() if getattr(self.llm, "supports_request_admission", False) else None
-        if admitted is not None:
-            kwargs["on_admitted"] = admitted.set
+        usage_accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
+
+        def revalidate() -> int:
+            limit = self._revalidate_request(
+                messages, None, thinking=thinking, thinking_params=thinking_params,
+            )
+            return min(limit, _summary_output_limit(messages)) if _summary_output_limit is not None else limit
+
+        admitted, scope = self._add_completion_controls(
+            self.llm.complete, kwargs, max_output_tokens=max_output_tokens,
+            usage_accounting=usage_accounting, revalidate=revalidate,
+        )
+        if scope is not None:
+            messages = scope.prepare_messages(messages)
         abandoned = False
         if self.tracer:
             self.tracer.log_step(step_type="llm_call_started", payload={
@@ -808,16 +942,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             })
 
         def account_response(response: CompletionResponse) -> None:
-            input_tokens, total_tokens = _normalize_completion_usage(response.usage)
-            self.state.add_used_tokens(total_tokens)
-            self._record_usage_event(response.usage, total_tokens, purpose="summary", late=abandoned)
-            self._mark_budget_reserve_consumed(protected_call=protected_call)
+            input_tokens, _total_tokens = _normalize_completion_usage(response.usage)
+            usage_accounting.finish(
+                response.usage, purpose="summary", late=abandoned,
+                response=response,
+            )
             self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
             self.state.set_context_tokens(input_tokens)
-            if abandoned:
-                self._late_provider_usage += (total_tokens,)
-                if self.late_provider_usage_checkpoint is not None:
-                    self.late_provider_usage_checkpoint()
             self.record_llm_trace(response, time.monotonic() - start, purpose="summary", thinking=thinking)
 
         async def complete_owned() -> CompletionResponse:
@@ -825,14 +956,17 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 if self._run_control is not None:
                     self._raise_if_run_cancelled()
                 return await _complete_with_error_usage(
-                    self, complete, messages, protected_call=protected_call,
+                    self, complete, messages, usage_accounting=usage_accounting,
                     usage_purpose="summary", on_response=account_response, **kwargs,
                 )
             finally:
                 self._draining_provider_tasks.discard(asyncio.current_task())
                 self._finish_run_control_if_quiesced()
 
-        owner = asyncio.create_task(complete_owned())
+        operation = complete_owned()
+        if scope is not None or _native_completion_controls.get() is not None:
+            operation = _with_native_completion_controls(operation, scope)
+        owner = asyncio.create_task(operation)
         self._track_provider_task(owner)
         try:
             if self._per_call_timeout is None:
@@ -857,7 +991,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._mark_provider_task_draining(owner)
             raise
 
-    async def _invoke_llm(self, **kwargs: Any) -> CompletionResponse:
+    async def _invoke_llm(self, *, max_output_tokens: int, **kwargs: Any) -> CompletionResponse:
         """Bound one provider generation by ``_per_call_timeout``.
 
         ``None`` disables the ceiling. Expiry raises ``GenerationTimeoutError``
@@ -867,20 +1001,52 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if self._run_control is not None:
             self._raise_if_run_cancelled()
         protected_call = self.state.wind_down_done
-        admitted = asyncio.Event() if getattr(self.llm, "supports_request_admission", False) else None
-        if admitted is not None:
-            kwargs["on_admitted"] = admitted.set
-        operation = _complete_with_error_usage(self, self.llm.complete, protected_call=protected_call, **kwargs)
+        usage_accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
+        complete = self.llm.complete
+        admitted, scope = self._add_completion_controls(
+            complete, kwargs, max_output_tokens=max_output_tokens,
+            usage_accounting=usage_accounting,
+            revalidate=lambda: self._revalidate_request(
+                kwargs["messages"], kwargs.get("tools"), thinking=kwargs.get("thinking", False),
+                thinking_params=kwargs.get("thinking_params"),
+            ),
+        )
+        if scope is not None:
+            kwargs["messages"] = scope.prepare_messages(kwargs["messages"])
+        late_accounted = False
+
+        async def complete_owned() -> CompletionResponse:
+            nonlocal late_accounted
+            try:
+                response = await _complete_with_error_usage(
+                    self, complete, usage_accounting=usage_accounting, **kwargs,
+                )
+                late_accounted = asyncio.current_task() in self._draining_provider_tasks
+                usage_accounting.finish(
+                    response.usage, purpose="completion", late=late_accounted,
+                    response=response,
+                )
+                return response
+            finally:
+                self._draining_provider_tasks.discard(asyncio.current_task())
+                self._finish_run_control_if_quiesced()
+
+        def record_abandoned(task: asyncio.Task[Any]) -> None:
+            if late_accounted:
+                self._provider_task_done(task)
+            else:
+                self._record_late_provider_result(task, accounting=usage_accounting)
+
+        operation = complete_owned()
+        if scope is not None or _native_completion_controls.get() is not None:
+            operation = _with_native_completion_controls(operation, scope)
         try:
             response = await operation if self._per_call_timeout is None else await abandon_on_timeout(
                 operation,
                 self._per_call_timeout,
                 task_tracker=self._track_provider_task,
                 late_task_tracker=self._mark_provider_task_draining,
-                late_result_handler=lambda task: self._record_late_provider_result(
-                    task,
-                    protected_call=protected_call,
-                ),
+                late_result_handler=record_abandoned,
                 start_event=admitted,
             )
         except CallerTimeoutError as exc:
@@ -936,12 +1102,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             isinstance(response.content, str)
             and bool(response.content.strip())
         )
-        # A provider-limit response may contain an incomplete tool call. Never
-        # persist that structure: a later turn would send an orphaned call back
-        # to the provider, and the run loop must not execute partial arguments.
-        # Preserve only user-visible partial text; the full raw response remains
-        # available in the trace for diagnosis.
-        if response.finish_reason in {"length", "max_tokens", "model_context_window_exceeded"}:
+        # Keep interrupted calls out of the transcript and later tool execution.
+        if response.finish_reason in _INCOMPLETE_RESPONSE_REASONS:
             if has_content:
                 self.state.append_message({"role": "assistant", "content": response.content})
             return

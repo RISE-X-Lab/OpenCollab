@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,8 +14,34 @@ from opencollab.domain.tool_loops import LoopState
 MAX_SCOUT_LEDGER_CARDS = 256
 
 
+def same_snapshot_value(left: Any, right: Any) -> bool:
+    if left is right:
+        return True
+    # The JSON encoder writes builtin subclasses as their underlying values.
+    if isinstance(left, str) and isinstance(right, str):
+        return str.__eq__(left, right)
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            same_snapshot_value(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(same_snapshot_value(a, b) for a, b in zip(left, right))
+    if isinstance(left, int) and isinstance(right, int):
+        return (type(left) is bool) == (type(right) is bool) and int.__eq__(left, right)
+    if isinstance(left, float) and isinstance(right, float):
+        left, right = float.__float__(left), float.__float__(right)
+        if left == right == 0:
+            return math.copysign(1, left) == math.copysign(1, right)
+        return left == right
+    return type(left) is type(right) and left == right
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class _MessageTimestamp(Enum):
+    UNKNOWN = 0
 
 
 class SessionPhase(Enum):
@@ -180,7 +207,7 @@ class SessionState:
     # Per-message creation timestamps (UTC ISO-8601), index-aligned with
     # ``messages``. Kept as a sidecar so ``messages`` stays a clean,
     # API-shaped list; merged into each message only when persisting.
-    message_timestamps: list[str] = field(default_factory=list)
+    message_timestamps: list[str | _MessageTimestamp] = field(default_factory=list)
     # User messages queued by the scheduler but not yet appended to
     # ``messages`` because the session is mid-turn or awaiting tool results.
     # These are persisted for observability/recovery without changing the
@@ -222,7 +249,7 @@ class SessionState:
             raise ValueError("message start must be a non-negative integer")
         self._align_timestamps()
         return [
-            {**msg, "timestamp": ts}
+            dict(msg) if ts is _MessageTimestamp.UNKNOWN else {**msg, "timestamp": ts}
             for msg, ts in zip(
                 self.messages[start:],
                 self.message_timestamps[start:],
@@ -272,9 +299,9 @@ class SessionState:
         self.active_turn_start_message_index = message_index
         self.completed_turn_start_message_index = None
 
-    def clear_active_turn(self) -> None:
-        """Clear suspended work and retain a completed turn's answer boundary."""
-        if self.phase is SessionPhase.DONE and self.active_turn_start_message_index is not None:
+    def clear_active_turn(self, *, retain_answer: bool = False) -> None:
+        """Clear suspended work and retain the answer boundary for a final turn."""
+        if (self.phase is SessionPhase.DONE or retain_answer) and self.active_turn_start_message_index is not None:
             self.completed_turn_start_message_index = self.active_turn_start_message_index
         self.active_turn_start_message_index = None
         self.pending_step_latency = None
@@ -288,24 +315,23 @@ class SessionState:
         self.messages.append(message)
         self.message_timestamps.append(_now_iso())
 
-    def replace_messages(self, messages: list[dict[str, Any]]) -> None:
-        """Swap the conversation, re-deriving aligned timestamps.
-
-        Precedence per message: an embedded ``timestamp`` (e.g. a resumed
-        transcript) wins; else the prior timestamp of the same dict object
-        (preserved across a slice-and-rebuild); else now.
-        """
+    def replace_messages(self, messages: list[dict[str, Any]], *, restoring: bool = False) -> None:
         prior = {id(m): ts for m, ts in zip(self.messages, self.message_timestamps)}
-        rebuilt = [
-            (
-                ({k: v for k, v in m.items() if k != "timestamp"}, m["timestamp"])
-                if isinstance(m, dict) and "timestamp" in m
-                else (m, prior.get(id(m)) or _now_iso())
-            )
-            for m in messages
-        ]
-        self.messages = [m for m, _ in rebuilt]
-        self.message_timestamps = [ts for _, ts in rebuilt]
+        rebuilt_messages: list[dict[str, Any]] = []
+        timestamps: list[str | _MessageTimestamp] = []
+        for message in messages:
+            if isinstance(message, dict) and "timestamp" in message:
+                timestamp = message["timestamp"]
+                message = {key: value for key, value in message.items() if key != "timestamp"}
+            elif id(message) in prior:
+                timestamp = prior[id(message)]
+            else:
+                # A legacy transcript leaves the message creation time unknown.
+                timestamp = _MessageTimestamp.UNKNOWN if restoring else _now_iso()
+            rebuilt_messages.append(message)
+            timestamps.append(timestamp)
+        self.messages = rebuilt_messages
+        self.message_timestamps = timestamps
         self.anthropic_history = None
 
     def add_used_tokens(self, tokens: int) -> None:

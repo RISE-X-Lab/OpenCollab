@@ -5,7 +5,7 @@ from opencollab.application.ports import ToolPort
 
 
 def observe_test_evidence(tools: tuple[ToolPort, ...]) -> tuple[ToolPort, ...]:
-    """Share completed edit observations with Bash's retained execution history."""
+    """Share native edit observations with Bash's retained execution history."""
     bash = next((BashEvidence(tool) for tool in tools if tool.name == "bash"), None)
     if bash is None:
         return tools

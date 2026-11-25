@@ -9,6 +9,7 @@ import os
 import threading
 import time
 import uuid
+from contextlib import AsyncExitStack
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -36,9 +37,16 @@ from opencollab.adapters.llm.request_admission import request_slot
 from opencollab.adapters.llm.responses_messages import messages_to_input
 from opencollab.adapters.llm.responses_provider import complete_responses
 from opencollab.adapters.llm.retry import RetryTimeBudget, _scoped_native_retry_budget
-from opencollab.adapters.llm.types import LLMResponse, model_context_window
+from opencollab.adapters.llm.types import LLMResponse, Usage, _TrackedUsage, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
+from opencollab.application._session_run_usage import _observe_native_usage, _own_native_usage
 from opencollab.application.async_timeout import await_owned_operation
+from opencollab.application.ports import (
+    _NATIVE_COMPLETION_CAPABILITY,
+    _NATIVE_REQUEST_ADMISSION,
+    _LegacyCompletionMessage,
+    _native_completion_controls,
+)
 from opencollab.domain.token_estimation import estimate_request_tokens
 
 # Native data-residency endpoints share the OpenAI model parameter rules.
@@ -69,12 +77,18 @@ async def _record_api_usage_async(**kwargs: Any) -> None:
     except Exception:
         return
 
+
 class LLMClient:
     """Client for OpenAI-compatible endpoints and native Anthropic requests.
 
     Set ``provider="anthropic"`` for the Anthropic SDK path, which converts
     OpenAI-format history per request.
     """
+
+    supports_request_revalidation = _NATIVE_COMPLETION_CAPABILITY
+    supports_request_admission = _NATIVE_REQUEST_ADMISSION
+    supports_attempt_usage = _NATIVE_COMPLETION_CAPABILITY
+    supports_usage_settlement = _NATIVE_COMPLETION_CAPABILITY
 
     def __init__(
         self,
@@ -121,7 +135,6 @@ class LLMClient:
             raise ValueError("request_pool must be an absolute local directory path")
         self.request_pool = request_pool
         self.request_capacity = request_capacity
-        self.supports_request_admission = request_pool is not None
         self.model = model
         self.provider = provider
         self.max_retries = max(0, max_retries)
@@ -290,6 +303,9 @@ class LLMClient:
         max_output_tokens: int | None = None,
         response_session_id: str | None = None,
         on_admitted: Callable[[], None] | None = None,
+        before_request: Callable[[], int] | None = None,
+        on_usage: Callable[[Any], None] | None = None,
+        on_attempt_usage: Callable[[Any], None] | None = None,
     ) -> LLMResponse:
         """Single-shot completion. Returns full response.
 
@@ -304,18 +320,62 @@ class LLMClient:
 
         ``top_p`` is ``None`` by default (provider default); when set it is sent
         as the nucleus-sampling knob. Unset == byte-identical request as today.
+
+        ``before_request`` runs before each physical attempt. Failed attempts
+        report their known usage through ``on_attempt_usage`` before retry
+        backoff. ``on_usage`` receives the final aggregate before slot release.
         """
+        scope = _native_completion_controls.get()
+        if scope is not None and scope.callbacks and scope.matches(messages, on_admitted):
+            controls = scope.callbacks
+            if on_admitted is None:
+                on_admitted = controls.get("on_admitted")
+            if before_request is None:
+                before_request = controls.get("before_request")
+            if on_attempt_usage is None:
+                on_attempt_usage = controls.get("on_attempt_usage")
+            if on_usage is None:
+                on_usage = controls.get("on_usage")
+            controls.clear()
+        if scope is not None and scope.admission_callback is None:
+            messages = [
+                dict(message) if isinstance(message, _LegacyCompletionMessage) else message for message in messages
+            ]
+
         start = time.monotonic()
         response = None
+        provider_error: BaseException | None = None
+        settlement_error: BaseException | None = None
+        settled_usage = None
+        first_attempt = True
+        initial_limit: int | None = None
+
+        def request_limit() -> int | None:
+            limit = max_output_tokens
+            if before_request is not None:
+                current_limit = before_request()
+                limit = current_limit if limit is None else min(limit, current_limit)
+            return limit
+
+        def prepare_attempt() -> int | None:
+            nonlocal first_attempt
+            if first_attempt:
+                first_attempt = False
+                return initial_limit
+            return request_limit()
+
         retry_budget = (
             self.provider_retry_budget
             if self._retry_budget_explicit
             else _scoped_native_retry_budget(self.provider_retry_budget)
         )
-        # Measure here so every provider path records the call timing.
-        with recording() as first_token:
-            try:
-                async with request_slot(self.request_pool, self.request_capacity):
+        try:
+            async with AsyncExitStack() as request_owner:
+                usage_origin = request_owner.enter_context(_own_native_usage())
+                first_token = request_owner.enter_context(recording())
+                try:
+                    await request_owner.enter_async_context(request_slot(self.request_pool, self.request_capacity))
+                    initial_limit = request_limit()
                     if on_admitted is not None:
                         on_admitted()
                     if self._anthropic:
@@ -330,9 +390,11 @@ class LLMClient:
                             thinking_params=thinking_params,
                             tool_choice=tool_choice,
                             top_p=top_p,
-                            max_output_tokens=max_output_tokens,
+                            max_output_tokens=initial_limit,
                             reasoning_effort=reasoning_effort,
                             provider_error_time_budget=retry_budget,
+                            before_attempt=prepare_attempt,
+                            on_attempt_usage=on_attempt_usage,
                         )
                     elif self.wire_protocol == RESPONSES:
                         response = await complete_responses(
@@ -346,7 +408,7 @@ class LLMClient:
                             thinking_params=thinking_params,
                             tool_choice=tool_choice,
                             top_p=top_p,
-                            max_output_tokens=max_output_tokens,
+                            max_output_tokens=initial_limit,
                             reasoning_effort=reasoning_effort,
                             prompt_cache_namespace=self._responses_prompt_cache_namespace,
                             response_session_id=response_session_id or uuid.uuid4().hex,
@@ -358,6 +420,8 @@ class LLMClient:
                             stream_idle_timeout=self.stream_idle_timeout,
                             round_timeout=self.request_timeout,
                             provider_error_time_budget=retry_budget,
+                            before_attempt=prepare_attempt,
+                            on_attempt_usage=on_attempt_usage,
                         )
                     else:
                         response = await complete_openai(
@@ -371,51 +435,64 @@ class LLMClient:
                             thinking_params=thinking_params,
                             tool_choice=tool_choice,
                             top_p=top_p,
-                            max_output_tokens=max_output_tokens,
+                            max_output_tokens=initial_limit,
                             reasoning_effort=reasoning_effort,
                             provider_error_time_budget=retry_budget,
+                            before_attempt=prepare_attempt,
+                            on_attempt_usage=on_attempt_usage,
                             stream=self.stream_chat,
                             first_event_timeout=self.first_event_timeout,
                             stream_idle_timeout=self.stream_idle_timeout,
                         )
-                transport_timing = first_token.snapshot()
-                try:
-                    response.transport_timing = transport_timing
-                except (AttributeError, TypeError):
-                    # Custom provider responses may reject new attributes. The usage ledger
-                    # still records their timing.
-                    pass
+                except BaseException as exc:
+                    provider_error = exc
+                    raise
+                finally:
+                    outcome = response if response is not None else provider_error
+                    settled_usage = getattr(outcome, "usage", None)
+                    if usage_origin is not None and type(settled_usage) is Usage:
+                        tracked = _TrackedUsage(_origin=usage_origin)
+                        vars(tracked).update(vars(settled_usage))
+                        try:
+                            outcome.usage = tracked
+                        except (AttributeError, TypeError):
+                            pass
+                        else:
+                            settled_usage = tracked
+                    transport_timing = first_token.snapshot()
+                    latency_s = time.monotonic() - start
+                    if response is not None:
+                        try:
+                            response.transport_timing = transport_timing
+                        except (AttributeError, TypeError):
+                            pass
+                    if settled_usage is not None:
+                        try:
+                            if on_usage is not None:
+                                on_usage(settled_usage)
+                            _observe_native_usage(settled_usage, provider_error, response)
+                        except BaseException as exc:
+                            exc.usage = settled_usage
+                            settlement_error = exc
+        finally:
+            try:
                 await _record_api_usage_async(
                     provider=self.provider,
                     model=self.model,
                     wire_protocol=self.wire_protocol,
                     reasoning_effort=reasoning_effort,
                     base_url=self.base_url,
-                    latency_s=time.monotonic() - start,
-                    status="success",
+                    latency_s=latency_s,
+                    status="success" if response is not None else "error",
                     response=response,
+                    error=provider_error,
                     transport_timing=transport_timing,
                 )
-                return response
             except BaseException as exc:
-                if response is not None:
-                    exc.usage = response.usage
-                else:
-                    try:
-                        await _record_api_usage_async(
-                            provider=self.provider,
-                            model=self.model,
-                            wire_protocol=self.wire_protocol,
-                            reasoning_effort=reasoning_effort,
-                            base_url=self.base_url,
-                            latency_s=time.monotonic() - start,
-                            status="error",
-                            error=exc,
-                            transport_timing=first_token.snapshot(),
-                        )
-                    except asyncio.CancelledError as cancellation:
-                        usage = getattr(exc, "usage", None)
-                        if usage is not None:
-                            cancellation.usage = usage
-                        raise
+                if settled_usage is not None:
+                    exc.usage = settled_usage
                 raise
+            finally:
+                if settlement_error is not None:
+                    raise settlement_error
+        return response

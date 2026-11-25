@@ -89,29 +89,43 @@ def _one_turn_llm() -> FakeLLMClient:
         ]
     )
 
-def test_a_restored_session_writes_under_the_identity_it_restored(local_environment_factory, tmp_path) -> None:
-    """``load_session`` builds with the default aid, then restores aid 7."""
+@pytest.mark.parametrize("overrides", [
+    {}, {"aid": 23}, {"run_id": "continued"}, {"aid": 0, "run_id": "continued"}, {"aid": -1},
+])
+def test_loaded_session_records_the_effective_identity(local_environment_factory, tmp_path, overrides) -> None:
     saved = Session(
-        env=local_environment_factory(), agent=FakeAgent(), llm=_one_turn_llm(), event_sink=EventBus(None), aid=7)
+        env=local_environment_factory(), agent=FakeAgent(), llm=_one_turn_llm(), aid=7, run_id="original",
+    )
     snapshot = tmp_path / "session.json"
     saved.save(str(snapshot))
 
-    tracer = Tracer("run-1", output_dir=str(tmp_path), filename="trajectory.jsonl")
+    expected_aid = overrides.get("aid", 7)
+    expected_run_id = overrides.get("run_id", "original")
+    automatic = tmp_path / "continued.json"
+    events = []
+    tracer = Tracer(expected_run_id, output_dir=str(tmp_path), filename="trajectory.jsonl")
     agent = FakeAgent(tools=[FakeTool(name="known_tool")])
     agent.name = "coder"
-    session = load_session(
-        str(snapshot), agent, env=local_environment_factory(),
-        llm=_one_turn_llm(), tracer=tracer, event_sink=EventBus(None)
-    )
-    assert session.state.aid == 7
     try:
+        session = load_session(
+            str(snapshot), agent, env=local_environment_factory(),
+            llm=_one_turn_llm(), tracer=tracer, event_sink=events.append,
+            auto_save_path=str(automatic), **overrides,
+        )
+        assert (session.state.aid, session.run_id) == (expected_aid, expected_run_id)
+        initial = json.loads(automatic.read_text(encoding="utf-8"))
+        assert (initial["aid"], initial["run_id"]) == (expected_aid, expected_run_id)
+
         assert run(session.run_loop()) == "recovered"
         records = _records(tracer)
+        continued = json.loads(automatic.read_text(encoding="utf-8"))
+        assert (continued["aid"], continued["run_id"]) == (expected_aid, expected_run_id)
     finally:
         tracer.close()
 
+    assert events and {event.data["aid"] for event in events} == {expected_aid}
     assert records
-    assert {(r["aid"], r["role"]) for r in records} == {(7, "coder")}
+    assert {(r["aid"], r["role"], r["run_id"]) for r in records} == {(expected_aid, "coder", expected_run_id)}
 
 def test_a_tracer_set_on_a_live_session_names_that_session(local_environment_factory, tmp_path) -> None:
     """Replacing ``session.tracer`` with a plain ``Tracer`` keeps attribution."""

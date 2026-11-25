@@ -1,7 +1,7 @@
 # Native test evidence
 
 `opencollab.tools.evidence_tools` composes the same native tools as
-`builtin_tools`, wraps Bash with an execution observer, and shares completed
+`builtin_tools`, wraps Bash with an execution observer, and shares native
 `file_write` and `apply_patch` observations with that history. Workflows can use the
 retained records when comparing candidate patches.
 
@@ -33,6 +33,10 @@ package-manager wrappers, `go test -json`, and Django's `python tests/runtests.p
 A leading `cd directory &&` supplies the execution workspace for relative test
 targets. Run pytest with `-rA` to retain its per-test passing results.
 
+Pytest proof requires exactly one complete result summary. When a test launches
+another pytest process, `--show-capture=no` omits its captured output from the
+outer report while keeping pytest's capture behavior.
+
 `BashEvidence.verification_records` returns copies of the observed target,
 runner, command, workspace, exit code and verified state. `verified_targets`
 returns the current passing targets. Pytest paths are relative to the environment's
@@ -56,14 +60,17 @@ collection-only runs update the current evidence. Truncated captured output
 also produces an unverified record. The workflow candidate runtime reads these
 two properties through its existing tool interface.
 
-Each execution record starts with `applicability="current"`. A completed native
-edit with an observed content change clears `verified_targets`, marks earlier
-records `applicability="unknown"`, and appends the edited path to
-`post_test_edits`. A Bash command outside the recognized executable test form
-has the same effect and is retained in `post_test_commands`, including commands
-that fail or are interrupted. Unchanged writes and native read-only tools keep
-the prior applicability. A new test execution creates a current record while
-the historical exit code and `verified` value remain available.
+Each execution record starts with `applicability="current"`. A native write with
+changed or uncertain content clears `verified_targets`, marks earlier records
+`applicability="unknown"`, and appends the attempted path to `post_test_edits`.
+The result is uncertain when the content comparison is unavailable or when
+an error or cancellation interrupts an attempted write.
+A Bash command outside the recognized executable test form also clears current
+evidence and is retained in `post_test_commands`, including commands that fail
+or are interrupted. Writes with a confirmed unchanged result and native
+read-only tools keep the prior applicability. A new test execution creates
+a current record while the historical exit code and `verified` value remain
+available.
 
 `opencollab.tools.BashEvidence` can wrap an explicitly configured Bash tool.
 `opencollab.tools.has_pass_evidence` interprets an already captured test result
