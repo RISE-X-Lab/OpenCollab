@@ -137,6 +137,12 @@ async def test_explicit_sdk_headers_keep_gateway_version_and_key(monkeypatch, tm
         "ANTHROPIC_CUSTOM_HEADERS",
         "anthropic-version: 2026-10-21\nX-Api-Key: fixture-gateway-key",  # pragma: allowlist secret
     )
+    credential_value = "fixture-sdk-credential"  # pragma: allowlist secret
+    # SDK releases predating ANTHROPIC_CUSTOM_HEADERS use their standard headers.
+    async with anthropic.AsyncAnthropic(
+        api_key=credential_value, base_url="https://controlled.invalid",
+    ) as sdk:
+        sdk_headers = {name.lower(): value for name, value in sdk.default_headers.items()}
     requests = []
 
     def handler(request):
@@ -151,13 +157,14 @@ async def test_explicit_sdk_headers_keep_gateway_version_and_key(monkeypatch, tm
     client = OpenCollab(
         tmp_path, provider="anthropic", model="claude-sonnet-5",
         base_url="https://controlled.invalid",
-        config={credential: "fixture-sdk-credential", "llm_max_retries": 0},  # pragma: allowlist secret
+        config={credential: credential_value, "llm_max_retries": 0},
     )
     async with client.create_model_client() as model:
         response = await model.complete([{"role": "user", "content": "Return ok"}])
 
     assert response.content == "ok"
+    version = sdk_headers["anthropic-version"]
     if credential == "api_key":
-        assert requests == [("2026-10-21", "fixture-gateway-key", None)]
+        assert requests == [(version, sdk_headers["x-api-key"], None)]
     else:
-        assert requests == [("2026-10-21", None, "Bearer fixture-sdk-credential")]
+        assert requests == [(version, None, f"Bearer {credential_value}")]
