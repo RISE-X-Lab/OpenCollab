@@ -1188,7 +1188,7 @@ async def test_native_tool_step_preserves_a_near_capacity_legacy_prefix(monkeypa
     ids=["between-checkpoints", "periodic-checkpoint", "checkpoint-error", "append-error"],
 )
 async def test_legacy_journal_persists_native_rewrites_before_checkpoint(
-    monkeypatch, tmp_path, base_sequence, failed_write, expected_writes,
+    monkeypatch, tmp_path, caplog, base_sequence, failed_write, expected_writes,
 ):
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     path = str(tmp_path / "session.json")
@@ -1257,7 +1257,9 @@ async def test_legacy_journal_persists_native_rewrites_before_checkpoint(
                 assert restored.messages == session.messages
                 assert sum(row["role"] == "tool" for row in restored.messages) == 1
             assert writes == expected_writes
-            assert session.persistence_errors == ((write_error,) if failed_write in expected_writes else ())
+            if failed_write == "checkpoint" and "checkpoint" in expected_writes:
+                assert "session checkpoint deferred after durable autosave" in caplog.text
+            assert session.persistence_errors == ((write_error,) if failed_write == "append" else ())
 
             resume.set()
             assert await running == "done"

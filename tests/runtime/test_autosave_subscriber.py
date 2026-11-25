@@ -13,6 +13,7 @@ import pytest
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
+from opencollab.application.ports import SnapshotCapacityError, SnapshotSequenceConflict
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import load_session
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
@@ -425,6 +426,40 @@ def test_autosave_retries_journal_record_after_fsync_error(local_environment_fac
     assert restored._auto_save_sequence == before_restore["_autosave_sequence"]
     assert session.persistence_errors == (injected_error,)
     assert journal_path.read_bytes() == b""
+
+@pytest.mark.parametrize("error_type", [OSError, SnapshotCapacityError, SnapshotSequenceConflict])
+async def test_scheduled_checkpoint_failure_after_durable_append(
+    local_environment_factory, tmp_path, caplog, error_type,
+):
+    path = tmp_path / "scheduled.json"
+    error = error_type("scheduled checkpoint failed")
+    store = _SwitchableCheckpointStore(error)
+    store.fail_checkpoint = True
+    session = Session(
+        env=local_environment_factory(),
+        agent=FakeAgent(),
+        llm=_CompletingLLM(),
+        auto_save_path=str(path),
+        store=store,
+    )
+
+    await session.add_user_message("go")
+    await asyncio.gather(*session.pending_cleanup_tasks)
+
+    assert not path.exists()
+    saved = store.load_snapshot(str(path), session.agent.system_prompt)
+    assert saved["messages"][-1]["content"] == "go"
+    if error_type is SnapshotSequenceConflict:
+        assert session.persistence_errors == (error,)
+    else:
+        assert session.persistence_errors == ()
+        assert "session checkpoint deferred after durable autosave: scheduled checkpoint failed" in caplog.text
+
+    store.fail_checkpoint = False
+    await session.enqueue_auto_save()
+    assert json.loads(path.read_bytes())["_autosave_sequence"] == saved["_autosave_sequence"] + 1
+    assert path.with_suffix(".json.journal").read_bytes() == b""
+    assert await session.run_loop() == "done"
 
 @pytest.mark.parametrize(
     ("mode", "expected_phase"),

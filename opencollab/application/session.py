@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import logging
 import os
 import threading
 from dataclasses import dataclass, replace
@@ -49,6 +50,8 @@ from opencollab.domain.tool_loops import LoopState
 
 if TYPE_CHECKING:
     from opencollab.application.scheduler import LaunchSpec
+
+logger = logging.getLogger(__name__)
 
 class SessionBusyError(RuntimeError):
     """Raised when a public operation would interleave an active session turn."""
@@ -1156,7 +1159,8 @@ class Session:
                 self.store.checkpoint_snapshot(path, full_messages, meta=meta, sequence=sequence)
             except (OSError, SnapshotCapacityError) as checkpoint_error:
                 if replacement_store is None:
-                    raise
+                    logger.warning("session checkpoint deferred after durable autosave: %s", checkpoint_error)
+                    return False
                 try:
                     saved = replacement_store.append_snapshot_replacement(
                         path,
