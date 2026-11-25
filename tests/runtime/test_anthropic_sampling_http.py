@@ -20,6 +20,7 @@ _CLAUDE_4_MODELS = [
 @pytest.fixture(autouse=True)
 def isolate_configuration(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
     monkeypatch.delenv("OPENCOLLAB_TEMPERATURE", raising=False)
     monkeypatch.delenv("OPENCOLLAB_TOP_P", raising=False)
 
@@ -128,3 +129,35 @@ async def test_public_agent_keeps_sampling_defaults(monkeypatch, tmp_path, model
     assert ("temperature" in body) is (expected_temperature is not None)
     if expected_temperature is not None:
         assert body["temperature"] == expected_temperature
+
+
+@pytest.mark.parametrize("credential", ["api_key", "auth_token"])
+async def test_explicit_sdk_headers_keep_gateway_version_and_key(monkeypatch, tmp_path, credential):
+    monkeypatch.setenv(
+        "ANTHROPIC_CUSTOM_HEADERS",
+        "anthropic-version: 2026-10-21\nX-Api-Key: fixture-gateway-key",  # pragma: allowlist secret
+    )
+    requests = []
+
+    def handler(request):
+        requests.append((
+            request.headers["anthropic-version"],
+            request.headers.get("x-api-key"),
+            request.headers.get("authorization"),
+        ))
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "anthropic", handler)
+    client = OpenCollab(
+        tmp_path, provider="anthropic", model="claude-sonnet-5",
+        base_url="https://controlled.invalid",
+        config={credential: "fixture-sdk-credential", "llm_max_retries": 0},  # pragma: allowlist secret
+    )
+    async with client.create_model_client() as model:
+        response = await model.complete([{"role": "user", "content": "Return ok"}])
+
+    assert response.content == "ok"
+    if credential == "api_key":
+        assert requests == [("2026-10-21", "fixture-gateway-key", None)]
+    else:
+        assert requests == [("2026-10-21", None, "Bearer fixture-sdk-credential")]
