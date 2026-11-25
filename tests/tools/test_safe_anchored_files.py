@@ -5,6 +5,7 @@ import stat
 
 import pytest
 
+from opencollab.adapters._env_base import _is_write_rejected
 from opencollab.adapters.safe_anchored_files import (
     create_regular_bytes_atomic_at,
     open_directory_anchor,
@@ -69,6 +70,36 @@ def test_atomic_write_failure_retains_target_and_removes_temporary(anchored_root
     if existing:
         assert target.read_bytes() == b"before"
     assert list(root.iterdir()) == ([target] if existing else [])
+
+
+@pytest.mark.parametrize("phase", ["staging", "cleanup", "publication"])
+def test_failed_atomic_write_marks_only_clean_prepublication_error(anchored_root, monkeypatch, phase):
+    root_fd, root = anchored_root
+    target = root / "target"
+    target.write_bytes(b"before")
+
+    def write(handle):
+        handle.write(b"after")
+        if phase != "publication":
+            raise OSError("staging")
+
+    def fail_cleanup(_name, **_kwargs):
+        raise OSError("cleanup")
+
+    def fail_publication(_source, _target, **_kwargs):
+        raise OSError("publication")
+
+    with monkeypatch.context() as scoped:
+        if phase == "cleanup":
+            scoped.setattr(os, "unlink", fail_cleanup)
+        elif phase == "publication":
+            scoped.setattr(os, "rename", fail_publication)
+        with pytest.raises(OSError, match=phase) as error:
+            write_regular_file_atomic_at(root_fd, root, target.name, write, max_bytes=32)
+
+    assert _is_write_rejected(error.value) is (phase == "staging")
+    assert bool(list(root.glob(".oc-*.tmp"))) is (phase == "cleanup")
+    assert target.read_bytes() == b"before"
 
 
 @pytest.mark.parametrize("name_length", [16, 224])

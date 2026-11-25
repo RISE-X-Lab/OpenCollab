@@ -152,11 +152,11 @@ class ApplyPatchTool(Tool):
                     summary += "\nNote: " + ". ".join(notes) + "."
                 return summary
 
-        except PermissionError as e:
-            return f"Error: {e}"
         except UnicodeDecodeError as e:
             return f"Error: refusing to edit non-UTF-8 file: invalid UTF-8 at byte {e.start}."
         except (OSError, ValueError) as e:
             if observations is not None and _is_write_rejected(e):
                 observations.record_write(completed=False, changed=False, path=path)
+            if isinstance(e, PermissionError):
+                return f"Error: {e}"
             raise

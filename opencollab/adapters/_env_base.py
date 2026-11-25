@@ -19,6 +19,13 @@ def _mark_write_rejected(error: OSError | ValueError) -> OSError | ValueError:
 def _is_write_rejected(error: OSError | ValueError) -> bool:
     return getattr(error, _WRITE_REJECTED_ATTR, False) is True
 
+def _encode_write_payload(content: str) -> bytes:
+    try:
+        return content.encode("utf-8")
+    except UnicodeEncodeError as error:
+        _mark_write_rejected(error)
+        raise
+
 @dataclass(slots=True)
 class ExecResult:
     returncode: int

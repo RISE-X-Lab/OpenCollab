@@ -189,7 +189,8 @@ async def test_nonregular_target_rejection_accounts_for_parent_creation(tmp_path
     finally:
         await env.cleanup()
 
-@pytest.mark.parametrize("operation", ["str_replace", "patch_rejected", "patch_published"])
+@pytest.mark.parametrize("operation", ["str_replace", "patch_rejected", "patch_published",
+                                       "str_replace_permission", "patch_permission"])
 async def test_local_rejected_and_late_failed_writes_keep_distinct_evidence(tmp_path, monkeypatch, operation):
     target = tmp_path / "input.txt"
     target.write_text("before\n")
@@ -207,6 +208,7 @@ async def test_local_rejected_and_late_failed_writes_keep_distinct_evidence(tmp_
     test = "test_input.py::test_input"
     command = f"{shlex.quote(sys.executable)} -m pytest -c pytest.ini -q -rA -p no:cacheprovider {test}"
     published = operation == "patch_published"
+    permission = operation.endswith("_permission")
     try:
         assert "1 passed" in await bash.execute_with_runtime({"command": command}, runtime)
         assert bash.verified_targets == {test}
@@ -222,18 +224,27 @@ async def test_local_rejected_and_late_failed_writes_keep_distinct_evidence(tmp_
                 real_fsync(fd)
 
             monkeypatch.setattr(safe_anchored_files.os, "fsync", fail_directory_fsync)
-        updated = "after" if published else "\u754c" * 23
+        elif permission:
+            def deny_staging_mode(_fd, _mode):
+                raise PermissionError("staging mode denied")
+
+            monkeypatch.setattr(safe_anchored_files.os, "fchmod", deny_staging_mode)
+        updated = "after" if published or permission else "\u754c" * 23
         params = {"path": "input.txt", "new_str": updated}
-        if operation == "str_replace":
+        if operation.startswith("str_replace"):
             tool, params = write, params | {"mode": "str_replace", "old_str": "before"}
         else:
             tool, params = patch, params | {"mode": "line_replace", "start_line": 1, "end_line": 1}
 
-        with pytest.raises(OSError, match="directory sync failed" if published else "write limit") as error:
-            await tool.execute_with_runtime(params, runtime)
-        assert type(error.value) is OSError
-        assert error.value.__cause__ is None
-        assert error.value.errno == (errno.EIO if published else None)
+        if permission:
+            assert await tool.execute_with_runtime(params, runtime) == "Error: staging mode denied"
+            assert not list(tmp_path.glob(".oc-*.tmp"))
+        else:
+            with pytest.raises(OSError, match="directory sync failed" if published else "write limit") as error:
+                await tool.execute_with_runtime(params, runtime)
+            assert type(error.value) is OSError
+            assert error.value.__cause__ is None
+            assert error.value.errno == (errno.EIO if published else None)
         assert target.read_text() == ("after\n" if published else "before\n")
         record, = bash.verification_records
         assert record["applicability"] == ("unknown" if published else "current")
@@ -242,6 +253,92 @@ async def test_local_rejected_and_late_failed_writes_keep_distinct_evidence(tmp_
         assert observations.close().content_changed is (None if published else False)
     finally:
         await environment.cleanup()
+
+@pytest.mark.parametrize("create_parents", [False, True])
+@pytest.mark.parametrize("backend", ["local", "docker"])
+async def test_long_leaf_failure_keeps_evidence_only_with_existing_parent(
+    tmp_path, monkeypatch, backend, create_parents,
+):
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    (tmp_path / "test_input.py").write_text(
+        "from pathlib import Path\ndef test_input():\n    assert not Path('added').exists()\n"
+    )
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "")
+    local = LocalEnvironment(str(tmp_path))
+    environment = local
+    if backend == "docker":
+        environment = DockerEnvironment(workspace=local.workspace, container_id="a" * 64)
+        environment._attached_bound = True
+
+        async def run_locally(command, *, input_bytes=None, **_kwargs):
+            return await local.exec_cmd(command, input_bytes=input_bytes)
+
+        async def discard(temporary):
+            assert os.path.commonpath((temporary, local.workspace)) == local.workspace
+            await local.exec_cmd(f"rm -f -- {shlex.quote(temporary)}")
+
+        monkeypatch.setattr(environment, "_exec", run_locally)
+        monkeypatch.setattr(environment, "_discard_write_temporary", discard)
+    target = "test_input.py::test_input"
+    cmd = f"{shlex.quote(sys.executable)} -m pytest -c pytest.ini -q -rA -p no:cacheprovider {target}"
+    bash, write = evidence_tools("bash", "file_write", headless=False)
+    observations = ToolFactsCollector()
+    runtime = SimpleNamespace(environment=environment, observations=observations, safety_policy=None)
+    leaf = "x" * (os.pathconf(tmp_path, "PC_NAME_MAX") + 1)
+    path = f"added/subdir/{leaf}" if create_parents else leaf
+    try:
+        assert "1 passed" in await bash.execute_with_runtime({"command": cmd}, runtime)
+        with pytest.raises(OSError) as error:
+            await write.execute_with_runtime(
+                {"path": path, "mode": "create", "content": "payload", "overwrite": True}, runtime
+            )
+        assert type(error.value) is OSError
+        if backend == "local":
+            assert error.value.errno == errno.ENAMETOOLONG
+        assert _is_write_rejected(error.value) is not create_parents
+        assert (tmp_path / "added/subdir").is_dir() is create_parents
+        assert (await local.exec_cmd(cmd)).returncode == int(create_parents)
+        record, = bash.verification_records
+        assert record["applicability"] == ("unknown" if create_parents else "current")
+        assert record["post_test_edits"] == ([path] if create_parents else [])
+        assert bash.verified_targets == (set() if create_parents else {target})
+        assert observations.close().content_changed is (None if create_parents else False)
+    finally:
+        await local.cleanup()
+
+@pytest.mark.parametrize("phase", ["staging", "cleanup", "publication"])
+async def test_docker_shell_rejection_requires_clean_staging_before_publication(tmp_path, monkeypatch, phase):
+    target = tmp_path / "input.txt"
+    target.write_text("before")
+    tools = tmp_path / "commands"
+    tools.mkdir()
+    failures = {"staging": ("chmod",), "cleanup": ("chmod", "rm"), "publication": ("mv",)}
+    for command in failures[phase]:
+        script = tools / command
+        script.write_text("#!/bin/sh\nexit 1\n")
+        script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
+    env = DockerEnvironment(workspace=os.path.realpath(tmp_path), container_id="a" * 64)
+    env._attached_bound = True
+    fallback = []
+
+    async def run_locally(command, *, input_bytes=None, **_kwargs):
+        result = subprocess.run(["bash", "-c", command], input=input_bytes, capture_output=True, cwd=tmp_path)
+        return ExecResult(result.returncode, result.stdout.decode(), result.stderr.decode())
+
+    async def discard(temporary):
+        fallback.append(temporary)
+
+    monkeypatch.setattr(env, "_exec", run_locally)
+    monkeypatch.setattr(env, "_discard_write_temporary", discard)
+    with pytest.raises(OSError, match="write verification failed") as error:
+        await env.write_file_with_change("input.txt", "after")
+
+    assert _is_write_rejected(error.value) is (phase == "staging")
+    assert bool(fallback) is (phase != "staging")
+    assert bool(list(tmp_path.glob(".*.opencollab-write-*.tmp"))) is (phase == "cleanup")
+    assert target.read_text() == "before"
 
 @pytest.mark.parametrize(("before", "content", "changed"), [
     (None, "", True), (b"", "", False), (b"same", "same", False), (b"old", "new", True),

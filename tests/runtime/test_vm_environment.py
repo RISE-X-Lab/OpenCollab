@@ -12,6 +12,7 @@ import pytest
 
 from opencollab import __version__
 from opencollab.adapters import _env_process, _env_vm, _vm_remote
+from opencollab.adapters._env_base import _is_write_rejected
 from opencollab.adapters.env import ExecResult, VMEnvironment, VMOperationError, VMTransportError
 from opencollab.adapters.vm_config import VMConnection
 
@@ -53,11 +54,25 @@ async def test_vm_guest_nonregular_write_keeps_oserror_receipt(tmp_path, monkeyp
     await _vm_remote._work(operation)
     receipt = _vm_remote._read(operation, "result.json")
     message = "atomic output target is not a regular file: directory"
-    assert receipt == {"status": "failed", "error": "OSError", "message": message, "action": "write", "args": {}}
+    assert receipt == {
+        "status": "failed", "error": "OSError", "message": message, "action": "write", "args": {},
+        "write_rejected": True,
+    }
     with pytest.raises(OSError, match=message) as error:
         await _env()._wait("operation", receipt)
     assert type(error.value) is OSError
+    assert _is_write_rejected(error.value)
 
+@pytest.mark.parametrize("error_type", [OSError, ValueError, PermissionError])
+@pytest.mark.parametrize("reported", [False, True])
+async def test_vm_failed_write_preserves_existing_error_and_uses_optional_rejection(error_type, reported):
+    status = {"status": "failed", "error": error_type.__name__, "message": "write failed", "action": "write"}
+    if reported:
+        status["write_rejected"] = True
+    with pytest.raises(error_type, match="write failed") as error:
+        await _env()._wait("operation", status)
+    assert type(error.value) is error_type
+    assert _is_write_rejected(error.value) is reported
 
 @pytest.mark.parametrize("kwargs", [{"host": "-oProxyCommand=evil"}, {"user": "a b"}, {"port": True},
                                     {"port": 0}, {"connect_timeout": math.inf}, {"python": "a\nb"}])

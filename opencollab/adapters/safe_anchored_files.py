@@ -100,19 +100,20 @@ def _open_parent_beneath(
     create: bool,
 ) -> tuple[int, str, bool]:
     _require_anchor_path(root_fd, root_path)
-    parents, name = _relative_components(path)
-    # A directory followed by .. must exist and keep its parent descriptor open.
-    existing_only: set[int] = set()
-    parent_steps = 0
-    for index in range(len(parents) - 1, -1, -1):
-        if parents[index] == "..":
-            parent_steps += 1
-        elif parent_steps:
-            existing_only.add(index)
-            parent_steps -= 1
-    opened = [os.dup(root_fd)]
+    opened: list[int] = []
     created_parent = False
     try:
+        parents, name = _relative_components(path)
+        # A directory followed by .. must exist and keep its parent descriptor open.
+        existing_only: set[int] = set()
+        parent_steps = 0
+        for index in range(len(parents) - 1, -1, -1):
+            if parents[index] == "..":
+                parent_steps += 1
+            elif parent_steps:
+                existing_only.add(index)
+                parent_steps -= 1
+        opened.append(os.dup(root_fd))
         for index, component in enumerate(parents):
             if component == "..":
                 os.close(opened.pop())
@@ -142,6 +143,10 @@ def _open_parent_beneath(
                 os.close(opened.pop())
             opened.append(next_fd)
         return opened.pop(), name, created_parent
+    except (OSError, ValueError) as error:
+        if create and not created_parent:
+            _mark_write_rejected(error)
+        raise
     finally:
         for fd in opened:
             os.close(fd)
@@ -271,15 +276,13 @@ def _current_regular_at(
     name: str,
     *,
     context: str,
-    reject_without_changes: bool = False,
 ) -> os.stat_result | None:
     try:
         info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
         return None
     if not stat.S_ISREG(info.st_mode):
-        error = OSError(f"{context} target is not a regular file: {name}")
-        raise _mark_write_rejected(error) if reject_without_changes else error
+        raise OSError(f"{context} target is not a regular file: {name}")
     return info
 
 def _content_identity(info: os.stat_result | None) -> tuple[int, ...] | None:
@@ -363,13 +366,10 @@ def write_regular_file_atomic_at(
     )
     temporary = f".oc-{uuid.uuid4().hex}.tmp"
     fd = -1
+    staged = False
+    publication_attempted = False
     try:
-        current = _current_regular_at(
-            parent_fd,
-            name,
-            context=context,
-            reject_without_changes=not created_parent,
-        )
+        current = _current_regular_at(parent_fd, name, context=context)
         if create_only and current is not None:
             raise FileExistsError(f"{context} target already exists: {path}")
         publish_mode = mode if current is None else stat.S_IMODE(current.st_mode)
@@ -379,6 +379,7 @@ def write_regular_file_atomic_at(
             publish_mode,
             dir_fd=parent_fd,
         )
+        staged = True
         if current is not None:
             os.fchmod(fd, publish_mode)
         with os.fdopen(fd, "w+b") as handle:
@@ -399,6 +400,7 @@ def write_regular_file_atomic_at(
                     changed = None
             except OSError:
                 changed = None
+        publication_attempted = True
         if create_only:
             os.link(
                 temporary,
@@ -417,16 +419,22 @@ def write_regular_file_atomic_at(
             )
         os.fsync(parent_fd)
         return changed
+    except (OSError, ValueError) as error:
+        # A cleanup failure in finally replaces the rejection with its own error.
+        if not created_parent and not publication_attempted:
+            _mark_write_rejected(error)
+        raise
     finally:
         try:
             if fd >= 0:
                 os.close(fd)
         finally:
             try:
-                try:
-                    os.unlink(temporary, dir_fd=parent_fd)
-                except FileNotFoundError:
-                    pass
+                if staged:
+                    try:
+                        os.unlink(temporary, dir_fd=parent_fd)
+                    except FileNotFoundError:
+                        pass
             finally:
                 os.close(parent_fd)
 
