@@ -144,14 +144,20 @@ class SchedulerCleanupMixin:
         for aid, _scb in suspended:
             self._finalize_cleanup_failure(aid, origin_override=origins.get(aid))
         for _aid, scb in suspended:
-            pending_events = scb.state.pending_events
+            state = scb.state
+            pending_events = state.pending_events
             for tool_call_id, row in tuple(pending_events.rows.items()):
                 if row.status is RowStatus.PENDING:
                     pending_events.fill(
                         tool_call_id, result=_CLEANUP_CANCELLED_WORK,
                         status=RowStatus.FAILED, error=_CLEANUP_CANCELLED_WORK,
                     )
-            scb.state.clear_active_turn()
+            if state.submitted_summary is not None:
+                for message in pending_events.ordered_results():
+                    state.append_message(message)
+                pending_events.clear()
+                state.append_message({"role": "assistant", "content": state.submitted_summary})
+            state.clear_active_turn()
 
         self._startup_tasks.clear()
         self._startup_envs.clear()

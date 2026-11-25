@@ -12,7 +12,8 @@ from tests.support.provider_sdk_http import completion_http_response, http_respo
 
 
 @pytest.mark.parametrize("outcome", ["completed", "timeout"])
-async def test_team_nested_turn_does_not_restart_after_settlement(tmp_path, monkeypatch, outcome):
+@pytest.mark.parametrize("submit_summary", [False, True])
+async def test_team_nested_turn_does_not_restart_after_settlement(tmp_path, monkeypatch, outcome, submit_summary):
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
@@ -21,7 +22,7 @@ async def test_team_nested_turn_does_not_restart_after_settlement(tmp_path, monk
     team = tmp_path / "team.yaml"
     team.write_text(
         "entry: lead\nroles:\n"
-        "  lead:\n    model: lead-fixture\n    prompt: Assemble both results.\n    tools: [spawn_agent]\n"
+        "  lead:\n    model: lead-fixture\n    prompt: Assemble both results.\n    tools: [spawn_agent, submit]\n"
         "  reviewer:\n    model: reviewer-fixture\n    prompt: Check the figures.\n    tools: [spawn_agent]\n"
         "  reader:\n    model: reader-fixture\n    prompt: Return the measured value.\n    tools: []\n"
         "topology:\n  lead: [reviewer]\n  reviewer: [reader]\n  reader: []\n",
@@ -30,6 +31,7 @@ async def test_team_nested_turn_does_not_restart_after_settlement(tmp_path, monk
     requests = []
     leaf_cancelled = asyncio.Event()
     restoring = False
+    summary = "The first table contains eight observations."
 
     async def handler(request):
         body = json.loads(request.content)
@@ -49,14 +51,21 @@ async def test_team_nested_turn_does_not_restart_after_settlement(tmp_path, monk
         if tool_result is not None:
             return completion_http_response(request, text=tool_result)
         role = "reviewer" if model == "lead-fixture" else "reader"
+        tool_calls = [{
+            "id": f"{role}-call", "type": "function", "function": {
+                "name": "spawn_agent", "arguments": json.dumps({"role": role, "task": f"Run {role}."}),
+            },
+        }]
+        if submit_summary and model == "lead-fixture":
+            tool_calls.append({
+                "id": "submit-call", "type": "function", "function": {
+                    "name": "submit", "arguments": json.dumps({"summary": summary}),
+                },
+            })
         return http_response(request, 200, json={
             "id": f"delegate-{role}", "object": "chat.completion", "created": 1, "model": model,
             "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
-                "role": "assistant", "content": None, "tool_calls": [{
-                    "id": f"{role}-call", "type": "function", "function": {
-                        "name": "spawn_agent", "arguments": json.dumps({"role": role, "task": f"Run {role}."}),
-                    },
-                }],
+                "role": "assistant", "content": None, "tool_calls": tool_calls,
             }}],
             "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
         })
@@ -80,8 +89,10 @@ async def test_team_nested_turn_does_not_restart_after_settlement(tmp_path, monk
         assert leaf_cancelled.is_set()
         assert len(requests) == 3
     else:
-        assert (result.status, result.output, result.tokens) == ("completed", "Measured value is 42.", 20)
-        assert len(requests) == 5
+        expected_answer = summary if submit_summary else "Measured value is 42."
+        expected_tokens = 16 if submit_summary else 20
+        assert (result.status, result.output, result.tokens) == ("completed", expected_answer, expected_tokens)
+        assert len(requests) == (4 if submit_summary else 5)
 
     snapshots = [app.read_session_snapshot(next(artifacts.glob(f"agent_{aid}_*.json"))) for aid in range(3)]
     phases = [snapshot["session_state"]["phase"] for snapshot in snapshots]
@@ -107,10 +118,15 @@ async def test_team_nested_turn_does_not_restart_after_settlement(tmp_path, monk
     expected_result = (
         "Error: scheduler cleanup cancelled delegated work" if outcome == "timeout" else "Measured value is 42."
     )
-    assert [(row["tool_call_id"], row["content"]) for row in tool_rows] == [("reviewer-call", expected_result)]
+    expected_tools = [("reviewer-call", expected_result)]
+    if submit_summary:
+        expected_tools.append(("submit-call", "Submitted. Your turn ends here."))
+        assert snapshots[0]["messages"][-1]["content"] == summary
+        assert restored_messages[-2] == {"role": "assistant", "content": summary}
+    assert [(row["tool_call_id"], row["content"]) for row in tool_rows] == expected_tools
     expected_phase = "stopped" if outcome == "timeout" else "done"
     assert phases == [expected_phase] * 3
     assert [agent["phase"] for agent in manifest["agents"]] == phases
     assert all(agent["busy"] is False for agent in manifest["agents"])
-    expected_rows = [[("reviewer-call", "failed")], [("reader-call", "failed")], []]
+    expected_rows = [[] if submit_summary else [("reviewer-call", "failed")], [("reader-call", "failed")], []]
     assert rows == (expected_rows if outcome == "timeout" else [[], [], []])
