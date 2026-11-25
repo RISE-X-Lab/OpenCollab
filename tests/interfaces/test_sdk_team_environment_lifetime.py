@@ -268,7 +268,7 @@ async def test_interrupted_team_keeps_its_outcome_when_cleanup_retries(
         await asyncio.wait_for(entered.wait(), 5)
         if interruption == "caller":
             running.cancel("caller ended team")
-            with pytest.raises(asyncio.CancelledError, match="caller ended team") as caught:
+            with pytest.raises(asyncio.CancelledError) as caught:
                 await running
             cancellation = caught.value
         else:
@@ -278,8 +278,16 @@ async def test_interrupted_team_keeps_its_outcome_when_cleanup_retries(
             assert result.metrics["execution_quiesced"] is True
             cancellation = result.error.__cause__
             assert isinstance(cancellation, asyncio.CancelledError)
+        # Python 3.10 can wrap the original exception at a cancelled task boundary.
+        exceptions = []
+        while cancellation is not None and cancellation not in exceptions:
+            exceptions.append(cancellation)
+            cancellation = cancellation.__cause__ or cancellation.__context__
+        if interruption == "caller":
+            assert any(error.args == ("caller ended team",) for error in exceptions)
         assert any(
-            "scheduler cleanup also failed" in note for note in getattr(cancellation, "__notes__", ())
+            "scheduler cleanup also failed" in note
+            for error in exceptions for note in getattr(error, "__notes__", ())
         ) is cleanup_fails
         assert cancelled.is_set()
         assert cleanup_calls == (2 if cleanup_fails else 1)
