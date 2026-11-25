@@ -84,6 +84,43 @@ async def test_manual_export_resumes_original_autosave_and_continues(
             await restored.aclose()
             await restored.env.cleanup()
 
+async def test_export_preserves_source_cursor_when_overwriting_an_old_autosave(tmp_path):
+    automatic = str(tmp_path / "automatic.json")
+    exported = str(tmp_path / "exported.json")
+    agent = Agent(name="reviewer", system_prompt="Remember each request.")
+    store = SessionStore()
+    older_messages = [{"role": "user", "content": "Earlier unrelated draft."}]
+    store.checkpoint_snapshot(exported, older_messages, meta={}, sequence=1)
+    store.append_snapshot_delta(
+        exported, sequence=2, replace_from=1, messages=[{"role": "assistant", "content": "Draft saved."}],
+        meta={},
+    )
+
+    original = build_session(agent=agent, llm=model(4), auto_save_path=automatic, store=store)
+    try:
+        await converse(original, 4)
+        source = store.load_snapshot(automatic, agent.system_prompt)
+        assert source["_autosave_sequence"] > 3
+        original.save(exported)
+        assert store.load_snapshot(exported, agent.system_prompt) == source
+    finally:
+        await original.aclose()
+        await original.env.cleanup()
+
+    restored = load_session(exported, agent=agent, llm=model(), auto_save_path=automatic, store=store)
+    try:
+        assert restored.messages == transcript(source)
+        await restored.add_user_message("Continue using the remembered requirements.")
+        await restored.run_loop()
+        resumed = store.load_snapshot(automatic, agent.system_prompt)
+        assert resumed["_autosave_sequence"] > source["_autosave_sequence"]
+        assert transcript(resumed) == restored.messages
+        assert restored.persistence_errors == ()
+    finally:
+        await restored.aclose()
+        await restored.env.cleanup()
+
+
 async def test_export_keeps_original_autosave_bytes_unchanged(tmp_path):
     automatic = tmp_path / "automatic.json"
     exported = tmp_path / "exported.json"

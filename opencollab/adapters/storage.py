@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import json
+import logging
 import os
 import threading
 from collections.abc import Iterator
@@ -31,6 +32,7 @@ _AUTOSAVE_JOURNAL_VERSION = 1
 _AUTOSAVE_JOURNAL_SUFFIX = ".journal"
 _AUTOSAVE_JOURNAL_LOCK_SUFFIX = ".lock"
 _JOURNAL_LOCK_TIMEOUT_SECONDS = 10.0
+logger = logging.getLogger(__name__)
 
 @dataclass
 class _JournalLockEntry:
@@ -165,7 +167,9 @@ class SessionStore:
                 # A full replacement supersedes every durable delta. Publish
                 # its cursor with the base before clearing the sidecar, so a
                 # crash between these writes cannot replay an older state.
-                obj[_AUTOSAVE_SEQUENCE_KEY] = self._newest_persisted_sequence(path) + 1
+                obj[_AUTOSAVE_SEQUENCE_KEY] = max(
+                    self._snapshot_sequence(obj), self._newest_persisted_sequence(path) + 1,
+                )
             self._atomic_json_write(path, obj)
             if records:
                 write_regular_bytes_atomic(self._journal_path(path), b"", max_bytes=0)
@@ -225,16 +229,23 @@ class SessionStore:
         sequence = self._snapshot_sequence(snapshot)
         for record in records:
             record_sequence = self._record_integer(record, "sequence", minimum=1)
+            retry_snapshot = None
             if record_sequence <= sequence:
-                if record is pending_record:
+                if record is not pending_record:
+                    continue
+                if record_sequence < sequence:
                     raise SnapshotSequenceConflict(
                         f"refusing stale autosave sequence {record_sequence}; "
                         f"persisted sequence is {sequence}"
                     )
-                continue
+                retry_snapshot = {**snapshot, "messages": messages}
             replace_from = self._record_integer(record, "replace_from", minimum=0)
             message_count = self._record_integer(record, "message_count", minimum=0)
             if replace_from > len(messages):
+                if retry_snapshot is not None:
+                    raise SnapshotSequenceConflict(
+                        f"refusing conflicting autosave sequence {record_sequence}"
+                    )
                 raise ValueError(
                     "Invalid autosave journal: replace_from exceeds restored messages"
                 )
@@ -286,6 +297,12 @@ class SessionStore:
                 **restored_meta,
                 _AUTOSAVE_SEQUENCE_KEY: record_sequence,
             }
+            if retry_snapshot is not None and not self._checkpoint_states_equal(
+                retry_snapshot, {**snapshot, "messages": messages},
+            ):
+                raise SnapshotSequenceConflict(
+                    f"refusing conflicting autosave sequence {record_sequence}"
+                )
             sequence = record_sequence
 
         self._validate_messages(messages)
@@ -618,12 +635,21 @@ class SessionStore:
                     )
             self._publish_checkpoint_unlocked(path, obj)
 
-    def _publish_checkpoint_unlocked(self, path: str, snapshot: dict[str, Any]) -> None:
+    def _publish_checkpoint_unlocked(
+        self, path: str, snapshot: dict[str, Any], *, defer_journal_reset: bool = False,
+    ) -> None:
         try:
             self._atomic_json_write(path, snapshot)
         except SnapshotCapacityError:
             self._atomic_json_write(path, snapshot, indent=None)
-        write_regular_bytes_atomic(self._journal_path(path), b"", max_bytes=0)
+        journal_path = self._journal_path(path)
+        try:
+            write_regular_bytes_atomic(journal_path, b"", max_bytes=0)
+        except OSError as exc:
+            if not defer_journal_reset:
+                raise
+            # The synced snapshot already supersedes every journal record.
+            logger.warning("could not compact covered session journal %s: %s", journal_path, exc)
 
     @staticmethod
     def _journal_path(path: str) -> str:
@@ -646,7 +672,7 @@ class SessionStore:
                 self._append_journal_record_unlocked(path, record)
             except SnapshotCapacityError:
                 snapshot = self._load_snapshot_unlocked(path, None, pending_record=record)
-                self._publish_checkpoint_unlocked(path, snapshot)
+                self._publish_checkpoint_unlocked(path, snapshot, defer_journal_reset=True)
 
     def _append_journal_record_unlocked(self, path: str, record: dict[str, Any]) -> None:
         journal_path = self._journal_path(path)
