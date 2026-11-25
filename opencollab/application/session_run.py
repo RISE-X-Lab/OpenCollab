@@ -489,6 +489,10 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         """
         self.state.wind_down_done = True
         self.state.wind_down_token_mark = self.state.used_tokens
+        self._restrict_to_submit_tool()
+        self.state.append_message({"role": "system", "content": _WIND_DOWN_NUDGE})
+
+    def _restrict_to_submit_tool(self) -> None:
         finder = getattr(self.agent, "find_tool", None)
         submit = finder(self._submit_tool_name) if callable(finder) else None
         if submit is not None:
@@ -497,7 +501,6 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             # for the retry turn too; ``_complete`` degrades it once to "auto" on a
             # 400, after which the retry's text instruction is the guarantee.
             self.agent.tool_choice = _submit_tool_choice(self._submit_tool_name)
-        self.state.append_message({"role": "system", "content": _WIND_DOWN_NUDGE})
 
     def _trace_brake_trip(
         self,
@@ -563,6 +566,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             return False
         if self.state.wind_down_done:
             if self.state.wind_down_attempts < 2:
+                self._restrict_to_submit_tool()
                 if self.state.wind_down_attempts:
                     self.state.append_message({"role": "system", "content": _WIND_DOWN_RETRY})
                 self.state.wind_down_attempts += 1

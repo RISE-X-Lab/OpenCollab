@@ -325,6 +325,33 @@ def test_restored_wind_down_does_not_regrant_an_already_allocated_retry(local_en
     assert restored_llm.calls == []
     assert restored.state.phase is SessionPhase.STOPPED
 
+@pytest.mark.parametrize("attempts", [0, 1])
+async def test_restored_wind_down_offers_only_the_submit_tool(local_environment_factory, tmp_path, attempts):
+    path = tmp_path / "pending-commit.json"
+    source = Session(env=local_environment_factory(), agent=_agent_with_submit(), llm=FakeLLM())
+    try:
+        await source.add_user_message("Submit the existing findings.")
+        source.state.wind_down_done = True
+        source.state.wind_down_attempts = attempts
+        source.save(str(path))
+    finally:
+        await source.aclose()
+        await source.env.cleanup()
+
+    llm = FakeLLM([llm_response(content="Recovered report.")])
+    restored = load_session(path, env=local_environment_factory(), agent=_agent_with_submit(), llm=llm)
+    try:
+        restored.runner.configure_enforcement(enforcement_strength=ENFORCEMENT_ON, commit_reserve=25_000)
+        assert await restored.run_loop() == "Recovered report."
+        request, = llm.calls
+        assert [tool["function"]["name"] for tool in request["tools"]] == [SUBMIT_TOOL_NAME]
+        assert request["tool_choice"] == _FORCED_SUBMIT_CHOICE
+        assert restored.state.wind_down_attempts == attempts + 1
+        assert restored.state.phase is SessionPhase.DONE
+    finally:
+        await restored.aclose()
+        await restored.env.cleanup()
+
 def test_legacy_wind_down_snapshot_without_attempts_stops_conservatively(local_environment_factory, tmp_path):
     session = Session(env=local_environment_factory(), agent=_agent_with_submit(), llm=FakeLLM())
     session.state.wind_down_done = True
