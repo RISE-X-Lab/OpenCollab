@@ -81,9 +81,19 @@ class _SessionRunTraceMixin:
             )
         self._last_steering_level = level  # update high-water mark even with no tracer
 
+    def _llm_trace_request_fields(self) -> dict[str, Any]:
+        return {
+            "session_step": self.state.step_count,
+            "response_session_id": self._response_session_id,
+            "request_tool_names": list(self._last_request_tool_names),
+            "request_tool_choice": self._last_request_tool_choice,
+            "request_observation_stage": "application",
+        }
+
     def record_llm_trace(
         self, response: CompletionResponse | None, latency: float, *, purpose: str | None = None,
         thinking: bool | None = None, error: BaseException | None = None, late: bool = False,
+        request_fields: dict[str, Any] | None = None,
     ) -> None:
         if self.tracer:
             result = error if error is not None else response
@@ -111,11 +121,7 @@ class _SessionRunTraceMixin:
                 "role": getattr(self.agent, "role", None)
                 or getattr(self.agent, "label", None)
                 or self.agent.model,
-                "session_step": self.state.step_count,
-                "response_session_id": self._response_session_id,
-                "request_tool_names": list(self._last_request_tool_names),
-                "request_tool_choice": self._last_request_tool_choice,
-                "request_observation_stage": "application",
+                **(self._llm_trace_request_fields() if request_fields is None else request_fields),
             }
             if purpose is not None:
                 payload["purpose"] = purpose

@@ -1139,6 +1139,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if scope is not None:
             kwargs["messages"] = scope.prepare_messages(kwargs["messages"])
         late_accounted = False
+        started = time.monotonic()
+        request_fields = self._llm_trace_request_fields() if self.tracer else None
 
         async def complete_owned() -> CompletionResponse:
             nonlocal late_accounted
@@ -1163,6 +1165,15 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._provider_task_done(task)
             else:
                 self._record_late_provider_result(task, accounting=usage_accounting)
+            if self.tracer and not task.cancelled() and task.exception() is None:
+                try:
+                    self.record_llm_trace(
+                        task.result(), time.monotonic() - started,
+                        purpose="completion", thinking=kwargs.get("thinking"),
+                        late=True, request_fields=request_fields,
+                    )
+                except Exception:
+                    logger.exception("late completion trace failed for aid=%s", self.state.aid)
 
         operation = complete_owned()
         if scope is not None or _native_completion_controls.get() is not None:
