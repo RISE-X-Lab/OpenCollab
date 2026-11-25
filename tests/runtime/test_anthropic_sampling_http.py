@@ -20,6 +20,7 @@ _CLAUDE_4_MODELS = [
 @pytest.fixture(autouse=True)
 def isolate_configuration(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
     monkeypatch.delenv("OPENCOLLAB_TEMPERATURE", raising=False)
     monkeypatch.delenv("OPENCOLLAB_TOP_P", raising=False)
 
@@ -103,7 +104,13 @@ async def test_public_agent_keeps_sampling_defaults(monkeypatch, tmp_path, model
     requests = []
 
     async def handler(request):
-        requests.append(json.loads(request.content))
+        body = json.loads(request.content)
+        requests.append((request.headers["anthropic-version"], body))
+        if request.headers["anthropic-version"] == "2026-10-21" and "temperature" in body:
+            return http_response(request, 400, json={
+                "type": "error", "error": {"type": "invalid_request_error",
+                    "message": "temperature is not supported in API version 2026-10-21"},
+            })
         return completion_http_response(request)
 
     install_sdk_transport(monkeypatch, "anthropic", handler)
@@ -116,7 +123,48 @@ async def test_public_agent_keeps_sampling_defaults(monkeypatch, tmp_path, model
 
     assert result.ok, result.error
     assert result.output == "ok" and len(requests) == 1
-    assert "top_p" not in requests[0]
-    assert ("temperature" in requests[0]) is (expected_temperature is not None)
+    api_version, body = requests[0]
+    assert api_version == "2023-06-01"
+    assert "top_p" not in body
+    assert ("temperature" in body) is (expected_temperature is not None)
     if expected_temperature is not None:
-        assert requests[0]["temperature"] == expected_temperature
+        assert body["temperature"] == expected_temperature
+
+
+@pytest.mark.parametrize("credential", ["api_key", "auth_token"])
+async def test_explicit_sdk_headers_keep_gateway_version_and_key(monkeypatch, tmp_path, credential):
+    monkeypatch.setenv(
+        "ANTHROPIC_CUSTOM_HEADERS",
+        "anthropic-version: 2026-10-21\nX-Api-Key: fixture-gateway-key",  # pragma: allowlist secret
+    )
+    credential_value = "fixture-sdk-credential"  # pragma: allowlist secret
+    # SDK releases predating ANTHROPIC_CUSTOM_HEADERS use their standard headers.
+    async with anthropic.AsyncAnthropic(
+        api_key=credential_value, base_url="https://controlled.invalid",
+    ) as sdk:
+        sdk_headers = {name.lower(): value for name, value in sdk.default_headers.items()}
+    requests = []
+
+    def handler(request):
+        requests.append((
+            request.headers["anthropic-version"],
+            request.headers.get("x-api-key"),
+            request.headers.get("authorization"),
+        ))
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "anthropic", handler)
+    client = OpenCollab(
+        tmp_path, provider="anthropic", model="claude-sonnet-5",
+        base_url="https://controlled.invalid",
+        config={credential: credential_value, "llm_max_retries": 0},
+    )
+    async with client.create_model_client() as model:
+        response = await model.complete([{"role": "user", "content": "Return ok"}])
+
+    assert response.content == "ok"
+    version = sdk_headers["anthropic-version"]
+    if credential == "api_key":
+        assert requests == [(version, sdk_headers["x-api-key"], None)]
+    else:
+        assert requests == [(version, None, f"Bearer {credential_value}")]
