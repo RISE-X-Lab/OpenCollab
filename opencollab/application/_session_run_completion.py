@@ -913,6 +913,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._raise_if_run_cancelled()
             raise
         replacement_has_text = isinstance(replacement.content, str) and bool(replacement.content.strip())
+        if getattr(replacement, "content_from_reasoning", False):
+            original_has_answer = (
+                isinstance(response.content, str)
+                and bool(response.content.strip())
+                and not getattr(response, "content_from_reasoning", False)
+            )
+            replacement_has_text = replacement_has_text and not original_has_answer
         replacement_has_action = (
             replacement.tool_calls and replacement.finish_reason not in _INCOMPLETE_RESPONSE_REASONS
         )

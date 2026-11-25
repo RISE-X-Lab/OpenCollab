@@ -483,7 +483,7 @@ def _parse_response(resp: Any) -> LLMResponse:
     # Keep the thinking text for trajectory observability; the shared rescue
     # rung falls back to it only when the turn is otherwise empty.
     reasoning = thinking_text or None
-    content = rescue_empty_turn(content, tool_calls, reasoning)
+    content, content_from_reasoning = rescue_empty_turn(content, tool_calls, reasoning)
 
     return LLMResponse(
         content=content or None,
@@ -491,6 +491,7 @@ def _parse_response(resp: Any) -> LLMResponse:
         usage=_parse_usage(resp.usage),
         finish_reason=resp.stop_reason,
         reasoning=reasoning,
+        content_from_reasoning=content_from_reasoning,
         provider_model=(
             value
             if isinstance((value := getattr(resp, "model", None)), str) and value

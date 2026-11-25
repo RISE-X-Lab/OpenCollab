@@ -94,6 +94,7 @@ class LLMResponse:
     # Transport timing set by ``LLMClient.complete`` on every provider path.
     # ``None`` identifies responses built outside the client.
     transport_timing: dict[str, Any] | None = None
+    content_from_reasoning: bool = False
 
 def to_plain_data(value: Any) -> Any:
     """Convert SDK model objects into JSON-compatible Python values."""
@@ -126,19 +127,14 @@ def rescue_empty_turn(
     content: str | None,
     tool_calls: list[dict[str, Any]],
     reasoning: str | None,
-) -> str | None:
-    """Use reasoning text when a completion contains neither answer nor tool call.
-
-    Providers separate ``reasoning`` from ``content``. Falling back keeps an
-    empty answer from ending the session. Preserve ``content`` when an answer
-    or tool call already exists.
-    """
+) -> tuple[str | None, bool]:
+    """Return display text and whether it came from the reasoning fallback."""
     if (
         (content is None or not content.strip())
         and not tool_calls
     ):
-        return reasoning
-    return content
+        return reasoning, reasoning is not None
+    return content, False
 
 @dataclass(frozen=True)
 class ModelCapabilities:

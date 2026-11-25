@@ -625,7 +625,7 @@ def _parse_stream(
         tools,
         reasoning=reasoning,
     )
-    content = rescue_empty_turn(content, tool_calls, reasoning)
+    content, content_from_reasoning = rescue_empty_turn(content, tool_calls, reasoning)
     if not content and not tool_calls and finish_reason != "max_tokens":
         raise ResponsesEmptyOutputError("response.completed contained no message or function call")
     return LLMResponse(
@@ -634,6 +634,7 @@ def _parse_stream(
         usage=usage,
         finish_reason=("tool_calls" if tool_calls and finish_reason == "stop" else finish_reason),
         reasoning=reasoning,
+        content_from_reasoning=content_from_reasoning,
         provider_items=state.output_items,
         provider_model=actual_model,
     )
