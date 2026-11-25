@@ -273,14 +273,18 @@ async def test_recovery_respects_session_authority(tmp_path, control_kind, budge
 
 
 @pytest.mark.parametrize(
-    "prepare_cap,commit_reserve,room",
+    "prepare_cap,commit_reserve,room,max_steps",
     [
-        (18_000, 256, None), (19_800, 256, None), (19_800, 100, None),
-        (16_000, 1_000, 0), (16_000, 1_000, 100), (16_000, 1_000, 700),
+        (18_000, 256, None, 100), (19_800, 256, None, 100), (19_800, 100, None, 100),
+        (16_000, 1_000, 0, 100), (16_000, 1_000, 100, 100), (16_000, 1_000, 700, 100),
+        (16_000, 1_000, 1800, 100), (16_000, 1_000, 100, 1), (16_000, 1_000, 1800, 2),
     ],
 )
-async def test_released_budget_reaches_enforced_scout_before_wind_down(tmp_path, prepare_cap, commit_reserve, room):
+async def test_released_budget_reaches_enforced_scout_before_wind_down(
+    tmp_path, prepare_cap, commit_reserve, room, max_steps,
+):
     (tmp_path / "notes.txt").write_text("Observed measurement is 42 ms.\n")
+    (tmp_path / "appendix.txt").write_text("Secondary check corroborates the result.\n")
     preparing, release = asyncio.Event(), asyncio.Event()
     entered, start = asyncio.Event(), asyncio.Event()
     reading, other_started, release_other = (asyncio.Event() for _ in range(3))
@@ -326,6 +330,14 @@ async def test_released_budget_reaches_enforced_scout_before_wind_down(tmp_path,
                     await wait(other_started)
                     return LLMResponse(tool_calls=[response], usage=Usage(911, 89), finish_reason="tool_calls")
             elif evidence:
+                appendix_read = any(
+                    row["role"] == "tool" and "Secondary check corroborates" in row["content"] for row in messages
+                )
+                if room in (700, 1800) and "file_read" in tool_names and not appendix_read:
+                    actions.append("appendix")
+                    response = call("file_read", {"path": "appendix.txt"})
+                    response["id"] = "read_appendix"
+                    return LLMResponse(tool_calls=[response], usage=Usage(1_400, 100), finish_reason="tool_calls")
                 actions.append("submit")
                 response = call("submit_findings", {
                     "summary": "Measured time was 42 ms.",
@@ -380,13 +392,12 @@ async def test_released_budget_reaches_enforced_scout_before_wind_down(tmp_path,
 
     result = await OpenCollab(tmp_path, model="offline", config={"max_output_tokens": 128}).workflow(
         flow, llm=Model(), budget=20000, concurrency=2, task_concurrency=2,
-        limit_mode="explicit", timeout=10, trace=False,
+        limit_mode="explicit", timeout=10, max_steps=max_steps, trace=False,
     )
 
     assert result.status == "completed", result.reason
-    assert actions == ["read", "submit"]
+    expected = ["read", "appendix", "submit"] if room == 1800 else ["read", "submit"]
+    assert actions == expected
     assert "Measured time was 42 ms." in result.output[0]
-    if room in (0, 100):
+    if room is not None:
         assert offered_tools[-1] == ["submit_findings"]
-    elif room == 700:
-        assert "file_read" in offered_tools[-1]

@@ -804,13 +804,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             ),
         )
         minimum_output_tokens = max(minimum_output_tokens, required_output_tokens)
-        remaining_budget = self.remaining_budget_tokens
+        remaining_budget = self._remaining_request_budget()
         if remaining_budget is not None:
             output_budget = remaining_budget - reserved_input_tokens
             if self._request_budget_recovery is not None and self._reclaim_output_budget(
                 output_budget, minimum_output_tokens, max_output_tokens,
             ):
-                remaining_budget = self.remaining_budget_tokens
+                remaining_budget = self._remaining_request_budget()
                 assert remaining_budget is not None
                 output_budget = remaining_budget - reserved_input_tokens
             if output_budget < minimum_output_tokens:
@@ -820,6 +820,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 )
             max_output_tokens = min(max_output_tokens, output_budget)
         return max_output_tokens
+
+    def _remaining_request_budget(self) -> int | None:
+        remaining = self.remaining_budget_tokens
+        if remaining is not None and self._preserve_submit_reserve and not self.state.wind_down_done:
+            return remaining - self._commit_reserve
+        return remaining
 
     def _budget_recovery_authority(self) -> _RequestBudgetRecovery | None:
         control = self._run_control
@@ -869,7 +875,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         configured, minimum, reserved = self._request_budget_requirements(
             messages, tools, thinking=kwargs.get("thinking", False), thinking_params=kwargs.get("thinking_params"),
         )
-        remaining = self.remaining_budget_tokens
+        remaining = self._remaining_request_budget()
         if remaining is None or max_output_tokens >= configured:
             return response
         # The clipped response has been billed. The next request must fit the

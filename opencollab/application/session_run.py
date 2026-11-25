@@ -165,7 +165,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         # Wind-down runs only when enforcement is enabled.
         self._enforcement_strength = enforcement_strength
         self._commit_reserve = commit_reserve
-        self._budget_wind_down_deferred = False
+        self._preserve_submit_reserve = False
         self._submit_tool_name = submit_tool_name
         # No-progress and low-yield limits share the budget wind-down actuator.
         self._watchdog_k = watchdog_k
@@ -197,6 +197,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self.agent.tool_choice = copy.deepcopy(self._initial_agent_tool_choice)
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None
+        self._preserve_submit_reserve = False
         self._required_tool_retried = False
 
     def reset_for_restore(self) -> None:
@@ -550,7 +551,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         await self.event_publisher.emit(self.event_factory.error(reason))
         self.state.transition_to(SessionPhase.STOPPED, reason=reason)
 
-    async def _apply_enforcement_gate(self) -> bool:
+    async def _apply_enforcement_gate(self, *, step_limit_reached: bool) -> bool:
         """Choose the next phase when an enforcement brake fires.
 
         With enforcement enabled and pending results consumed, budget reserve,
@@ -558,7 +559,6 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         attempt counts allow one protected submit turn and one compatibility retry,
         then STOPPED, including after restore. Return whether a phase was selected.
         """
-        self._budget_wind_down_deferred = False
         if not self._enforcement_on():
             return False
         if self.state.wind_down_done:
@@ -587,14 +587,17 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
                             and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve)
             if (
                 budget_spent
+                and not step_limit_reached
                 and not self.state.budget_reserve_consumed
                 and self.state.pending_events.is_empty()
                 and self.max_budget_tokens is not None
             ):
                 missing = self.state.used_tokens + self._commit_reserve + 1 - self.max_budget_tokens
                 if self._claim_request_budget(missing, missing):
-                    self._budget_wind_down_deferred = True
+                    self._preserve_submit_reserve = True
                     return False
+        if self._preserve_submit_reserve and step_limit_reached:
+            budget_spent = True
         brake = budget_spent or watchdog_tripped or low_yield_tripped
         if not brake or not self.state.pending_events.is_empty():
             return False
@@ -672,10 +675,11 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self._stop_precheck(reason)
             return
 
-        if await self._apply_enforcement_gate():
+        step_limit_reached = self.max_steps is not None and self.state.step_count >= self.max_steps
+        if await self._apply_enforcement_gate(step_limit_reached=step_limit_reached):
             return
 
-        if self.max_steps is not None and self.state.step_count >= self.max_steps:
+        if step_limit_reached:
             reason = f"step limit reached: {self.state.step_count} steps"
             await self._stop_precheck(reason)
             return
@@ -693,13 +697,15 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         start = time.monotonic()
 
         tools = self.build_tool_schemas()
-        deferred_wind_down = self._budget_wind_down_deferred
-        self._budget_wind_down_deferred = False
         try:
             try:
                 response = await self.call_llm(tools)
             except _TokenBudgetStop:
-                if not deferred_wind_down:
+                if (
+                    not self._preserve_submit_reserve
+                    or self.state.wind_down_done
+                    or not self.state.pending_events.is_empty()
+                ):
                     raise
                 self._raise_if_run_cancelled()
                 await self._begin_wind_down(budget_spent=True, watchdog_tripped=False, low_yield_tripped=False)
