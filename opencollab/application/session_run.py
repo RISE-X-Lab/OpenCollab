@@ -14,6 +14,7 @@ from opencollab.application._session_run_shared import (
     _EMPTY_STOP_PLACEHOLDER,
     _FILTERED_OUTPUT_REASON,
     _INCOMPLETE_RESPONSE_REASONS,
+    _OUTPUT_LIMIT_REASONS,
     _WIND_DOWN_NUDGE,
     _WIND_DOWN_RETRY,
     DEFAULT_COMMIT_RESERVE,
@@ -487,7 +488,6 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         is absent, retain the current tools and apply the nudge and turn limit.
         """
         self.state.wind_down_done = True
-        self.state.wind_down_attempts += 1
         self.state.wind_down_token_mark = self.state.used_tokens
         finder = getattr(self.agent, "find_tool", None)
         submit = finder(self._submit_tool_name) if callable(finder) else None
@@ -563,8 +563,9 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             return False
         if self.state.wind_down_done:
             if self.state.wind_down_attempts < 2:
+                if self.state.wind_down_attempts:
+                    self.state.append_message({"role": "system", "content": _WIND_DOWN_RETRY})
                 self.state.wind_down_attempts += 1
-                self.state.append_message({"role": "system", "content": _WIND_DOWN_RETRY})
                 self.state.transition_to(SessionPhase.CALLING_LLM)
                 return True
             await self._stop_precheck("wind-down complete: forced commit within reserve")
@@ -611,7 +612,10 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self.state.transition_to(SessionPhase.CALLING_LLM)
         return True
 
-    async def _begin_wind_down(self, budget_spent: bool, watchdog_tripped: bool, low_yield_tripped: bool) -> None:
+    async def _begin_wind_down(
+        self, budget_spent: bool, watchdog_tripped: bool, low_yield_tripped: bool, *,
+        defer_first_attempt: bool = False,
+    ) -> None:
         self._trace_brake_trip(budget_spent, watchdog_tripped, low_yield_tripped)
         if budget_spent:
             self.state.budget_reserve_consumed = True
@@ -626,6 +630,16 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
                 )
             )
         self._enter_wind_down()
+        if not defer_first_attempt:
+            self.state.wind_down_attempts += 1
+
+    def _can_use_preserved_submit_budget(self) -> bool:
+        return (
+            self._preserve_submit_reserve
+            and not self.state.wind_down_done
+            and not self.state.budget_reserve_consumed
+            and self.state.pending_events.is_empty()
+        )
 
     def _ensure_tool_environment_active(self) -> None:
         if getattr(self.tool_execution, "environment_revoked", False):
@@ -701,11 +715,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             try:
                 response = await self.call_llm(tools)
             except _TokenBudgetStop:
-                if (
-                    not self._preserve_submit_reserve
-                    or self.state.wind_down_done
-                    or not self.state.pending_events.is_empty()
-                ):
+                if not self._can_use_preserved_submit_budget():
                     raise
                 self._raise_if_run_cancelled()
                 await self._begin_wind_down(budget_spent=True, watchdog_tripped=False, low_yield_tripped=False)
@@ -820,6 +830,13 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self.event_publisher.emit(self.event_factory.text_delta(response.content))
 
         if response.finish_reason in _INCOMPLETE_RESPONSE_REASONS:
+            if response.finish_reason in _OUTPUT_LIMIT_REASONS and self._can_use_preserved_submit_budget():
+                await self._begin_wind_down(
+                    budget_spent=True, watchdog_tripped=False, low_yield_tripped=False,
+                    defer_first_attempt=True,
+                )
+                self.state.transition_to(SessionPhase.AUTOSAVING)
+                return
             reason = "output truncated: provider reached its generation limit"
             self.state.append_message({
                 "role": "system",

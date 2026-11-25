@@ -20,6 +20,7 @@ from opencollab.application._anthropic_history import (
 )
 from opencollab.application._session_run_shared import (
     _INCOMPLETE_RESPONSE_REASONS,
+    _OUTPUT_LIMIT_REASONS,
     _STRUCTURED_OUTPUT_TOOL,
     _WRITE_TOOLS,
     GenerationTimeoutError,
@@ -870,7 +871,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             messages=messages, tools=tools, max_output_tokens=max_output_tokens, **kwargs,
         )
         recovery = self._budget_recovery_authority()
-        if response.finish_reason not in {"length", "max_tokens"} or recovery is None:
+        if response.finish_reason not in _OUTPUT_LIMIT_REASONS or recovery is None:
             return response
         configured, minimum, reserved = self._request_budget_requirements(
             messages, tools, thinking=kwargs.get("thinking", False), thinking_params=kwargs.get("thinking_params"),

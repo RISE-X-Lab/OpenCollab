@@ -273,15 +273,24 @@ async def test_recovery_respects_session_authority(tmp_path, control_kind, budge
 
 
 @pytest.mark.parametrize(
-    "prepare_cap,commit_reserve,room,max_steps",
+    "prepare_cap,commit_reserve,room,max_steps,appendix_finish_reason",
     [
-        (18_000, 256, None, 100), (19_800, 256, None, 100), (19_800, 100, None, 100),
-        (16_000, 1_000, 0, 100), (16_000, 1_000, 100, 100), (16_000, 1_000, 700, 100),
-        (16_000, 1_000, 1800, 100), (16_000, 1_000, 100, 1), (16_000, 1_000, 1800, 2),
+        (18_000, 256, None, 100, "tool_calls"),
+        (19_800, 256, None, 100, "tool_calls"),
+        (19_800, 100, None, 100, "tool_calls"),
+        (16_000, 1_000, 0, 100, "tool_calls"),
+        (16_000, 1_000, 100, 100, "tool_calls"),
+        (16_000, 1_000, 700, 100, "tool_calls"),
+        (16_000, 1_000, 1800, 100, "tool_calls"),
+        (16_000, 1_000, 100, 1, "tool_calls"),
+        (16_000, 1_000, 1800, 2, "tool_calls"),
+        (16_000, 1_000, 1800, 100, "length"),
+        (16_000, 1_000, 1800, 100, "max_tokens"),
+        (16_000, 1_000, 1800, 100, "content_filter"),
     ],
 )
 async def test_released_budget_reaches_enforced_scout_before_wind_down(
-    tmp_path, prepare_cap, commit_reserve, room, max_steps,
+    tmp_path, prepare_cap, commit_reserve, room, max_steps, appendix_finish_reason,
 ):
     (tmp_path / "notes.txt").write_text("Observed measurement is 42 ms.\n")
     (tmp_path / "appendix.txt").write_text("Secondary check corroborates the result.\n")
@@ -289,6 +298,7 @@ async def test_released_budget_reaches_enforced_scout_before_wind_down(
     entered, start = asyncio.Event(), asyncio.Event()
     reading, other_started, release_other = (asyncio.Event() for _ in range(3))
     actions, offered_tools = [], []
+    partial = "I was about to check the appendix."
 
     async def wait(event):
         await asyncio.wait_for(event.wait(), 5)
@@ -309,7 +319,7 @@ async def test_released_budget_reaches_enforced_scout_before_wind_down(
                 return 900
             return 1_400 if any(tool["function"]["name"] == "file_read" for tool in tools) else 850
 
-        async def complete(self, messages, *, tools, **kwargs):
+        async def complete(self, messages, *, tools, max_output_tokens, **kwargs):
             user = user_label(messages)
             if user == "prepare":
                 preparing.set()
@@ -337,8 +347,16 @@ async def test_released_budget_reaches_enforced_scout_before_wind_down(
                     actions.append("appendix")
                     response = call("file_read", {"path": "appendix.txt"})
                     response["id"] = "read_appendix"
+                    if appendix_finish_reason != "tool_calls":
+                        return LLMResponse(
+                            content=partial, tool_calls=[response], usage=Usage(1_400, max_output_tokens),
+                            finish_reason=appendix_finish_reason,
+                        )
                     return LLMResponse(tool_calls=[response], usage=Usage(1_400, 100), finish_reason="tool_calls")
                 actions.append("submit")
+                if appendix_finish_reason in ("length", "max_tokens"):
+                    assert not appendix_read
+                    assert any(row["role"] == "assistant" and row.get("content") == partial for row in messages)
                 response = call("submit_findings", {
                     "summary": "Measured time was 42 ms.",
                     "findings": [{
@@ -390,14 +408,26 @@ async def test_released_budget_reaches_enforced_scout_before_wind_down(
                 event.set()
             await asyncio.gather(*[t for t in (prep, group, other) if t], return_exceptions=True)
 
+    artifacts = tmp_path / "artifacts" if appendix_finish_reason in ("length", "max_tokens") else None
     result = await OpenCollab(tmp_path, model="offline", config={"max_output_tokens": 128}).workflow(
         flow, llm=Model(), budget=20000, concurrency=2, task_concurrency=2,
-        limit_mode="explicit", timeout=10, max_steps=max_steps, trace=False,
+        limit_mode="explicit", timeout=10, max_steps=max_steps,
+        artifacts=artifacts, trace=artifacts is not None,
     )
 
     assert result.status == "completed", result.reason
+    if appendix_finish_reason == "content_filter":
+        assert actions == ["read", "appendix"]
+        assert result.output[0] == partial
+        return
     expected = ["read", "appendix", "submit"] if room == 1800 else ["read", "submit"]
     assert actions == expected
     assert "Measured time was 42 ms." in result.output[0]
+    if artifacts is not None:
+        assert result.tokens == 4_083
+        rows = [json.loads(line) for line in (artifacts / "orchestration.jsonl").read_text().splitlines()]
+        calls = [row for row in rows if row["type"] == "llm_call"]
+        assert sum(row["metrics"]["tokens"] for row in calls) == result.tokens
+        assert any(row["payload"]["finish_reason"] == appendix_finish_reason for row in calls)
     if room is not None:
         assert offered_tools[-1] == ["submit_findings"]
