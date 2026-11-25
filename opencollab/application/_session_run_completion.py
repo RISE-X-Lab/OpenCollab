@@ -1179,7 +1179,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if scope is not None or _native_completion_controls.get() is not None:
             operation = _with_native_completion_controls(operation, scope)
         try:
-            response = await operation if self._per_call_timeout is None else await abandon_on_timeout(
+            response = await abandon_on_timeout(
                 operation,
                 self._per_call_timeout,
                 task_tracker=self._track_provider_task,

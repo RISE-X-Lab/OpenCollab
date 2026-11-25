@@ -126,23 +126,26 @@ async def abandon_on_timeout(
     immediately raises TimeoutError to the caller. Caller cancellation retains
     the same background ownership and delayed-result handling.
 
-    ``start_event`` defers the deadline until request admission finishes.
+    ``None`` disables the deadline while retaining caller cancellation handling.
+    ``start_event`` defers an enabled deadline until request admission finishes.
     """
-    if timeout is None:
-        return await awaitable
-    if isinstance(timeout, bool):
-        raise ValueError("timeout must be a finite positive number or None")
-    try:
-        normalized_timeout = float(timeout)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("timeout must be a finite positive number or None") from exc
-    if not math.isfinite(normalized_timeout) or normalized_timeout <= 0:
-        raise ValueError("timeout must be a finite positive number or None")
+    normalized_timeout = None
+    if timeout is not None:
+        if isinstance(timeout, bool):
+            raise ValueError("timeout must be a finite positive number or None")
+        try:
+            normalized_timeout = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("timeout must be a finite positive number or None") from exc
+        if not math.isfinite(normalized_timeout) or normalized_timeout <= 0:
+            raise ValueError("timeout must be a finite positive number or None")
 
     task = asyncio.ensure_future(awaitable)
     if task_tracker is not None and isinstance(task, asyncio.Task):
         task_tracker(task)
-    admission = asyncio.create_task(start_event.wait()) if start_event is not None else None
+    admission = None
+    if normalized_timeout is not None and start_event is not None:
+        admission = asyncio.create_task(start_event.wait())
     try:
         if admission is not None:
             await asyncio.wait({task, admission}, return_when=asyncio.FIRST_COMPLETED)

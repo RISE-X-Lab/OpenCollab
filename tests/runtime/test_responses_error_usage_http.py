@@ -391,12 +391,16 @@ async def _drain(session):
         await asyncio.sleep(0)
 
 @pytest.mark.parametrize("summary", [False, True])
-@pytest.mark.parametrize("trigger", ["cancel", "timeout"])
+@pytest.mark.parametrize(("trigger", "session_timeout"), [
+    pytest.param("cancel", 600, id="cancel-with-deadline"),
+    pytest.param("cancel", None, id="cancel-without-deadline"),
+    pytest.param("timeout", 0.01, id="timeout"),
+])
 @pytest.mark.parametrize("kind", ["filter", "answer"])
 @pytest.mark.parametrize("repeat_cancel", [False, True])
 async def test_late_sdk_terminal_usage_is_saved_once(
     local_environment_factory,
-    monkeypatch, tmp_path, usage_log, summary, trigger, kind, repeat_cancel, trajectory,
+    monkeypatch, tmp_path, usage_log, summary, trigger, session_timeout, kind, repeat_cancel, trajectory,
 ):
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -417,7 +421,7 @@ async def test_late_sdk_terminal_usage_is_saved_once(
     async with _client("gpt-4o", "http://controlled.invalid/v1") as client:
         session = build_session(
             env=local_environment_factory(),
-            agent=_agent(), llm=client, llm_timeout=0.01 if trigger == "timeout" else 600,
+            agent=_agent(), llm=client, llm_timeout=session_timeout,
             auto_save_path=str(snapshot_path), tracer=trajectory,
         )
         if summary:
@@ -434,8 +438,10 @@ async def test_late_sdk_terminal_usage_is_saved_once(
                 expected_error = asyncio.CancelledError
             else:
                 expected_error = GenerationTimeoutError
+            done, _ = await asyncio.wait({turn}, timeout=1)
+            assert turn in done
             with pytest.raises(expected_error):
-                await asyncio.wait_for(turn, 1)
+                await turn
             await asyncio.wait_for(cancelled.wait(), 1)
             assert session.used_tokens == 0
             if repeat_cancel:
