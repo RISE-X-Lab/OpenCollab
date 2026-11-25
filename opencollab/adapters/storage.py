@@ -186,7 +186,9 @@ class SessionStore:
             )
 
     def _load_snapshot_unlocked(
-        self, path: str, fallback_system_prompt: str | None, *, read_journal: bool = True,
+        self, path: str, fallback_system_prompt: str | None, *,
+        read_journal: bool = True,
+        pending_record: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Load a locked snapshot or a standalone read-only export."""
         try:
@@ -194,6 +196,8 @@ class SessionStore:
         except FileNotFoundError:
             text = None
         records = self._read_journal_records(path) if read_journal else []
+        if pending_record is not None:
+            records.append(pending_record)
         if text is None and not records:
             raise FileNotFoundError(path)
 
@@ -222,6 +226,11 @@ class SessionStore:
         for record in records:
             record_sequence = self._record_integer(record, "sequence", minimum=1)
             if record_sequence <= sequence:
+                if record is pending_record:
+                    raise SnapshotSequenceConflict(
+                        f"refusing stale autosave sequence {record_sequence}; "
+                        f"persisted sequence is {sequence}"
+                    )
                 continue
             replace_from = self._record_integer(record, "replace_from", minimum=0)
             message_count = self._record_integer(record, "message_count", minimum=0)
@@ -607,15 +616,14 @@ class SessionStore:
                         "refusing checkpoint sequence "
                         f"{sequence}; it conflicts with persisted {source} state"
                     )
-            try:
-                self._atomic_json_write(path, obj)
-            except SnapshotCapacityError:
-                self._atomic_json_write(path, obj, indent=None)
-            write_regular_bytes_atomic(
-                self._journal_path(path),
-                b"",
-                max_bytes=0,
-            )
+            self._publish_checkpoint_unlocked(path, obj)
+
+    def _publish_checkpoint_unlocked(self, path: str, snapshot: dict[str, Any]) -> None:
+        try:
+            self._atomic_json_write(path, snapshot)
+        except SnapshotCapacityError:
+            self._atomic_json_write(path, snapshot, indent=None)
+        write_regular_bytes_atomic(self._journal_path(path), b"", max_bytes=0)
 
     @staticmethod
     def _journal_path(path: str) -> str:
@@ -634,14 +642,18 @@ class SessionStore:
 
     def _append_journal_record(self, path: str, record: dict[str, Any]) -> None:
         with _journal_operation_lock(path):
-            self._append_journal_record_unlocked(path, record)
+            try:
+                self._append_journal_record_unlocked(path, record)
+            except SnapshotCapacityError:
+                snapshot = self._load_snapshot_unlocked(path, None, pending_record=record)
+                self._publish_checkpoint_unlocked(path, snapshot)
 
     def _append_journal_record_unlocked(self, path: str, record: dict[str, Any]) -> None:
         journal_path = self._journal_path(path)
         payload = self._encode_journal_record(record)
         payload_size = len(payload.encode("utf-8"))
         if payload_size > MAX_SESSION_SNAPSHOT_BYTES:
-            raise ValueError(
+            raise SnapshotCapacityError(
                 "autosave journal record exceeds "
                 f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
                 f"{journal_path}"
@@ -658,7 +670,7 @@ class SessionStore:
                     os.ftruncate(handle.fileno(), complete_size)
                     current_size = complete_size
                 if current_size + payload_size > MAX_SESSION_SNAPSHOT_BYTES:
-                    raise ValueError(
+                    raise SnapshotCapacityError(
                         "autosave journal exceeds "
                         f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
                         f"{journal_path}"
