@@ -15,8 +15,12 @@ async def test_collection_can_spend_budget_released_during_preparation(tmp_path,
     first_started, release_first = asyncio.Event(), asyncio.Event()
     prepared, budget_released = asyncio.Event(), asyncio.Event()
     calls, rows = [], []
+    input_tokens, output_limit = 256, 128
 
     class Model:
+        def estimate_request_tokens(self, messages, tools, **kwargs):
+            return input_tokens
+
         async def complete(self, messages, **kwargs):
             prompt = messages[-1]["content"].splitlines()[0]
             calls.append(prompt)
@@ -24,6 +28,7 @@ async def test_collection_can_spend_budget_released_during_preparation(tmp_path,
                 first_started.set()
                 await release_first.wait()
                 return LLMResponse(content="prepared", usage=Usage(4990, 10))
+            assert kwargs["max_output_tokens"] == output_limit
             return LLMResponse(content=f"summary of {prompt}", usage=Usage(5, 10))
 
     async def flow(ctx, _inputs):
@@ -69,16 +74,17 @@ async def test_collection_can_spend_budget_released_during_preparation(tmp_path,
             await asyncio.gather(first, *([collection] if collection else []), return_exceptions=True)
 
     result = await OpenCollab(
-        tmp_path, model="test-model", config={"max_output_tokens": 128},
+        tmp_path, model="test-model", config={"max_output_tokens": output_limit},
     ).workflow(
         flow, llm=Model(), budget=20000, concurrency=2,
         task_concurrency=2, trace=False, limit_mode="explicit", timeout=10,
     )
 
     assert result.status == "completed", result.reason
+    grant = input_tokens + output_limit if start == "overlap" else 7500
     assert [(row.status, row.hard_budget_tokens, row.reason) for row in rows] == [
-        ("completed", 7500, None),
-        ("completed", 7500, None),
+        ("completed", grant, None),
+        ("completed", grant, None),
     ]
     assert result.output == ["summary of first.txt", "summary of second.txt"]
     assert sorted(calls) == ["first.txt", "prepare source", "second.txt"]
@@ -241,6 +247,10 @@ async def test_parent_balance_uses_its_own_entry_and_live_admission(tmp_path, mo
     grants = {}
 
     class Model:
+        def estimate_request_tokens(self, messages, tools, **kwargs):
+            prompt = [row["content"] for row in messages if row["role"] == "user"][-1]
+            return 3999 if prompt.startswith("Summarize the") else 256
+
         async def complete(self, messages, **kwargs):
             prompt = [row["content"] for row in messages if row["role"] == "user"][-1]
             if prompt == "Prepare a set of notes.":

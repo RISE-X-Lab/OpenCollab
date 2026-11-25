@@ -9,7 +9,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from opencollab.application.workflow_collections import WorkflowBudgetExceeded
+from opencollab.application.workflow_collections import WorkflowBudgetExceeded, _CollectionBudget
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,8 @@ class WorkflowBudget:
 
     @property
     def total(self) -> int | None:
+        if self._total is not None and self._parent_allocation is not None:
+            return self._parent_allocation[1].total
         return self._total
 
     def spent(self) -> int:
@@ -62,9 +64,9 @@ class WorkflowBudget:
             parent._track_session(session)
 
     def remaining(self) -> float:
-        if self._total is None:
+        total = self.total
+        if total is None:
             return float("inf")
-        total = self._total
         spent = self.spent()
         if self._parent_allocation is not None:
             parent, allocation = self._parent_allocation
@@ -82,6 +84,55 @@ class WorkflowBudget:
         except ValueError:
             pass
 
+    def _parent_recovery_room(self) -> int:
+        if self._parent_allocation is None:
+            return 0
+        parent, allocation = self._parent_allocation
+        return parent._recovery_room(allocation)
+
+    def _collection_recovery_share(self, collection: _CollectionBudget, free: int) -> int:
+        # Reservations held by this collection already count toward its share.
+        reserved = sum(
+            lease.remaining() for lease in self._leases if collection.includes(lease.collection)
+        )
+        balance = max(collection.entry_balance, free + int(reserved))
+        if collection.parent is not None:
+            balance = min(balance, self._collection_recovery_share(collection.parent, free))
+        collection.recovered_share = max(collection.recovered_share, balance // collection.size)
+        return collection.recovered_share
+
+    def _recovery_room(self, lease: _BudgetLease) -> int:
+        if lease.total is None or lease.recovery_limit is None or lease not in self._leases:
+            return 0
+        free = int(self.remaining()) + self._parent_recovery_room()
+        if free <= 0:
+            return 0
+        limit = lease.recovery_limit
+        if isinstance(limit, _CollectionBudget):
+            limit = self._collection_recovery_share(limit, free)
+        return max(0, min(limit - lease.total, free))
+
+    def _claim_parent_capacity(self, tokens: int) -> None:
+        if self._parent_allocation is None:
+            return
+        missing = tokens - int(self.remaining())
+        if missing > 0:
+            parent, allocation = self._parent_allocation
+            parent._extend_lease(allocation, missing)
+
+    def _extend_lease(self, lease: _BudgetLease, tokens: int) -> None:
+        self._claim_parent_capacity(tokens)
+        assert lease.total is not None
+        lease.total += tokens
+        lease.reserved = lease.total
+
+    def _claim_recovered_budget(self, lease: _BudgetLease, minimum: int, preferred: int) -> int | None:
+        growth = min(preferred, self._recovery_room(lease))
+        if growth < minimum:
+            return None
+        self._extend_lease(lease, growth)
+        return lease.total
+
 @dataclass
 class _BudgetEscapeState:
     """One atomic forced-write claim shared by a workflow and its children."""
@@ -97,6 +148,8 @@ class _BudgetLease:
     reserved: int
     sessions: list[Any]
     pending_tasks: list[asyncio.Task[Any]] | None = None
+    recovery_limit: int | _CollectionBudget | None = None
+    collection: _CollectionBudget | None = None
 
     def remaining(self) -> float:
         if self.total is None:
@@ -226,7 +279,9 @@ class WorkflowBudgetMixin:
                     return _BudgetLease(total=total, reserved=0, sessions=[])
 
                 available = max(0, int(remaining))
-                if available <= 0 and not over_budget_ok:
+                recoverable = max(0, int(remaining) + self.budget._parent_recovery_room())
+                initial = available or min(1, recoverable)
+                if initial <= 0 and not over_budget_ok:
                     self._trace_budget_decision(
                         "budget_refusal",
                         cap=cap,
@@ -237,7 +292,7 @@ class WorkflowBudgetMixin:
                         f"workflow budget exhausted: spent {self.budget.spent()} "
                         f"of {self.budget.total}"
                     )
-                if over_budget_ok and available <= 0:
+                if over_budget_ok and initial <= 0:
                     async with self._budget_escape_state.lock:
                         if self._budget_escape_state.used:
                             self._trace_budget_decision(
@@ -265,15 +320,26 @@ class WorkflowBudgetMixin:
                     total = max(0, cap) if cap is not None else UNBOUNDED_SESSION_BUDGET
                     return _BudgetLease(total=total, reserved=0, sessions=[])
 
-                collection_share = self._active_collection_budget.get()
-                share = collection_share(available) if collection_share is not None else None
+                collection = self._active_collection_budget.get()
+                recovery_limit = None
                 if cap is not None:
-                    total = min(cap, available)
-                elif share is not None:
-                    total = min(share, available)
+                    total = min(cap, initial)
+                    if self.budget._parent_allocation is not None:
+                        recovery_limit = cap
+                elif collection is not None:
+                    total = min(collection.entry_share, initial)
+                    recovery_limit = collection
                 else:
-                    total = max(1, available // max(1, self._budget_waiters))
-                lease = _BudgetLease(total=total, reserved=total, sessions=[])
+                    waiters = max(1, self._budget_waiters)
+                    total = max(1, initial // waiters)
+                    ceiling = recoverable // waiters
+                    if ceiling > total:
+                        recovery_limit = ceiling
+                lease = _BudgetLease(
+                    total=total, reserved=total, sessions=[], recovery_limit=recovery_limit, collection=collection,
+                )
+                if total > available:
+                    self.budget._claim_parent_capacity(total)
                 self.budget.reserve(lease)
                 return lease
         finally:

@@ -20,6 +20,27 @@ class WorkflowBudgetExceeded(Exception):
 class WorkflowEnvironmentRevoked(RuntimeError):
     """The shared workflow environment can no longer execute agent work."""
 
+@dataclass(eq=False)
+class _CollectionBudget:
+    size: int
+    entry_balance: int
+    parent: _CollectionBudget | None
+    recovered_share: int = 0
+
+    @property
+    def entry_share(self) -> int:
+        balance = self.entry_balance
+        if self.parent is not None:
+            balance = min(balance, self.parent.entry_share)
+        return max(1, balance // self.size)
+
+    def includes(self, member: _CollectionBudget | None) -> bool:
+        while member is not None:
+            if member is self:
+                return True
+            member = member.parent
+        return False
+
 @dataclass
 class _TaskPermitState:
     """Shared state for one context-wide task-concurrency slot."""
@@ -143,27 +164,16 @@ class WorkflowCollectionsMixin:
         if size == 0:
             return []
 
-        parent_share = self._active_collection_budget.get()
-        planned_budget: int | None = None
         starting_balance = self.budget.remaining()
         available_at_entry = int(starting_balance) if 0 < starting_balance < float("inf") else 0
-
-        def budget_share(live_balance: int) -> int:
-            nonlocal planned_budget
-            if planned_budget is None:
-                # A competing reservation can start or settle during preparation.
-                balance = max(available_at_entry, live_balance)
-                if parent_share is not None:
-                    balance = min(balance, parent_share(live_balance))
-                planned_budget = max(1, balance // size)
-            return planned_budget
+        collection_budget = _CollectionBudget(size, available_at_entry, self._active_collection_budget.get())
 
         results: list[Any] = [None] * size
         next_index = iter(range(size))
         errors: dict[int, BaseException] = {}
 
         async def execute(index: int) -> None:
-            budget_token = self._active_collection_budget.set(budget_share)
+            budget_token = self._active_collection_budget.set(collection_budget)
             try:
                 results[index] = await self._run_with_task_concurrency_permit(
                     lambda: run_unit(index)

@@ -804,12 +804,36 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if remaining_budget is not None:
             output_budget = remaining_budget - reserved_input_tokens
             if output_budget < minimum_output_tokens:
+                minimum = minimum_output_tokens - output_budget
+                preferred = max(max_output_tokens, minimum_output_tokens) - output_budget
+                if self._reclaim_request_budget(minimum, preferred):
+                    remaining_budget = self.remaining_budget_tokens
+                    assert remaining_budget is not None
+                    output_budget = remaining_budget - reserved_input_tokens
+            if output_budget < minimum_output_tokens:
                 raise _TokenBudgetStop(
                     reserved_input_tokens=reserved_input_tokens, remaining_budget=remaining_budget,
                     minimum_output_tokens=minimum_output_tokens,
                 )
             max_output_tokens = min(max_output_tokens, output_budget)
         return max_output_tokens
+
+    def _reclaim_request_budget(self, minimum: int, preferred: int) -> bool:
+        reclaim = self._request_budget_reclaim
+        control = self._run_control
+        if reclaim is None or self.max_budget_tokens != self.hard_budget_tokens:
+            return False
+        if control is not None and (
+            control.initial_soft_budget_tokens is not None or control.decide_budget is not None
+        ):
+            return False
+        self._raise_if_run_cancelled()
+        grant = reclaim(minimum, preferred)
+        if grant is None:
+            return False
+        self.max_budget_tokens = grant
+        self.hard_budget_tokens = grant
+        return True
 
     @property
     def remaining_budget_tokens(self) -> int | None:

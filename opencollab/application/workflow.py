@@ -30,7 +30,7 @@ import contextvars
 import logging
 import math
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from copy import deepcopy
 from typing import Any
@@ -74,6 +74,7 @@ from opencollab.application.workflow_collections import (
 )
 from opencollab.application.workflow_collections import (
     WorkflowCollectionsMixin,
+    _CollectionBudget,
     _TaskConcurrencyPermit,
 )
 from opencollab.application.workflow_collections import (
@@ -204,7 +205,7 @@ class WorkflowContext(
         self._active_budget_lease: contextvars.ContextVar[_BudgetLease | None] = (
             contextvars.ContextVar("workflow_budget_lease", default=None)
         )
-        self._active_collection_budget: contextvars.ContextVar[Callable[[int], int] | None] = (
+        self._active_collection_budget: contextvars.ContextVar[_CollectionBudget | None] = (
             contextvars.ContextVar("workflow_collection_budget", default=None)
         )
         self._active_concurrency_permit: contextvars.ContextVar[
@@ -744,6 +745,15 @@ class WorkflowContext(
             if lease.reserved and runner is not None:
                 # Other leases keep their allocation when a sibling overspends.
                 runner.budget_reservations.append(lambda: max(0, -int(self.budget.remaining())))
+                if (
+                    lease.recovery_limit is not None
+                    and len(lease.sessions) == 1
+                    and getattr(runner, "hard_budget_tokens", None) == lease.total
+                    and hasattr(runner, "_request_budget_reclaim")
+                ):
+                    runner._request_budget_reclaim = (
+                        lambda minimum, preferred: self.budget._claim_recovered_budget(lease, minimum, preferred)
+                    )
 
     def _active_call_has_pending_cleanup(self) -> bool:
         lease = self._active_budget_lease.get()

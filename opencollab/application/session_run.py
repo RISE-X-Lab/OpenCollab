@@ -121,6 +121,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
         self.budget_reservations: list[Callable[[], int]] = []
+        self._request_budget_reclaim: Callable[[int, int], int | None] | None = None
         self._initialize_run_control(run_control, run_id)
         self.max_steps = max_steps
         self.deferrable_tool_names = deferrable_tool_names
