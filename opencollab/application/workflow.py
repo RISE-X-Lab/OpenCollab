@@ -30,7 +30,7 @@ import contextvars
 import logging
 import math
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from copy import deepcopy
 from typing import Any
@@ -204,7 +204,7 @@ class WorkflowContext(
         self._active_budget_lease: contextvars.ContextVar[_BudgetLease | None] = (
             contextvars.ContextVar("workflow_budget_lease", default=None)
         )
-        self._active_collection_budget: contextvars.ContextVar[int | None] = (
+        self._active_collection_budget: contextvars.ContextVar[Callable[[int], int] | None] = (
             contextvars.ContextVar("workflow_collection_budget", default=None)
         )
         self._active_concurrency_permit: contextvars.ContextVar[

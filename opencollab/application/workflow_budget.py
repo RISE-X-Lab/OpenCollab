@@ -268,7 +268,7 @@ class WorkflowBudgetMixin:
                 if cap is None:
                     collection_share = self._active_collection_budget.get()
                     if collection_share is not None:
-                        total = min(collection_share, available)
+                        total = min(collection_share(available), available)
                     else:
                         total = max(
                             1,

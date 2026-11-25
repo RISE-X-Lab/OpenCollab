@@ -143,21 +143,27 @@ class WorkflowCollectionsMixin:
         if size == 0:
             return []
 
+        parent_share = self._active_collection_budget.get()
+        planned_budget: int | None = None
+
+        def budget_share(available: int) -> int:
+            nonlocal planned_budget
+            if planned_budget is None:
+                if parent_share is not None:
+                    available = min(available, parent_share(available))
+                planned_budget = max(1, available // size)
+            return planned_budget
+
+        # A fully reserved pool can regain tokens before the first agent call.
         remaining = self.budget.remaining()
-        if remaining == float("inf"):
-            planned_budget = None
-        else:
-            available = max(0, int(remaining))
-            parent_budget = self._active_collection_budget.get()
-            if parent_budget is not None:
-                available = min(available, parent_budget)
-            planned_budget = max(1, available // size) if available else 0
+        if 0 < remaining < float("inf"):
+            budget_share(int(remaining))
         results: list[Any] = [None] * size
         next_index = iter(range(size))
         errors: dict[int, BaseException] = {}
 
         async def execute(index: int) -> None:
-            budget_token = self._active_collection_budget.set(planned_budget)
+            budget_token = self._active_collection_budget.set(budget_share)
             try:
                 results[index] = await self._run_with_task_concurrency_permit(
                     lambda: run_unit(index)
