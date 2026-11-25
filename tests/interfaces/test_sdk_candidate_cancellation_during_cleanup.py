@@ -13,8 +13,9 @@ from tests.workflows.test_workflow_candidate_workspace import _git, _repository
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-async def test_candidate_releases_outer_worktree_when_cancelled_during_isolated_cleanup(
-    tmp_path, monkeypatch, cancel,
+@pytest.mark.parametrize("phase", ["pending_cleanup", "isolated_release"])
+async def test_candidate_releases_outer_worktree_when_cancelled_during_cleanup(
+    tmp_path, monkeypatch, cancel, phase,
 ):
     repository = _repository(tmp_path)
     entered, release = asyncio.Event(), asyncio.Event()
@@ -35,20 +36,38 @@ async def test_candidate_releases_outer_worktree_when_cancelled_during_isolated_
         assert await child.agent("review report", isolation="worktree", tools=[]) == "checked"
         environment = child.sessions[-1].env
         isolated.append(Path(environment.workspace))
-        cleanup = environment.cleanup
 
-        async def finish():
+        async def pause_cleanup():
             entered.set()
             await release.wait()
-            await cleanup()
 
-        monkeypatch.setattr(environment, "cleanup", finish)
+        if phase == "pending_cleanup":
+            waits = 0
+            wait = child.wait_for_pending_cleanup
+
+            async def wait_for_cleanup():
+                nonlocal waits
+                waits += 1
+                if waits == 2:
+                    child._track_pending_cleanup(asyncio.create_task(pause_cleanup()))
+                await wait()
+
+            monkeypatch.setattr(child, "wait_for_pending_cleanup", wait_for_cleanup)
+        else:
+            cleanup = environment.cleanup
+
+            async def finish():
+                await pause_cleanup()
+                await cleanup()
+
+            monkeypatch.setattr(environment, "cleanup", finish)
         return "ready"
 
     async def flow(ctx, inputs):
         task = asyncio.create_task(ctx.candidate_workflow(edit, inputs, label="report", budget=10000))
         try:
             await asyncio.wait_for(entered.wait(), 5)
+            assert "+prepared report" in (candidates[0].delivery_diff or "")
             assert Path(candidates[0].candidate_workspace, "report.txt").read_text() == "prepared report\n"
             assert isolated[0].is_dir()
             if cancel:

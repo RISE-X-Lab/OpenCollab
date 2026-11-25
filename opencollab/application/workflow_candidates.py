@@ -592,6 +592,10 @@ class WorkflowCandidatesMixin:
                 cleanup_quiesced = child is None
                 try:
                     if child is not None:
+                        async def finish_child() -> None:
+                            await child.wait_for_pending_cleanup()
+                            await child.release_isolated_workspaces()
+
                         try:
                             if isinstance(failure, asyncio.CancelledError):
                                 child._agent_run_environment_unsafe = True
@@ -599,17 +603,16 @@ class WorkflowCandidatesMixin:
                                 for active in tuple(child._active_call_tasks):
                                     if active is not current:
                                         active.cancel()
-                            await child.wait_for_pending_cleanup()
-                            release = asyncio.create_task(child.release_isolated_workspaces())
+                            cleanup = asyncio.create_task(finish_child())
                             try:
-                                await await_owned_operation(release, propagate_cancellation=True)
+                                await await_owned_operation(cleanup, propagate_cancellation=True)
                             except asyncio.CancelledError as exc:
                                 if failure is None:
                                     failure = exc
-                                if release.cancelled():
-                                    raise RuntimeError("isolated workspace cleanup was cancelled") from exc
+                                if cleanup.cancelled():
+                                    raise RuntimeError("candidate workflow cleanup was cancelled") from exc
                                 # Report cleanup failures through the normal retention path.
-                                release.result()
+                                cleanup.result()
                             cleanup_quiesced = True
                         except Exception as exc:
                             detail = f"{type(exc).__name__}: {exc}"
