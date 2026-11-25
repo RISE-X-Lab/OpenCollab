@@ -29,6 +29,7 @@ async def _wait(event):
         ("context", 100, [10, 128], "stopped", "Useful partial", [6000]),
         ("empty", 100, [10, 128], "stopped", "Useful partial", [6000, 6118]),
         ("invalid", 100, [10, 128], "failed", None, [6000]),
+        ("expired", 100, [10, 128], "failed", None, [6000]),
         ("filtered", 100, [10, 128], "stopped", "", [6000, 5994]),
     ],
 )
@@ -79,6 +80,10 @@ async def test_budget_replay_preserves_first_partial_when_it_cannot_improve(
             elif outcome in {"busy", "invalid"}:
                 code = 503 if outcome == "busy" else 400
                 return http_response(request, code, json={"error": {"message": f"Offline replay {outcome}"}})
+            elif outcome == "expired":
+                return http_response(request, 401, json={
+                    "error": {"message": "Authentication session expired after its idle timeout."},
+                })
             elif outcome == "context":
                 return http_response(request, 400, json={
                     "error": {"message": "Maximum context length exceeded", "code": "context_length_exceeded"},
@@ -152,3 +157,5 @@ async def test_budget_replay_preserves_first_partial_when_it_cannot_improve(
         assert review_payloads[0]["messages"] == review_payloads[1]["messages"]
     if outcome == "filtered":
         assert row.reason == "provider filtered the output"
+    if outcome == "expired":
+        assert "AuthenticationError" in row.reason

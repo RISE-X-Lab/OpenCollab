@@ -15,6 +15,7 @@ from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
 from opencollab.adapters.llm.errors import TransientProviderError, is_context_overflow_error
+from opencollab.application.ports import ProviderTerminalEventError
 
 # HTTP statuses worth retrying: timeouts, conflicts, rate limits, server errors.
 RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504, 529}
@@ -190,46 +191,32 @@ def _http_status_of(error: BaseException) -> int | None:
     return None
 
 def is_retryable_error(error: Exception) -> bool:
-    """Whether ``error`` looks transient (retryable status code or message)."""
-    if isinstance(error, TransientProviderError):
-        return True
-
     # The session handles context overflow by compacting before retry. Exclude
     # it here even when its message contains a transient-error fragment.
     if is_context_overflow_error(error):
         return False
 
-    status = getattr(error, "status_code", None)
-    if status in RETRYABLE_STATUS_CODES:
-        return True
-
-    response = getattr(error, "response", None)
-    if response is not None:
-        resp_status = getattr(response, "status_code", None)
-        if resp_status in RETRYABLE_STATUS_CODES:
-            return True
-
-    msg = str(error).lower()
-    if any(k in msg for k in RETRYABLE_MESSAGE_FRAGMENTS):
-        return True
-
-    # Follow the exception cause/context chain because SDK wrappers often
-    # preserve the useful transport error only as ``__cause__``.
+    retryable_hint = False
     current: BaseException | None = error
     seen: set[int] = set()
-    gateway_refusal = False
-    has_http_status = False
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        has_http_status = has_http_status or _http_status_of(current) is not None
+        # Status and typed terminal errors take precedence over wrapper text.
+        status = _http_status_of(current)
+        if status is not None:
+            return status in RETRYABLE_STATUS_CODES
+        if isinstance(current, TransientProviderError):
+            return True
+        if isinstance(current, ProviderTerminalEventError):
+            return False
         class_name = type(current).__name__.lower()
         if class_name in _TRANSIENT_TRANSPORT_CLASS_NAMES:
-            return True
+            retryable_hint = True
         message = str(current).lower()
         if class_name in _STATUSLESS_PROVIDER_ERROR_CLASS_NAMES and any(
             fragment in message for fragment in _TRANSIENT_GATEWAY_MESSAGE_FRAGMENTS
         ):
-            gateway_refusal = True
+            retryable_hint = True
         if any(
             fragment in message
             for fragment in _TRANSIENT_TRANSPORT_MESSAGE_FRAGMENTS
@@ -242,10 +229,10 @@ def is_retryable_error(error: Exception) -> bool:
             "remoteprotocolerror",
             "timeouterror",
         }:
-            return True
+            retryable_hint = True
         current = current.__cause__ or current.__context__
-    # A wrapper or cause carrying a status also excludes the gateway rule.
-    return gateway_refusal and not has_http_status
+    message = str(error).lower()
+    return retryable_hint or any(fragment in message for fragment in RETRYABLE_MESSAGE_FRAGMENTS)
 
 def extract_retry_after_seconds(
     error: Exception,
