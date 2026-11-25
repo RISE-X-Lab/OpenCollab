@@ -156,9 +156,6 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         # Previous steering spend drives threshold crossings. ``None`` makes
         # the first build compare spend against itself, including after restore.
         self._steering_prev_used_tokens: int | None = None
-        # One ``session_terminal`` row per session, not per turn: ``run_loop``
-        # can be re-entered on an already-finished session as a read-only query
-        # for its answer, and that must not add a second disposition.
         self._session_terminal_traced = False
         # The protected submit reserve is carved from the token cap.
         # Wind-down runs only when enforcement is enabled.
@@ -322,6 +319,8 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         read_final_answer = entry_phase is SessionPhase.DONE or (
             entry_phase is SessionPhase.STOPPED and self.state.terminal_reason == _FILTERED_OUTPUT_REASON
         )
+        if not read_final_answer:
+            self._session_terminal_traced = False
         if entry_phase is SessionPhase.AWAITING_EVENTS:
             self._turn_start_message_index = self.state.active_turn_start_message_index
         elif read_final_answer:
