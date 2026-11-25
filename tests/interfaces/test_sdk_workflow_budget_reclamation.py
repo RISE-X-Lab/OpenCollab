@@ -9,6 +9,7 @@ from opencollab import OpenCollab
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.adapters.tools.fs import FileReadTool
 
 
 @pytest.fixture
@@ -24,8 +25,13 @@ def repository(tmp_path):
 
 @pytest.mark.parametrize("kind", ["parallel", "pipeline"])
 @pytest.mark.parametrize("method", ["agent", "agent_run", "candidate_agent"])
-@pytest.mark.parametrize("input_cost", [3900, 4300])
-async def test_mixed_collection_claims_only_necessary_budget(repository, monkeypatch, kind, method, input_cost):
+@pytest.mark.parametrize(
+    "input_cost,output_limit,expected_grant",
+    [(2800, 128, 4000), (3900, 128, 4000), (4300, 128, 4428), (2800, 8192, 4000), (2800, 65536, 4000)],
+)
+async def test_mixed_collection_claims_only_necessary_budget(
+    repository, monkeypatch, kind, method, input_cost, output_limit, expected_grant,
+):
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", "")
@@ -112,7 +118,7 @@ async def test_mixed_collection_claims_only_necessary_budget(repository, monkeyp
     environment = LocalEnvironment(str(repository))
     try:
         result = await OpenCollab(
-            repository, environment=environment, model="offline", config={"max_output_tokens": 128},
+            repository, environment=environment, model="offline", config={"max_output_tokens": output_limit},
         ).workflow(
             flow, llm=Model(), candidate_workspace=EnvCandidateWorkspace(environment),
             budget=30000, concurrency=3, task_concurrency=3, limit_mode="explicit",
@@ -120,7 +126,6 @@ async def test_mixed_collection_claims_only_necessary_budget(repository, monkeyp
         )
     finally:
         await environment.cleanup()
-    expected_grant = 4000 if input_cost == 3900 else 4428
     assert result.status == "completed", result.reason
     assert result.output == ["Summarize", "Review", "Footer"]
     assert grants == {
@@ -128,7 +133,12 @@ async def test_mixed_collection_claims_only_necessary_budget(repository, monkeyp
         "available_for_review": 27000 - expected_grant,
         "review": 22000,
     }
-    assert calls == [("Prepare", 128), ("Summarize", expected_grant - input_cost), ("Review", 128), ("Footer", 128)]
+    assert calls == [
+        ("Prepare", min(output_limit, 18000 - 2990)),
+        ("Summarize", min(output_limit, expected_grant - input_cost)),
+        ("Review", min(output_limit, 22000 - 20490)),
+        ("Footer", min(output_limit, 2500 - 55)),
+    ]
     assert result.tokens == 23575 + input_cost
 
 
@@ -285,3 +295,194 @@ async def test_preparer_releases_before_queued_provider_admission(tmp_path, monk
     assert calls == [("prepare", 128), ("first", 128), ("second", 128)]
     assert budgets == {"first": ("completed", 7828, None), "second": ("completed", 7828, None)}
     assert result.tokens == 19420
+
+
+@pytest.mark.parametrize("exact", [False, True])
+async def test_recovery_after_spending_entire_entry_share(tmp_path, monkeypatch, exact):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", "")
+    (tmp_path / "notes.txt").write_text("Evidence for the review.\n")
+    preparing, release_prepare = asyncio.Event(), asyncio.Event()
+    collection_entered, release_collection = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    class Model:
+        def estimate_request_tokens(self, messages, tools=None, **kwargs):
+            if messages[-1]["role"] == "tool":
+                return 2000
+            return {"prepare": 2990, "review": 5872}[messages[-1]["content"]]
+
+        async def complete(self, messages, *, max_output_tokens, **kwargs):
+            last = messages[-1]
+            if last["role"] == "tool":
+                calls.append(("answer", max_output_tokens))
+                assert "Evidence for the review." in last["content"]
+                return LLMResponse(content="Review complete", usage=Usage(2000, 10), finish_reason="stop")
+            if last["content"] == "prepare":
+                calls.append(("prepare", max_output_tokens))
+                preparing.set()
+                await release_prepare.wait()
+                return LLMResponse(content="prepared", usage=Usage(2990, 10), finish_reason="stop")
+            calls.append(("read", max_output_tokens))
+            return LLMResponse(
+                tool_calls=[{
+                    "id": "read-notes",
+                    "type": "function",
+                    "function": {"name": "file_read", "arguments": '{"path":"notes.txt"}'},
+                }],
+                usage=Usage(5872, 128 if exact else 127),
+                finish_reason="tool_calls",
+            )
+
+    async def flow(ctx, _inputs):
+        async def review():
+            collection_entered.set()
+            await release_collection.wait()
+            row = await ctx.agent_run("review", tools=[FileReadTool()])
+            return row.status, row.output, row.reason, row.hard_budget_tokens
+
+        async def record():
+            return "logged"
+
+        prepare = asyncio.create_task(ctx.agent_run("prepare", budget=18000, tools=[]))
+        collection = None
+        try:
+            await asyncio.wait_for(preparing.wait(), 4)
+            collection = asyncio.create_task(ctx.parallel([review, record]))
+            await asyncio.wait_for(collection_entered.wait(), 4)
+            assert ctx.tokens_remaining() == 12000
+            release_prepare.set()
+            assert (await prepare).output == "prepared"
+            release_collection.set()
+            return await collection
+        finally:
+            release_prepare.set()
+            release_collection.set()
+            await asyncio.gather(prepare, *([collection] if collection else []), return_exceptions=True)
+
+    result = await OpenCollab(tmp_path, model="offline", config={"max_output_tokens": 128}).workflow(
+        flow, llm=Model(), budget=30000, concurrency=2, task_concurrency=2, limit_mode="explicit", timeout=15
+    )
+    assert result.status == "completed", result.reason
+    assert result.output == [("completed", "Review complete", None, 8128 if exact else 8127), "logged"]
+    assert calls == [("prepare", 128), ("read", 128), ("answer", 128)]
+    assert result.tokens == (11010 if exact else 11009)
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("direct-after", "completed"),
+        ("inner-collection", "completed"),
+        ("explicit-child", "completed"),
+        ("capped-child", "stopped"),
+        ("capped-outer", "stopped"),
+        ("direct-queued", "completed"),
+    ],
+)
+async def test_queued_candidate_child_rechecks_parent_allocation(repository, monkeypatch, mode, expected):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", "")
+    repo = repository
+
+    def label(messages):
+        return next(row["content"] for row in reversed(messages) if row["role"] == "user")
+
+    async def wait(event):
+        await asyncio.wait_for(event.wait(), 5)
+
+    preparing, release_prepare, prepare_done = (asyncio.Event() for _ in range(3))
+    child_setup = asyncio.Event()
+    calls, children, views = [], [], {}
+
+    class Model:
+        def estimate_request_tokens(self, messages, tools=None, **kwargs):
+            return {"prepare": 590, "review": 3000}[label(messages)]
+
+        async def complete(self, messages, *, max_output_tokens, **kwargs):
+            name = label(messages)
+            calls.append((name, max_output_tokens))
+            if name == "prepare":
+                preparing.set()
+                await wait(release_prepare)
+                return LLMResponse(content=name, usage=Usage(590, 10), finish_reason="stop")
+            return LLMResponse(content=name, usage=Usage(3000, 10), finish_reason="stop")
+
+    async def child_work(child, _inputs):
+        children.append(child)
+        child_setup.set()
+        if mode == "direct-after":
+            await wait(prepare_done)
+
+        async def review():
+            cap = {"explicit-child": 4000, "capped-child": 2000}.get(mode)
+            row = await child.agent_run("review", budget=cap, tools=[])
+            return row.status, row.output, row.hard_budget_tokens, row.reason
+
+        if mode == "inner-collection":
+            row, = await child.parallel([review])
+        else:
+            row = await review()
+        views["child_total"] = child.budget.total
+        return row
+
+    async def flow(ctx, _inputs):
+        async def run_candidate():
+            cap = 1000 if mode == "capped-outer" else None
+            return (await ctx.candidate_workflow(child_work, {}, label="draft", budget=cap)).output
+
+        async def note():
+            return "noted"
+
+        async def wait_for_child_reservation(child):
+            while not child.budget._leases:
+                await asyncio.sleep(0)
+
+        prep = asyncio.create_task(ctx.agent_run("prepare", budget=19000, tools=[]))
+        group = None
+        try:
+            await wait(preparing)
+            assert ctx.tokens_remaining() == 1000
+            group = asyncio.create_task(ctx.parallel([run_candidate, note]))
+            await wait(child_setup)
+            if mode != "direct-after":
+                await asyncio.wait_for(wait_for_child_reservation(children[0]), 5)
+                views["queued_grant"] = children[0].budget._leases[0].total
+            views["before_release"] = ctx.tokens_remaining()
+            release_prepare.set()
+            await prep
+            prepare_done.set()
+            output = await group
+            views["remaining"] = ctx.tokens_remaining()
+            views["leases"] = [len(ctx.budget._leases), len(children[0].budget._leases)]
+            return output
+        finally:
+            release_prepare.set()
+            prepare_done.set()
+            await asyncio.gather(*[t for t in (prep, group) if t], return_exceptions=True)
+
+    environment = LocalEnvironment(str(repo))
+    try:
+        result = await OpenCollab(
+            repo, environment=environment, model="offline", config={"max_output_tokens": 128},
+        ).workflow(
+            flow, llm=Model(), candidate_workspace=EnvCandidateWorkspace(environment),
+            budget=20000, concurrency=1, task_concurrency=2, limit_mode="explicit", timeout=15, trace=False,
+        )
+    finally:
+        await environment.cleanup()
+
+    assert result.status == "completed", result.reason
+    assert views["leases"] == [0, 0]
+    assert views["remaining"] == 20000 - result.tokens
+    assert result.output[0][0] == expected
+    if expected == "completed":
+        assert result.output[0][1] == "review"
+        assert calls == [("prepare", 128), ("review", 128)]
+        assert result.tokens == 3610
+    else:
+        assert calls == [("prepare", 128)]
+        assert result.tokens == 600
+        assert result.output[0][2] <= (1000 if mode == "capped-outer" else 2000)

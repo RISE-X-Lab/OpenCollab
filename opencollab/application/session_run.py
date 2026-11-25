@@ -28,6 +28,7 @@ from opencollab.application._session_run_shared import (
     PendingStep,
     _ContextOverflowStop,
     _last_assistant_answer,
+    _RequestBudgetRecovery,
     _submit_tool_choice,
     _TeamBudgetStop,
     _TokenBudgetStop,
@@ -121,7 +122,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
         self.budget_reservations: list[Callable[[], int]] = []
-        self._request_budget_reclaim: Callable[[int, int], int | None] | None = None
+        self._request_budget_recovery: _RequestBudgetRecovery | None = None
         self._initialize_run_control(run_control, run_id)
         self.max_steps = max_steps
         self.deferrable_tool_names = deferrable_tool_names
@@ -456,7 +457,9 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             and self.max_budget_tokens is not None
             and effective_reserve > self.max_budget_tokens
         ):
-            raise ValueError("commit_reserve cannot exceed max_budget_tokens")
+            missing = effective_reserve - self.max_budget_tokens
+            if not self._claim_request_budget(missing, missing):
+                raise ValueError("commit_reserve cannot exceed max_budget_tokens")
 
         self._enforcement_strength = enforcement_strength
         if commit_reserve is not None:
@@ -579,6 +582,9 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self._decide_run_budget(reason="wind_down")
             budget_spent = (self.max_budget_tokens is not None
                             and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve)
+            if budget_spent and self.max_budget_tokens is not None:
+                missing = self.state.used_tokens + self._commit_reserve + 1 - self.max_budget_tokens
+                budget_spent = not self._claim_request_budget(missing, missing)
         brake = budget_spent or watchdog_tripped or low_yield_tripped
         if not brake or not self.state.pending_events.is_empty():
             return False
@@ -640,9 +646,11 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             self.max_budget_tokens is not None
             and self.state.used_tokens >= self.max_budget_tokens
         ):
-            reason = f"budget exceeded: {self.state.used_tokens} tokens used"
-            await self._stop_precheck(reason)
-            return
+            recovery = self._budget_recovery_authority()
+            if self.state.used_tokens > self.max_budget_tokens or recovery is None or recovery.available() <= 0:
+                reason = f"budget exceeded: {self.state.used_tokens} tokens used"
+                await self._stop_precheck(reason)
+                return
 
         # Stop at the aggregate team ceiling even if this session has allowance left,
         # since an overshooting generation can consume the shared pool.

@@ -25,6 +25,7 @@ from opencollab.application._session_run_shared import (
     GenerationTimeoutError,
     _ContextOverflowStop,
     _request_tool_names,
+    _RequestBudgetRecovery,
     _submit_tool_choice,
     _TeamBudgetStop,
     _TokenBudgetStop,
@@ -693,7 +694,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if getattr(self.llm, "supports_response_session_identity", False):
             extra["response_session_id"] = self._response_session_id
         try:
-            return await self._invoke_llm(
+            return await self._invoke_with_budget_recovery(
                 messages=messages,
                 tools=tools,
                 temperature=self.agent.temperature,
@@ -728,7 +729,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 step_type="thinking_prefix_recovery",
                 payload={"aid": self.state.aid, "session_step": self.state.step_count, **payload},
             )
-        return await self._invoke_llm(
+        return await self._invoke_with_budget_recovery(
             messages=messages,
             tools=tools,
             temperature=self.agent.temperature,
@@ -803,13 +804,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         remaining_budget = self.remaining_budget_tokens
         if remaining_budget is not None:
             output_budget = remaining_budget - reserved_input_tokens
-            if output_budget < minimum_output_tokens:
-                minimum = minimum_output_tokens - output_budget
-                preferred = max(max_output_tokens, minimum_output_tokens) - output_budget
-                if self._reclaim_request_budget(minimum, preferred):
-                    remaining_budget = self.remaining_budget_tokens
-                    assert remaining_budget is not None
-                    output_budget = remaining_budget - reserved_input_tokens
+            if self._request_budget_recovery is not None and self._reclaim_output_budget(
+                output_budget, minimum_output_tokens, max_output_tokens,
+            ):
+                remaining_budget = self.remaining_budget_tokens
+                assert remaining_budget is not None
+                output_budget = remaining_budget - reserved_input_tokens
             if output_budget < minimum_output_tokens:
                 raise _TokenBudgetStop(
                     reserved_input_tokens=reserved_input_tokens, remaining_budget=remaining_budget,
@@ -818,22 +818,75 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             max_output_tokens = min(max_output_tokens, output_budget)
         return max_output_tokens
 
-    def _reclaim_request_budget(self, minimum: int, preferred: int) -> bool:
-        reclaim = self._request_budget_reclaim
+    def _budget_recovery_authority(self) -> _RequestBudgetRecovery | None:
         control = self._run_control
-        if reclaim is None or self.max_budget_tokens != self.hard_budget_tokens:
-            return False
+        if self.max_budget_tokens != self.hard_budget_tokens:
+            return None
         if control is not None and (
             control.initial_soft_budget_tokens is not None or control.decide_budget is not None
         ):
+            return None
+        return self._request_budget_recovery
+
+    def _reclaim_output_budget(self, output: int, minimum_output: int, configured_output: int) -> bool:
+        recovery = self._budget_recovery_authority()
+        if recovery is None:
+            return False
+        if not recovery.observed:
+            recovery.available()
+            recovery.observed = True
+        if output >= minimum_output:
+            return False
+        return self._claim_request_budget(
+            minimum_output - output, max(configured_output, minimum_output) - output,
+        )
+
+    def _claim_request_budget(self, minimum: int, preferred: int) -> bool:
+        recovery = self._budget_recovery_authority()
+        if recovery is None:
             return False
         self._raise_if_run_cancelled()
-        grant = reclaim(minimum, preferred)
+        grant = recovery.claim(minimum, preferred)
         if grant is None:
             return False
         self.max_budget_tokens = grant
         self.hard_budget_tokens = grant
         return True
+
+    async def _invoke_with_budget_recovery(
+        self, *, messages: list[dict], tools: list[dict] | None, max_output_tokens: int, **kwargs: Any,
+    ) -> CompletionResponse:
+        start = time.monotonic()
+        response = await self._invoke_llm(
+            messages=messages, tools=tools, max_output_tokens=max_output_tokens, **kwargs,
+        )
+        if response.finish_reason not in {"length", "max_tokens"} or self._budget_recovery_authority() is None:
+            return response
+        configured, _minimum, reserved = self._request_budget_requirements(
+            messages, tools, thinking=kwargs.get("thinking", False), thinking_params=kwargs.get("thinking_params"),
+        )
+        remaining = self.remaining_budget_tokens
+        if remaining is None or max_output_tokens >= configured:
+            return response
+        # The clipped response has already been billed. Fund the full replay before retrying.
+        missing = reserved + configured - remaining
+        if missing > 0 and not self._claim_request_budget(missing, missing):
+            return response
+        self._raise_if_run_cancelled()
+        latency = time.monotonic() - start
+        try:
+            retry_limit = self._revalidate_request(
+                messages, tools, thinking=kwargs.get("thinking", False), thinking_params=kwargs.get("thinking_params"),
+            )
+            if retry_limit < configured:
+                return response
+            replacement = await self._invoke_llm(
+                messages=messages, tools=tools, max_output_tokens=retry_limit, **kwargs,
+            )
+        except (_TokenBudgetStop, _TeamBudgetStop):
+            return response
+        self.record_llm_trace(response, latency)
+        return replacement
 
     @property
     def remaining_budget_tokens(self) -> int | None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,6 +24,12 @@ class _ContextOverflowStop(Exception):
 
 class _TeamBudgetStop(Exception):
     """Internal signal that shared team allowance ran out before a request."""
+
+@dataclass(slots=True)
+class _RequestBudgetRecovery:
+    available: Callable[[], int]
+    claim: Callable[[int, int], int | None]
+    observed: bool = False
 
 class _TokenBudgetStop(Exception):
     """Internal signal that a request has insufficient legal output headroom."""

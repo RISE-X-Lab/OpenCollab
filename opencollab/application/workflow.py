@@ -35,7 +35,7 @@ from contextlib import ExitStack
 from copy import deepcopy
 from typing import Any
 
-from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _RequestBudgetRecovery
 from opencollab.application.async_timeout import (
     CallerTimeoutError,
 )
@@ -746,13 +746,14 @@ class WorkflowContext(
                 # Other leases keep their allocation when a sibling overspends.
                 runner.budget_reservations.append(lambda: max(0, -int(self.budget.remaining())))
                 if (
-                    lease.recovery_limit is not None
+                    (lease.recovery_limit is not None or self.budget._parent_allocation is not None)
                     and len(lease.sessions) == 1
                     and getattr(runner, "hard_budget_tokens", None) == lease.total
-                    and hasattr(runner, "_request_budget_reclaim")
+                    and hasattr(runner, "_request_budget_recovery")
                 ):
-                    runner._request_budget_reclaim = (
-                        lambda minimum, preferred: self.budget._claim_recovered_budget(lease, minimum, preferred)
+                    runner._request_budget_recovery = _RequestBudgetRecovery(
+                        available=lambda: self.budget._recovery_room(lease),
+                        claim=lambda minimum, preferred: self.budget._claim_recovered_budget(lease, minimum, preferred),
                     )
 
     def _active_call_has_pending_cleanup(self) -> bool:

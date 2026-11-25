@@ -102,12 +102,16 @@ class WorkflowBudget:
         return collection.recovered_share
 
     def _recovery_room(self, lease: _BudgetLease) -> int:
-        if lease.total is None or lease.recovery_limit is None or lease not in self._leases:
+        if lease.total is None or lease not in self._leases:
+            return 0
+        limit = lease.recovery_limit
+        if limit is None and self._parent_allocation is None:
             return 0
         free = int(self.remaining()) + self._parent_recovery_room()
         if free <= 0:
             return 0
-        limit = lease.recovery_limit
+        if limit is None:
+            return free
         if isinstance(limit, _CollectionBudget):
             limit = self._collection_recovery_share(limit, free)
         return max(0, min(limit - lease.total, free))
@@ -330,11 +334,7 @@ class WorkflowBudgetMixin:
                     total = min(collection.entry_share, initial)
                     recovery_limit = collection
                 else:
-                    waiters = max(1, self._budget_waiters)
-                    total = max(1, initial // waiters)
-                    ceiling = recoverable // waiters
-                    if ceiling > total:
-                        recovery_limit = ceiling
+                    total = max(1, initial // max(1, self._budget_waiters))
                 lease = _BudgetLease(
                     total=total, reserved=total, sessions=[], recovery_limit=recovery_limit, collection=collection,
                 )
