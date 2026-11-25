@@ -38,6 +38,7 @@ from opencollab.application._session_run_usage import (
 )
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import (
     _NATIVE_COMPLETION_CAPABILITY,
     _NATIVE_REQUEST_ADMISSION,
@@ -879,25 +880,31 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         missing = reserved + retry_limit - remaining
         if missing > 0 and not self._claim_request_budget(missing, missing):
             return response
-        self._raise_if_run_cancelled()
         retry_started = time.monotonic()
         try:
+            self._raise_if_run_cancelled()
             replacement = await self._invoke_llm(
                 messages=messages, tools=tools, max_output_tokens=retry_limit,
                 required_output_tokens=retry_limit, **kwargs,
             )
         except (_TokenBudgetStop, _TeamBudgetStop):
             return response
-        except Exception as exc:
-            if not (
+        except BaseException as exc:
+            recoverable = isinstance(exc, Exception) and (
                 isinstance(exc, GenerationTimeoutError)
                 or self._is_context_overflow(exc)
                 or self._is_retryable_provider_error(exc)
-            ):
-                raise
-            self._raise_if_run_cancelled()
-            logger.warning("completion budget retry failed on aid=%s (%s)", self.state.aid, type(exc).__name__)
-            return response
+            )
+            if recoverable and not self._run_cancellation_requested():
+                logger.warning("completion budget retry failed on aid=%s (%s)", self.state.aid, type(exc).__name__)
+                return response
+            try:
+                self.record_llm_trace(response, retry_started - start, purpose="budget_recovery")
+            except Exception as trace_error:
+                add_exception_note(exc, f"completion trace failed: {type(trace_error).__name__}")
+            if recoverable:
+                self._raise_if_run_cancelled()
+            raise
         replacement_has_text = isinstance(replacement.content, str) and bool(replacement.content.strip())
         replacement_has_action = (
             replacement.tool_calls and replacement.finish_reason not in _INCOMPLETE_RESPONSE_REASONS

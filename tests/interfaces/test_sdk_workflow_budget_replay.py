@@ -143,7 +143,7 @@ async def test_budget_replay_preserves_first_partial_when_it_cannot_improve(
     ) as client:
         result = await OpenCollab(tmp_path, model="gpt-4o", config={"max_output_tokens": 128}).workflow(
             workflow, llm=client, budget=30000, concurrency=3, task_concurrency=2, limit_mode="explicit",
-            trace=False, timeout=15,
+            artifacts=tmp_path / "artifacts", trace=True, timeout=15,
         )
 
     assert result.status == "completed", result.reason
@@ -151,6 +151,10 @@ async def test_budget_replay_preserves_first_partial_when_it_cannot_improve(
     assert (row.status, row.output, row.steps) == (status, output, 1)
     assert row.tokens == sum(usage)
     assert result.tokens == 3000 + sibling_tokens + row.tokens
+    trace_path = tmp_path / "artifacts" / "orchestration.jsonl"
+    rows = [json.loads(line) for line in trace_path.read_text().splitlines()]
+    completions = [row for row in rows if row["type"] == "llm_call"]
+    assert sum(row["metrics"]["tokens"] for row in completions) == result.tokens
     assert [event.data["total_tokens"] for event in events if event.type == "usage"] == usage
     assert [body["max_tokens"] for body in review_payloads] == review_limits
     if len(review_limits) > 1:
