@@ -18,7 +18,7 @@ from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient, is_context_overflow_error
 from opencollab.adapters.llm.anthropic_provider import _anthropic_thinking_is_always_on
 from opencollab.adapters.llm.providers import is_anthropic
-from opencollab.adapters.llm.retry import RetryTimeBudget
+from opencollab.adapters.llm.retry import RetryTimeBudget, is_retryable_error
 from opencollab.adapters.skills.file_skill_store import FileSkillStore
 from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.adapters.storage import SessionStore
@@ -530,6 +530,7 @@ def build_session_runtime(
             # boundary pattern as the team-budget predicate). Enables the
             # force-compact-and-retry + graceful-stop safety net in ``call_llm``.
             is_context_overflow=is_context_overflow_error,
+            is_retryable_provider_error=is_retryable_error,
             # Cooperative per-generation ceiling: bound a single model call to the
             # configured provider timeout so one slow (thinking) generation cannot
             # eat the whole run wall (P7).

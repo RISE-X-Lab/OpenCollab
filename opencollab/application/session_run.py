@@ -96,6 +96,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         shaper: ShaperPort | None = None,
         team_budget_exhausted: Callable[[], bool] | None = None,
         is_context_overflow: Callable[[Exception], bool] | None = None,
+        is_retryable_provider_error: Callable[[Exception], bool] | None = None,
         per_call_timeout: float | None = None,
         enforcement_strength: str = ENFORCEMENT_OFF,
         commit_reserve: int = DEFAULT_COMMIT_RESERVE,
@@ -133,6 +134,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         # The adapter classifies provider context overflow without provider imports
         # in this layer. An unwired classifier leaves exceptions on the ERROR path.
         self._is_context_overflow = is_context_overflow or (lambda _exc: False)
+        self._is_retryable_provider_error = is_retryable_provider_error or (lambda _exc: False)
         # Bound each generation because an HTTP timeout may not bound a slow
         # streaming or thinking response within the run's wall-clock budget.
         if per_call_timeout is None:

@@ -792,6 +792,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     def _request_output_limit(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool,
         thinking_params: dict[str, Any] | None = None,
+        required_output_tokens: int = 0,
     ) -> int:
         if self._team_budget_exhausted is not None and self._team_budget_exhausted():
             raise _TeamBudgetStop
@@ -801,6 +802,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._run_control is not None and self.hard_budget_tokens is not None
             ),
         )
+        minimum_output_tokens = max(minimum_output_tokens, required_output_tokens)
         remaining_budget = self.remaining_budget_tokens
         if remaining_budget is not None:
             output_budget = remaining_budget - reserved_input_tokens
@@ -860,32 +862,50 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         response = await self._invoke_llm(
             messages=messages, tools=tools, max_output_tokens=max_output_tokens, **kwargs,
         )
-        if response.finish_reason not in {"length", "max_tokens"} or self._budget_recovery_authority() is None:
+        recovery = self._budget_recovery_authority()
+        if response.finish_reason not in {"length", "max_tokens"} or recovery is None:
             return response
-        configured, _minimum, reserved = self._request_budget_requirements(
+        configured, minimum, reserved = self._request_budget_requirements(
             messages, tools, thinking=kwargs.get("thinking", False), thinking_params=kwargs.get("thinking_params"),
         )
         remaining = self.remaining_budget_tokens
         if remaining is None or max_output_tokens >= configured:
             return response
-        # The clipped response has already been billed. Fund the full replay before retrying.
-        missing = reserved + configured - remaining
+        # The clipped response has been billed. The next request must fit the
+        # prompt again and leave more output headroom than the first attempt.
+        retry_limit = min(configured, remaining + recovery.available() - reserved)
+        if retry_limit <= max_output_tokens or retry_limit < minimum:
+            return response
+        missing = reserved + retry_limit - remaining
         if missing > 0 and not self._claim_request_budget(missing, missing):
             return response
         self._raise_if_run_cancelled()
-        latency = time.monotonic() - start
+        retry_started = time.monotonic()
         try:
-            retry_limit = self._revalidate_request(
-                messages, tools, thinking=kwargs.get("thinking", False), thinking_params=kwargs.get("thinking_params"),
-            )
-            if retry_limit < configured:
-                return response
             replacement = await self._invoke_llm(
-                messages=messages, tools=tools, max_output_tokens=retry_limit, **kwargs,
+                messages=messages, tools=tools, max_output_tokens=retry_limit,
+                required_output_tokens=retry_limit, **kwargs,
             )
         except (_TokenBudgetStop, _TeamBudgetStop):
             return response
-        self.record_llm_trace(response, latency)
+        except Exception as exc:
+            if not (
+                isinstance(exc, GenerationTimeoutError)
+                or self._is_context_overflow(exc)
+                or self._is_retryable_provider_error(exc)
+            ):
+                raise
+            self._raise_if_run_cancelled()
+            logger.warning("completion budget retry failed on aid=%s (%s)", self.state.aid, type(exc).__name__)
+            return response
+        replacement_has_text = isinstance(replacement.content, str) and bool(replacement.content.strip())
+        replacement_has_action = (
+            replacement.tool_calls and replacement.finish_reason not in _INCOMPLETE_RESPONSE_REASONS
+        )
+        if replacement.finish_reason != "content_filter" and not (replacement_has_text or replacement_has_action):
+            self.record_llm_trace(replacement, time.monotonic() - retry_started, purpose="budget_recovery")
+            return response
+        self.record_llm_trace(response, retry_started - start, purpose="budget_recovery")
         return replacement
 
     @property
@@ -973,10 +993,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     def _revalidate_request(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool = False,
         thinking_params: dict[str, Any] | None = None,
+        required_output_tokens: int = 0,
     ) -> int:
         self._raise_if_run_cancelled()
         return self._request_output_limit(
             messages, tools, thinking=thinking, thinking_params=thinking_params,
+            required_output_tokens=required_output_tokens,
         )
 
     async def _invoke_summary(
@@ -1068,7 +1090,9 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._mark_provider_task_draining(owner)
             raise
 
-    async def _invoke_llm(self, *, max_output_tokens: int, **kwargs: Any) -> CompletionResponse:
+    async def _invoke_llm(
+        self, *, max_output_tokens: int, required_output_tokens: int = 0, **kwargs: Any,
+    ) -> CompletionResponse:
         """Bound one provider generation by ``_per_call_timeout``.
 
         ``None`` disables the ceiling. Expiry raises ``GenerationTimeoutError``
@@ -1080,13 +1104,16 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         protected_call = self.state.wind_down_done
         usage_accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
         complete = self.llm.complete
+
+        def revalidate() -> int:
+            return self._revalidate_request(
+                kwargs["messages"], kwargs.get("tools"), thinking=kwargs.get("thinking", False),
+                thinking_params=kwargs.get("thinking_params"), required_output_tokens=required_output_tokens,
+            )
+
         admitted, scope = self._add_completion_controls(
             complete, kwargs, max_output_tokens=max_output_tokens,
-            usage_accounting=usage_accounting,
-            revalidate=lambda: self._revalidate_request(
-                kwargs["messages"], kwargs.get("tools"), thinking=kwargs.get("thinking", False),
-                thinking_params=kwargs.get("thinking_params"),
-            ),
+            usage_accounting=usage_accounting, revalidate=revalidate,
         )
         if scope is not None:
             kwargs["messages"] = scope.prepare_messages(kwargs["messages"])
@@ -1095,6 +1122,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         async def complete_owned() -> CompletionResponse:
             nonlocal late_accounted
             try:
+                if required_output_tokens:
+                    revalidate()
                 response = await _complete_with_error_usage(
                     self, complete, usage_accounting=usage_accounting, **kwargs,
                 )

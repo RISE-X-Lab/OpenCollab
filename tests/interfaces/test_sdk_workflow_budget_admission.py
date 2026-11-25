@@ -114,15 +114,16 @@ async def test_later_review_can_spend_immediately_free_tokens(tmp_path, first_co
 
 
 @pytest.mark.parametrize(
-    "review_input,prepare_tokens,expected_output,expected_limits,review_tokens",
+    "review_input,prepare_tokens,configured_output,expected_output,expected_limits,review_tokens",
     [
-        (5750, 3000, "Review complete", [128], 5774),
-        (5990, 3000, "Review complete", [10, 128], 12014),
-        (5990, 10000, None, [10], 6000),
+        (5750, 3000, 128, "Review complete", [128], 5774),
+        (5990, 3000, 128, "Review complete", [10, 128], 12014),
+        (5990, 3000, 8192, "Review complete", [10, 1510], 12014),
+        (5990, 10000, 128, None, [10], 6000),
     ],
 )
 async def test_truncated_request_replays_only_with_full_budget(
-    tmp_path, review_input, prepare_tokens, expected_output, expected_limits, review_tokens,
+    tmp_path, review_input, prepare_tokens, configured_output, expected_output, expected_limits, review_tokens,
 ):
     preparing, release_prepare = asyncio.Event(), asyncio.Event()
     entered, start = asyncio.Event(), asyncio.Event()
@@ -171,7 +172,7 @@ async def test_truncated_request_replays_only_with_full_budget(
             start.set()
             await asyncio.gather(*[t for t in (prep, group) if t], return_exceptions=True)
 
-    result = await OpenCollab(tmp_path, model="offline", config={"max_output_tokens": 128}).workflow(
+    result = await OpenCollab(tmp_path, model="offline", config={"max_output_tokens": configured_output}).workflow(
         flow, llm=Model(), budget=30000, concurrency=2, task_concurrency=2,
         limit_mode="explicit", timeout=10, trace=False,
     )
@@ -182,7 +183,7 @@ async def test_truncated_request_replays_only_with_full_budget(
         assert "output truncated" in result.output[0][3]
     else:
         assert (row_status, output) == ("completed", expected_output)
-    assert calls == [("prepare", 128), *(("review", limit) for limit in expected_limits)]
+    assert calls == [("prepare", configured_output), *(("review", limit) for limit in expected_limits)]
     assert result.tokens == prepare_tokens + review_tokens
 
 
