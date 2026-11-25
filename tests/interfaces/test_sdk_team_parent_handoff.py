@@ -49,11 +49,11 @@ async def test_public_saved_parent_delivers_each_child_once(
         original_init(self, *args, **kwargs)
         schedulers.append(self)
 
-    async def save_after_child_delivery(self):
+    async def save_after_child_delivery(self, **kwargs):
         if checkpoint_tail and self.agent.name == "lead" and self.state.phase is SessionPhase.AWAITING_EVENTS:
             checkpoint_entered.set()
             await children_delivered.wait()
-        await original_checkpoint(self)
+        await original_checkpoint(self, **kwargs)
 
     async def capture_delivery(self, *args, **kwargs):
         nonlocal deliveries
