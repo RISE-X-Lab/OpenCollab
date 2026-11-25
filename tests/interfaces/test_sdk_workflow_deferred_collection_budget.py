@@ -226,3 +226,103 @@ async def test_collection_keeps_live_available_budget_during_later_temporary_res
         assert grants["first"].hard_budget_tokens == 8000
     else:
         assert 9900 <= grants["first"].hard_budget_tokens <= 10000
+
+@pytest.mark.parametrize("nested", [False, True], ids=["direct", "nested"])
+async def test_parent_balance_uses_its_own_entry_and_live_admission(tmp_path, monkeypatch, nested):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+
+    preparation_started, settle_preparation = asyncio.Event(), asyncio.Event()
+    parent_preparing, start_first_group = asyncio.Event(), asyncio.Event()
+    first_group_entered, admit_first = asyncio.Event(), asyncio.Event()
+    outside_started, settle_outside = asyncio.Event(), asyncio.Event()
+    first_started, finish_first = asyncio.Event(), asyncio.Event()
+    second_attempted = asyncio.Event()
+    grants = {}
+
+    class Model:
+        async def complete(self, messages, **kwargs):
+            prompt = [row["content"] for row in messages if row["role"] == "user"][-1]
+            if prompt == "Prepare a set of notes.":
+                preparation_started.set()
+                await settle_preparation.wait()
+                return LLMResponse(content=prompt, usage=Usage(3990, 10))
+            if prompt == "Annotate the unrelated document.":
+                outside_started.set()
+                await settle_outside.wait()
+            elif prompt == "Summarize the first report.":
+                first_started.set()
+                await finish_first.wait()
+            return LLMResponse(content=prompt, usage=Usage(8, 7))
+
+    async def flow(ctx, _inputs):
+        async def first_item():
+            assert ctx.tokens_remaining() == 16000
+            first_group_entered.set()
+            await admit_first.wait()
+            row = await ctx.agent_run("Summarize the first report.", tools=[])
+            grants["first"] = row.hard_budget_tokens
+            return row.output
+
+        async def stage(_previous, _item, _index):
+            return await first_item()
+
+        async def first_group():
+            assert ctx.tokens_remaining() == 4000
+            parent_preparing.set()
+            await start_first_group.wait()
+            if nested:
+                return (await ctx.pipeline(["first"], stage))[0]
+            return await first_item()
+
+        async def second_group():
+            await first_started.wait()
+            assert ctx.tokens_remaining() == 4000
+            try:
+                row = await ctx.agent_run("Summarize the second report.", tools=[])
+                grants["second"] = row.hard_budget_tokens
+                return row.output
+            finally:
+                second_attempted.set()
+
+        first = asyncio.create_task(ctx.agent_run("Prepare a set of notes.", tools=[], budget=16000))
+        tasks = [first]
+        try:
+            await asyncio.wait_for(preparation_started.wait(), 4)
+            assert ctx.tokens_remaining() == 4000
+            collection = asyncio.create_task(ctx.parallel([first_group, second_group]))
+            tasks.append(collection)
+            await asyncio.wait_for(parent_preparing.wait(), 4)
+            settle_preparation.set()
+            assert (await first).output == "Prepare a set of notes."
+            assert ctx.tokens_remaining() == 16000
+            start_first_group.set()
+            await asyncio.wait_for(first_group_entered.wait(), 4)
+            other = asyncio.create_task(ctx.agent_run("Annotate the unrelated document.", tools=[], budget=8000))
+            tasks.append(other)
+            await asyncio.wait_for(outside_started.wait(), 4)
+            assert ctx.tokens_remaining() == 8000
+            admit_first.set()
+            await asyncio.wait_for(second_attempted.wait(), 4)
+            finish_first.set()
+            settle_outside.set()
+            await other
+            return await collection
+        finally:
+            settle_preparation.set()
+            start_first_group.set()
+            admit_first.set()
+            finish_first.set()
+            settle_outside.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    result = await OpenCollab(
+        tmp_path, model="offline", config={"max_output_tokens": 128},
+    ).workflow(
+        flow, llm=Model(), budget=20000, concurrency=3, task_concurrency=3, timeout=10,
+        trace=False, limit_mode="explicit", system_prompt="Summarize one detail.",
+    )
+    assert result.status == "completed", result.reason
+    assert result.output == ["Summarize the first report.", "Summarize the second report."]
+    assert result.tokens == 4045
+    assert grants == {"first": 4000, "second": 4000}
