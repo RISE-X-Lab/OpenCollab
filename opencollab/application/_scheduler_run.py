@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.scheduler_types import SchedulerStalledError, SchedulerTurnError
 from opencollab.domain.pending import RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
@@ -63,14 +64,17 @@ class SchedulerRunMixin:
                 finally:
                     if self._turn_cancel_events.get(aid) is cancel_event:
                         self._turn_cancel_events.pop(aid, None)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancellation:
             # Acquiring the run lock gives this caller ownership of the team
             # turn. A cancelled waiter only withdraws its queued request.
             if owns_turn and not self._shutting_down:
                 if current_task is not None:
                     if self._active_run_tasks.get(current_task) == aid:
                         self._active_run_tasks.pop(current_task, None)
-                await self.cleanup()
+                try:
+                    await self.cleanup()
+                except Exception as exc:
+                    add_exception_note(cancellation, f"scheduler cleanup also failed: {type(exc).__name__}: {exc}")
             raise
         finally:
             if current_task is not None:
