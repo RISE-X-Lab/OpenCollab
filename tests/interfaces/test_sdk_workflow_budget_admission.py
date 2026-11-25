@@ -273,13 +273,18 @@ async def test_recovery_respects_session_authority(tmp_path, control_kind, budge
 
 
 @pytest.mark.parametrize(
-    "prepare_cap,commit_reserve", [(18_000, 256), (19_800, 256), (19_800, 100)],
+    "prepare_cap,commit_reserve,room",
+    [
+        (18_000, 256, None), (19_800, 256, None), (19_800, 100, None),
+        (16_000, 1_000, 0), (16_000, 1_000, 100), (16_000, 1_000, 700),
+    ],
 )
-async def test_released_budget_reaches_enforced_scout_before_wind_down(tmp_path, prepare_cap, commit_reserve):
+async def test_released_budget_reaches_enforced_scout_before_wind_down(tmp_path, prepare_cap, commit_reserve, room):
     (tmp_path / "notes.txt").write_text("Observed measurement is 42 ms.\n")
     preparing, release = asyncio.Event(), asyncio.Event()
     entered, start = asyncio.Event(), asyncio.Event()
-    actions = []
+    reading, other_started, release_other = (asyncio.Event() for _ in range(3))
+    actions, offered_tools = [], []
 
     async def wait(event):
         await asyncio.wait_for(event.wait(), 5)
@@ -287,23 +292,39 @@ async def test_released_budget_reaches_enforced_scout_before_wind_down(tmp_path,
     def call(name, arguments):
         return {"id": name, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
 
+    def has_evidence(messages):
+        return any(
+            row["role"] == "tool" and "Observed measurement is 42 ms." in row["content"] for row in messages
+        )
+
     class Model:
         def estimate_request_tokens(self, messages, tools=None, **kwargs):
-            return 80
+            if room is None or user_label(messages) in {"prepare", "other"}:
+                return 80
+            if not has_evidence(messages):
+                return 900
+            return 1_400 if any(tool["function"]["name"] == "file_read" for tool in tools) else 850
 
         async def complete(self, messages, *, tools, **kwargs):
-            user = next(row["content"] for row in messages if row["role"] == "user")
+            user = user_label(messages)
             if user == "prepare":
                 preparing.set()
                 await wait(release)
                 return LLMResponse(content="prepared", usage=Usage(590, 10), finish_reason="stop")
+            if user == "other":
+                other_started.set()
+                await wait(release_other)
+                return LLMResponse(content="other finished", usage=Usage(80, 10), finish_reason="stop")
             tool_names = [tool["function"]["name"] for tool in tools]
-            evidence = any(
-                row["role"] == "tool" and "Observed measurement is 42 ms." in row["content"] for row in messages
-            )
+            evidence = has_evidence(messages)
+            offered_tools.append(tool_names)
             if "file_read" in tool_names and not evidence:
                 actions.append("read")
                 response = call("file_read", {"path": "notes.txt"})
+                if room is not None:
+                    reading.set()
+                    await wait(other_started)
+                    return LLMResponse(tool_calls=[response], usage=Usage(911, 89), finish_reason="tool_calls")
             elif evidence:
                 actions.append("submit")
                 response = call("submit_findings", {
@@ -319,7 +340,8 @@ async def test_released_budget_reaches_enforced_scout_before_wind_down(tmp_path,
                 response = call("submit_findings", {
                     "summary": "No evidence was collected.", "findings": [], "insufficient_evidence": True,
                 })
-            return LLMResponse(tool_calls=[response], usage=Usage(80, 15), finish_reason="tool_calls")
+            usage = Usage(self.estimate_request_tokens(messages, tools), 15)
+            return LLMResponse(tool_calls=[response], usage=usage, finish_reason="tool_calls")
 
     async def flow(ctx, _inputs):
         async def scout():
@@ -334,7 +356,7 @@ async def test_released_budget_reaches_enforced_scout_before_wind_down(tmp_path,
             return "recorded"
 
         prep = asyncio.create_task(ctx.agent_run("prepare", budget=prepare_cap, tools=[]))
-        group = None
+        group = other = None
         try:
             await wait(preparing)
             assert ctx.tokens_remaining() == 20_000 - prepare_cap
@@ -344,11 +366,17 @@ async def test_released_budget_reaches_enforced_scout_before_wind_down(tmp_path,
             await prep
             assert ctx.tokens_remaining() == 19_400
             start.set()
+            if room is not None:
+                await wait(reading)
+                remaining = ctx.tokens_remaining()
+                other = asyncio.create_task(ctx.agent_run("other", budget=int(remaining) - room, tools=[]))
+                await wait(other_started)
+                assert ctx.tokens_remaining() == room
             return await group
         finally:
-            release.set()
-            start.set()
-            await asyncio.gather(*[t for t in (prep, group) if t], return_exceptions=True)
+            for event in (release, start, other_started, release_other):
+                event.set()
+            await asyncio.gather(*[t for t in (prep, group, other) if t], return_exceptions=True)
 
     result = await OpenCollab(tmp_path, model="offline", config={"max_output_tokens": 128}).workflow(
         flow, llm=Model(), budget=20000, concurrency=2, task_concurrency=2,
@@ -358,3 +386,7 @@ async def test_released_budget_reaches_enforced_scout_before_wind_down(tmp_path,
     assert result.status == "completed", result.reason
     assert actions == ["read", "submit"]
     assert "Measured time was 42 ms." in result.output[0]
+    if room in (0, 100):
+        assert offered_tools[-1] == ["submit_findings"]
+    elif room == 700:
+        assert "file_read" in offered_tools[-1]

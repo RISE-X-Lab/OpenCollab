@@ -165,6 +165,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         # Wind-down runs only when enforcement is enabled.
         self._enforcement_strength = enforcement_strength
         self._commit_reserve = commit_reserve
+        self._budget_wind_down_deferred = False
         self._submit_tool_name = submit_tool_name
         # No-progress and low-yield limits share the budget wind-down actuator.
         self._watchdog_k = watchdog_k
@@ -557,6 +558,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         attempt counts allow one protected submit turn and one compatibility retry,
         then STOPPED, including after restore. Return whether a phase was selected.
         """
+        self._budget_wind_down_deferred = False
         if not self._enforcement_on():
             return False
         if self.state.wind_down_done:
@@ -583,9 +585,16 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self._decide_run_budget(reason="wind_down")
             budget_spent = (self.max_budget_tokens is not None
                             and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve)
-            if budget_spent and self.max_budget_tokens is not None:
+            if (
+                budget_spent
+                and not self.state.budget_reserve_consumed
+                and self.state.pending_events.is_empty()
+                and self.max_budget_tokens is not None
+            ):
                 missing = self.state.used_tokens + self._commit_reserve + 1 - self.max_budget_tokens
-                budget_spent = not self._claim_request_budget(missing, missing)
+                if self._claim_request_budget(missing, missing):
+                    self._budget_wind_down_deferred = True
+                    return False
         brake = budget_spent or watchdog_tripped or low_yield_tripped
         if not brake or not self.state.pending_events.is_empty():
             return False
@@ -595,6 +604,11 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             )
             return True
 
+        await self._begin_wind_down(budget_spent, watchdog_tripped, low_yield_tripped)
+        self.state.transition_to(SessionPhase.CALLING_LLM)
+        return True
+
+    async def _begin_wind_down(self, budget_spent: bool, watchdog_tripped: bool, low_yield_tripped: bool) -> None:
         self._trace_brake_trip(budget_spent, watchdog_tripped, low_yield_tripped)
         if budget_spent:
             self.state.budget_reserve_consumed = True
@@ -609,8 +623,6 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
                 )
             )
         self._enter_wind_down()
-        self.state.transition_to(SessionPhase.CALLING_LLM)
-        return True
 
     def _ensure_tool_environment_active(self) -> None:
         if getattr(self.tool_execution, "environment_revoked", False):
@@ -681,8 +693,17 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         start = time.monotonic()
 
         tools = self.build_tool_schemas()
+        deferred_wind_down = self._budget_wind_down_deferred
+        self._budget_wind_down_deferred = False
         try:
-            response = await self.call_llm(tools)
+            try:
+                response = await self.call_llm(tools)
+            except _TokenBudgetStop:
+                if not deferred_wind_down:
+                    raise
+                self._raise_if_run_cancelled()
+                await self._begin_wind_down(budget_spent=True, watchdog_tripped=False, low_yield_tripped=False)
+                response = await self.call_llm(self.build_tool_schemas())
         except _RunCancelled:
             await self._stop_for_run_cancellation()
             return
