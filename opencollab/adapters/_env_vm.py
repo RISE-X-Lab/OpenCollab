@@ -23,7 +23,7 @@ from opencollab.adapters._env_base import (
     Environment,
     ExecResult,
     TextFileRange,
-    WriteRejectedValueError,
+    _mark_write_rejected,
 )
 from opencollab.adapters._env_process import (
     ProcessCleanupError,
@@ -301,7 +301,7 @@ class VMEnvironment(Environment):
 
     async def write_file_with_change(self, path: str, content: str) -> bool | None:
         if len(content.encode()) > ENV_FILE_WRITE_LIMIT_BYTES:
-            raise WriteRejectedValueError("VM file exceeds write limit")
+            raise _mark_write_rejected(ValueError("VM file exceeds write limit"))
         return await self._operate("write", {"path": path, "content": content})
 
     async def write_temp_file(self, content: str, *, prefix: str, suffix: str = ".tmp") -> str:

@@ -7,7 +7,7 @@ import shlex
 from copy import deepcopy
 from typing import Any
 
-from opencollab.adapters._env_base import TextFileRange, WriteRejectedValueError, WriteRejectedWithoutChanges
+from opencollab.adapters._env_base import TextFileRange, _is_write_rejected
 from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
 from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools._parameters import integer_parameter
@@ -265,14 +265,14 @@ class FileWriteTool(Tool):
                 if mode == "str_replace":
                     return await self._str_replace(env, path, params, observations=observations)
                 return f"Error: unknown mode '{mode}'. Use 'create' or 'str_replace'."
-        except (WriteRejectedWithoutChanges, WriteRejectedValueError) as e:
-            if observations is not None:
-                observations.record_write(completed=False, changed=False, path=path)
-            raise e.public_error(*e.args) from e
         except PermissionError as e:
             return f"Error: {e}"
         except UnicodeDecodeError as e:
             return f"Error: refusing to edit non-UTF-8 file: invalid UTF-8 at byte {e.start}."
+        except (OSError, ValueError) as e:
+            if observations is not None and _is_write_rejected(e):
+                observations.record_write(completed=False, changed=False, path=path)
+            raise
 
     async def _create(
         self, env: Any, path: str, content: str, *, overwrite: bool = False, observations: Any = None

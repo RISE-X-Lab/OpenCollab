@@ -23,7 +23,7 @@ from opencollab.adapters._env_base import (
     Environment,
     ExecResult,
     TextFileRange,
-    WriteRejectedWithoutChanges,
+    _mark_write_rejected,
 )
 from opencollab.adapters._env_process import (
     PROCESS_OUTPUT_CAPTURE_BYTES,
@@ -896,9 +896,9 @@ class DockerEnvironment(Environment):
     ) -> bool | None:
         payload = content.encode("utf-8")
         if len(payload) > ENV_FILE_WRITE_LIMIT_BYTES:
-            raise WriteRejectedWithoutChanges(
-                f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {path}"
-            )
+            raise _mark_write_rejected(OSError(
+                f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {path}",
+            ))
         async with self._target_file_write_lock(path, containment_root=containment_root) as target:
             if containment_root == "/tmp":
                 self._temporary_files.add(path)

@@ -1,6 +1,7 @@
 """Observed writes resolve paths read-only and publish in one payload call."""
 from __future__ import annotations
 
+import errno
 import os
 import shlex
 import subprocess
@@ -9,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from opencollab.adapters import safe_anchored_files
-from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES, ExecResult, WriteRejectedWithoutChanges
+from opencollab.adapters import _env_local, safe_anchored_files
+from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES, ExecResult, _is_write_rejected
 from opencollab.adapters.env import DockerEnvironment, LocalEnvironment, VMEnvironment
 from opencollab.adapters.vm_config import VMConnection
 from opencollab.domain.tool_facts import ToolFactsCollector
@@ -182,10 +183,65 @@ async def test_nonregular_target_rejection_accounts_for_parent_creation(tmp_path
     try:
         with pytest.raises(OSError, match="target is not a regular file") as error:
             await env.write_file_with_change("parent/target", "payload")
-        assert isinstance(error.value, WriteRejectedWithoutChanges) is not create_parent
+        assert type(error.value) is OSError
+        assert _is_write_rejected(error.value) is not create_parent
         assert target.is_dir() and not list(target.iterdir())
     finally:
         await env.cleanup()
+
+@pytest.mark.parametrize("operation", ["str_replace", "patch_rejected", "patch_published"])
+async def test_local_rejected_and_late_failed_writes_keep_distinct_evidence(tmp_path, monkeypatch, operation):
+    target = tmp_path / "input.txt"
+    target.write_text("before\n")
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    (tmp_path / "test_input.py").write_text(
+        "from pathlib import Path\ndef test_input():\n    assert Path('input.txt').read_text() == 'before\\n'\n"
+    )
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "")
+    monkeypatch.setattr(_env_local, "LOCAL_FILE_WRITE_LIMIT_BYTES", 64)
+    bash, write, patch = evidence_tools("bash", "file_write", "apply_patch", headless=False)
+    environment = LocalEnvironment(str(tmp_path))
+    observations = ToolFactsCollector()
+    runtime = SimpleNamespace(environment=environment, observations=observations, safety_policy=None)
+    test = "test_input.py::test_input"
+    command = f"{shlex.quote(sys.executable)} -m pytest -c pytest.ini -q -rA -p no:cacheprovider {test}"
+    published = operation == "patch_published"
+    try:
+        assert "1 passed" in await bash.execute_with_runtime({"command": command}, runtime)
+        assert bash.verified_targets == {test}
+
+        if published:
+            real_fsync = os.fsync
+            directory = tmp_path.stat()
+
+            def fail_directory_fsync(fd):
+                entry = os.fstat(fd)
+                if (entry.st_dev, entry.st_ino) == (directory.st_dev, directory.st_ino):
+                    raise OSError(errno.EIO, "directory sync failed")
+                real_fsync(fd)
+
+            monkeypatch.setattr(safe_anchored_files.os, "fsync", fail_directory_fsync)
+        updated = "after" if published else "界" * 23
+        params = {"path": "input.txt", "new_str": updated}
+        if operation == "str_replace":
+            tool, params = write, params | {"mode": "str_replace", "old_str": "before"}
+        else:
+            tool, params = patch, params | {"mode": "line_replace", "start_line": 1, "end_line": 1}
+
+        with pytest.raises(OSError, match="directory sync failed" if published else "write limit") as error:
+            await tool.execute_with_runtime(params, runtime)
+        assert type(error.value) is OSError
+        assert error.value.__cause__ is None
+        assert error.value.errno == (errno.EIO if published else None)
+        assert target.read_text() == ("after\n" if published else "before\n")
+        record, = bash.verification_records
+        assert record["applicability"] == ("unknown" if published else "current")
+        assert record["post_test_edits"] == (["input.txt"] if published else [])
+        assert bash.verified_targets == (set() if published else {test})
+        assert observations.close().content_changed is (None if published else False)
+    finally:
+        await environment.cleanup()
 
 @pytest.mark.parametrize(("before", "content", "changed"), [
     (None, "", True), (b"", "", False), (b"same", "same", False), (b"old", "new", True),

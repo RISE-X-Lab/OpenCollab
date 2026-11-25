@@ -9,21 +9,15 @@ from dataclasses import dataclass, field
 from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
 
 ENV_FILE_WRITE_LIMIT_BYTES = 4 * 1024 * 1024
+_WRITE_REJECTED_ATTR = "_opencollab_write_rejected"
 
-class WriteRejectedWithoutChanges(OSError):
-    """A native write rejected before it could change the workspace."""
+def _mark_write_rejected(error: OSError | ValueError) -> OSError | ValueError:
+    """Mark a native write rejected before it could change the workspace."""
+    setattr(error, _WRITE_REJECTED_ATTR, True)
+    return error
 
-    public_error = OSError
-
-class WriteRejectedValueError(ValueError):
-    """A native write argument rejected before changing the workspace."""
-
-    public_error = ValueError
-
-def _public_error_name(error: BaseException) -> str:
-    if isinstance(error, (WriteRejectedWithoutChanges, WriteRejectedValueError)):
-        return error.public_error.__name__
-    return type(error).__name__
+def _is_write_rejected(error: OSError | ValueError) -> bool:
+    return getattr(error, _WRITE_REJECTED_ATTR, False) is True
 
 @dataclass(slots=True)
 class ExecResult:

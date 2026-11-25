@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import BinaryIO
 
-from opencollab.adapters._env_base import TextFileRange, WriteRejectedWithoutChanges
+from opencollab.adapters._env_base import TextFileRange, _mark_write_rejected
 from opencollab.adapters._safe_file_common import (
     _RANGE_TOTAL_COUNT_LIMIT_BYTES,
     _READ_CHUNK_BYTES,
@@ -271,14 +271,15 @@ def _current_regular_at(
     name: str,
     *,
     context: str,
-    non_regular_error: type[OSError] = OSError,
+    reject_without_changes: bool = False,
 ) -> os.stat_result | None:
     try:
         info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
         return None
     if not stat.S_ISREG(info.st_mode):
-        raise non_regular_error(f"{context} target is not a regular file: {name}")
+        error = OSError(f"{context} target is not a regular file: {name}")
+        raise _mark_write_rejected(error) if reject_without_changes else error
     return info
 
 def _content_identity(info: os.stat_result | None) -> tuple[int, ...] | None:
@@ -367,7 +368,7 @@ def write_regular_file_atomic_at(
             parent_fd,
             name,
             context=context,
-            non_regular_error=OSError if created_parent else WriteRejectedWithoutChanges,
+            reject_without_changes=not created_parent,
         )
         if create_only and current is not None:
             raise FileExistsError(f"{context} target already exists: {path}")

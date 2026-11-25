@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from opencollab import __version__
-from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES, _public_error_name
+from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import ProcessCleanupError
 from opencollab.adapters._vm_archive import pack, publish, unpack
@@ -303,13 +303,13 @@ async def _work(directory: Path) -> None:
     except asyncio.CancelledError:
         result = {"status": "cancelled"}
     except BaseException as exc:
-        result = {"status": "failed", "error": _public_error_name(exc), "message": str(exc)}
+        result = {"status": "failed", "error": type(exc).__name__, "message": str(exc)}
     try:
         await _stop_descendants()
     except BaseException as cleanup_error:
         failed_cancel = (directory / "cancel.json").stat().st_mtime_ns if (directory / "cancel.json").exists() else None
         while True:
-            _write(directory, "result.json", {"status": "cleanup_failed", "error": _public_error_name(cleanup_error),
+            _write(directory, "result.json", {"status": "cleanup_failed", "error": type(cleanup_error).__name__,
                                               "message": str(cleanup_error), "descendants": _descendants()})
             while True:
                 await asyncio.sleep(0.1)
@@ -344,9 +344,7 @@ def _worker(directory: Path) -> None:
         try:
             asyncio.run(_work(directory))
         except BaseException as exc:
-            _write(directory, "result.json", {
-                "status": "failed", "error": _public_error_name(exc), "message": str(exc),
-            })
+            _write(directory, "result.json", {"status": "failed", "error": type(exc).__name__, "message": str(exc)})
 
 
 def _prepare(root: Path, request: dict[str, Any]) -> Path:
@@ -495,7 +493,7 @@ def _main() -> None:
         value = _upload(root, request) if sys.argv[1] == "upload" else _rpc(root, request)
         response = {"ok": True, "value": value}
     except Exception as exc:
-        response = {"ok": False, "error": _public_error_name(exc), "message": str(exc)}
+        response = {"ok": False, "error": type(exc).__name__, "message": str(exc)}
     _response(response)
 
 
