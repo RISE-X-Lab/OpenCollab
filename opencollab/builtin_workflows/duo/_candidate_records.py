@@ -60,6 +60,12 @@ def _record_state(record: dict[str, Any]) -> str | None:
         return "red"
     return None
 
+def _verified_for_budget_fallback(candidate: CandidateRun) -> bool:
+    if not candidate.effective_diff.strip() or candidate.lifecycle_errors:
+        return False
+    states = {_record_state(record) for record in _candidate_records(candidate)}
+    return "green" in states and "red" not in states
+
 def _public_red_winner(
     candidate_a: CandidateRun,
     candidate_b: CandidateRun,
@@ -93,8 +99,8 @@ async def _adopt(
     order = [winner, *(label for label in ("A", "B") if label != winner)]
     attempts: list[str] = []
     for label in order:
-        candidate = candidates[label]
-        if not candidate.effective_diff.strip():
+        candidate = candidates.get(label)
+        if candidate is None or not candidate.effective_diff.strip():
             continue
         attempts.append(label)
         try:

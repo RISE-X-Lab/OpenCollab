@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
+from opencollab.application.workflow_collections import WorkflowBudgetExceeded
 from opencollab.patches import patch_paths
 from opencollab.tools import evidence_tools
 from opencollab.workflows import CandidateRun
@@ -64,6 +65,27 @@ async def _coder_candidate(
             "public_test_records": records,
         },
     )
+
+def _candidate_summary(candidate: CandidateRun | None, kind: str) -> dict[str, Any]:
+    if candidate is None:
+        return {
+            "kind": kind,
+            "status": "skipped",
+            "reason": "budget_exceeded",
+            "nonempty": False,
+            "diff_bytes": 0,
+            "changed_paths": [],
+            "public_command": "",
+            "public_test_records": [],
+        }
+    return {
+        "kind": kind,
+        "nonempty": bool(candidate.effective_diff.strip()),
+        "diff_bytes": len(candidate.diff.encode("utf-8")),
+        "changed_paths": patch_paths(candidate.effective_diff),
+        "public_command": dual._candidate_command(candidate),
+        "public_test_records": dual._candidate_records(candidate),
+    }
 
 async def _contract_adjudicate(
     ctx: Any,
@@ -170,21 +192,26 @@ async def run_dual_coder(
     shared_command = dual._candidate_command(candidate_a)
 
     await ctx.phase("dual-coder-b")
-    candidate_b = await _coder_candidate(
-        ctx,
-        label="dual-coder-contract-b",
-        prompt=prompts[1],
-        goal=goal,
-        shared_command=shared_command,
-        allow_unisolated_shell=allow_unisolated_shell,
-        rules=role_rules,
-    )
+    try:
+        candidate_b = await _coder_candidate(
+            ctx,
+            label="dual-coder-contract-b",
+            prompt=prompts[1],
+            goal=goal,
+            shared_command=shared_command,
+            allow_unisolated_shell=allow_unisolated_shell,
+            rules=role_rules,
+        )
+    except WorkflowBudgetExceeded:
+        if not dual._verified_for_budget_fallback(candidate_a):
+            raise
+        candidate_b = None
 
     await ctx.phase("dual-coder-mechanical-selection")
-    winner, reason, needs_judge = contract._mechanical_choice(
-        candidate_a,
-        candidate_b,
-    )
+    if candidate_b is None:
+        winner, reason, needs_judge = "A", "candidate-b-budget-exhausted", False
+    else:
+        winner, reason, needs_judge = contract._mechanical_choice(candidate_a, candidate_b)
     judge_result: Any = None
     if needs_judge:
         await ctx.phase("dual-coder-contract-adjudication")
@@ -207,7 +234,9 @@ async def run_dual_coder(
     if source_changed:
         raise RuntimeError("candidate_workspace_tracking_failure: source worktree changed before candidate adoption")
 
-    candidates = {"A": candidate_a, "B": candidate_b}
+    candidates = {"A": candidate_a}
+    if candidate_b is not None:
+        candidates["B"] = candidate_b
     preserve_paths = [str(path) for path in args.get("injected_test_paths") or [] if str(path)]
     adopted, adoption_attempts = await dual._adopt(
         ctx,
@@ -226,22 +255,8 @@ async def run_dual_coder(
         "adoption_attempts": adoption_attempts,
         "shared_public_command": shared_command,
         "candidates": {
-            "A": {
-                "kind": "minimal-root-cause-coder",
-                "nonempty": bool(candidate_a.effective_diff.strip()),
-                "diff_bytes": len(candidate_a.diff.encode("utf-8")),
-                "changed_paths": patch_paths(candidate_a.effective_diff),
-                "public_command": dual._candidate_command(candidate_a),
-                "public_test_records": dual._candidate_records(candidate_a),
-            },
-            "B": {
-                "kind": "cross-component-contract-coder",
-                "nonempty": bool(candidate_b.effective_diff.strip()),
-                "diff_bytes": len(candidate_b.diff.encode("utf-8")),
-                "changed_paths": patch_paths(candidate_b.effective_diff),
-                "public_command": dual._candidate_command(candidate_b),
-                "public_test_records": dual._candidate_records(candidate_b),
-            },
+            "A": _candidate_summary(candidate_a, "minimal-root-cause-coder"),
+            "B": _candidate_summary(candidate_b, "cross-component-contract-coder"),
         },
         "tokens_spent": ctx.tokens_spent(),
     }
