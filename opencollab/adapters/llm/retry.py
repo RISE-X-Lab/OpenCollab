@@ -20,7 +20,7 @@ from opencollab.application.ports import ProviderTerminalEventError
 # HTTP statuses worth retrying: timeouts, conflicts, rate limits, server errors.
 RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504, 529}
 
-# Error-message fragments that signal a transient failure when no status is set.
+# Transient failure descriptions for statusless errors and gateway responses.
 RETRYABLE_MESSAGE_FRAGMENTS = (
     "rate limit",
     "429",
@@ -204,7 +204,12 @@ def is_retryable_error(error: Exception) -> bool:
         # Status and typed terminal errors take precedence over wrapper text.
         status = _http_status_of(current)
         if status is not None:
-            return status in RETRYABLE_STATUS_CODES
+            if status in RETRYABLE_STATUS_CODES:
+                return True
+            if status in {520, 524}:
+                message = str(current).lower()
+                return any(fragment in message for fragment in RETRYABLE_MESSAGE_FRAGMENTS)
+            return False
         if isinstance(current, TransientProviderError):
             return True
         if isinstance(current, ProviderTerminalEventError):

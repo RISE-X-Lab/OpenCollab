@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import anthropic
+import openai
 import pytest
 
 from opencollab.adapters.llm import retry
@@ -59,3 +61,51 @@ async def test_provider_retry_delay_fits_budget(monkeypatch, tmp_path, protocol,
     assert record["status"] == "success"
     assert record["transport_timing"]["attempts"] == 2
     assert record["usage"]["total_tokens"] == 9
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize(("status", "error_text", "retryable"), [
+    (524, "A Timeout Occurred", True),
+    (520, "Upstream temporarily unavailable", True),
+    (501, "The timeout option is not implemented for this endpoint", False),
+    (400, "Invalid timeout parameter", False),
+])
+async def test_gateway_status_and_error_text_control_retry(
+    monkeypatch, tmp_path, provider, status, error_text, retryable,
+):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.delenv("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION", raising=False)
+    requests, delays = [], []
+
+    def handle(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return http_response(
+                request, status, headers={"Content-Type": "text/html", "Retry-After": "0.125"},
+                text=f"<title>{status} {error_text}</title>",
+            )
+        return completion_http_response(request)
+
+    async def record_delay(seconds):
+        delays.append(seconds)
+
+    monkeypatch.setattr(retry, "asyncio", SimpleNamespace(sleep=record_delay))
+    monkeypatch.setattr(retry, "RETRY_JITTER_MAX_SECONDS", 0)
+    install_sdk_transport(monkeypatch, provider, handle)
+    async with LLMClient(
+        provider=provider, model="claude-sonnet-4-6" if provider == "anthropic" else "gpt-4o",
+        api_key=tmp_path.name, base_url="https://controlled.invalid",
+        max_retries=1,
+    ) as client:
+        messages = [{"role": "user", "content": "Reply ok."}]
+        if retryable:
+            result = await client.complete(messages)
+            assert result.content == "ok"
+            assert result.usage.total_tokens == 4
+        else:
+            with pytest.raises((openai.APIStatusError, anthropic.APIStatusError)) as captured:
+                await client.complete(messages)
+            assert captured.value.status_code == status
+
+    assert len(requests) == (2 if retryable else 1)
+    assert delays == ([0.125] if retryable else [])
