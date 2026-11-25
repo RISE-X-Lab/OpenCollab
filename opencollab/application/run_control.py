@@ -149,6 +149,8 @@ class _SessionRunControlMixin:
             aid=self.state.aid, used_tokens=self.state.used_tokens, steps=self.state.step_count,
             data=copy.deepcopy(data),
         )
+        # Tasks started by host observers own their request admission.
+        token = _request_admission_cancel_signals.set(None)
         try:
             result = receiver(event)
             if inspect.isawaitable(result):
@@ -159,6 +161,8 @@ class _SessionRunControlMixin:
         except (Exception, asyncio.CancelledError) as exc:
             self._run_observation_errors.append(f"{event_type}: {type(exc).__name__}: {exc}")
             logger.error("run event receiver failed: %s", exc)
+        finally:
+            _request_admission_cancel_signals.reset(token)
 
     def _observe_runtime_event(self, event: Any) -> None:
         if getattr(event, "type", None) == "error":
