@@ -153,9 +153,10 @@ async def abandon_on_timeout(
                 return task.result()
         done, _ = await asyncio.wait({task}, timeout=normalized_timeout)
     except asyncio.CancelledError:
-        if late_task_tracker is not None and isinstance(task, asyncio.Task):
-            late_task_tracker(task)
-        task.cancel()
+        if not task.done():
+            if late_task_tracker is not None and isinstance(task, asyncio.Task):
+                late_task_tracker(task)
+            task.cancel()
         task.add_done_callback(late_result_handler or consume_task_result)
         raise
     finally:
