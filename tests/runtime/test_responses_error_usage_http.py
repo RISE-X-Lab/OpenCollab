@@ -26,7 +26,7 @@ from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase
 from tests.runtime.test_async_compaction import history
 from tests.support.environment_test_support import local_environment_factory as local_environment_factory
-from tests.support.provider_sdk_http import install_sdk_transport
+from tests.support.provider_sdk_http import http_response, install_sdk_transport, provider_http
 from tests.support.responses_provider_test_support import function_item, message_item
 
 KNOWN_USAGE = {
@@ -542,6 +542,108 @@ async def test_cancellation_during_retry_retains_previous_terminal_usage(
     assert records[0]["status"] == "error"
     assert records[0]["error"]["type"] == "CancelledError"
     assert records[0]["usage"]["total_tokens"] == 37
+
+@pytest.mark.parametrize("trigger", ["cancel", "deadline"])
+@pytest.mark.parametrize("retry_time_budget", [0.0, 30.0])
+@pytest.mark.parametrize(("stage", "late_kind"), [
+    ("headers", "answer"), ("first_event", "answer"), ("close", "answer"), ("close", "failed"),
+])
+async def test_round_timeout_retains_late_usage_after_retries(
+    local_environment_factory, monkeypatch, tmp_path, usage_log, trigger, retry_time_budget, stage, late_kind,
+):
+    blocked = asyncio.Event()
+    sdk_cancelled = asyncio.Event()
+    release = asyncio.Event()
+    prior_spend = []
+    reported_usage = [(21, 10), (28, 13), (42, 11), (47, 15)]
+    http = provider_http("openai")
+
+    async def wait_for_release():
+        blocked.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                sdk_cancelled.set()
+
+    async def handler(request):
+        index = len(prior_spend)
+        prior_spend.append(session.used_tokens)
+        input_tokens, output_tokens = reported_usage[index]
+        kind = "failed" if index < 2 else late_kind if index == 2 else "answer"
+        content_type, payload = _payload(json.loads(request.content), {
+            "kind": kind,
+            "usage": {
+                "input_tokens": input_tokens, "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+        })
+        if index != 2:
+            return http_response(request, 200, headers={"content-type": content_type}, content=payload)
+        if stage == "headers":
+            await wait_for_release()
+            return http_response(request, 200, headers={"content-type": content_type}, content=payload)
+
+        class LateStream(http.AsyncByteStream):
+            async def __aiter__(self):
+                if stage == "first_event":
+                    await wait_for_release()
+                yield payload
+
+            async def aclose(self):
+                if stage == "close":
+                    await wait_for_release()
+
+        return http_response(request, 200, headers={"content-type": content_type}, stream=LateStream())
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    snapshot_path = tmp_path / "late-round.json"
+    async with LLMClient(
+        model="gpt-4o", wire_protocol="responses", api_key="controlled-local",  # pragma: allowlist secret
+        base_url="http://controlled.invalid/v1", max_retries=3, request_timeout=10.0,
+        provider_error_time_budget=retry_time_budget, context_window=40000,
+    ) as client:
+        session = build_session(
+            env=local_environment_factory(), agent=_agent(), llm=client,
+            llm_timeout=0.75 if trigger == "deadline" else 10.0, auto_save_path=str(snapshot_path),
+        )
+        await session.add_user_message("Give a short answer")
+        turn = asyncio.create_task(session.run_loop())
+        try:
+            await asyncio.wait_for(blocked.wait(), 5)
+            if trigger == "cancel":
+                turn.cancel()
+            expected_error = asyncio.CancelledError if trigger == "cancel" else GenerationTimeoutError
+            with pytest.raises(expected_error):
+                await asyncio.wait_for(turn, 5)
+            await asyncio.wait_for(sdk_cancelled.wait(), 5)
+            assert session.used_tokens == 72
+            stopped_messages = session.messages.copy()
+            owner, = session.runner.pending_cleanup_tasks
+            owner.cancel()
+            await asyncio.sleep(0)
+            assert not owner.done()
+            release.set()
+            await asyncio.wait_for(_drain(session), 5)
+        finally:
+            release.set()
+            await asyncio.gather(turn, return_exceptions=True)
+            await _drain(session)
+
+    assert prior_spend == [0, 31, 72]
+    assert session.messages == stopped_messages
+    assert session.phase is (SessionPhase.STOPPED if trigger == "cancel" else SessionPhase.ERROR)
+    assert session.used_tokens == 125
+    assert session.runner.late_provider_usage == (125,)
+    snapshot = SessionStore().load_snapshot(str(snapshot_path), session.agent.system_prompt)
+    assert snapshot["session_state"]["used_tokens"] == 125
+    record, = _records(usage_log)
+    assert record["status"] == ("success" if late_kind == "answer" else "error")
+    if late_kind == "failed":
+        assert record["error"]["type"] == "CancelledError"
+    assert record["transport_timing"]["attempts"] == 3
+    assert record["usage"]["total_tokens"] == 125
+    assert [attempt["total_tokens"] for attempt in record["usage"]["raw_usage"]["attempts"]] == [31, 41, 53]
 
 @pytest.mark.parametrize("kind", ["filter", "answer"])
 async def test_cancellation_during_ledger_write_does_not_duplicate_usage(

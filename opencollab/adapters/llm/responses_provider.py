@@ -6,8 +6,10 @@ import asyncio
 import hashlib
 import logging
 import os
+import sys
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 from opencollab.adapters.llm._responses_instructions import _check_instructions_echo
 from opencollab.adapters.llm._responses_output import (
@@ -253,11 +255,42 @@ def _build_request_kwargs(
         kwargs["extra_body"] = params
     return kwargs
 
+_T = TypeVar("_T")
+_TransportInterruption = asyncio.CancelledError | asyncio.TimeoutError
+
+async def _wait_for_transport(
+    operation: Awaitable[_T],
+    timeout: float | None,
+    *,
+    on_interrupt: Callable[[_TransportInterruption], None] | None = None,
+) -> _T:
+    if sys.version_info >= (3, 12) and on_interrupt is None:
+        return await asyncio.wait_for(operation, timeout)
+    # Retain terminal usage when a cancelled transport still delivers a result.
+    task = asyncio.ensure_future(operation)
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout)
+    except (asyncio.CancelledError, asyncio.TimeoutError) as interruption:
+        if task.done():
+            return task.result()
+        if on_interrupt is not None:
+            on_interrupt(interruption)
+        task.cancel()
+        while not task.done():
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if not task.done():
+                    task.cancel()
+        if task.cancelled():
+            raise interruption
+        return task.result()
+
 async def _next_event(iterator: Any, timeout: float | None, *, stage: str) -> Any:
     try:
         if timeout is None:
             return await iterator.__anext__()
-        return await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
+        return await _wait_for_transport(iterator.__anext__(), timeout)
     except asyncio.TimeoutError as exc:
         detail = "from the provider transport" if timeout is None else f"after {timeout:g}s"
         raise ResponsesStreamInterruptedError(
@@ -496,7 +529,7 @@ async def _create_and_consume_stream(
         if first_event_timeout is None:
             event_stream = await client.responses.create(**kwargs)
         else:
-            event_stream = await asyncio.wait_for(
+            event_stream = await _wait_for_transport(
                 client.responses.create(**kwargs),
                 timeout=first_event_timeout,
             )
@@ -716,10 +749,19 @@ async def complete_responses(
     capabilities = model_capabilities(model)
     stream = stream and capabilities.supports_responses_streaming
     failed_usages: list[Usage | None] = []
+    attempt_usage: Usage | None = None
     callback_timeout: asyncio.TimeoutError | None = None
+    round_interruption: _TransportInterruption | None = None
+
+    def interrupt_round(exc: _TransportInterruption) -> None:
+        nonlocal round_interruption
+        round_interruption = exc
 
     def prepare_attempt() -> None:
-        nonlocal callback_timeout
+        nonlocal attempt_usage, callback_timeout
+        if round_interruption is not None:
+            raise round_interruption
+        attempt_usage = None
         try:
             if before_attempt is not None and (limit := before_attempt()) is not None:
                 kwargs["max_output_tokens"] = limit
@@ -730,13 +772,16 @@ async def complete_responses(
     def report_failure(_exc: BaseException) -> None:
         nonlocal callback_timeout
         try:
-            if failed_usages and (usage := failed_usages[-1]) is not None and on_attempt_usage is not None:
-                on_attempt_usage(usage)
+            if attempt_usage is not None and on_attempt_usage is not None:
+                on_attempt_usage(attempt_usage)
         except asyncio.TimeoutError as exc:
             callback_timeout = exc
             raise
+        if round_interruption is not None:
+            raise round_interruption
 
     async def request_once() -> LLMResponse:
+        nonlocal attempt_usage
         terminal = None
         try:
             if not stream:
@@ -765,8 +810,8 @@ async def complete_responses(
                 converted_tools,
             )
         except BaseException as exc:
-            usage = _reported_responses_usage(terminal) or getattr(exc, "usage", None)
-            failed_usages.append(usage)
+            attempt_usage = _reported_responses_usage(terminal) or getattr(exc, "usage", None)
+            failed_usages.append(attempt_usage)
             raise
 
     if retry_budget is not None:
@@ -775,7 +820,7 @@ async def complete_responses(
             if round_timeout is None:
                 return await request_once()
             try:
-                return await asyncio.wait_for(request_once(), timeout=round_timeout)
+                return await _wait_for_transport(request_once(), round_timeout)
             except asyncio.TimeoutError as exc:
                 raise TransientProviderError(f"Responses request timeout after {round_timeout:g}s") from exc
 
@@ -792,10 +837,9 @@ async def complete_responses(
 
     try:
         try:
-            if round_timeout is None or retry_budget is not None:
-                response = await run()
-            else:
-                response = await asyncio.wait_for(run(), timeout=round_timeout)
+            response = await _wait_for_transport(
+                run(), round_timeout if retry_budget is None else None, on_interrupt=interrupt_round,
+            )
         except asyncio.TimeoutError as exc:
             if exc is callback_timeout or round_timeout is None:
                 raise
