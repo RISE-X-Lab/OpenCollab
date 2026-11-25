@@ -103,7 +103,13 @@ async def test_public_agent_keeps_sampling_defaults(monkeypatch, tmp_path, model
     requests = []
 
     async def handler(request):
-        requests.append(json.loads(request.content))
+        body = json.loads(request.content)
+        requests.append((request.headers["anthropic-version"], body))
+        if request.headers["anthropic-version"] == "2026-10-21" and "temperature" in body:
+            return http_response(request, 400, json={
+                "type": "error", "error": {"type": "invalid_request_error",
+                    "message": "temperature is not supported in API version 2026-10-21"},
+            })
         return completion_http_response(request)
 
     install_sdk_transport(monkeypatch, "anthropic", handler)
@@ -116,7 +122,9 @@ async def test_public_agent_keeps_sampling_defaults(monkeypatch, tmp_path, model
 
     assert result.ok, result.error
     assert result.output == "ok" and len(requests) == 1
-    assert "top_p" not in requests[0]
-    assert ("temperature" in requests[0]) is (expected_temperature is not None)
+    api_version, body = requests[0]
+    assert api_version == "2023-06-01"
+    assert "top_p" not in body
+    assert ("temperature" in body) is (expected_temperature is not None)
     if expected_temperature is not None:
-        assert requests[0]["temperature"] == expected_temperature
+        assert body["temperature"] == expected_temperature

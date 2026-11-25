@@ -169,17 +169,23 @@ class LLMClient:
             import anthropic
 
             self.base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL")
+            resolved_api_key = api_key or (None if auth_token else os.environ.get("ANTHROPIC_API_KEY"))
+            # The 2023-06-01 Messages API accepts the configured sampling parameters.
+            headers: dict[str, str | anthropic.Omit] = {"anthropic-version": "2023-06-01"}
             anthropic_kwargs: dict[str, Any] = {
-                "api_key": api_key or (None if auth_token else os.environ.get("ANTHROPIC_API_KEY")),
+                "api_key": resolved_api_key,
                 "timeout": anthropic.Timeout(request_timeout, connect=connect_timeout),
                 "max_retries": 0,
+                "default_headers": headers,
             }
             if auth_token and not api_key:
                 anthropic_kwargs["auth_token"] = auth_token
                 # Older SDKs also load an API key when a token is explicit.
-                anthropic_kwargs["default_headers"] = {"X-Api-Key": anthropic.Omit()}
-            elif api_key:
-                anthropic_kwargs["default_headers"] = {"Authorization": anthropic.Omit()}
+                headers["X-Api-Key"] = anthropic.Omit()
+            elif resolved_api_key:
+                # Anthropic-compatible gateways may expect the dedicated key header.
+                headers["X-Api-Key"] = resolved_api_key
+                headers["Authorization"] = anthropic.Omit()
             if self.base_url:
                 anthropic_kwargs["base_url"] = self.base_url
             self._anthropic = anthropic.AsyncAnthropic(**anthropic_kwargs)
