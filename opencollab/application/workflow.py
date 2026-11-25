@@ -736,10 +736,11 @@ class WorkflowContext(
             timeout = min(timeout, remaining)
         return time.monotonic() + timeout
 
-    def _track_session(self, session: Any) -> None:
+    def _track_session(self, session: Any, *, continue_budget: bool = False) -> None:
         self.budget._track_session(session)
         lease = self._active_budget_lease.get()
         if lease is not None:
+            previous_spend = lease.spent()
             lease.sessions.append(session)
             runner = getattr(session, "runner", None)
             if lease.reserved and runner is not None:
@@ -747,13 +748,17 @@ class WorkflowContext(
                 runner.budget_reservations.append(lambda: max(0, -int(self.budget.remaining())))
                 if (
                     (lease.recovery_limit is not None or self.budget._parent_allocation is not None)
-                    and len(lease.sessions) == 1
-                    and getattr(runner, "hard_budget_tokens", None) == lease.total
+                    and (len(lease.sessions) == 1 or continue_budget)
+                    and lease.total is not None
+                    and previous_spend <= lease.total
+                    and getattr(runner, "hard_budget_tokens", None) == lease.total - previous_spend
                     and hasattr(runner, "_request_budget_recovery")
                 ):
                     runner._request_budget_recovery = _RequestBudgetRecovery(
                         available=lambda: self.budget._recovery_room(lease),
-                        claim=lambda minimum, preferred: self.budget._claim_recovered_budget(lease, minimum, preferred),
+                        claim=lambda minimum, preferred: self.budget._claim_recovered_budget(
+                            lease, minimum, preferred, previous_spend=previous_spend,
+                        ),
                     )
 
     def _active_call_has_pending_cleanup(self) -> bool:

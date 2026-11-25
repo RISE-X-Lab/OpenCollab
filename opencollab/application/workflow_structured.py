@@ -216,7 +216,7 @@ class WorkflowStructuredMixin:
             await self.log(f"structured retry build failed ({label or 'agent'}): {exc}")
             return None
 
-        self._track_session(session)
+        self._track_session(session, continue_budget=True)
         try:
             if not self._carry_exploration(prior_session, session):
                 await self.log(

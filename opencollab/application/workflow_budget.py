@@ -130,12 +130,15 @@ class WorkflowBudget:
         lease.total += tokens
         lease.reserved = lease.total
 
-    def _claim_recovered_budget(self, lease: _BudgetLease, minimum: int, preferred: int) -> int | None:
+    def _claim_recovered_budget(
+        self, lease: _BudgetLease, minimum: int, preferred: int, *, previous_spend: int,
+    ) -> int | None:
         growth = min(preferred, self._recovery_room(lease))
         if growth < minimum:
             return None
         self._extend_lease(lease, growth)
-        return lease.total
+        assert lease.total is not None
+        return lease.total - previous_spend
 
 @dataclass
 class _BudgetEscapeState:
@@ -155,11 +158,13 @@ class _BudgetLease:
     recovery_limit: int | _CollectionBudget | None = None
     collection: _CollectionBudget | None = None
 
+    def spent(self) -> int:
+        return sum(max(0, int(getattr(session, "used_tokens", 0))) for session in self.sessions)
+
     def remaining(self) -> float:
         if self.total is None:
             return float("inf")
-        spent = sum(max(0, int(getattr(s, "used_tokens", 0))) for s in self.sessions)
-        return max(0, self.total - spent)
+        return max(0, self.total - self.spent())
 
 @dataclass
 class _ConcurrencyPermit:

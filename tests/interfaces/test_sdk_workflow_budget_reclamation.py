@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 
 import pytest
@@ -486,3 +487,109 @@ async def test_queued_candidate_child_rechecks_parent_allocation(repository, mon
         assert calls == [("prepare", 128)]
         assert result.tokens == 600
         assert result.output[0][2] <= (1000 if mode == "capped-outer" else 2000)
+
+
+@pytest.mark.parametrize("kind", ["parallel", "pipeline"])
+@pytest.mark.parametrize(
+    "role_cap,exploration_tokens,correction_budget",
+    [(None, 5000, 5128), (None, 6000, 5128), (None, 6100, None), (6000, 5000, None), (11000, 5000, 6000)],
+)
+async def test_structured_correction_uses_available_collection_budget(
+    tmp_path, monkeypatch, kind, role_cap, exploration_tokens, correction_budget,
+):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    prepare_started, release_preparation, group_entered, start_review = (asyncio.Event() for _ in range(4))
+    calls, grants = [], []
+    evidence = "The observed measurement was 42 milliseconds."
+
+    def stage(messages):
+        prompt = next(row["content"] for row in reversed(messages) if row["role"] == "user")
+        if prompt == "prepare":
+            return "prepare"
+        return "correct" if "You MUST call" in prompt else "explore"
+
+    class Model:
+        def estimate_request_tokens(self, messages, tools=None, **kwargs):
+            return {"prepare": 2990, "explore": 4950, "correct": 5000}[stage(messages)]
+
+        async def complete(self, messages, *, tools=None, max_output_tokens, **kwargs):
+            action = stage(messages)
+            calls.append((action, max_output_tokens))
+            if action == "prepare":
+                prepare_started.set()
+                await asyncio.wait_for(release_preparation.wait(), 5)
+                return LLMResponse(content="prepared", usage=Usage(2990, 10), finish_reason="stop")
+            if action == "explore":
+                return LLMResponse(
+                    content=evidence, usage=Usage(exploration_tokens - 50, 50), finish_reason="stop",
+                )
+            assert any(row.get("content") == evidence for row in messages)
+            assert [tool["function"]["name"] for tool in tools] == ["structured_output"]
+            return LLMResponse(
+                tool_calls=[{
+                    "id": "structured-42", "type": "function",
+                    "function": {
+                        "name": "structured_output",
+                        "arguments": json.dumps({"measurement": 42}),
+                    },
+                }],
+                usage=Usage(5000, 20), finish_reason="tool_calls",
+            )
+
+    schema = {
+        "type": "object", "properties": {"measurement": {"type": "integer"}},
+        "required": ["measurement"],
+    }
+
+    async def workflow(ctx, _inputs):
+        async def review():
+            group_entered.set()
+            await asyncio.wait_for(start_review.wait(), 5)
+            return await ctx.agent("Record the measurement.", schema=schema, tools=[], budget=role_cap)
+
+        async def note():
+            return "recorded"
+
+        async def run_stage(_previous, thunk, _index):
+            return await thunk()
+
+        preparer = asyncio.create_task(ctx.agent_run("prepare", tools=[], budget=18000))
+        group = None
+        try:
+            await asyncio.wait_for(prepare_started.wait(), 5)
+            assert ctx.tokens_remaining() == 12000
+            thunks = [review, note]
+            collection = ctx.parallel(thunks) if kind == "parallel" else ctx.pipeline(thunks, run_stage)
+            group = asyncio.create_task(collection)
+            await asyncio.wait_for(group_entered.wait(), 5)
+            release_preparation.set()
+            assert (await preparer).output == "prepared"
+            assert ctx.tokens_remaining() == 27000
+            start_review.set()
+            results = await group
+            grants.extend((session.used_tokens, session.max_budget_tokens) for session in ctx.sessions)
+            assert not ctx.budget._leases
+            return results
+        finally:
+            release_preparation.set()
+            start_review.set()
+            await asyncio.gather(*[task for task in (preparer, group) if task is not None], return_exceptions=True)
+
+    result = await OpenCollab(tmp_path, model="offline", config={"max_output_tokens": 128}).workflow(
+        workflow, llm=Model(), budget=30000, concurrency=2, task_concurrency=2,
+        limit_mode="explicit", timeout=15, trace=False,
+    )
+    assert result.status == "completed", result.reason
+    assert calls[:2] == [("prepare", 128), ("explore", 128)]
+    assert grants[1][0] == exploration_tokens
+    if correction_budget is not None:
+        assert result.output == [{"measurement": 42}, "recorded"]
+        assert calls[2:] == [("correct", 128)]
+        assert grants[2] == (5020, correction_budget)
+        assert result.tokens == 3000 + exploration_tokens + 5020
+    else:
+        assert result.output == [None, "recorded"]
+        assert len(calls) == 2
+        assert grants[2][0] == 0
+        assert result.tokens == 3000 + exploration_tokens
