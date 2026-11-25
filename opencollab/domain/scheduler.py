@@ -95,6 +95,8 @@ class SessionControlBlock:
     state: SessionState
     result: str = ""
     answer: str | None = None
+    provider_error_code: str | None = None
+    provider_status_code: int | None = None
 
 @dataclass
 class SessionTable:

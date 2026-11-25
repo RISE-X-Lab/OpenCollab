@@ -9,6 +9,7 @@ from opencollab.adapters.env import LocalEnvironment
 from opencollab.bootstrap import load_session
 from opencollab.domain.agent import Agent
 from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
+from tests.support.responses_provider_test_support import function_item, message_item
 from tests.support.session_characterization_test_support import FakeLLMClient
 
 _INTERIM = "I will inspect the inventory before reporting a subtotal."
@@ -245,3 +246,80 @@ async def test_team_keeps_completed_lead_answer_after_empty_filtered_followup(
     assert (result.output, result.status, result.reason) == (
         output, "stopped" if filtered else "completed", _FILTER_REASON if filtered else None,
     )
+
+
+@pytest.mark.parametrize(
+    ("code", "exception_type", "status_code"),
+    [
+        ("content_filter", "ResponsesTerminalEventError", None),
+        ("invalid_prompt", "ResponsesTerminalEventError", None),
+        ("rate_limit_exceeded", "ResponsesTransientEventError", 429),
+    ],
+)
+async def test_team_keeps_typed_responses_failure_metadata(tmp_path, monkeypatch, code, exception_type, status_code):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    team = tmp_path / "team.yaml"
+    team.write_text(
+        "entry: lead\nroles:\n"
+        "  lead:\n    model: gpt-4o\n    prompt: Delegate the inventory review.\n    tools: [spawn_agent]\n"
+        "  reviewer:\n    model: gpt-4o-mini\n    prompt: Review the inventory.\n    tools: []\n"
+        "topology:\n  lead: [reviewer]\n",
+        encoding="utf-8",
+    )
+    requests = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert request.url.path.endswith("/responses")
+        requests.append(body)
+        model = body["model"]
+        if len(requests) == 3:
+            assert model == "gpt-4o"
+            assert any(row.get("type") == "function_call_output" for row in body["input"])
+            return completion_http_response(request, text="Recorded the reviewer's outcome.")
+        status = "completed"
+        error = None
+        incomplete = None
+        if len(requests) == 1:
+            assert model == "gpt-4o"
+            items = [function_item("delegate", "spawn_agent", '{"role":"reviewer","task":"Review the subtotal."}')]
+        else:
+            assert len(requests) == 2 and model == "gpt-4o-mini"
+            if code == "content_filter":
+                status = "incomplete"
+                incomplete = {"reason": code}
+                items = [message_item(_VISIBLE)]
+            else:
+                status = "failed"
+                error = {"code": code, "message": "The inventory provider reported an error."}
+                items = []
+        response = {
+            "id": f"inventory-{len(requests)}", "object": "response", "model": model,
+            "status": status, "error": error, "incomplete_details": incomplete, "output": items,
+            "usage": {"input_tokens": 2, "output_tokens": 2, "total_tokens": 4},
+        }
+        events = [{"type": "response.output_item.done", "output_index": index, "item": item}
+                  for index, item in enumerate(items)]
+        events.append({"type": f"response.{status}", "response": response})
+        frames = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+        return http_response(request, 200, headers={"Content-Type": "text/event-stream"}, text=frames)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    app = OpenCollab(
+        tmp_path, model="gpt-4o", provider="openai", api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://fixture.invalid/v1",
+        config={"llm_max_retries": 0, "wire_protocol": "responses"},
+    )
+    result = await app.team(
+        "Report the inventory subtotal.", config=team, trace=False, use_worktrees=False,
+        budget=100_000, timeout=5,
+    )
+
+    assert len(requests) == 3
+    assert (result.status, result.output, result.tokens) == ("completed", "Recorded the reviewer's outcome.", 12)
+    assert result.agent_failures == ({
+        "label": "reviewer",
+        "exception_type": exception_type,
+        "status_code": status_code,
+        "provider_error_type": code,
+    },)
