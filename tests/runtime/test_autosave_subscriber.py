@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
+import os
 import threading
 import time
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from opencollab.adapters import safe_files
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
@@ -594,6 +599,70 @@ def test_terminal_checkpoint_failure_surfaces_without_primary_error(local_enviro
         assert session.persistence_errors == (checkpoint_error,)
 
     asyncio.run(scenario())
+
+@pytest.mark.parametrize("failure_stage", ["base_rename", "directory_sync", "journal_reset", "append_then_reset"])
+async def test_terminal_result_requires_a_durable_base_but_can_leave_covered_journal(
+    local_environment_factory, tmp_path, monkeypatch, caplog, failure_stage,
+):
+    path = tmp_path / "completed.json"
+    journal = path.with_suffix(".json.journal")
+    session = Session(
+        env=local_environment_factory(), agent=FakeAgent(), llm=_CompletingLLM(),
+        auto_save_path=str(path),
+    )
+    error = OSError(errno.EIO, f"checkpoint {failure_stage}")
+    append_error = OSError(errno.EIO, "terminal append")
+    append = session.store.append_snapshot_delta
+    save = session.save
+    replace_file = os.replace
+
+    def fail_rename(source, destination):
+        failing_path = path if failure_stage == "base_rename" else journal
+        if Path(destination) == failing_path:
+            raise error
+        return replace_file(source, destination)
+
+    def save_with_failure(target):
+        if failure_stage == "directory_sync":
+            with patch.object(safe_files, "_fsync_directory", side_effect=error):
+                save(target)
+        else:
+            with patch.object(os, "replace", fail_rename):
+                save(target)
+
+    def fail_terminal_append(*args, **kwargs):
+        if kwargs["meta"]["session_state"]["phase"] == "done":
+            raise append_error
+        return append(*args, **kwargs)
+
+    try:
+        await session.add_user_message("initial turn")
+        assert await session.run_loop() == "done"
+        if failure_stage == "append_then_reset":
+            monkeypatch.setattr(session.store, "append_snapshot_delta", fail_terminal_append)
+        monkeypatch.setattr(session, "save", save_with_failure)
+        await session.add_user_message("go")
+        if failure_stage == "journal_reset":
+            assert await session.run_loop() == "done"
+            base = json.loads(path.read_bytes())
+            assert base["session_state"]["phase"] == "done"
+            assert base["messages"][-1]["content"] == "done"
+            assert journal.stat().st_size > 0
+            assert session.persistence_errors == ()
+            assert "could not compact covered session journal" in caplog.text
+
+            with pytest.raises(OSError) as manual:
+                session.save(str(path))
+            assert manual.value is error
+        else:
+            with pytest.raises(OSError) as terminal:
+                await session.run_loop()
+            assert terminal.value is error
+            expected = (append_error, error) if failure_stage == "append_then_reset" else (error,)
+            assert session.persistence_errors == expected
+    finally:
+        await session.aclose()
+        await session.env.cleanup()
 
 def test_cancelling_terminal_checkpoint_waits_for_owned_write(local_environment_factory, tmp_path):
     class BlockingCheckpointStore(SessionStore):

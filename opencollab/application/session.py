@@ -27,6 +27,7 @@ from opencollab.application.ports import (
     SnapshotSequenceConflict,
     SnapshotStorePort,
     TracePort,
+    _defer_covered_journal_reset_for,
 )
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.session_snapshot import (
@@ -422,7 +423,7 @@ class Session:
                         add_exception_note(primary_error, f"owned runtime cleanup also failed: {cleanup_error}")
                 self.runner._record_run_terminal()
                 try:
-                    await self._checkpoint_terminal_snapshot()
+                    await self._checkpoint_terminal_snapshot(defer_journal_reset=primary_error is None)
                 except Exception as checkpoint_error:
                     if primary_error is None:
                         raise
@@ -432,9 +433,11 @@ class Session:
                         f"{type(checkpoint_error).__name__}: {checkpoint_error}",
                     )
 
-    async def _checkpoint_terminal_snapshot(self) -> None:
+    async def _checkpoint_terminal_snapshot(self, *, defer_journal_reset: bool = False) -> None:
         if not self.state.phase.is_terminal() and self.state.phase is not SessionPhase.AWAITING_EVENTS:
             return
+        subscriber = self._auto_save_subscriber
+        failures = subscriber.failure_count if subscriber is not None else 0
         owner = self.enqueue_auto_save()
         if owner is not None:
             await await_owned_operation(
@@ -453,18 +456,22 @@ class Session:
         # must also publish a self-contained base snapshot: callers and crash
         # recovery may read the base file directly, without replaying its
         # sidecar journal.
-        if (
-            not self._auto_save_path
-            or not isinstance(self.store, JournalSnapshotStorePort)
-        ):
+        path = self._auto_save_path
+        if not path or not isinstance(self.store, JournalSnapshotStorePort):
             return
 
+        if subscriber is not None and subscriber.failure_count != failures:
+            defer_journal_reset = False
+
         async def checkpoint() -> None:
+            token = _defer_covered_journal_reset_for.set(path if defer_journal_reset else None)
             try:
-                await asyncio.to_thread(self.save, self._auto_save_path)
+                await asyncio.to_thread(self.save, path)
             except Exception as exc:
                 self._terminal_checkpoint_error = exc
                 raise
+            finally:
+                _defer_covered_journal_reset_for.reset(token)
 
         await await_owned_operation(
             checkpoint(),

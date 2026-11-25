@@ -604,6 +604,12 @@ class RequestOutputRequirementPort(Protocol):
         """
         ...
 
+# A terminal checkpoint can leave covered journal records after syncing its base.
+_defer_covered_journal_reset_for: ContextVar[str | None] = ContextVar(
+    "defer_covered_journal_reset_for", default=None,
+)
+
+
 class SessionStorePort(Protocol):
     """Message persistence surface (structured JSON per agent)."""
 

@@ -21,7 +21,11 @@ from opencollab.adapters.safe_files import (
     write_regular_bytes_atomic,
     write_regular_file_atomic,
 )
-from opencollab.application.ports import SnapshotCapacityError, SnapshotSequenceConflict
+from opencollab.application.ports import (
+    SnapshotCapacityError,
+    SnapshotSequenceConflict,
+    _defer_covered_journal_reset_for,
+)
 from opencollab.application.session_snapshot import decode_anthropic_history
 from opencollab.domain.session import same_snapshot_value
 
@@ -646,7 +650,7 @@ class SessionStore:
         try:
             write_regular_bytes_atomic(journal_path, b"", max_bytes=0)
         except OSError as exc:
-            if not defer_journal_reset:
+            if not defer_journal_reset and _defer_covered_journal_reset_for.get() != path:
                 raise
             # The synced snapshot already supersedes every journal record.
             logger.warning("could not compact covered session journal %s: %s", journal_path, exc)
