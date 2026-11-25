@@ -19,6 +19,63 @@ from opencollab.adapters.session_environments import SessionEnvironmentPool
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.bootstrap.authored_workflow import AuthoredWorkflowTool, _Child
 from opencollab.bootstrap.authored_workflow_bridge import AuthoredWorkflowBridge, BridgeClient, BridgeEnvironment
+from tests.support.docker_native_edits_support import LocalDockerTransport, docker_environment
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+@pytest.mark.parametrize("component", ["directory", "symlink", "missing"])
+async def test_artifact_transfer_keeps_parent_traversal_identity(tmp_path, absolute, component):
+    workspace = tmp_path / "workspace"
+    (workspace / "actual/child").mkdir(parents=True)
+    (workspace / "result.json").write_text('{"selected": 42}')
+    (workspace / "actual/result.json").write_text('{"other": 7}')
+    if component == "directory":
+        (workspace / "parent").mkdir()
+    elif component == "symlink":
+        (workspace / "parent").symlink_to("actual/child", target_is_directory=True)
+    relative = "parent/../result.json"
+    source = os.path.join(str(workspace), relative) if absolute else relative
+    target = tmp_path / "copied.json"
+    environment = LocalEnvironment(str(workspace))
+    try:
+        if component == "directory":
+            await _copy_artifact_to_host(environment, source, target)
+            assert target.read_text() == '{"selected": 42}'
+        else:
+            with pytest.raises(OSError):
+                await _copy_artifact_to_host(environment, source, target)
+            assert not target.exists()
+        assert (workspace / "result.json").read_text() == '{"selected": 42}'
+        assert (workspace / "actual/result.json").read_text() == '{"other": 7}'
+    finally:
+        await environment.cleanup()
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+async def test_docker_artifact_transfer_resolves_parent_in_execution_environment(tmp_path, absolute):
+    (tmp_path / "actual/child").mkdir(parents=True)
+    (tmp_path / "alias").symlink_to("actual/child", target_is_directory=True)
+    (tmp_path / "actual/result.json").write_text('{"selected": 42}')
+    (tmp_path / "result.json").write_text('{"other": 7}')
+
+    class ArtifactTransport(LocalDockerTransport):
+        async def __call__(self, *argv, **kwargs):
+            if argv[0] == "cp":
+                shutil.copyfile(argv[2].split(":", 1)[1], argv[3])
+                return ProcessResult(0, b"", b"")
+            return await super().__call__(*argv, **kwargs)
+
+    transport = ArtifactTransport(tmp_path, pair_reads=False)
+    environment = docker_environment(tmp_path, transport)
+    relative = "alias/../result.json"
+    source = os.path.join(str(tmp_path), relative) if absolute else relative
+    target = tmp_path / "copied.json"
+    try:
+        await _copy_artifact_to_host(environment, source, target)
+        assert target.read_text() == '{"selected": 42}'
+        assert (tmp_path / "result.json").read_text() == '{"other": 7}'
+    finally:
+        await environment.cleanup()
 
 
 @pytest.mark.parametrize("kind", ["local", "worktree"])

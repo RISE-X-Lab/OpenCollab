@@ -30,6 +30,7 @@ OpenCollab follows a **rigorous and restrained software engineering philosophy**
 
 ## News
 
+- ⭐ **2026-11-07** — OpenCollab reached **1,000 stars on GitHub**.
 - 🏆 **2026-10-11** — **[Won first place](https://create.gosim.org/factory26/)** at the OAIC Agentic Software Factory Hackathon using OpenCollab! 🏆
 - 🎉 **2026-10-08** — [OpenCollab 0.9.3 (v1.0.0 PreRelease)](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.3)
   includes the latest Duo V8 workflow and all the statistical features described
@@ -158,7 +159,7 @@ Controllable Runtime*](https://arxiv.org/abs/2609.38345). OpenCollab builds on
 ```bibtex
 @misc{hsu2026opencollab,
   author        = {Hsu, Chun-Wah and Gong, Kai and Wu, Yu and Chen, Xianhe and
-                   Li, Hanyu and Li, Jie and Liu, Mengyang and Liu, Zhixuan and
+                   Liu, Mengyang and Li, Jie and Li, Hanyu and Liu, Zhixuan and
                    Tang, Naisheng and Chi, Jiaying and Fan, Ziheng and He, Xuning and
                    Yang, Xiaokang and Jiang, Xue and Dong, Yihong},
   title         = {OpenCollab: A Multi-Agent Coding Framework with Programmable Collaboration and Controllable Runtime},

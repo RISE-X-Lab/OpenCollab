@@ -672,15 +672,15 @@ async def test_dead_scout_synth_uses_internal_cap_without_caller_deadline(monkey
     ]
     ctx = WorkflowContext(FakeFactory([FakeSession()]))
     internal_deadline = asyncio.get_running_loop().time() + 120.0
-    seen_deadlines: list[float | None] = []
+    seen_turns: list[tuple[float | None, str | None]] = []
 
     monkeypatch.setattr(ctx, "_internal_commit_deadline", lambda: internal_deadline)
 
-    async def record_deadline(_session, _prompt, *, deadline, cancel_event=None):
-        seen_deadlines.append(deadline)
+    async def record_turn(_session, _prompt, *, deadline, label=None, cancel_event=None):
+        seen_turns.append((deadline, label))
         return ""
 
-    monkeypatch.setattr(ctx, "_run_session_turn", record_deadline)
+    monkeypatch.setattr(ctx, "_run_session_turn", record_turn)
 
     await ctx._synthesize_dead_scout(
         dead,
@@ -689,7 +689,7 @@ async def test_dead_scout_synth_uses_internal_cap_without_caller_deadline(monkey
         caller_deadline=None,
     )
 
-    assert seen_deadlines == [internal_deadline]
+    assert seen_turns == [(internal_deadline, "scout:synth")]
 
 @pytest.mark.asyncio
 async def test_caller_cancellation_keeps_budget_reserved_until_cleanup_finishes():

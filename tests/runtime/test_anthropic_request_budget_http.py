@@ -32,6 +32,26 @@ def _wire_input_tokens(request):
         messages.insert(0, {"role": "system", "content": request["system"]})
     return estimate_request_tokens(messages, request.get("tools"))
 
+
+@pytest.mark.parametrize(("requested", "expected"), [(None, 8192), (0, 8192), (32, 32)])
+async def test_anthropic_admission_applies_the_native_output_default(monkeypatch, requested, expected):
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "anthropic", handler)
+    async with LLMClient(
+        model=_MODEL, provider="anthropic", api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", max_retries=0,
+    ) as client:
+        result = await client.complete([{"role": "user", "content": "Answer ok"}], max_output_tokens=requested)
+
+    assert result.content == "ok"
+    assert [body["max_tokens"] for body in requests] == [expected]
+
+
 @pytest.mark.parametrize("budget,thinking,expected_tokens,expected_calls", [
     (11_000, True, 9702, 2),
     (None, True, 9702, 2),

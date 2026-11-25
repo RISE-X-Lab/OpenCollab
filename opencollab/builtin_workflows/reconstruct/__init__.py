@@ -25,9 +25,9 @@ from typing import Any, Awaitable, Callable, Sequence
 
 from opencollab.workflows import workflow
 
-from ._reconstruct_coverage import describe
-from ._reconstruct_coverage import missing as missing_categories
-from ._reconstruct_verification import (
+from ._coverage import describe
+from ._coverage import missing as missing_categories
+from ._verification import (
     COMPLEXITY_THRESHOLD,
     MEMORISED_INPUTS_THRESHOLD,
     complexity_penalty,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Callable
+from contextlib import ExitStack
 from typing import Any, Literal
 
 from opencollab.adapters.trace import Tracer
@@ -155,6 +156,8 @@ async def run_workflow(
     stop_reason: Literal["budget_exceeded"] | None = None
     workflow_failure: BaseException | None = None
     cancellation: asyncio.CancelledError | None = None
+    imports = ExitStack()
+    ctx._workflow_imports = imports
     try:
         result = await fn(ctx, args)
     except WorkflowBudgetExceeded as exc:
@@ -181,6 +184,9 @@ async def run_workflow(
         cancellation = cancellation or cleanup_cancellation
     except BaseException as exc:
         cleanup_failure = exc
+    finally:
+        ctx._workflow_imports = None
+        imports.close()
 
     tracer_failure = _close_tracer_capture(tracer) if owns_tracer else None
     tracer_write_error, tracer_dropped_steps, inspection_failure = _inspect_tracer(tracer)

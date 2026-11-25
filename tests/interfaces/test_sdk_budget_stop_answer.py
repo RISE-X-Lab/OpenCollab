@@ -8,12 +8,15 @@ from dataclasses import asdict
 import pytest
 
 from opencollab import BudgetDecision, OpenCollab, RunControl
+from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.tools.base import Tool
 from opencollab.bootstrap import agent_runtime
 from tests.support.provider_sdk_http import http_response, install_sdk_transport
 from tests.support.responses_provider_test_support import function_item, message_item
 
 ANSWER = "The measured total is 42. The calculation is complete."
+REQUEST_INPUT_ESTIMATE = 500
+INITIAL_BUDGET = 1075
 PROMPT = "Read these notes and return the measured total.\n" + (
     "The measured count was recorded as 42 and checked by the operator.\n" * 30
 )
@@ -41,7 +44,7 @@ async def test_budget_stop_preserves_answer_after_native_retry(tmp_path, monkeyp
     retry = case not in {"single", "truncated"}
     with_tool = case.endswith("_tool")
     has_text = case not in {"soft_tool", "hard_tool"}
-    hard_budget = 1000 if case.startswith("hard_") else 3000
+    hard_budget = INITIAL_BUDGET if case.startswith("hard_") else 3000
     expected_tokens = 1115 if retry else 565
     stopped_for_budget = case.startswith(("soft_", "hard_"))
     original = agent_runtime.build_session
@@ -93,6 +96,7 @@ async def test_budget_stop_preserves_answer_after_native_retry(tmp_path, monkeyp
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
     monkeypatch.delenv("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION", raising=False)
     monkeypatch.setattr(agent_runtime, "build_session", observed_session)
+    monkeypatch.setattr(LLMClient, "estimate_request_tokens", lambda *_args, **_kwargs: REQUEST_INPUT_ESTIMATE)
     install_sdk_transport(monkeypatch, "openai", handler)
     artifacts = tmp_path / "artifacts"
     result = await OpenCollab(
@@ -102,7 +106,7 @@ async def test_budget_stop_preserves_answer_after_native_retry(tmp_path, monkeyp
     ).agent2(
         PROMPT, tools=(tool,) if with_tool else (), system_prompt="Answer the user using the supplied notes.",
         budget=hard_budget, max_steps=4, trace=trace, artifacts=artifacts,
-        run_control=RunControl(initial_soft_budget_tokens=1000, decide_budget=decide, on_event=events.append),
+        run_control=RunControl(initial_soft_budget_tokens=INITIAL_BUDGET, decide_budget=decide, on_event=events.append),
     )
     saved = OpenCollab.read_session_snapshot(artifacts / "agent.json")
     messages = saved["messages"]
@@ -127,7 +131,9 @@ async def test_budget_stop_preserves_answer_after_native_retry(tmp_path, monkeyp
     assert all((0 if retry and index == 0 else 15) <= body["max_output_tokens"]
                for index, body in enumerate(requests))
     request_snapshot = next(snapshot for snapshot in snapshots if snapshot.reason == "request")
-    assert request_snapshot.reserved_input_tokens >= 550
+    assert request_snapshot.reserved_input_tokens == REQUEST_INPUT_ESTIMATE
+    if retry:
+        assert requests[1]["max_output_tokens"] == INITIAL_BUDGET - 550 - REQUEST_INPUT_ESTIMATE == 25
     assert [event.data["total_tokens"] for event in events if event.type == "usage"] == [expected_tokens]
     assert len(ledger) == 1 and ledger[0]["usage"]["total_tokens"] == expected_tokens
     assert ledger[0]["usage"]["input_tokens"] == (1100 if retry else 550)
@@ -141,7 +147,7 @@ async def test_budget_stop_preserves_answer_after_native_retry(tmp_path, monkeyp
         assert all(not message.get("response_items") and not message.get("provider_state") for message in messages)
         if case.startswith("soft_"):
             assert snapshots[-1].reason == "after_response"
-            assert snapshots[-1].used_tokens == expected_tokens and snapshots[-1].soft_budget_tokens == 1000
+            assert snapshots[-1].used_tokens == expected_tokens and snapshots[-1].soft_budget_tokens == INITIAL_BUDGET
         else:
             assert all(snapshot.used_tokens < hard_budget for snapshot in snapshots)
     elif case == "growth":

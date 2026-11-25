@@ -10,14 +10,14 @@ from typing import Any
 import pytest
 
 from opencollab.builtin_workflows import ReconstructionTask, get_builtin_workflows, reconstruct, register_task
-from opencollab.builtin_workflows import _reconstruct_coverage as coverage
-from opencollab.builtin_workflows import _reconstruct_verification as verification
 from opencollab.builtin_workflows.reconstruct import (
     INITIAL_BATCH,
     MEMORISATION_PATIENCE,
     PROMOTION_EARLY_STOP,
     resolve_task,
 )
+from opencollab.builtin_workflows.reconstruct import _coverage as coverage
+from opencollab.builtin_workflows.reconstruct import _verification as verification
 
 CORRECT = "def solve(xs):\n    return sum(abs(x) for x in xs)\n"
 LOOKUP = (

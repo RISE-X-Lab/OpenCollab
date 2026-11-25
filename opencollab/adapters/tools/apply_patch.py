@@ -108,7 +108,7 @@ class ApplyPatchTool(Tool):
         if env is None:
             return "Error: no execution environment available."
 
-        path = checked_path(runtime, path)
+        path = checked_path(runtime, path, native_file=True)
 
         try:
             async with host_write_lock(path, env):
@@ -142,7 +142,7 @@ class ApplyPatchTool(Tool):
                         f"Error applying patch to {path}: patch produced no changes."
                     )
                 if observations is not None:
-                    observations.record_write(completed=False, changed=None)
+                    observations.record_write(completed=False, changed=None, path=path)
                 await env.write_file(path, updated)
                 if observations is not None:
                     observations.record_write(completed=True, changed=True, path=path)

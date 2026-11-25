@@ -80,6 +80,18 @@ class LocalDockerTransport:
                     pass
         return ProcessResult(proc.returncode, out, err)
 
+class RemoteDockerTransport(LocalDockerTransport):
+    def __init__(self, workspace: Path, *, pair_reads: bool = False):
+        super().__init__(workspace, pair_reads=pair_reads)
+        self.remote = f"/oc-native-test-{uuid.uuid4().hex}"
+
+    async def __call__(self, *argv, **kwargs):
+        actual = str(self.workspace)
+        mapped = tuple(arg.replace(self.remote, actual) if isinstance(arg, str) else arg for arg in argv)
+        result = await super().__call__(*mapped, **kwargs)
+        return ProcessResult(result.returncode, result.stdout.replace(actual.encode(), self.remote.encode()),
+                             result.stderr.replace(actual.encode(), self.remote.encode()))
+
 def docker_environment(workspace: Path, transport: LocalDockerTransport, *, container_id=None):
     env = DockerEnvironment(
         workspace=str(workspace),

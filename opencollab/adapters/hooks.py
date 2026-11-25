@@ -11,6 +11,7 @@ import shlex
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from opencollab.adapters._env_base import _track_shell_command
 from opencollab.adapters._env_process import ProcessCleanupError, run_process
 from opencollab.application.ports import HookPort
 from opencollab.domain.hooks import TOOL_SCOPED_EVENTS, HookOutcome, HookSpec, match_hooks
@@ -94,7 +95,8 @@ class ShellHookRunner(HookPort):
                     f"printf '%s' {shlex.quote(stdin_bytes.decode())} | "
                     f"{assignments} sh -c {shlex.quote(spec.command)}"
                 )
-                result = await execution_environment.exec_cmd(command, timeout=timeout)
+                with _track_shell_command(execution_environment):
+                    result = await execution_environment.exec_cmd(command, timeout=timeout)
                 if getattr(result, "timed_out", False):
                     logger.warning("hook command timed out after %.2fs: %s", timeout, spec.command)
                     return

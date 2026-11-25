@@ -1,11 +1,4 @@
-"""Shared path-jail helper for filesystem tools.
-
-Every filesystem tool resolves a user-supplied path through the sandbox's
-``check_path`` before touching the environment, so no path can escape the
-workspace (ref: ``adapters/safety.py``). This module is the single copy of that
-guard; ``fs.py`` and ``apply_patch.py`` delegate here instead of repeating the
-``policy and policy.check_path(...)`` dance.
-"""
+"""Check workspace paths for filesystem tools."""
 
 from __future__ import annotations
 
@@ -15,13 +8,17 @@ import posixpath
 from opencollab.application.tool_execution import ToolRuntime
 
 
-def checked_path(runtime: ToolRuntime, path: str) -> str:
-    """Jail ``path`` to the workspace via the runtime's safety policy.
+def _checked_remote_path(runtime: ToolRuntime, path: str) -> str | None:
+    check = getattr(runtime.safety_policy, "check_remote_file_path", None)
+    return check(path) if callable(check) else None
 
-    Returns the resolved absolute path, or ``path`` unchanged when no policy is
-    wired (yolo / tests). Raises ``PermissionError`` if the path escapes the
-    workspace — callers that prefer a soft error catch it and return a string.
-    """
+
+def checked_path(runtime: ToolRuntime, path: str, *, native_file: bool = False) -> str:
+    """Apply the runtime policy and preserve remote components for native file operations."""
+    if native_file:
+        remote_path = _checked_remote_path(runtime, path)
+        if remote_path is not None:
+            return remote_path
     policy = runtime.safety_policy
     checked = policy.check_path(path) if policy else path
     environment = runtime.environment
@@ -32,3 +29,12 @@ def checked_path(runtime: ToolRuntime, path: str) -> str:
         if os.path.isabs(checked) and os.path.commonpath((host_root, checked)) == host_root:
             checked = posixpath.join(workspace, os.path.relpath(checked, host_root))
     return checked
+
+
+async def checked_search_path(runtime: ToolRuntime, path: str) -> str:
+    resolve = getattr(runtime.environment, "resolve_search_path", None)
+    if callable(resolve):
+        remote_path = _checked_remote_path(runtime, path)
+        if remote_path is not None:
+            return await resolve(remote_path)
+    return checked_path(runtime, path)

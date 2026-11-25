@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import sys
+from enum import Enum
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,27 @@ async def test_agent_uses_real_hardened_runtime_and_persists_evidence(
     assert (artifacts / ".opencollab-run").read_text() == "claimed\n"
     transcript = json.loads((artifacts / "agent.json").read_text())
     assert transcript["messages"][-1]["content"] == "finished"
+
+
+async def test_agent2_persists_string_enum_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class Prompt(str, Enum):
+        FINISH = "finish once"
+
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    artifacts = tmp_path / "agent2-run"
+    result = await OpenCollab(tmp_path, model="model", provider="openai").agent2(
+        Prompt.FINISH, tools=(), llm=ReplyLLM(), artifacts=artifacts, trace=False,
+    )
+
+    assert result.status == "completed"
+    assert result.output == "finished"
+    path = artifacts / "agent.json"
+    snapshot = OpenCollab.read_session_snapshot(path)
+    assert any(row["content"] == Prompt.FINISH.value for row in snapshot["messages"] if row["role"] == "user")
+    assert snapshot["messages"][-1]["content"] == "finished"
+    assert path.with_suffix(".json.journal").read_bytes() == b""
+
 
 async def test_client_resolves_config_once_and_delegates_plain_arguments(
     monkeypatch: pytest.MonkeyPatch,

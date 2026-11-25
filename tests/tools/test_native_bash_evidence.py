@@ -301,7 +301,8 @@ async def test_real_pytest_pass_then_failure_and_arbitrary_native_shell(tmp_path
     finally:
         await env.cleanup()
 
-async def test_real_pytest_same_names_keep_the_unrelated_directory_pass(tmp_path):
+@pytest.mark.parametrize("color", ["no", "yes"])
+async def test_real_pytest_same_names_keep_the_unrelated_directory_pass(tmp_path, color):
     for name in ("alpha", "beta"):
         directory = tmp_path / name
         directory.mkdir()
@@ -311,11 +312,12 @@ async def test_real_pytest_same_names_keep_the_unrelated_directory_pass(tmp_path
     env = local_environment(str(tmp_path))
     await env.setup()
     tool = evidence_tools("bash", headless=False)[0]
-    command = f"{shlex.quote(sys.executable)} -B -m pytest -p no:cacheprovider -rA test_example.py"
+    command = f"{shlex.quote(sys.executable)} -B -m pytest -p no:cacheprovider -rA --color={color} test_example.py"
     try:
         for name in ("alpha", "beta"):
             output = await tool.execute_with_runtime({"command": f"cd {name} && {command}"}, runtime(env))
             assert "Exit code: 0" in output and "1 passed" in output
+            assert ("\x1b[" in output) == (color == "yes")
         assert tool.verified_targets == {
             "alpha/test_example.py", "alpha/test_example.py::test_case",
             "beta/test_example.py", "beta/test_example.py::test_case",

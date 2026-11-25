@@ -181,7 +181,7 @@ async def test_link_probe_without_bash_keeps_executable_physical_delivery(tmp_pa
     binaries = tmp_path / "commands"
     binaries.mkdir()
     for name in ("git", "mktemp", "rm", "cat", "grep", "mkdir", "sh", "sed", "awk", "basename",
-                 "dirname", "uname", "expr", "tr", "wc", "cut", "pwd", "sort", "cp"):
+                 "dirname", "uname", "expr", "tr", "wc", "cut", "pwd", "sort", "cp", "stat", "mv", "chmod"):
         command = shutil.which(name)
         assert command is not None
         (binaries / name).symlink_to(command)

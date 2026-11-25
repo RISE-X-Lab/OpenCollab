@@ -1,5 +1,7 @@
 # Duo
 
+Duo 的完整内置实现位于 [`builtin_workflows/duo/`](../../opencollab/builtin_workflows/duo/) 目录。先读 `__init__.py` 中带装饰器的工作流入口，再读 `_dual_coder.py` 中的候选执行流程和 `_prompts.py` 中的角色提示词。选择规则与证据处理文件也在这个目录中。相邻的 `weave/` 和 `reconstruct/` 目录分别包含另外两个工作流的实现。
+
 [English guide](../duo.md)
 
 Duo V8 为同一任务生成两个隔离候选，比较证据后采用一个结果。通用角色提示覆盖源码修改、配置、数据和任务要求的其他产物。运行时提供候选环境与实际交付方式。
@@ -23,7 +25,6 @@ opencollab workflow run duo --workspace /path/to/workspace \
 import asyncio
 
 from opencollab import OpenCollab
-
 
 async def main():
     client = OpenCollab("/path/to/workspace")
@@ -58,7 +59,7 @@ Duo 先运行 A，再运行 B，随后完成机械选择、必要的裁决和采
 
 裁决者先分别检查候选中具体的失败路径，从任务入口或产物追踪输入、状态和触发条件，经由使用方抵达结果。每项覆盖判断需要这条路径的完整行为依据，函数或符号记录对应的路径仍须核实。每项需求的 `a_evidence` 与 `b_evidence` 引用原始改动路径，并解释这些改动如何实现行为。模型撰写的结果报告标为候选陈述。测试记录在目标、runner 和命令一致，且仍适用于最终候选时参与比较。
 
-识别到的 Bash 测试执行产生 `applicability="current"` 记录。随后完成的 `file_write` 或 `apply_patch` 若观察到内容变化，会将此前记录改为 `unknown`，并按完成顺序把变更路径写入 `post_test_edits`。原始退出码与由解析器判定的 `verified` 值继续保留。执行失败的原生编辑和内容未变的写入保留既有适用状态，重新执行测试会增加一条当前记录。自定义 `CandidateRun` 提供方省略这些可选字段时，继续沿用原有比较行为。
+识别到的 Bash 测试执行产生 `applicability="current"` 记录。随后通过原生 `file_write` 或 `apply_patch` 写入时，内容发生变化或结果无法确认，都会将此前记录改为 `unknown`，并把尝试写入的路径加入 `post_test_edits`。无法比较内容，或写入尝试遇到错误或取消时，写入结果视为不确定。确认内容未变的写入保留既有适用状态。历史记录保留原始退出码和由解析器判定的 `verified` 值。重新执行测试会增加一条当前记录。自定义 `CandidateRun` 提供方省略这些可选字段时，继续沿用原有比较行为。
 
 识别范围外的 Bash 命令也会让已有记录变为 `unknown`，命令保存在 `post_test_commands`，包括执行失败或被中断的命令。shell 命令在这些情况下也可能改变文件，其影响会保留为待核实状态。原生只读工具保留既有适用状态，重新执行测试会增加一条当前记录。
 
@@ -68,7 +69,7 @@ Duo 先运行 A，再运行 B，随后完成机械选择、必要的裁决和采
 
 缺项、矛盾或缺乏路径依据的裁决最多补做一次会话，集中核实尚未解决的证据。分页证据会话可以多次调用文件读取工具，复查后仍无法使用或模型调用异常时默认选 B。已经明确观察到 B 缺少某项而 A 覆盖时，后续复查失败仍保留 A。空候选处理与可比较的公开测试失败优先规则先于裁决，相同 diff 选择 B。
 
-提示集中放在 [`_prompts.py`](../../opencollab/builtin_workflows/_prompts.py)。内部修订号为 8，结果中的 `prompt_revision` 记录该值，对外统一使用 `duo`。
+提示集中放在 [`_prompts.py`](../../opencollab/builtin_workflows/duo/_prompts.py)。内部修订号为 8，结果中的 `prompt_revision` 记录该值，对外统一使用 `duo`。
 
 `requirements_complete` 表示裁决者已经逐项审阅所有明确需求。候选尚未覆盖的需求仍记录为 `not_covered` 或 `unclear`，需求清单完整时该字段仍为 true，裁决者据此比较候选间的具体差异。
 
@@ -87,6 +88,8 @@ Duo 先运行 A，再运行 B，随后完成机械选择、必要的裁决和采
 Duo 通过现有候选工作区接口完成隔离、变更捕获与采用。默认 Git 后端交付仓库改动。完整环境集成提供对应候选后端，按候选身份采用实际环境，并保留必要文件和服务。运行时继续检查候选有效性与采用结果，现有补丁选择规则把空改动记为未完成。
 
 Git 候选从源目录当前受跟踪文件和未被忽略的未跟踪文件开始，交付补丁表示候选随后产生的增量。采用时将增量应用到当前源文件，保留独立用户修改和源索引，冲突会保留当前源目录。修改忽略规则后，已从源目录复制的文件和候选中已加入索引或提交的文件仍进入交付。新建的忽略文件经 `git add --force` 加入后进入交付。
+
+补丁部分应用后回滚时，OpenCollab 会保留其他进程可能仍在写入的文件。错误或警告会给出 `candidate-recovery-*` 目录，通常位于 Git 公共目录下。Git 公共目录只读时，OpenCollab 优先选择同一文件系统上工作树外的可写目录，让恢复文件在移除工作树后得以保留。如果包含 `volumes/`，该目录中的记录列出受影响挂载卷上的其他恢复目录。相邻的 `path` 或 `.path` 记录标明文件原来的位置。移除恢复目录或工作树前，请等待写入进程关闭文件，并恢复其中的数据。
 
 候选运行期间源目录发生变化，运行时会报告错误并保留候选工作树。错误包含初始 Git tree，工作树中的 `refs/worktree/opencollab-source` 继续引用它，可以通过 `git show <tree>:<path>` 恢复文件。后端提供源版本时，`CandidateRun.source_revision` 记录源 `HEAD`，采用前再次核对。源 diff 相同而 `HEAD` 已变化时，采用也会被拒绝。
 

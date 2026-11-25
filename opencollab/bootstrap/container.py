@@ -492,6 +492,8 @@ def build_session_runtime(
         resolved_llm = _resolve_llm(agent, llm, llm_timeout, provider_retry_budget)
 
         if agent_profile is not None:
+            if safety_policy is None:
+                safety_policy = build_workspace_safety_policy(resolved_env)
             safety_policy = agent_profile.wrap_safety(
                 safety_policy,
                 resolved_env.workspace,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, InitVar, dataclass, field, fields
 from typing import Any
 
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
@@ -22,6 +22,8 @@ class Usage:
     reports; they are already included in ``input_tokens`` and must not be
     added again to compute the budget total.
     """
+
+    __slots__ = ("__dict__", "__weakref__", "_native_usage_origin")
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -42,6 +44,34 @@ class Usage:
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
+
+
+class _UsageOriginForReplace:
+    def __get__(self, usage: Usage | None, _owner: type[Usage]) -> object | None:
+        return getattr(usage, "_native_usage_origin", None)
+
+
+_USAGE_FIELDS = tuple(item.name for item in fields(Usage))
+
+
+@dataclass(eq=False)
+class _TrackedUsage(Usage):
+    __slots__ = ()
+
+    _: KW_ONLY
+    # replace() copies this InitVar while asdict() emits only the public fields.
+    _origin: InitVar[object | None] = _UsageOriginForReplace()
+
+    def __post_init__(self, _origin: object | None) -> None:
+        self._native_usage_origin = _origin
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is Usage:
+            return tuple(getattr(self, name) for name in _USAGE_FIELDS) == tuple(
+                getattr(other, name) for name in _USAGE_FIELDS
+            )
+        return super().__eq__(other)
+
 
 @dataclass
 class LLMResponse:

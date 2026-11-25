@@ -34,6 +34,7 @@ from opencollab.adapters.safe_anchored_files import (
     unlink_regular_file_durable_at,
     write_regular_bytes_atomic_at,
 )
+from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.vm_config import validate_vm_path
 
 _MAX_MESSAGE = 32 * 1024 * 1024
@@ -205,6 +206,8 @@ async def _perform(request: dict[str, Any], directory: Path) -> Any:
             return result
         if action == "read":
             return await env.read_file(args["path"])
+        if action == "resolve_search_path":
+            return SandboxInterceptor(env.workspace).check_path(args["path"])
         if action == "range":
             return asdict(await env.read_text_range(**args))
         if action == "write":

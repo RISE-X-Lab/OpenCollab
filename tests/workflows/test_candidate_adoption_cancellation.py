@@ -7,8 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from opencollab.adapters._candidate_increment import _apply_increment
+from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.application.workflow import WorkflowContext
 from opencollab.application.workflow_candidates import CandidateRun
+from tests.workflows.test_candidate_adoption_recovery import _repository
+from tests.workflows.test_workflow_candidate_workspace import _git
 
 
 @pytest.mark.parametrize("modern", [False, True])
@@ -71,3 +75,38 @@ async def test_candidate_adoption_preserves_uncancelled_backend_failure(modern):
     with pytest.raises(OSError) as raised:
         await context.adopt_candidate(selected)
     assert raised.value is failure
+
+
+async def test_backend_cancellation_cleans_recovery_directory_created_before_receipt(tmp_path, monkeypatch):
+    repo = _repository(tmp_path)
+    original = (repo / "other.py").read_text()
+    (repo / "other.py").write_text("VALUE = 42\n")
+    patch = _git(repo, "diff", "--binary", "--", "other.py")
+    _git(repo, "restore", "--worktree", "--", "other.py")
+    environment = LocalEnvironment(str(repo))
+    execute = environment.exec_cmd
+    allocated, release_receipt = asyncio.Event(), asyncio.Event()
+
+    async def hold_recovery_directory_receipt(command, *args, **kwargs):
+        result = await execute(command, *args, **kwargs)
+        if command.startswith("mktemp -d ") and "candidate-recovery-" in command:
+            allocated.set()
+            await release_receipt.wait()
+        return result
+
+    monkeypatch.setattr(environment, "exec_cmd", hold_recovery_directory_receipt)
+    task = asyncio.create_task(_apply_increment(environment, str(repo), patch))
+    try:
+        await asyncio.wait_for(allocated.wait(), 5)
+        assert list((repo / ".git").glob("candidate-recovery-*"))
+        task.cancel()
+        await asyncio.sleep(0)
+        release_receipt.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+        assert not list((repo / ".git").glob("candidate-recovery-*"))
+        assert (repo / "other.py").read_text() == original
+    finally:
+        release_receipt.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await environment.cleanup()

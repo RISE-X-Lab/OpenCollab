@@ -13,6 +13,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
+from opencollab.adapters._candidate_adoption import _mounted_recovery_paths
 from opencollab.adapters._candidate_increment import _apply_increment as _apply_increment
 from opencollab.adapters._candidate_increment import _safe_path
 from opencollab.adapters._candidate_physical import (
@@ -85,19 +86,20 @@ async def _raw_diff_at(
         ),
         "candidate tracked diff", environment, workspace, base_revision, index_file,
     )
+    untracked_paths = (*excluded, *(_safe_path(path) + "/" for path in untracked_exclude_paths))
+    untracked_pathspec = " -- . " + shlex.join(
+        f":(exclude,literal){path}" for path in untracked_paths
+    ) if untracked_paths else ""
     untracked = _complete(
         await environment.exec_cmd(
             f"{git} ls-files --others --exclude-standard -z"
-            + pathspec,
+            + untracked_pathspec,
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
         "candidate untracked listing",
     )
     parts = [tracked] if tracked.strip() else []
-    untracked_excluded = tuple(_safe_path(path) + "/" for path in untracked_exclude_paths)
     for path in (item for item in untracked.split("\0") if item):
-        if path.startswith(untracked_excluded):
-            continue
         patch = await _complete_patch(
             await environment.exec_cmd(
                 "git -c core.quotePath=true -C "
@@ -206,17 +208,21 @@ class _CandidateLease:
 
     async def physical_source_changed(self, exclude_paths: Sequence[str] = (), *, force: bool = False) -> bool:
         excluded = _repository_exclusions(self.workspace_prefix, exclude_paths)
+        untracked_exclusions = (
+            *self.source_untracked_exclusions,
+            *await _mounted_recovery_paths(self.base_environment, self.source_workspace),
+        )
         if await self._submodule_contents_changed(
             self.source_workspace, self.physical_source_submodules,
             initialized=self.initialized_source_submodules,
-            excluded=excluded, untracked_exclusions=self.source_untracked_exclusions,
+            excluded=excluded, untracked_exclusions=untracked_exclusions,
         ):
             return True
         original_tree = self.physical_base_revision
         if original_tree is None:
             if not force and not await _has_worktree_conversions(
                 self.base_environment, self.source_workspace, strict=self.strict_capture,
-                exclude_paths=excluded, exclude_untracked_paths=self.source_untracked_exclusions,
+                exclude_paths=excluded, exclude_untracked_paths=untracked_exclusions,
             ):
                 return False
             # Without initial conversions, the ordinary source tree already
@@ -228,7 +234,7 @@ class _CandidateLease:
             ), "candidate original source tree").strip()
         current = await _physical_tree(
             self.base_environment, self.source_workspace, self.base_revision,
-            exclude_paths=self.source_untracked_exclusions, strict=self.strict_capture,
+            exclude_paths=untracked_exclusions, strict=self.strict_capture,
         )
         if not exclude_paths:
             return current != original_tree
@@ -422,6 +428,12 @@ class EnvCandidateWorkspace:
             return ()
         return (os.path.relpath(self._owned_save_dir, repository_root).replace(os.sep, "/"),)
 
+    async def _source_untracked_paths(self, repository_root: str) -> tuple[str, ...]:
+        return (
+            *self._owned_untracked_paths(repository_root),
+            *await _mounted_recovery_paths(self._environment, repository_root),
+        )
+
     async def _repository_root(self) -> str:
         return _complete(
             await self._environment.exec_cmd(
@@ -443,6 +455,7 @@ class EnvCandidateWorkspace:
     async def _source_patch(
         self, repository_root: str, base_revision: str,
         exclude_paths: Sequence[str] = (),
+        *, untracked_exclusions: Sequence[str] = (),
     ) -> str:
         # Keep staged additions in a temporary index without its skip hints,
         # then stage the current tracked bytes without changing the source index.
@@ -472,13 +485,13 @@ class EnvCandidateWorkspace:
             await _assert_patchable_submodules(
                 self._environment, repository_root, base_revision,
                 index_file=source_index, reject_ignored_untracked=False,
-                exclude_untracked_paths=self._owned_untracked_paths(repository_root),
+                exclude_untracked_paths=untracked_exclusions,
                 exclude_paths=exclude_paths,
             )
             return await _raw_diff_at(
                 self._environment, repository_root, exclude_paths,
                 base_revision=base_revision, index_file=source_index,
-                untracked_exclude_paths=self._owned_untracked_paths(repository_root),
+                untracked_exclude_paths=untracked_exclusions,
             )
         finally:
             async def remove_index() -> None:
@@ -535,6 +548,14 @@ class EnvCandidateWorkspace:
             ),
             "candidate base revision",
         ).strip()
+        source_owned = (
+            *self._owned_untracked_paths(repository_root),
+            *(_safe_path(path) for path in strict_untracked_exclusions),
+        )
+        source_untracked = (
+            *source_owned,
+            *await _mounted_recovery_paths(self._environment, repository_root),
+        )
         if strict_capture:
             source_patch = await _complete_patch(
                 await self._environment.exec_cmd(
@@ -542,10 +563,7 @@ class EnvCandidateWorkspace:
                     + guarded_staged_diff_command(
                         base_revision=base_revision,
                         reject_ignored_untracked=False,
-                        exclude_untracked_paths=(
-                            *self._owned_untracked_paths(repository_root),
-                            *(_safe_path(path) for path in strict_untracked_exclusions),
-                        ),
+                        exclude_untracked_paths=source_untracked,
                     ),
                     timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
                 ),
@@ -555,28 +573,28 @@ class EnvCandidateWorkspace:
         async with AsyncExitStack() as capture_resources:
             converted = await _has_worktree_conversions(
                 self._environment, repository_root, strict=strict_capture,
+                exclude_untracked_paths=source_untracked,
             )
             source_capture = physical_context = None
             if converted:
                 if not strict_capture:
                     await _assert_patchable_submodules(
                         self._environment, repository_root, base_revision, reject_ignored_untracked=False,
-                        exclude_untracked_paths=self._owned_untracked_paths(repository_root),
+                        exclude_untracked_paths=source_untracked,
                     )
                 physical_context = await capture_resources.enter_async_context(_physical_git(
                     self._environment, repository_root, strict=strict_capture,
                 ))
                 source_capture = await _capture_physical(
                     self._environment, repository_root, base_revision,
-                    exclude_paths=(
-                        *self._owned_untracked_paths(repository_root),
-                        *strict_untracked_exclusions,
-                    ),
+                    exclude_paths=source_untracked,
                     strict=strict_capture, metadata=physical_context,
                 )
                 source_patch = source_capture.patch
             elif not strict_capture:
-                source_patch = await self._source_patch(repository_root, base_revision)
+                source_patch = await self._source_patch(
+                    repository_root, base_revision, untracked_exclusions=source_untracked,
+                )
             initialized_source = await _initialized_submodule_paths(
                 self._environment, repository_root, strict=strict_capture,
                 source_prefix=workspace_prefix.rstrip("/"),
@@ -584,7 +602,7 @@ class EnvCandidateWorkspace:
             source_modules = await _physical_submodule_trees(
                 self._environment, repository_root, strict=strict_capture,
                 source_prefix=workspace_prefix.rstrip("/"),
-                exclude_paths=(*self._owned_untracked_paths(repository_root), *strict_untracked_exclusions),
+                exclude_paths=source_untracked,
                 module_paths=initialized_source,
             )
             lease = _CandidateLease(
@@ -596,10 +614,7 @@ class EnvCandidateWorkspace:
                 workspace_prefix=workspace_prefix,
                 physical_base_revision=source_capture.tree if source_capture is not None else None,
                 strict_capture=strict_capture,
-                source_untracked_exclusions=(
-                    *self._owned_untracked_paths(repository_root),
-                    *strict_untracked_exclusions,
-                ),
+                source_untracked_exclusions=source_owned,
                 physical_source_submodules=source_modules,
                 initialized_source_submodules=initialized_source,
             )
@@ -774,24 +789,28 @@ class EnvCandidateWorkspace:
         repository_root = await self._repository_root()
         excluded = _repository_exclusions(await self._workspace_prefix(), exclude_paths) if exclude_paths else ()
         base_revision = await self.source_revision()
-        return await self._source_patch(repository_root, base_revision, excluded)
+        return await self._source_patch(
+            repository_root, base_revision, excluded,
+            untracked_exclusions=await self._source_untracked_paths(repository_root),
+        )
 
     async def physical_source_revision(self, exclude_paths: Sequence[str] = ()) -> str | None:
         """Read conversion-aware source trees with repository-relative exclusions."""
         root = await self._repository_root()
         excluded = tuple(_safe_path(path) for path in exclude_paths)
+        owned = await self._source_untracked_paths(root)
         modules = await _physical_submodule_trees(
-            self._environment, root, exclude_paths=(*self._owned_untracked_paths(root), *excluded),
+            self._environment, root, exclude_paths=(*owned, *excluded),
             exclude_tree_paths=excluded,
         )
         revision = None
         if await _has_worktree_conversions(
             self._environment, root, exclude_paths=excluded,
-            exclude_untracked_paths=self._owned_untracked_paths(root),
+            exclude_untracked_paths=owned,
         ):
             revision = await _physical_tree(
                 self._environment, root, await self.source_revision(),
-                exclude_paths=(*self._owned_untracked_paths(root), *excluded),
+                exclude_paths=(*owned, *excluded),
                 exclude_tree_paths=excluded,
             )
         return json.dumps((revision, modules)) if modules else revision
@@ -805,7 +824,7 @@ class EnvCandidateWorkspace:
             _repository_exclusions(await self._workspace_prefix(), exclude_paths)
             if exclude_paths else ()
         )
-        owned = self._owned_untracked_paths(repository_root)
+        owned = await self._source_untracked_paths(repository_root)
 
         def relative_paths(paths: Sequence[str], prefix: str) -> tuple[str, ...]:
             if not prefix:

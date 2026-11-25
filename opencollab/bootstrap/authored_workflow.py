@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args
 
 from opencollab.adapters._docker_snapshot import _copy_artifact_to_host
+from opencollab.adapters._env_base import ExecResult, _track_shell_command
 from opencollab.adapters._env_process import ProcessCleanupError
 from opencollab.adapters.session_environments import SessionEnvironmentPool
 from opencollab.adapters.tools._paths import checked_path
@@ -55,6 +56,7 @@ class _Child:
     stop_requested: bool = False
     status: str = "running"
     tokens: int = 0
+    reported_tokens: int = 0
     result: dict[str, Any] | None = None
     cleanup_error: Exception | None = None
     bridge: AuthoredWorkflowBridge | None = None
@@ -212,8 +214,17 @@ class AuthoredWorkflowTool(Tool):
         return record
 
     def _reserved_tokens(self) -> int:
-        return sum(max(0, (item.budget or 0) - item.tokens)
+        # Retain native spend while the child's usage file catches up.
+        return sum(max(0, (item.budget or 0) - item.tokens,
+                       (item.bridge.tokens if item.bridge is not None else item.tokens) - item.tokens)
                    for item in self._children.values() if item.status == "running")
+
+    def _remaining_child_budget(self, child: _Child) -> int | None:
+        remaining = self._get_session().runner.remaining_budget_tokens
+        if remaining is None:
+            return None
+        spent = max(child.tokens, child.bridge.tokens if child.bridge is not None else 0)
+        return remaining + max(0, (child.budget or 0) - spent)
 
     async def _launch(self, params: dict[str, Any], runtime: ToolRuntime) -> _Child:
         parent = self._get_session()
@@ -231,7 +242,7 @@ class AuthoredWorkflowTool(Tool):
         source = params.get("source")
         if not isinstance(source, str) or not source or "\x00" in source:
             raise ValueError("source must name a Python file in the workspace")
-        source = checked_path(runtime, source)
+        source = checked_path(runtime, source, native_file=True)
         await environment.read_file(source)
         budget = params.get("budget")
         if budget is not None and (isinstance(budget, bool) or not isinstance(budget, int) or budget < 1):
@@ -291,6 +302,11 @@ class AuthoredWorkflowTool(Tool):
             await runtime.safety_policy.check_cmd_interactive(command, runtime.confirm_fn())
         child.bridge = AuthoredWorkflowBridge(
             environment, artifacts, pool, config, runtime,
+            budget=budget,
+            remaining_budget=lambda: self._remaining_child_budget(child),
+            on_usage=lambda tokens: self._account_usage(child, tokens, reported=False),
+            team_budget_exhausted=parent.runner._team_budget_exhausted,
+            cancel_requested=lambda: child.stop_requested or parent.runner._run_cancellation_requested(),
             allow_unisolated_shell=self._allow_unisolated_shell
             and not getattr(shell, "require_process_isolation", False),
         )
@@ -316,24 +332,29 @@ class AuthoredWorkflowTool(Tool):
             return
         self._account_usage(child, usage["tokens"])
 
-    def _account_usage(self, child: _Child, tokens: Any) -> None:
-        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < child.tokens:
+    def _account_usage(self, child: _Child, tokens: Any, *, reported: bool = True) -> None:
+        minimum = child.reported_tokens if reported else child.tokens
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < minimum:
             raise ValueError("invalid child usage total")
-        delta = tokens - child.tokens
+        if reported:
+            child.reported_tokens = tokens
+        delta = max(child.tokens, tokens) - child.tokens
         if delta:
             parent = self._get_session()
             parent.state.add_used_tokens(delta)
             parent.enqueue_auto_save()
-            child.tokens = tokens
+            child.tokens += delta
 
     async def _execute(self, child: _Child, command: str, request_bytes: bytes) -> None:
+        async def run() -> ExecResult:
+            with _track_shell_command(child.environment):
+                return await child.environment.exec_cmd(command, timeout=math.inf, input_bytes=request_bytes)
+
         execution = None
         logs: dict[str, Any] = {}
         status = "running"
         try:
-            execution = asyncio.create_task(child.environment.exec_cmd(
-                command, timeout=math.inf, input_bytes=request_bytes,
-            ))
+            execution = asyncio.create_task(run())
             child.execution = execution
             if child.stop_requested:
                 execution.cancel()
@@ -377,7 +398,7 @@ class AuthoredWorkflowTool(Tool):
                 assert child.bridge is not None
                 await await_owned_operation(child.bridge.aclose(), propagate_cancellation=False)
                 await self._refresh_usage(child)
-                self._account_usage(child, max(child.tokens, child.bridge.tokens))
+                self._account_usage(child, max(child.tokens, child.bridge.tokens), reported=False)
             except Exception as exc:
                 status = "failed"
                 child.cleanup_error = exc
