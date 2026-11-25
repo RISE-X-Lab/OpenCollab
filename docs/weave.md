@@ -74,19 +74,17 @@ shown above. Include assertions in the probe so the expected output follows
 the behavior being checked.
 
 Weave adds `-rap` to recognized pytest invocations to retain executed test
-nodes and report the captured output of failures. It uses `-rA` for an
-`expected_output` check or options that request captured passing output. Weave
-reads reporting options from the command, its `PYTEST_ADDOPTS` assignment, and
-an explicitly selected INI or CFG file. On Python 3.11 or later it also reads
-selected TOML files. On Python 3.10 an explicit command option can enable passing
-output for a TOML-backed check. When a config read is slow, Weave uses the command
-options and reserves the remaining check time for pytest. It joins config read
-cleanup after the checks. See
-[native test evidence](test-evidence.md) for tests that launch another pytest
-process. The verification report keeps the supplied `command` and records
-`executed_command` when reporting flags were
+nodes and report the captured output of failures. For checks with
+`expected_output` or explicit reporting, capture display, or configuration
+override flags, it adds `-rA`. See [native test evidence](test-evidence.md) for
+tests that launch another pytest process. The verification report keeps the
+supplied `command` and records `executed_command` when reporting flags were
 added. Shell combinations outside the supported test parser require an
 application verifier or an assertion script with `expected_output`.
+
+Pytest reads its selected configuration during the check. To include captured
+output from passing tests in the verification report, use a reporting flag in
+the check command or specify `expected_output`.
 
 ## Run through the public SDK
 

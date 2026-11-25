@@ -5,9 +5,8 @@ import posixpath
 import re
 import shlex
 from dataclasses import dataclass
-from itertools import takewhile
 
-from ._test_results import _ENV_ASSIGNMENT_RE, _is_pytest_runner
+from ._test_results import _is_pytest_runner
 from .django_evidence import is_django_runner
 
 
@@ -17,21 +16,6 @@ class TestCommand:
     targets: tuple[str, ...]
     workspace: str | None
     provable: bool = True
-    pytest_arguments: tuple[str, ...] = ()
-    pytest_addopts: str = ""
-
-_PYTEST_VALUE_OPTIONS = {
-    "-k", "-m", "-p", "-r", "--report-chars", "-c", "-o", "-W", "--override-ini",
-    "--rootdir", "--confcutdir",
-    "--config-file", "--junitxml", "--junit-xml", "--junitprefix", "--junit-prefix",
-    "--basetemp", "--tb", "--maxfail", "--max-warnings", "--color", "--code-highlight", "--capture",
-    "--import-mode", "--deselect", "--ignore", "--ignore-glob", "--durations", "--durations-min",
-    "--verbosity", "--show-capture", "--pythonwarnings", "--doctest-report", "--doctest-glob",
-    "--assert", "--pdbcls", "--pastebin", "--lfnf", "--last-failed-no-failures",
-    "--log-level", "--log-format", "--log-date-format", "--log-cli-level", "--log-cli-format",
-    "--log-cli-date-format", "--log-file", "--log-file-mode", "--log-file-level", "--log-file-format",
-    "--log-file-date-format", "--log-auto-indent", "--log-disable",
-}
 
 def relative_target(target: str, workspace: str | None) -> str:
     path, separator, selector = target.partition("::")
@@ -104,9 +88,7 @@ def parse_test_command(command: str, workspace: str | None) -> TestCommand | Non
         parts = parts[split + 1:]
     if not parts or any("&" in part for part in parts):
         return None
-    assignments = []
-    while parts and _ENV_ASSIGNMENT_RE.fullmatch(parts[0]):
-        assignments.append(parts[0])
+    while parts and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", parts[0]):
         parts = parts[1:]
     for index, item in enumerate(parts):
         if item.rsplit("/", 1)[-1] != "pytest":
@@ -114,22 +96,21 @@ def parse_test_command(command: str, workspace: str | None) -> TestCommand | Non
         runner = shlex.join(parts[:index + 1])
         if not _is_pytest_runner(runner):
             return None
-        arguments = parts[index + 1:]
-        targets = _targets(arguments, _PYTEST_VALUE_OPTIONS)
-        for position, wrapper in enumerate(parts[:index]):
-            if wrapper.rsplit("/", 1)[-1] == "env":
-                assignments.extend(takewhile(_ENV_ASSIGNMENT_RE.fullmatch, parts[position + 1:index]))
-        addopts = next(
-            (part.partition("=")[2] for part in reversed(assignments) if part.startswith("PYTEST_ADDOPTS=")),
-            "",
-        )
-        return TestCommand(
-            runner, targets or (".",), workspace,
-            targets is not None and not any(
-                part in {"--collect-only", "--co", "--help", "-h", "--version"} for part in parts
-            ),
-            pytest_arguments=tuple(arguments), pytest_addopts=addopts,
-        )
+        targets = _targets(parts[index + 1:], {
+            "-k", "-m", "-p", "-r", "--report-chars", "-c", "-o", "-W", "--override-ini",
+            "--rootdir", "--confcutdir",
+            "--config-file", "--junitxml", "--junit-xml", "--junitprefix", "--junit-prefix",
+            "--basetemp", "--tb", "--maxfail", "--max-warnings", "--color", "--code-highlight", "--capture",
+            "--import-mode", "--deselect", "--ignore", "--ignore-glob", "--durations", "--durations-min",
+            "--verbosity", "--show-capture", "--pythonwarnings", "--doctest-report", "--doctest-glob",
+            "--assert", "--pdbcls", "--pastebin", "--lfnf", "--last-failed-no-failures",
+            "--log-level", "--log-format", "--log-date-format", "--log-cli-level", "--log-cli-format",
+            "--log-cli-date-format", "--log-file", "--log-file-mode", "--log-file-level", "--log-file-format",
+            "--log-file-date-format", "--log-auto-indent", "--log-disable",
+        })
+        return TestCommand(runner, targets or (".",), workspace, targets is not None and not any(
+            part in {"--collect-only", "--co", "--help", "-h", "--version"} for part in parts
+        ))
     if len(parts) >= 2 and is_django_runner(shlex.join(parts[:2])):
         targets = _targets(parts[2:], {"--verbosity", "-v", "--parallel", "--settings", "--exclude-tag", "--tag"})
         return TestCommand(shlex.join(parts[:2]), targets or (".",), workspace, targets is not None and not any(

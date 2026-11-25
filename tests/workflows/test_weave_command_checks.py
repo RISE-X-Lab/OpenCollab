@@ -6,10 +6,12 @@ import asyncio
 import shlex
 import shutil
 import sys
+import time
 
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters import _env_local
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.application.workflow import WorkflowContext
 from opencollab.builtin_workflows import WeaveAdapter
@@ -17,13 +19,13 @@ from opencollab.builtin_workflows.weave._execution import _static_printer_suppli
 from tests.workflows.test_weave_execution import FileModel
 
 
-async def _check(workspace, command, seconds=10):
+async def _check(workspace, command, seconds=10, workflow_timeout=20):
     async def flow(ctx, _args):
         commands = command if isinstance(command, list) else [command]
         check = await WeaveAdapter(check_commands=commands).verify(ctx, None, seconds)
         return {"ok": check.ok, "executed": check.executed, "report": check.report}
 
-    result = await OpenCollab(workspace, model="offline").workflow(flow, trace=False, timeout=20)
+    result = await OpenCollab(workspace, model="offline").workflow(flow, trace=False, timeout=workflow_timeout)
     assert result.ok, result.reason
     return result.output
 
@@ -513,7 +515,7 @@ async def test_timed_out_behavior_probe_retains_execution_without_passing(tmp_pa
 
 
 @pytest.mark.parametrize("with_followup", [False, True], ids=["single", "serial"])
-async def test_slow_pytest_config_leaves_time_for_the_real_check(tmp_path, monkeypatch, with_followup):
+async def test_pytest_checks_complete_without_config_preflight(tmp_path, monkeypatch, with_followup):
     (tmp_path / "selected.ini").write_text("[pytest]\naddopts = -rP\n", encoding="utf-8")
     (tmp_path / "test_result.py").write_text(
         "from pathlib import Path\n"
@@ -534,50 +536,37 @@ async def test_slow_pytest_config_leaves_time_for_the_real_check(tmp_path, monke
             "    print('Follow-up inventory total')\n",
             encoding="utf-8",
         )
-        commands.append(command.replace("selected.ini", "followup.ini").replace("test_result.py", "test_followup.py"))
-    command_finished = asyncio.Event()
-    config_cancelled = asyncio.Event()
-    config_finished = asyncio.Event()
-    read_file = LocalEnvironment.read_file
+        commands.append(command.replace("selected.ini", "followup.ini").replace("test_result.py", "test_followup.py")
+                        + " -rP")
+    config_reads = []
+    read = _env_local.read_regular_bytes
     exec_cmd = LocalEnvironment.exec_cmd
     executed = []
 
-    async def slow_config(environment, path):
-        if not path.endswith("/selected.ini"):
-            return await read_file(environment, path)
-        try:
-            await asyncio.sleep(2)
-            return await read_file(environment, path)
-        except asyncio.CancelledError:
-            config_cancelled.set()
-            await asyncio.wait_for(command_finished.wait(), timeout=3)
-            raise
-        finally:
-            config_finished.set()
+    def slow_config(root_fd, workspace, path, *args, **kwargs):
+        if str(path) == "selected.ini":
+            config_reads.append(path)
+            time.sleep(4.5)
+        return read(root_fd, workspace, path, *args, **kwargs)
 
     async def record_execution(environment, cmd, timeout=120.0, **kwargs):
         if cmd.startswith(command):
             executed.append((cmd, timeout))
-        try:
-            return await exec_cmd(environment, cmd, timeout=timeout, **kwargs)
-        finally:
-            if cmd.startswith(commands[-1]):
-                command_finished.set()
+        return await exec_cmd(environment, cmd, timeout=timeout, **kwargs)
 
-    monkeypatch.setattr(LocalEnvironment, "read_file", slow_config)
+    monkeypatch.setattr(_env_local, "read_regular_bytes", slow_config)
     monkeypatch.setattr(LocalEnvironment, "exec_cmd", record_execution)
-    seconds = 2 if with_followup else 1
-    output = await _check(tmp_path, commands, seconds=seconds)
+    output = await _check(tmp_path, commands, seconds=3, workflow_timeout=4)
     row = output["report"]["checks"][0]
     (actual_command, actual_timeout), = executed
-    assert 0 < actual_timeout < seconds - 0.05
+    assert 0 < actual_timeout <= 3
     assert row["command"] == command
     assert row["executed_command"] == actual_command == command + " -rap"
     assert row["test_records"][0]["command"] == actual_command
     assert output["executed"] and output["ok"]
     assert (tmp_path / "test-executed").read_text() == "yes"
     assert "Captured inventory total" not in row["output"]
-    assert config_cancelled.is_set() and config_finished.is_set()
+    assert config_reads == []
     if with_followup:
         assert (tmp_path / "followup-executed").read_text() == "yes"
         assert "Follow-up inventory total" in output["report"]["checks"][1]["output"]
