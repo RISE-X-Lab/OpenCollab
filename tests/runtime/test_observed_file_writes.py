@@ -222,7 +222,7 @@ async def test_local_rejected_and_late_failed_writes_keep_distinct_evidence(tmp_
                 real_fsync(fd)
 
             monkeypatch.setattr(safe_anchored_files.os, "fsync", fail_directory_fsync)
-        updated = "after" if published else "界" * 23
+        updated = "after" if published else "\u754c" * 23
         params = {"path": "input.txt", "new_str": updated}
         if operation == "str_replace":
             tool, params = write, params | {"mode": "str_replace", "old_str": "before"}

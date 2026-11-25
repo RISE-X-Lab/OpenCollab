@@ -599,8 +599,10 @@ async def test_workflow_execution_failure_is_a_result(tmp_path: Path) -> None:
 @pytest.mark.parametrize(("backend", "content", "error_type", "message"), [
     pytest.param("local-directory", "report\n", OSError, "atomic output target is not a regular file: report",
                  id="local-directory"),
-    pytest.param("local", "界" * 23, OSError, "local file exceeds write limit of 64 bytes: report", id="local-limit"),
-    pytest.param("vm", "界" * 23, ValueError, "VM file exceeds write limit", id="vm-limit"),
+    pytest.param(
+        "local", "\u754c" * 23, OSError, "local file exceeds write limit of 64 bytes: report", id="local-limit",
+    ),
+    pytest.param("vm", "\u754c" * 23, ValueError, "VM file exceeds write limit", id="vm-limit"),
 ])
 async def test_workflow_write_rejection_preserves_public_error(
     tmp_path, monkeypatch, backend, content, error_type, message,
