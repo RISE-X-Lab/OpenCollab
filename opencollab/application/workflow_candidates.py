@@ -600,7 +600,16 @@ class WorkflowCandidatesMixin:
                                     if active is not current:
                                         active.cancel()
                             await child.wait_for_pending_cleanup()
-                            await child.release_isolated_workspaces()
+                            release = asyncio.create_task(child.release_isolated_workspaces())
+                            try:
+                                await await_owned_operation(release, propagate_cancellation=True)
+                            except asyncio.CancelledError as exc:
+                                if failure is None:
+                                    failure = exc
+                                if release.cancelled():
+                                    raise RuntimeError("isolated workspace cleanup was cancelled") from exc
+                                # Report cleanup failures through the normal retention path.
+                                release.result()
                             cleanup_quiesced = True
                         except Exception as exc:
                             detail = f"{type(exc).__name__}: {exc}"
