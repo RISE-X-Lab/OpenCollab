@@ -604,9 +604,16 @@ class RequestOutputRequirementPort(Protocol):
         """
         ...
 
-# A terminal checkpoint can leave covered journal records after syncing its base.
-_defer_covered_journal_reset_for: ContextVar[str | None] = ContextVar(
-    "defer_covered_journal_reset_for", default=None,
+@dataclass
+class _CheckpointPublication:
+    path: str
+    defer_journal_reset: bool = False
+    visible: bool = False
+    synced: bool = False
+
+
+_checkpoint_publication: ContextVar[_CheckpointPublication | None] = ContextVar(
+    "checkpoint_publication", default=None,
 )
 
 _AUTOSAVE_EXPORT_SOURCE_SEQUENCE = "_autosave_export_source_sequence"

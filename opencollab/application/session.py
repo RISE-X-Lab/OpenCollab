@@ -31,7 +31,8 @@ from opencollab.application.ports import (
     SnapshotSequenceConflict,
     SnapshotStorePort,
     TracePort,
-    _defer_covered_journal_reset_for,
+    _checkpoint_publication,
+    _CheckpointPublication,
 )
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.session_snapshot import (
@@ -160,6 +161,7 @@ class Session:
         self._terminal_checkpoint_error: Exception | None = None
         self._auto_save_sequence = 0
         self._auto_save_reserved_sequence = 0
+        self._auto_save_visible_sequence = 0
         self._auto_save_export_source_sequence: int | None = None
         self._auto_save_conflict: str | None = None
         self._auto_save_message_count = 0
@@ -411,7 +413,10 @@ class Session:
         if _same_snapshot_path(path, self._auto_save_path):
             with self._auto_save_lock:
                 if self._autosave_writer is None:
-                    expected = self._auto_save_sequence if require_current else None
+                    expected = (
+                        max(self._auto_save_sequence, self._auto_save_visible_sequence)
+                        if require_current else None
+                    )
                     self._autosave_writer = acquire(expected)
                 self._autosave_writer_references += 1
             release = self._release_autosave_writer
@@ -538,14 +543,14 @@ class Session:
             defer_journal_reset = False
 
         async def checkpoint() -> None:
-            token = _defer_covered_journal_reset_for.set(path if defer_journal_reset else None)
+            token = _checkpoint_publication.set(_CheckpointPublication(path, defer_journal_reset))
             try:
                 await asyncio.to_thread(self.save, path)
             except Exception as exc:
                 self._terminal_checkpoint_error = exc
                 raise
             finally:
-                _defer_covered_journal_reset_for.reset(token)
+                _checkpoint_publication.reset(token)
 
         await await_owned_operation(
             checkpoint(),
@@ -849,6 +854,7 @@ class Session:
         sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
         self._auto_save_sequence = sequence
         self._auto_save_reserved_sequence = sequence
+        self._auto_save_visible_sequence = 0
         export_source = snapshot.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE)
         self._auto_save_export_source_sequence = (
             None if export_source is None else _snapshot_nonnegative_int(export_source)
@@ -1085,16 +1091,30 @@ class Session:
                     with self._auto_save_lock:
                         if sequence < self._auto_save_sequence:
                             return
-                    self.store.checkpoint_snapshot(path, messages, meta=meta, sequence=sequence)
-                    with self._auto_save_lock:
-                        self._auto_save_sequence = sequence
-                        self._auto_save_message_count = len(messages)
-                        self._auto_save_messages = tracked_messages
-                        self._auto_save_conflict = None
-                        if self._auto_save_rewrite_revision == rewrite_revision:
-                            self._auto_save_rewrite_from = None
-                        self._auto_save_seen_result_hashes = set(meta["session_state"]["seen_result_hashes"])
-                        self._next_auto_save_checkpoint = 1 << sequence.bit_length()
+                    active = _checkpoint_publication.get()
+                    publication = _CheckpointPublication(
+                        path, active is not None and active.path == path and active.defer_journal_reset,
+                    )
+                    token = _checkpoint_publication.set(publication)
+                    try:
+                        self.store.checkpoint_snapshot(path, messages, meta=meta, sequence=sequence)
+                        publication.synced = True
+                    finally:
+                        _checkpoint_publication.reset(token)
+                        with self._auto_save_lock:
+                            if publication.synced:
+                                self._auto_save_sequence = sequence
+                                self._auto_save_visible_sequence = 0
+                                self._auto_save_message_count = len(messages)
+                                self._auto_save_messages = tracked_messages
+                                self._auto_save_conflict = None
+                                if self._auto_save_rewrite_revision == rewrite_revision:
+                                    self._auto_save_rewrite_from = None
+                                self._auto_save_seen_result_hashes = set(meta["session_state"]["seen_result_hashes"])
+                                self._next_auto_save_checkpoint = 1 << sequence.bit_length()
+                            elif publication.visible:
+                                # The rename is ours. A later delta must still cover the unsynced base.
+                                self._auto_save_visible_sequence = sequence
             finally:
                 with self._auto_save_lock:
                     self._auto_save_pending_checkpoints.discard(sequence)

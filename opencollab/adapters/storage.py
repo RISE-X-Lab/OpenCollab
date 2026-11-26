@@ -25,7 +25,7 @@ from opencollab.application.ports import (
     _AUTOSAVE_EXPORT_SOURCE_SEQUENCE,
     SnapshotCapacityError,
     SnapshotSequenceConflict,
-    _defer_covered_journal_reset_for,
+    _checkpoint_publication,
 )
 from opencollab.application.session_snapshot import decode_anthropic_history
 from opencollab.domain.session import same_snapshot_value
@@ -247,15 +247,21 @@ class SessionStore:
         obj = {**(meta or {}), "messages": messages}
         with _journal_operation_lock(path):
             records = self._read_journal_records(path)
+            destination_sequence = None
             if records:
-                # A full replacement supersedes every durable delta. Publish
-                # its cursor with the base before clearing the sidecar, so a
-                # crash between these writes cannot replay an older state.
+                destination_sequence = self._newest_persisted_sequence(path)
+            elif _AUTOSAVE_SEQUENCE_KEY in obj:
+                try:
+                    destination_sequence = self._persisted_base_sequence(path)
+                except ValueError:
+                    # An explicit export may replace a non-snapshot file.
+                    destination_sequence = None
+            if destination_sequence is not None:
+                # An export supersedes the destination even after journal compaction.
                 source_sequence = self._snapshot_sequence(obj)
-                destination_sequence = self._newest_persisted_sequence(path) + 1
-                if destination_sequence > source_sequence and _AUTOSAVE_SEQUENCE_KEY in obj:
+                if destination_sequence >= source_sequence and _AUTOSAVE_SEQUENCE_KEY in obj:
                     obj.setdefault(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE, source_sequence)
-                obj[_AUTOSAVE_SEQUENCE_KEY] = max(source_sequence, destination_sequence)
+                obj[_AUTOSAVE_SEQUENCE_KEY] = max(source_sequence, destination_sequence + 1)
             self._atomic_json_write(path, obj)
             if records:
                 write_regular_bytes_atomic(self._journal_path(path), b"", max_bytes=0)
@@ -727,15 +733,31 @@ class SessionStore:
     def _publish_checkpoint_unlocked(
         self, path: str, snapshot: dict[str, Any], *, defer_journal_reset: bool = False,
     ) -> None:
+        publication = _checkpoint_publication.get()
+        if publication is not None and (publication.path != path or defer_journal_reset):
+            publication = None
         try:
-            self._atomic_json_write(path, snapshot)
-        except SnapshotCapacityError:
-            self._atomic_json_write(path, snapshot, indent=None)
+            try:
+                self._atomic_json_write(path, snapshot)
+            except SnapshotCapacityError:
+                self._atomic_json_write(path, snapshot, indent=None)
+        except OSError:
+            if publication is not None:
+                # Directory sync can fail after the rename has made the candidate visible.
+                try:
+                    visible = json.loads(self._read_snapshot_text(path))
+                except (OSError, ValueError):
+                    pass
+                else:
+                    publication.visible = same_snapshot_value(visible, snapshot)
+            raise
+        if publication is not None:
+            publication.synced = True
         journal_path = self._journal_path(path)
         try:
             write_regular_bytes_atomic(journal_path, b"", max_bytes=0)
         except OSError as exc:
-            if not defer_journal_reset and _defer_covered_journal_reset_for.get() != path:
+            if not (defer_journal_reset or publication is not None and publication.defer_journal_reset):
                 raise
             # The synced snapshot already supersedes every journal record.
             logger.warning("could not compact covered session journal %s: %s", journal_path, exc)
@@ -881,16 +903,18 @@ class SessionStore:
             records.append(record)
         return records
 
-    def _newest_persisted_sequence(self, path: str) -> int:
-        newest = 0
+    def _persisted_base_sequence(self, path: str) -> int | None:
         try:
             text = self._read_snapshot_text(path)
         except FileNotFoundError:
-            pass
-        else:
-            parsed = self._parse_document(text)
-            if isinstance(parsed, dict):
-                newest = self._snapshot_sequence(parsed)
+            return None
+        parsed = self._parse_document(text)
+        if isinstance(parsed, dict) and _AUTOSAVE_SEQUENCE_KEY in parsed:
+            return self._snapshot_sequence(parsed)
+        return None
+
+    def _newest_persisted_sequence(self, path: str) -> int:
+        newest = self._persisted_base_sequence(path) or 0
         for record in self._read_journal_records(path):
             newest = max(
                 newest,
