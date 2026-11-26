@@ -647,8 +647,13 @@ class SnapshotStorePort(Protocol):
 
 @runtime_checkable
 class AutosaveOwnershipStorePort(Protocol):
-    def try_autosave_lock(self, path: str) -> Callable[[], None] | None:
-        """Return a callback to release exclusive write access, or None if busy."""
+    def try_autosave_lock(
+        self, path: str, *, expected_sequence: int | None = None,
+    ) -> Callable[[], None] | None:
+        """Return a release callback, or None if busy.
+
+        Raise SnapshotSequenceConflict if durable state exceeds expected_sequence.
+        """
         ...
 
 @runtime_checkable

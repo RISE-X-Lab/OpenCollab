@@ -40,6 +40,32 @@ _AUTOSAVE_OWNERSHIP_LOCK_SUFFIX = ".autosave.lock"
 _JOURNAL_LOCK_TIMEOUT_SECONDS = 10.0
 logger = logging.getLogger(__name__)
 
+_FileRevision = tuple[int, int, int, int, int]
+_AutosaveFileRevisions = tuple[_FileRevision | None, _FileRevision | None]
+
+
+@dataclass(frozen=True)
+class _AutosaveCursor:
+    path: str
+    revisions: _AutosaveFileRevisions
+    sequence: int
+
+
+def _file_revision(info: os.stat_result) -> _FileRevision:
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _regular_file_revision(path: str) -> _FileRevision | None:
+    try:
+        fd = _open_regular_read(path)
+    except FileNotFoundError:
+        return None
+    try:
+        return _file_revision(os.fstat(fd))
+    finally:
+        os.close(fd)
+
+
 @dataclass
 class _JournalLockEntry:
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -153,8 +179,11 @@ class _BoundedUTF8Writer:
 
 class SessionStore:
     allowed_roles = {"system", "developer", "user", "assistant", "tool"}
+    _autosave_cursor: _AutosaveCursor | None = None
 
-    def try_autosave_lock(self, path: str) -> Callable[[], None] | None:
+    def try_autosave_lock(
+        self, path: str, *, expected_sequence: int | None = None,
+    ) -> Callable[[], None] | None:
         # Keep the sidecar inode stable while snapshots and journals are replaced.
         lock_path = f"{path}{_AUTOSAVE_OWNERSHIP_LOCK_SUFFIX}"
         handle = open_regular_text_append(lock_path)
@@ -165,7 +194,43 @@ class SessionStore:
             if isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
                 return None
             raise
+        try:
+            if expected_sequence is not None:
+                with _journal_operation_lock(path):
+                    sequence = self._autosave_sequence_for_ownership(path)
+                    if sequence > expected_sequence:
+                        raise SnapshotSequenceConflict(
+                            f"refusing stale autosave sequence {expected_sequence}; "
+                            f"persisted sequence {sequence} is newer"
+                        )
+        except BaseException:
+            handle.close()
+            raise
         return handle.close
+
+    def _autosave_file_revisions(self, path: str) -> _AutosaveFileRevisions:
+        return _regular_file_revision(path), _regular_file_revision(self._journal_path(path))
+
+    def _autosave_sequence_for_ownership(self, path: str) -> int:
+        cursor = self._autosave_cursor
+        if cursor is not None and cursor.path == os.path.abspath(path):
+            try:
+                if cursor.revisions == self._autosave_file_revisions(path):
+                    return cursor.sequence
+            except OSError:
+                pass
+        sequence = self._newest_persisted_sequence(path)
+        self._remember_autosave_cursor(path, sequence)
+        return sequence
+
+    def _remember_autosave_cursor(self, path: str, sequence: int) -> None:
+        # The caller holds the journal lock across the read or publication.
+        try:
+            key = os.path.abspath(path)
+            revisions = self._autosave_file_revisions(path)
+        except OSError:
+            return
+        self._autosave_cursor = _AutosaveCursor(key, revisions, sequence)
 
     def has_snapshot(self, path: str) -> bool:
         """Return whether a base or recoverable journal sidecar is present."""
@@ -206,9 +271,12 @@ class SessionStore:
         # observe the old base together with the already-compacted journal (or
         # vice versa).
         with _journal_operation_lock(path, reading=True) as journal_locked:
-            return self._load_snapshot_unlocked(
+            snapshot = self._load_snapshot_unlocked(
                 path, system_prompt, read_journal=journal_locked,
             )
+            if journal_locked:
+                self._remember_autosave_cursor(path, self._snapshot_sequence(snapshot))
+            return snapshot
 
     def _load_snapshot_unlocked(
         self, path: str, fallback_system_prompt: str | None, *,
@@ -671,6 +739,7 @@ class SessionStore:
                 raise
             # The synced snapshot already supersedes every journal record.
             logger.warning("could not compact covered session journal %s: %s", journal_path, exc)
+        self._remember_autosave_cursor(path, snapshot[_AUTOSAVE_SEQUENCE_KEY])
 
     @staticmethod
     def _journal_path(path: str) -> str:
@@ -708,7 +777,8 @@ class SessionStore:
         append_start: int | None = None
         try:
             with open_regular_text_append(journal_path, readable=True) as handle:
-                current_size = os.fstat(handle.fileno()).st_size
+                before_append = os.fstat(handle.fileno())
+                current_size = before_append.st_size
                 complete_size = self._complete_journal_size(
                     handle.fileno(),
                     current_size,
@@ -726,6 +796,7 @@ class SessionStore:
                 write_locked_text(handle, payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+                self._advance_autosave_cursor(path, handle.fileno(), before_append, record["sequence"])
         except BaseException as append_error:
             if append_start is not None:
                 try:
@@ -737,6 +808,26 @@ class SessionStore:
                 except BaseException as rollback_error:
                     raise append_error from rollback_error
             raise
+
+    def _advance_autosave_cursor(
+        self, path: str, fd: int, before_append: os.stat_result, sequence: int,
+    ) -> None:
+        cursor = self._autosave_cursor
+        if cursor is None or cursor.path != os.path.abspath(path):
+            return
+        snapshot_revision, journal_revision = cursor.revisions
+        if journal_revision != _file_revision(before_append) and not (
+            journal_revision is None and before_append.st_size == 0
+        ):
+            return
+        try:
+            journal_revision = _file_revision(os.fstat(fd))
+        except OSError:
+            return
+        # A late append can leave an older record after the current cursor.
+        self._autosave_cursor = _AutosaveCursor(
+            cursor.path, (snapshot_revision, journal_revision), max(cursor.sequence, sequence),
+        )
 
     @staticmethod
     def _complete_journal_size(fd: int, size: int) -> int:
