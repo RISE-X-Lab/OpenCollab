@@ -51,6 +51,7 @@ from opencollab.application.ports import (
     WorkflowSessionFactoryPort,
     WorkingTreeProbe,
 )
+from opencollab.application.provider_failure import provider_http_failure_metadata
 from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE as DEFAULT_COMMIT_RESERVE
 from opencollab.application.session_run import ENFORCEMENT_OFF
 from opencollab.application.structured_output import TOOL_NAME as STRUCTURED_OUTPUT_TOOL_NAME
@@ -415,21 +416,9 @@ class WorkflowContext(
             await release()
 
     def _record_agent_failure(self, label: str | None, exc: Exception) -> None:
-        status_code = getattr(exc, "status_code", None)
-        if isinstance(status_code, bool) or not isinstance(status_code, int):
-            response = getattr(exc, "response", None)
-            status_code = getattr(response, "status_code", None)
-        if isinstance(status_code, bool) or not isinstance(status_code, int):
-            status_code = None
-        body = getattr(exc, "body", None)
-        error = body.get("error") if isinstance(body, dict) else None
-        if not isinstance(error, dict):
-            error = body if isinstance(body, dict) else {}
-        error_type = "content_filter" if self._agent_failure_filtered(exc) else error.get("type")
-        if not isinstance(error_type, str) or not error_type or len(error_type) > 128:
-            error_type = None
-        elif any(not (char.isalnum() or char in "._-") for char in error_type):
-            error_type = None
+        status_code, error_type = provider_http_failure_metadata(exc)
+        if self._agent_failure_filtered(exc):
+            error_type = "content_filter"
         record = {
             "label": str(label or "agent")[:240],
             "exception_type": type(exc).__name__[:128],

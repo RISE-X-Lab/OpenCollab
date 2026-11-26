@@ -254,9 +254,10 @@ async def test_team_keeps_completed_lead_answer_after_empty_filtered_followup(
         ("content_filter", "ResponsesTerminalEventError", None),
         ("invalid_prompt", "ResponsesTerminalEventError", None),
         ("rate_limit_exceeded", "ResponsesTransientEventError", 429),
+        ("rate_limit_error", "RateLimitError", 429),
     ],
 )
-async def test_team_keeps_typed_responses_failure_metadata(tmp_path, monkeypatch, code, exception_type, status_code):
+async def test_team_keeps_responses_failure_metadata(tmp_path, monkeypatch, code, exception_type, status_code):
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     team = tmp_path / "team.yaml"
     team.write_text(
@@ -285,6 +286,10 @@ async def test_team_keeps_typed_responses_failure_metadata(tmp_path, monkeypatch
             items = [function_item("delegate", "spawn_agent", '{"role":"reviewer","task":"Review the subtotal."}')]
         else:
             assert len(requests) == 2 and model == "gpt-4o-mini"
+            if code == "rate_limit_error":
+                return http_response(request, 429, json={
+                    "error": {"type": code, "message": "The inventory provider reported an error."},
+                })
             if code == "content_filter":
                 status = "incomplete"
                 incomplete = {"reason": code}
@@ -316,7 +321,10 @@ async def test_team_keeps_typed_responses_failure_metadata(tmp_path, monkeypatch
     )
 
     assert len(requests) == 3
-    assert (result.status, result.output, result.tokens) == ("completed", "Recorded the reviewer's outcome.", 12)
+    expected_tokens = 8 if code == "rate_limit_error" else 12
+    assert (result.status, result.output, result.tokens) == (
+        "completed", "Recorded the reviewer's outcome.", expected_tokens,
+    )
     assert result.agent_failures == ({
         "label": "reviewer",
         "exception_type": exception_type,

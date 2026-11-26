@@ -15,6 +15,7 @@ from typing import Any
 
 from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
 from opencollab.application.ports import ProviderTerminalEventError
+from opencollab.application.provider_failure import provider_http_failure_metadata
 from opencollab.application.scheduler_types import LaunchSpec
 from opencollab.domain.identity import role_collision_key, validate_role_identity
 from opencollab.domain.pending import PendingRowError, RowStatus
@@ -461,6 +462,8 @@ class LifecycleMixin:
                 status_code = getattr(exc, "status_code", None)
                 if type(status_code) is int:
                     scb.provider_status_code = status_code
+            else:
+                scb.provider_status_code, scb.provider_error_code = provider_http_failure_metadata(exc)
             terminal_reason = scb.state.terminal_reason or f"{type(exc).__name__}: {exc}"
             scb.state.fail(terminal_reason)
             reason = f"Error: {terminal_reason}"
