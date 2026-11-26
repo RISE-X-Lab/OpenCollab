@@ -219,6 +219,27 @@ def _input_key(value: Any) -> str:
         return repr(value)
 
 
+def _archive_candidate(program: Path, candidates_dir: Path, iteration: int) -> Path:
+    stem = f"iter_{iteration:03d}"
+    path = candidates_dir / f"{stem}.py"
+    suffix = 2
+    while True:
+        try:
+            destination = path.open("xb")
+        except FileExistsError:
+            path = candidates_dir / f"{stem}_{suffix}.py"
+            suffix += 1
+            continue
+        try:
+            with destination, program.open("rb") as source:
+                shutil.copyfileobj(source, destination)
+            shutil.copymode(program, path)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        return path
+
+
 @workflow(
     name="reconstruct",
     description="Reconstruct a hidden program from input/output observations with batched active exploration",
@@ -432,9 +453,9 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         score = None
         source = ""
         if candidate_exists:
-            archived.append(candidates_dir / f"iter_{iteration:03d}.py")
-            shutil.copy(program, archived[-1])
-            source = program.read_text(encoding="utf-8")
+            archive = _archive_candidate(program, candidates_dir, iteration)
+            archived.append(archive)
+            source = archive.read_text(encoding="utf-8")
             score = round(stage_score(source, passed / len(examples) if examples else 0.0, examples), 4)
         promoted = not fails
         miss = uncovered() if promoted else set()

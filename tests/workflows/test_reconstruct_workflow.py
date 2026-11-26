@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -221,8 +221,16 @@ def make_task(workspace: Path, **overrides: Any) -> ReconstructionTask:
 class ScriptedContext:
     """Plays the agent: writes the scripted candidate, proposes fresh inputs, spends no tokens."""
 
-    def __init__(self, workspace: Path, programs: list[str] | None = None, repeat_first_proposal: bool = False):
+    def __init__(
+        self,
+        workspace: Path,
+        programs: list[str] | None = None,
+        repeat_first_proposal: bool = False,
+        *,
+        candidate_file: str = "candidate.py",
+    ):
         self.workspace = workspace
+        self.candidate_file = candidate_file
         self.programs = list(programs or [CORRECT])
         self.repeat_first_proposal = repeat_first_proposal
         self.labels: list[str] = []
@@ -254,7 +262,7 @@ class ScriptedContext:
                 batch.append([self._next, -3])
             return {"inputs": batch}
         program = self.programs.pop(0) if len(self.programs) > 1 else self.programs[0]
-        (self.workspace / "candidate.py").write_text(program, encoding="utf-8")
+        (self.workspace / self.candidate_file).write_text(program, encoding="utf-8")
         return "done"
 
 
@@ -503,6 +511,46 @@ def test_selection_ignores_candidates_left_by_an_earlier_run(tmp_path: Path) -> 
     assert out["final_program"] == "iter_001.py"
     assert (tmp_path / "candidate.py").read_text(encoding="utf-8") == CORRECT
     assert (stale_dir / "iter_050.py").read_text(encoding="utf-8") == stale  # left untouched
+
+
+@pytest.mark.parametrize("overlap", [False, True], ids=["sequential", "parallel"])
+async def test_shared_workspace_runs_keep_their_archived_candidates(tmp_path: Path, overlap: bool) -> None:
+    first_selecting = asyncio.Event()
+    second_finished = asyncio.Event()
+    doubled = "def solve(xs):\n    return 2 * sum(abs(x) for x in xs)\n"
+
+    class FirstContext(ScriptedContext):
+        async def phase(self, name: str) -> None:
+            await super().phase(name)
+            if overlap and name == "select":
+                first_selecting.set()
+                await asyncio.wait_for(second_finished.wait(), timeout=5)
+
+    async def run(ctx: ScriptedContext, oracle: Callable[[list[int]], int]) -> dict[str, Any]:
+        task = make_task(tmp_path, candidate_file=ctx.candidate_file, oracle=oracle)
+        return await reconstruct(ctx, {"task": register_task(task), "max_iterations": 1, "early_stop": 1})
+
+    async def run_second() -> dict[str, Any]:
+        if overlap:
+            await asyncio.wait_for(first_selecting.wait(), timeout=5)
+        ctx = ScriptedContext(tmp_path, [doubled], candidate_file="doubled.py")
+        second = await run(ctx, lambda xs: 2 * _oracle(xs))
+        second_finished.set()
+        return second
+
+    first_run = run(FirstContext(tmp_path, candidate_file="absolute.py"), _oracle)
+    if overlap:
+        first, second = await asyncio.gather(first_run, run_second())
+    else:
+        first, second = await first_run, await run_second()
+
+    for outcome, filename, source in [(first, "absolute.py", CORRECT), (second, "doubled.py", doubled)]:
+        assert outcome["promotions"] == 1
+        assert outcome["final_score"] == 1.0
+        assert (tmp_path / filename).read_text(encoding="utf-8") == source
+        assert (tmp_path / ".oc_candidates" / outcome["final_program"]).read_text(encoding="utf-8") == source
+    assert first["final_program"] == "iter_001.py"
+    assert second["final_program"] != first["final_program"]
 
 
 def test_task_resolution_from_import_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
