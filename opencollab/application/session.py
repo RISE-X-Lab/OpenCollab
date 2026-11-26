@@ -395,15 +395,15 @@ class Session:
 
     @contextmanager
     def _autosave_access(
-        self, path: str | None, *, settle: bool = False,
+        self, path: str | None, *, settle: bool = False, require_current: bool = False,
     ) -> Iterator[None]:
         store = self.store
         if not path or not isinstance(store, AutosaveOwnershipStorePort):
             yield
             return
 
-        def acquire() -> Callable[[], None]:
-            release = store.try_autosave_lock(path)
+        def acquire(expected_sequence: int | None = None) -> Callable[[], None]:
+            release = store.try_autosave_lock(path, expected_sequence=expected_sequence)
             if release is None:
                 raise SessionBusyError(f"autosave has an active writer: {path}")
             return release
@@ -411,7 +411,8 @@ class Session:
         if _same_snapshot_path(path, self._auto_save_path):
             with self._auto_save_lock:
                 if self._autosave_writer is None:
-                    self._autosave_writer = acquire()
+                    expected = self._auto_save_sequence if require_current else None
+                    self._autosave_writer = acquire(expected)
                 self._autosave_writer_references += 1
             release = self._release_autosave_writer
         else:
@@ -450,7 +451,7 @@ class Session:
         if self._turn_lock.locked() or self.runner.pending_cleanup_tasks:
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            with self._autosave_access(self._auto_save_path, settle=True):
+            with self._autosave_access(self._auto_save_path, settle=True, require_current=True):
                 return await self._run_turn(cancel_event)
 
     async def _run_turn(self, cancel_event: asyncio.Event | None) -> str:
@@ -560,7 +561,7 @@ class Session:
         ):
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            with self._autosave_access(self._auto_save_path, settle=True):
+            with self._autosave_access(self._auto_save_path, settle=True, require_current=True):
                 self.state.append_queued_external_user_turn(
                     content, defer=not self.state.pending_events.is_empty()
                 )
@@ -1062,7 +1063,7 @@ class Session:
         saving_autosave = _same_snapshot_path(path, self._auto_save_path)
         if not saving_autosave and self.state.phase.is_terminal() and self.runner.pending_cleanup_tasks:
             raise SessionBusyError("cannot export a terminal session while provider requests are still draining")
-        with self._autosave_access(path):
+        with self._autosave_access(path, require_current=saving_autosave):
             self._save_snapshot(path, saving_autosave=saving_autosave)
 
     def _save_snapshot(self, path: str, *, saving_autosave: bool) -> None:
@@ -1333,7 +1334,7 @@ class Session:
     def enqueue_auto_save(self) -> asyncio.Task[None] | None:
         if self._auto_save_subscriber is None:
             return None
-        with self._autosave_access(self._auto_save_path, settle=True):
+        with self._autosave_access(self._auto_save_path, settle=True, require_current=True):
             return self._auto_save_subscriber.enqueue()
 
     def _track_tool_results(self, completed_results: list[dict]) -> None:
