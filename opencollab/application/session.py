@@ -404,12 +404,6 @@ class Session:
             yield
             return
 
-        def acquire(expected_sequence: int | None = None) -> Callable[[], None]:
-            release = store.try_autosave_lock(path, expected_sequence=expected_sequence)
-            if release is None:
-                raise SessionBusyError(f"autosave has an active writer: {path}")
-            return release
-
         if _same_snapshot_path(path, self._auto_save_path):
             with self._auto_save_lock:
                 if self._autosave_writer is None:
@@ -417,11 +411,11 @@ class Session:
                         max(self._auto_save_sequence, self._auto_save_visible_sequence)
                         if require_current else None
                     )
-                    self._autosave_writer = acquire(expected)
+                    self._autosave_writer = _acquire_autosave_writer(store, path, expected)
                 self._autosave_writer_references += 1
             release = self._release_autosave_writer
         else:
-            release = acquire()
+            release = _acquire_autosave_writer(store, path)
 
         try:
             yield
@@ -620,16 +614,10 @@ class Session:
         if self._turn_lock.locked() or self.pending_cleanup_tasks:
             raise SessionBusyError("session cannot be restored while runtime work is active")
         with self._autosave_access(self._auto_save_path):
-            self._restore_snapshot(path, aid=aid)
+            snapshot = _read_session_snapshot(self.store, path, self.agent.system_prompt)
+            self._restore_snapshot(path, snapshot, aid=aid)
 
-    def _restore_snapshot(self, path: str, *, aid: int | None) -> None:
-        if isinstance(self.store, SnapshotStorePort):
-            snapshot = self.store.load_snapshot(path, self.agent.system_prompt)
-        else:
-            snapshot = {
-                "messages": self.store.load_messages(path, self.agent.system_prompt)
-            }
-
+    def _restore_snapshot(self, path: str, snapshot: dict[str, Any], *, aid: int | None) -> None:
         messages = list(snapshot.get("messages", []))
         raw_state = snapshot.get("session_state")
         restored = SessionState(
@@ -1405,6 +1393,21 @@ class Session:
     def _auto_save(self) -> None:
         if self._auto_save_path:
             self.save(self._auto_save_path)
+
+def _acquire_autosave_writer(
+    store: AutosaveOwnershipStorePort, path: str, expected_sequence: int | None = None,
+) -> Callable[[], None]:
+    release = store.try_autosave_lock(path, expected_sequence=expected_sequence)
+    if release is None:
+        raise SessionBusyError(f"autosave has an active writer: {path}")
+    return release
+
+def _read_session_snapshot(
+    store: SessionStorePort, path: str, system_prompt: str,
+) -> dict[str, Any]:
+    if isinstance(store, SnapshotStorePort):
+        return store.load_snapshot(path, system_prompt)
+    return {"messages": store.load_messages(path, system_prompt)}
 
 def _same_snapshot_path(left: str | None, right: str | None) -> bool:
     if left is None or right is None:

@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import threading
+from contextlib import AsyncExitStack
 from pathlib import Path
 
 import pytest
 
 from opencollab import OpenCollab, RunControl, workflow
 from opencollab.adapters.llm.types import LLMResponse, Usage
-from opencollab.bootstrap import build_runtime_context, build_scheduler, load_session
+from opencollab.adapters.storage import SessionStore
+from opencollab.bootstrap import build_runtime_context, build_scheduler, build_session, load_session
 from opencollab.domain.agent import Agent
 from tests.support.environment_test_support import local_environment_factory as local_environment_factory
 from tests.support.prebuilt_team_test_support import CONFIG
@@ -132,6 +136,66 @@ async def test_loading_an_sdk_snapshot_keeps_the_selected_run_identity(local_env
         assert answers == ["finished", "finished"]
     finally:
         await restored.aclose()
+
+@pytest.mark.parametrize("autosave", [False, True])
+async def test_replacing_an_export_during_resume_keeps_its_run_identity(
+    tmp_path, local_environment_factory, monkeypatch, autosave,
+):
+    env = local_environment_factory(str(tmp_path))
+    agent = Agent(name="saved-agent", system_prompt="Answer briefly.")
+    source = str(tmp_path / "shared.json")
+    target = str(tmp_path / "continued.json")
+    store = SessionStore()
+    load_snapshot = store.load_snapshot
+    read_first = threading.Event()
+    replaced = threading.Event()
+    events = []
+
+    def read_with_concurrent_export(path, system_prompt):
+        snapshot = load_snapshot(path, system_prompt)
+        if path == source and not read_first.is_set():
+            read_first.set()
+            assert replaced.wait(5)
+        return snapshot
+
+    monkeypatch.setattr(store, "load_snapshot", read_with_concurrent_export)
+    async with AsyncExitStack() as sessions:
+        original, replacement = (
+            build_session(agent=agent, env=env, llm=ReplyLLM(), aid=aid, run_id=run_id)
+            for aid, run_id in ((3, "review-a"), (7, "review-b"))
+        )
+        for writer, prompt in ((original, "Review A."), (replacement, "Review B.")):
+            sessions.push_async_callback(writer.aclose)
+            await writer.add_user_message(prompt)
+            assert await writer.run_loop() == "finished"
+        original.save(source)
+
+        reader = asyncio.create_task(asyncio.to_thread(
+            load_session, source, agent, env=env, llm=ReplyLLM(), store=store,
+            auto_save_path=target if autosave else None,
+            run_control=RunControl(on_event=events.append),
+        ))
+        try:
+            assert await asyncio.to_thread(read_first.wait, 5)
+            replacement.save(source)
+            assert OpenCollab.read_session_snapshot(source)["run_id"] == "review-b"
+        finally:
+            replaced.set()
+            restored = await reader
+            sessions.push_async_callback(restored.aclose)
+        assert restored.state.aid == 3
+        assert restored.run_id == "review-a"
+        assert restored.messages == original.messages
+        await restored.add_user_message("Summarize the review.")
+        assert await restored.run_loop() == "finished"
+        if not autosave:
+            restored.save(target)
+        continued = OpenCollab.read_session_snapshot(target)
+        assert continued["run_id"] == "review-a"
+        assert continued["aid"] == 3
+        assert continued["session_state"]["used_tokens"] == 12
+        assert [event.run_id for event in events if event.type == "usage"] == ["review-a"]
+        assert OpenCollab.read_session_snapshot(source)["run_id"] == "review-b"
 
 @pytest.mark.parametrize("saved_id", [None, "", "  ", 7, "invalid\x00id"])
 def test_loading_an_unusable_saved_run_id_preserves_agent_identity(local_environment_factory, tmp_path, saved_id):
