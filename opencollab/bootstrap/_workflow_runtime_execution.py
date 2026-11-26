@@ -6,6 +6,7 @@ import asyncio
 import uuid
 from collections.abc import Callable
 from contextlib import ExitStack
+from copy import deepcopy
 from typing import Any, Literal
 
 from opencollab.adapters.trace import Tracer
@@ -82,6 +83,7 @@ async def run_workflow(
     system_prompt: str = WORKFLOW_AGENT_PROMPT,
     agent_profile: Any | None = None,
     save_dir: str | None = None,
+    manifest_args: dict[str, Any] | None = None,
     trace: bool = True,
     cleanup_timeout: float = DEFAULT_WORKFLOW_CLEANUP_TIMEOUT_SECONDS,
     env: Any | None = None,
@@ -101,6 +103,8 @@ async def run_workflow(
 ) -> Any:
     """Run one workflow and return only after cleanup and evidence persistence."""
     cleanup_timeout = _positive_cleanup_timeout(cleanup_timeout)
+    if save_dir is not None and manifest_args is None:
+        manifest_args = deepcopy(args)
     fn = _resolve_spec_fn(spec_or_fn)
     metadata = (
         spec_or_fn
@@ -230,7 +234,7 @@ async def run_workflow(
             save_dir,
             run_id=run_id,
             name=name,
-            args=args,
+            args=manifest_args if manifest_args is not None else args,
             ctx=ctx,
             tracer=tracer,
             tracer_failure=tracer_failure,

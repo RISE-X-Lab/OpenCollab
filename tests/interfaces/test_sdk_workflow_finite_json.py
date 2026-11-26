@@ -1,5 +1,6 @@
 """Structured workflow results and their traces can be consumed as JSON."""
 
+import asyncio
 import json
 
 import pytest
@@ -121,3 +122,28 @@ async def test_workflow_records_preparsed_arguments_as_text(tmp_path, finite):
     assert calls == (1 if finite else 2)
     assert result.tokens == 4 * calls
     _assert_json_artifacts(artifacts)
+
+
+@pytest.mark.parametrize("external_change", [False, True])
+async def test_workflow_manifest_snapshots_args_before_execution(tmp_path, external_change):
+    inputs = {"samples": [2.5]}
+    artifacts = tmp_path / "artifacts"
+
+    async def flow(_ctx, args):
+        if not external_change:
+            args["samples"].append(float("-inf"))
+        return len(args["samples"])
+
+    pending = asyncio.create_task(OpenCollab(tmp_path).workflow(
+        flow, inputs, artifacts=artifacts, trace=False,
+    ))
+    if external_change:
+        await asyncio.sleep(0)
+        assert (artifacts / ".opencollab-run").exists()
+        inputs["samples"].append(float("-inf"))
+
+    result = await pending
+    assert result.ok and result.output == 2
+    manifest = json.loads((artifacts / "workflow.json").read_text(), parse_constant=_reject_constant)
+    assert manifest["args"] == {"samples": [2.5]}
+    assert manifest["evidence_complete"] is True

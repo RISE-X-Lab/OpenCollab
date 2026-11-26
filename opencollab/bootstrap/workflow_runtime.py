@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
 from opencollab.adapters.llm.retry import _with_native_retry_budget_scope
@@ -109,6 +110,7 @@ async def run_workflow(
         agent_profile = resolve_agent_profile(agent_profile)
     if cleanup_environment is None:
         cleanup_environment = env is None
+    manifest_args = deepcopy(args) if save_dir is not None else None
     token = _WORKFLOW_ENV_OVERRIDE.set(env)
     cancelled_result: WorkflowRuntimeResult | None = None
     cancelled_notes: tuple[str, ...] = ()
@@ -139,6 +141,7 @@ async def run_workflow(
                 candidate_workspace=candidate_workspace,
                 run_id=run_id,
                 save_dir=save_dir,
+                manifest_args=manifest_args,
                 trace=trace,
                 cleanup_timeout=cleanup_timeout,
                 env=env,
