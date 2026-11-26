@@ -983,10 +983,10 @@ class Session:
             )
 
     def save(self, path: str) -> None:
-        if (
-            _same_snapshot_path(path, self._auto_save_path)
-            and isinstance(self.store, JournalSnapshotStorePort)
-        ):
+        saving_autosave = _same_snapshot_path(path, self._auto_save_path)
+        if not saving_autosave and self.state.phase.is_terminal() and self.runner.pending_cleanup_tasks:
+            raise SessionBusyError("cannot export a terminal session while provider requests are still draining")
+        if saving_autosave and isinstance(self.store, JournalSnapshotStorePort):
             # Freeze and publish after every operation already submitted by
             # this session. An older append may finish later, but replay will
             # skip its sequence and its completion cannot rewind our cursor.
