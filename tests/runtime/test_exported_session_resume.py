@@ -16,6 +16,7 @@ from opencollab.bootstrap import build_session, load_session
 from opencollab.domain import session as session_module
 from opencollab.domain.agent import Agent
 from opencollab.tools import builtin_tools
+from tests.support.environment_test_support import local_environment_factory as local_environment_factory
 from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
 from tests.support.session_run_test_support import FakeLLM, llm_response, tool_call
 
@@ -140,6 +141,63 @@ async def test_export_keeps_original_autosave_bytes_unchanged(tmp_path):
     finally:
         await original.aclose()
         await original.env.cleanup()
+
+@pytest.mark.parametrize("copy_mode", ["direct", "read-only", "writable"])
+@pytest.mark.parametrize("source_advances", [False, True])
+async def test_reusing_export_path_does_not_promote_source_history(
+    tmp_path, local_environment_factory, copy_mode, source_advances,
+):
+    source, backup, copy_path = (tmp_path / name for name in ("source.json", "backup.json", "copy.json"))
+    store = SessionStore()
+    store.checkpoint_snapshot(
+        str(backup), [{"role": "user", "content": "Previous task."}], meta={}, sequence=20,
+    )
+    store.append_snapshot_delta(
+        str(backup), sequence=21, replace_from=1,
+        messages=[{"role": "assistant", "content": "Saved the previous task."}], meta={},
+    )
+    agent = Agent(name="reviewer", system_prompt="Remember the original requirements.")
+    options = {"agent": agent, "store": store, "env": local_environment_factory(str(tmp_path))}
+    original = build_session(**options, llm=model(3), auto_save_path=str(source))
+    reader = restored = None
+    try:
+        await converse(original, 1)
+        first = store.load_snapshot(str(source), agent.system_prompt)
+        original.save(str(backup))
+        exported = store.load_snapshot(str(backup), agent.system_prompt)
+        assert exported["_autosave_sequence"] > first["_autosave_sequence"]
+        if copy_mode != "direct":
+            reader = load_session(
+                str(backup), **options, llm=model(),
+                auto_save_path=str(backup) if copy_mode == "writable" else None,
+            )
+            if copy_mode == "writable":
+                reader.save(str(backup))
+                assert store.load_snapshot(str(backup), agent.system_prompt)["_autosave_sequence"] > (
+                    exported["_autosave_sequence"]
+                )
+            reader.save(str(copy_path))
+            backup = copy_path
+        if source_advances:
+            await converse(original, 2)
+            before = store.load_snapshot(str(source), agent.system_prompt)
+            files = [source, source.with_suffix(".json.journal")]
+            original_bytes = [path.read_bytes() for path in files]
+            with pytest.raises(SnapshotSequenceConflict, match="refusing stale checkpoint"):
+                load_session(str(backup), **options, llm=model(), auto_save_path=str(source))
+            assert store.load_snapshot(str(source), agent.system_prompt) == before
+            assert [path.read_bytes() for path in files] == original_bytes
+        else:
+            restored = load_session(str(backup), **options, llm=model(), auto_save_path=str(source))
+            resumed = store.load_snapshot(str(source), agent.system_prompt)
+            assert resumed["_autosave_sequence"] == first["_autosave_sequence"] + 1
+            assert resumed["messages"] == first["messages"]
+            await converse(restored, 1)
+            assert store.load_snapshot(str(source), agent.system_prompt)["session_state"]["used_tokens"] == 14
+    finally:
+        for session in (original, reader, restored):
+            if session is not None:
+                await session.aclose()
 
 async def test_older_export_still_cannot_replace_a_newer_autosave(tmp_path):
     automatic = tmp_path / "automatic.json"

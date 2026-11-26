@@ -16,6 +16,7 @@ from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import (
+    _AUTOSAVE_EXPORT_SOURCE_SEQUENCE,
     EnvironmentPort,
     JournalSnapshotStorePort,
     LLMPort,
@@ -156,6 +157,7 @@ class Session:
         self._terminal_checkpoint_error: Exception | None = None
         self._auto_save_sequence = 0
         self._auto_save_reserved_sequence = 0
+        self._auto_save_export_source_sequence: int | None = None
         self._auto_save_conflict: str | None = None
         self._auto_save_message_count = 0
         self._auto_save_messages: list[dict] | None = None
@@ -770,6 +772,10 @@ class Session:
         sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
         self._auto_save_sequence = sequence
         self._auto_save_reserved_sequence = sequence
+        export_source = snapshot.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE)
+        self._auto_save_export_source_sequence = (
+            None if export_source is None else _snapshot_nonnegative_int(export_source)
+        )
         self._auto_save_conflict = None
         stored_messages = snapshot.get("messages")
         self._auto_save_message_count = min(
@@ -798,7 +804,9 @@ class Session:
             return snapshot
         with self._auto_save_lock:
             messages, meta = self._snapshot_for_save(state=restored)
-        sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
+        sequence = _snapshot_nonnegative_int(
+            snapshot.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE, snapshot.get("_autosave_sequence")),
+        )
         if isinstance(self.store, JournalSnapshotStorePort):
             sequence += 1
             try:
@@ -823,7 +831,9 @@ class Session:
         else:
             meta["_autosave_sequence"] = sequence
             self.store.save(target_path, messages, meta=meta)
-        return {**snapshot, "_autosave_sequence": sequence, "messages": messages}
+        recovered = {**snapshot, "_autosave_sequence": sequence, "messages": messages}
+        recovered.pop(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE, None)
+        return recovered
 
     def _publish_restored_state(
         self, restored: SessionState, snapshot: dict[str, Any], source_path: str,
@@ -982,6 +992,8 @@ class Session:
             # skip its sequence and its completion cannot rewind our cursor.
             with self._auto_save_lock:
                 messages, meta = self._snapshot_for_save()
+                if self._auto_save_export_source_sequence is not None:
+                    meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = self._auto_save_export_source_sequence
                 track_messages = self._auto_save_messages is not None or self.state.anthropic_history is not None
                 tracked_messages = messages if track_messages else None
                 sequence = self._reserve_auto_save_sequence()
@@ -1010,7 +1022,8 @@ class Session:
             messages, meta = self._snapshot_for_save()
             # An exported snapshot may resume this session's autosave target.
             # Keep its ordering cursor when saving to another filename.
-            meta["_autosave_sequence"] = self._auto_save_reserved_sequence
+            export_source = self._auto_save_export_source_sequence
+            meta["_autosave_sequence"] = self._auto_save_reserved_sequence if export_source is None else export_source
         self.store.save(path, messages, meta=meta)
 
     def _snapshot_for_save(
@@ -1155,6 +1168,7 @@ class Session:
 
         def advance_cursor() -> None:
             self._auto_save_sequence = sequence
+            self._auto_save_export_source_sequence = None
             self._auto_save_message_count = message_count
             self._auto_save_messages = tracked_messages
             if self._auto_save_rewrite_revision == rewrite_revision:

@@ -22,6 +22,7 @@ from opencollab.adapters.safe_files import (
     write_regular_file_atomic,
 )
 from opencollab.application.ports import (
+    _AUTOSAVE_EXPORT_SOURCE_SEQUENCE,
     SnapshotCapacityError,
     SnapshotSequenceConflict,
     _defer_covered_journal_reset_for,
@@ -171,9 +172,11 @@ class SessionStore:
                 # A full replacement supersedes every durable delta. Publish
                 # its cursor with the base before clearing the sidecar, so a
                 # crash between these writes cannot replay an older state.
-                obj[_AUTOSAVE_SEQUENCE_KEY] = max(
-                    self._snapshot_sequence(obj), self._newest_persisted_sequence(path) + 1,
-                )
+                source_sequence = self._snapshot_sequence(obj)
+                destination_sequence = self._newest_persisted_sequence(path) + 1
+                if destination_sequence > source_sequence and _AUTOSAVE_SEQUENCE_KEY in obj:
+                    obj.setdefault(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE, source_sequence)
+                obj[_AUTOSAVE_SEQUENCE_KEY] = max(source_sequence, destination_sequence)
             self._atomic_json_write(path, obj)
             if records:
                 write_regular_bytes_atomic(self._journal_path(path), b"", max_bytes=0)

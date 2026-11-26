@@ -609,6 +609,8 @@ _defer_covered_journal_reset_for: ContextVar[str | None] = ContextVar(
     "defer_covered_journal_reset_for", default=None,
 )
 
+_AUTOSAVE_EXPORT_SOURCE_SEQUENCE = "_autosave_export_source_sequence"
+
 
 class SessionStorePort(Protocol):
     """Message persistence surface (structured JSON per agent)."""
