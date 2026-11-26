@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -226,3 +227,171 @@ async def test_interrupted_team_recovery_keeps_accepted_submission(tmp_path, mon
     assert sum(row.get("content") == summary for row in settled["messages"]) == int(submit)
     if submit:
         assert settled["messages"][-1]["content"] == summary
+
+
+@pytest.mark.parametrize(
+    ("exit_input", "submit"),
+    [("interrupt", True), ("eof", True), ("eof", False), ("after_drain", True)],
+)
+async def test_fresh_team_interrupt_then_exit_keeps_accepted_submission(tmp_path, monkeypatch, exit_input, submit):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    team = tmp_path / "team.yaml"
+    team.write_text(
+        "entry: lead\nroles:\n"
+        "  lead:\n    model: lead-fixture\n    prompt: Report the verified table count.\n"
+        "    tools: [spawn_agent, submit]\n"
+        "  reviewer:\n    model: reviewer-fixture\n    prompt: Review the table.\n"
+        "    tools: []\ntopology:\n  lead: [reviewer]\n  reviewer: []\n",
+        encoding="utf-8",
+    )
+
+    original = "Check the table and report its size."
+    followup = "Recall the previously submitted count."
+    summary = "The verified count is 17 rows."
+    late_review = "Late reviewer result."
+    started = asyncio.Event()
+    abandoned = asyncio.Event()
+    release = asyncio.Event()
+    returned = asyncio.Event()
+    final_requests = []
+    restoring = False
+
+    async def handler(request):
+        body = json.loads(request.content)
+        if restoring:
+            final_requests.append(body)
+            return completion_http_response(request, text="Follow-up complete.")
+        if body["model"] == "reviewer-fixture":
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                abandoned.set()
+                await release.wait()
+                returned.set()
+                return completion_http_response(request, text=late_review)
+        assert body["messages"][-1]["content"] == original
+        calls = [("review", "spawn_agent", {"role": "reviewer", "task": "Review the appendix."})]
+        if submit:
+            calls.append(("submit-count", "submit", {"summary": summary}))
+        return _tool_reply(request, *calls)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    provider = {
+        "provider": "openai", "model": "lead-fixture", "api_key": "team-test-token",  # pragma: allowlist secret
+        "base_url": "https://fixture.invalid/v1",
+    }
+    transport = {"wire_protocol": "chat_completions", "llm_stream_chat": False, "llm_max_retries": 0}
+    cfg = build_config(str(tmp_path), overrides={**provider, **transport, "budget": 100_000})
+    context = build_runtime_context(str(tmp_path), cfg.model_dump(), trace=False)
+    artifacts = tmp_path / "fresh"
+    scheduler = build_scheduler(
+        context, use_worktrees=False, interactive=True, team_config_path=team,
+        save_dir=artifacts, cleanup_timeout=2,
+    )
+    completed_interrupts = []
+    hard_cancellations = []
+
+    async def run_queued(prompt, aid, event):
+        try:
+            await scheduler.run_turn(aid, prompt, cancel_event=event)
+        except SchedulerTurnError as exc:
+            completed_interrupts.append((exc.terminal_reason, exc.partial_answer))
+        except asyncio.CancelledError as exc:
+            hard_cancellations.append(exc)
+            raise
+
+    queue = TurnQueue(run_queued)
+
+    async def wait_for_submitted_turn():
+        await started.wait()
+        while True:
+            for path in artifacts.glob("agent_0_*.json"):
+                snapshot = OpenCollab.read_session_snapshot(path)
+                state = snapshot["session_state"]
+                if state["phase"] != "awaiting_events":
+                    continue
+                assert state["submitted_summary"] == (summary if submit else None)
+                pending = [("review", "pending"), ("submit-count", "done")] if submit else [("review", "pending")]
+                assert [(row["tool_call_id"], row["status"]) for row in state["pending_events"]] == pending
+                return
+            await asyncio.sleep(0.005)
+
+    async def return_late_response():
+        await abandoned.wait()
+        if exit_input != "after_drain":
+            while not scheduler._shutting_down:
+                await asyncio.sleep(0.001)
+        release.set()
+
+    class Prompt:
+        reads = 0
+
+        async def read(self):
+            self.reads += 1
+            if self.reads == 1:
+                return original
+            if self.reads == 2:
+                await wait_for_submitted_turn()
+                raise KeyboardInterrupt
+            await abandoned.wait()
+            assert queue.busy
+            if exit_input == "after_drain":
+                await queue.drain()
+            if exit_input == "interrupt":
+                raise KeyboardInterrupt
+            raise EOFError
+
+        def deliver(self, _line):
+            return False
+
+        def decline_pending(self):
+            return False
+
+    prompt = Prompt()
+    late_response_task = asyncio.create_task(return_late_response())
+    try:
+        await asyncio.wait_for(cli_main._drive(
+            queue, reader=cli_main._read_loop(prompt, queue, SimpleNamespace(selected_aid=0), scheduler.lead_session),
+            until_drained=False,
+        ), 6)
+    finally:
+        release.set()
+        late_response_task.cancel()
+        await asyncio.gather(late_response_task, return_exceptions=True)
+        await cli_main._await_scheduler_cleanup(scheduler, cleanup_timeout=2)
+    assert returned.is_set()
+    assert prompt.reads == 3
+    if exit_input == "after_drain":
+        assert completed_interrupts == [("interrupted by user", summary)]
+        assert not hard_cancellations
+    else:
+        assert not completed_interrupts
+        assert len(hard_cancellations) == 1
+
+    path = next(artifacts.glob("agent_0_*.json"))
+    saved = OpenCollab.read_session_snapshot(path)
+    state = saved["session_state"]
+    assert (state["phase"], state["terminal_reason"]) == ("stopped", "interrupted by user")
+    restoring = True
+    resumed = await asyncio.to_thread(CliRunner().invoke, cli_main.app, [
+        "--workspace", str(tmp_path), "--team-config", str(team), "--no-worktrees",
+        "--provider", provider["provider"], "--model", provider["model"], "--api-key", provider["api_key"],
+        "--base-url", provider["base_url"], "--budget", "100000", "--session", str(path), "--prompt", followup,
+    ])
+    assert resumed.exit_code == 0, (resumed.output, resumed.exception)
+    assert [body["model"] for body in final_requests] == ["lead-fixture"]
+    messages = final_requests[0]["messages"]
+    assert [row["content"] for row in messages if row["role"] == "user"] == [original, followup]
+    assert messages.count({"role": "assistant", "content": summary}) == int(submit)
+    tool_rows = [row for row in messages if row["role"] == "tool"]
+    assert [row["tool_call_id"] for row in tool_rows] == (["review", "submit-count"] if submit else ["review"])
+    assert tool_rows[0]["content"].startswith("Error:")
+    if submit:
+        assert tool_rows[1]["content"] == "Submitted. Your turn ends here."
+    assert all(row.get("content") != late_review for row in messages)
+    assert state["pending_events"] == []
+    assert state["submitted_summary"] is None

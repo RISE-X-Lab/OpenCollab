@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
+from opencollab.application.async_timeout import consume_task_result
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.scheduler_types import SchedulerStalledError, SchedulerTurnError
 from opencollab.domain.pending import RowStatus
@@ -340,8 +341,30 @@ class SchedulerRunMixin:
         for task in owned_tasks:
             task.cancel()
         if owned_tasks:
-            await asyncio.gather(*owned_tasks, return_exceptions=True)
+            try:
+                done, _ = await asyncio.wait(owned_tasks)
+            except asyncio.CancelledError as cancellation:
+                # The CLI can exit while children are still unwinding. Record
+                # the stopped turn before bounded scheduler cleanup takes over.
+                try:
+                    self._record_cancelled_turn_subtree(aid, descendants, reason)
+                except Exception as exc:
+                    add_exception_note(
+                        cancellation, f"interrupted turn settlement also failed: {type(exc).__name__}: {exc}",
+                    )
+                raise
+            for task in done:
+                consume_task_result(task)
+        self._record_cancelled_turn_subtree(aid, descendants, reason)
 
+        await self.notify_unanswered_senders(aid, reason)
+        await self._safe_emit_scheduler_event(
+            self._events.agent_cancelled(aid, target.agent.name)
+        )
+        self._write_manifest()
+
+    def _record_cancelled_turn_subtree(self, aid: int, descendants: set[int], reason: str) -> None:
+        failure = f"Error: {reason}"
         for child_aid in (*descendants, aid):
             scb = self.table.get(child_aid)
             if scb is None:
@@ -379,12 +402,6 @@ class SchedulerRunMixin:
             self._release_leases(child_aid)
             self._turn_started_at.pop(child_aid, None)
             self._autosave_session(child_aid)
-
-        await self.notify_unanswered_senders(aid, reason)
-        await self._safe_emit_scheduler_event(
-            self._events.agent_cancelled(aid, target.agent.name)
-        )
-        self._write_manifest()
 
     def _message_budget_cleanup_tasks(self) -> set[asyncio.Task]:
         if not any(
