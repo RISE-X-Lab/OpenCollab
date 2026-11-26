@@ -8,6 +8,8 @@ from typer.testing import CliRunner
 
 from opencollab import OpenCollab
 from opencollab.adapters.cli import main as cli_main
+from opencollab.adapters.cli.turn_queue import TurnQueue
+from opencollab.application.scheduler_types import SchedulerTurnError
 from opencollab.bootstrap import build_scheduler
 from opencollab.bootstrap.config import build_config
 from opencollab.bootstrap.runtime_context import build_runtime_context
@@ -31,8 +33,11 @@ def _tool_reply(request, *calls):
     })
 
 
-@pytest.mark.parametrize("interruption", ["cancel", "timeout"])
-async def test_interrupted_team_recovery_keeps_accepted_submission(tmp_path, monkeypatch, interruption):
+@pytest.mark.parametrize(
+    ("interruption", "submit"),
+    [("cancel", True), ("timeout", True), ("cooperative", True), ("cooperative", False)],
+)
+async def test_interrupted_team_recovery_keeps_accepted_submission(tmp_path, monkeypatch, interruption, submit):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
@@ -57,6 +62,7 @@ async def test_interrupted_team_recovery_keeps_accepted_submission(tmp_path, mon
     original_review_release = asyncio.Event()
     recovery_review_started = asyncio.Event()
     recovery_review_cancelled = asyncio.Event()
+    late_review_returned = asyncio.Event()
     final_requests = []
     stage = "original"
 
@@ -74,8 +80,13 @@ async def test_interrupted_team_recovery_keeps_accepted_submission(tmp_path, mon
             recovery_review_started.set()
             try:
                 await asyncio.Event().wait()
-            finally:
+            except asyncio.CancelledError:
                 recovery_review_cancelled.set()
+                if interruption != "cooperative":
+                    raise
+                await asyncio.sleep(0)
+                late_review_returned.set()
+                return completion_http_response(request, text="Late reviewer result.")
         tool_rows = [row for row in messages if row["role"] == "tool"]
         if stage == "original":
             if tool_rows:
@@ -86,11 +97,10 @@ async def test_interrupted_team_recovery_keeps_accepted_submission(tmp_path, mon
         assert messages[-1]["role"] == "tool"
         assert messages[-1]["tool_call_id"] == "original-review"
         assert messages[-1]["content"] == "deferred child interrupted by session restore"
-        return _tool_reply(
-            request,
-            ("recovery-review", "spawn_agent", {"role": "reviewer", "task": "Check the next table."}),
-            ("submit-count", "submit", {"summary": summary}),
-        )
+        calls = [("recovery-review", "spawn_agent", {"role": "reviewer", "task": "Check the next table."})]
+        if submit:
+            calls.append(("submit-count", "submit", {"summary": summary}))
+        return _tool_reply(request, *calls)
 
     install_sdk_transport(monkeypatch, "openai", handler)
     provider = {
@@ -100,12 +110,19 @@ async def test_interrupted_team_recovery_keeps_accepted_submission(tmp_path, mon
     transport = {"wire_protocol": "chat_completions", "llm_stream_chat": False, "llm_max_retries": 0}
     app = OpenCollab(tmp_path, config=transport, **provider)
 
-    async def await_suspension(directory, *, submitted_summary=None):
+    async def await_suspension(directory, *, submitted_summary=None, pending_call=None):
         while True:
             for path in directory.glob("agent_0_*.json"):
                 snapshot = app.read_session_snapshot(path)
                 state = snapshot["session_state"]
-                if state["phase"] == "awaiting_events" and state["submitted_summary"] == submitted_summary:
+                if (
+                    state["phase"] == "awaiting_events"
+                    and state["submitted_summary"] == submitted_summary
+                    and (pending_call is None or any(
+                        row["tool_call_id"] == pending_call and row["status"] == "pending"
+                        for row in state["pending_events"]
+                    ))
+                ):
                     return path, snapshot
             await asyncio.sleep(0.005)
 
@@ -132,16 +149,35 @@ async def test_interrupted_team_recovery_keeps_accepted_submission(tmp_path, mon
         context, use_worktrees=False, interactive=True, team_config_path=team,
         session_file=str(checkpoint), save_dir=recovery_dir,
     )
-    active = asyncio.create_task(scheduler.run(queued_prompt))
+    async def run_queued(prompt, aid, cancel_event):
+        await scheduler.run_turn(aid, prompt, cancel_event=cancel_event)
+
+    queue = TurnQueue(run_queued)
+    if interruption == "cooperative":
+        active = asyncio.create_task(queue.run())
+        queue.submit(queued_prompt, 0)
+    else:
+        active = asyncio.create_task(scheduler.run(queued_prompt))
     try:
         await asyncio.wait_for(recovery_review_started.wait(), 5)
         recovery_path, accepted = await asyncio.wait_for(
-            await_suspension(recovery_dir, submitted_summary=summary), 5,
+            await_suspension(
+                recovery_dir, submitted_summary=summary if submit else None, pending_call="recovery-review",
+            ), 5,
         )
-        assert [(row["tool_call_id"], row["status"]) for row in accepted["session_state"]["pending_events"]] == [
-            ("recovery-review", "pending"), ("submit-count", "done"),
-        ]
-        if interruption == "cancel":
+        pending_rows = [("recovery-review", "pending")]
+        if submit:
+            pending_rows.append(("submit-count", "done"))
+        accepted_rows = accepted["session_state"]["pending_events"]
+        assert [(row["tool_call_id"], row["status"]) for row in accepted_rows] == pending_rows
+        if interruption == "cooperative":
+            assert queue.interrupt()
+            with pytest.raises(SchedulerTurnError) as stopped:
+                await asyncio.wait_for(active, 5)
+            assert stopped.value.terminal_reason == "interrupted by user"
+            assert stopped.value.partial_answer == (summary if submit else None)
+            await asyncio.wait_for(late_review_returned.wait(), 5)
+        elif interruption == "cancel":
             active.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await active
@@ -168,15 +204,25 @@ async def test_interrupted_team_recovery_keeps_accepted_submission(tmp_path, mon
     assert [model for model, _ in final_requests] == ["lead-fixture"]
     messages = final_requests[0][1]
     assert messages[-1] == {"role": "user", "content": final_prompt}
-    assert messages[-2] == {"role": "assistant", "content": summary}
-    assert sum(message == messages[-2] for message in messages) == 1
+    summary_message = {"role": "assistant", "content": summary}
+    assert messages.count(summary_message) == int(submit)
+    if submit:
+        assert messages[-2] == summary_message
     assert [row["content"] for row in messages if row["role"] == "user"] == [original_prompt, final_prompt]
-    assert [(row["tool_call_id"], row["content"]) for row in messages if row["role"] == "tool"] == [
+    review_result = (
+        "Error: agent cancelled before completing delegated work" if interruption == "cooperative"
+        else "Error: scheduler cleanup cancelled delegated work"
+    )
+    tools = [
         ("original-review", "deferred child interrupted by session restore"),
-        ("recovery-review", "Error: scheduler cleanup cancelled delegated work"),
-        ("submit-count", "Submitted. Your turn ends here."),
+        ("recovery-review", review_result),
     ]
+    if submit:
+        tools.append(("submit-count", "Submitted. Your turn ends here."))
+    assert [(row["tool_call_id"], row["content"]) for row in messages if row["role"] == "tool"] == tools
     assert settled["session_state"]["phase"] == "stopped"
     assert settled["session_state"]["pending_events"] == []
     assert settled["session_state"]["submitted_summary"] is None
-    assert settled["messages"][-1]["content"] == summary
+    assert sum(row.get("content") == summary for row in settled["messages"]) == int(submit)
+    if submit:
+        assert settled["messages"][-1]["content"] == summary
