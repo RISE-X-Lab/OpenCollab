@@ -82,6 +82,10 @@ supplied `command` and records `executed_command` when reporting flags were
 added. Shell combinations outside the supported test parser require an
 application verifier or an assertion script with `expected_output`.
 
+Pytest reads its selected configuration during the check. To include captured
+output from passing tests in the verification report, use a reporting flag in
+the check command or specify `expected_output`.
+
 ## Run through the public SDK
 
 This script uses the installed package, creates ordinary files, and verifies

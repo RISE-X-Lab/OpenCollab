@@ -4,7 +4,7 @@ Duo 的完整内置实现位于 [`builtin_workflows/duo/`](../../opencollab/buil
 
 [English guide](../duo.md)
 
-Duo V8 为同一任务生成两个隔离候选，比较证据后采用一个结果。通用角色提示覆盖源码修改、配置、数据和任务要求的其他产物。运行时提供候选环境与实际交付方式。
+Duo V8 在独立候选工作区中为同一任务生成两个方案，比较证据后采用一个结果。通用角色提示覆盖源码修改、配置、数据和任务要求的其他产物。运行时提供候选环境与实际交付方式。
 
 ## 运行 Duo
 
@@ -13,13 +13,20 @@ Duo V8 为同一任务生成两个隔离候选，比较证据后采用一个结�
 ```bash
 opencollab workflow list --workspace /path/to/workspace
 opencollab workflow run duo --workspace /path/to/workspace \
-  --task 'Complete the task described here.' \
-  --args '{"allow_unisolated_shell":true}'
+  --task 'Complete the task described here.'
 ```
 
 `--task` 设置工作流的 `goal` 参数。较长的任务可用 `--task-file task.md` 读取 UTF-8 文件，其他工作流参数继续放在 `--args` 中。两种任务输入方式选择一种，使用快捷参数时将 `goal` 留给它填写。原有纯 JSON 调用方式继续可用。
 
-上例显式允许在可信本地工作区执行 shell。默认设置要求进程隔离。容器调用方可以保留默认设置，并通过 SDK 传入执行环境。
+默认 Git 候选后端提供独立的工作树，文件工具的操作范围限于各自工作区。由于候选与源工作区共用执行环境，Duo 不向该后端的候选提供 Bash。本地进程、同一个容器或同一台虚拟机内的工作树均适用。Duo 仍接受布尔值 `allow_unisolated_shell` 以兼容旧调用，传入 `True` 时会记录一条警告。候选能否使用 Bash 取决于其沙箱。
+
+需要在独立容器中运行候选的 Shell 命令时，可使用[标准 Docker 提供方](../session-isolation.zh-CN.md#docker-策略)，
+在 CLI 中设置 `--isolation docker-session`，或在 SDK 中传入 `isolation="docker-session"`。
+该策略将起始工作区复制到每个容器，再把选中的补丁交付到源工作区。
+每个候选沿用 Docker 的 Git 导入检查。仓库本地配置中的 `core.excludesFile` 会使导入在调用模型前报错。
+
+使用自定义环境提供方的集成可通过 SDK 单独传入 `candidate_workspace` 后端。
+要启用 Bash，该后端须将源工作区和其他候选放在每个候选沙箱之外，并在候选环境中声明 `process_isolated=True`。
 
 ```python
 import asyncio
@@ -33,7 +40,6 @@ async def main():
         {
             "goal": "Produce the requested data files and update their configuration.",
             "candidate_evidence_dir": "artifacts/duo-evidence",
-            "allow_unisolated_shell": True,
         },
         budget=1_000_000,
         artifacts="artifacts/duo-run",

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from opencollab import __version__
-from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES
+from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES, _is_write_rejected
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import ProcessCleanupError
 from opencollab.adapters._vm_archive import pack, publish, unpack
@@ -304,6 +304,8 @@ async def _work(directory: Path) -> None:
         result = {"status": "cancelled"}
     except BaseException as exc:
         result = {"status": "failed", "error": type(exc).__name__, "message": str(exc)}
+        if request["action"] == "write" and isinstance(exc, (OSError, ValueError)) and _is_write_rejected(exc):
+            result["write_rejected"] = True
     try:
         await _stop_descendants()
     except BaseException as cleanup_error:

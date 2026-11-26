@@ -18,7 +18,14 @@ from pathlib import Path
 from typing import Any
 
 from opencollab import __version__
-from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES, Environment, ExecResult, TextFileRange
+from opencollab.adapters._env_base import (
+    ENV_FILE_WRITE_LIMIT_BYTES,
+    Environment,
+    ExecResult,
+    TextFileRange,
+    _encode_write_payload,
+    _mark_write_rejected,
+)
 from opencollab.adapters._env_process import (
     ProcessCleanupError,
     ProcessRegistry,
@@ -196,7 +203,10 @@ class VMEnvironment(Environment):
             error = {"ValueError": ValueError, "PermissionError": PermissionError,
                      "FileNotFoundError": FileNotFoundError, "FileExistsError": FileExistsError,
                      "UnicodeDecodeError": UnicodeError}.get(status["error"], OSError)
-            raise error(status["message"])
+            failure = error(status["message"])
+            if status.get("action") == "write" and status.get("write_rejected") is True:
+                _mark_write_rejected(failure)
+            raise failure
         return status["value"]
 
     async def _operate(self, action: str, args: dict[str, Any], operation_id: str | None = None,
@@ -294,8 +304,8 @@ class VMEnvironment(Environment):
         await self.write_file_with_change(path, content)
 
     async def write_file_with_change(self, path: str, content: str) -> bool | None:
-        if len(content.encode()) > ENV_FILE_WRITE_LIMIT_BYTES:
-            raise ValueError("VM file exceeds write limit")
+        if len(_encode_write_payload(content)) > ENV_FILE_WRITE_LIMIT_BYTES:
+            raise _mark_write_rejected(ValueError("VM file exceeds write limit"))
         return await self._operate("write", {"path": path, "content": content})
 
     async def write_temp_file(self, content: str, *, prefix: str, suffix: str = ".tmp") -> str:

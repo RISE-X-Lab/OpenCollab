@@ -15,8 +15,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_request_admission_cancel_signals: ContextVar[tuple[asyncio.Event, ...]] = ContextVar(
-    "request_admission_cancel_signals", default=(),
+_request_admission_cancel_signals: ContextVar[list[asyncio.Event] | None] = ContextVar(
+    "request_admission_cancel_signals", default=None,
 )
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +82,8 @@ class _RunCancelled(Exception):
     """The current turn's explicit cancellation signal was set."""
 
 def _raise_if_request_admission_cancelled() -> None:
-    if any(signal.is_set() for signal in _request_admission_cancel_signals.get()):
+    signals = _request_admission_cancel_signals.get()
+    if signals and any(signal.is_set() for signal in signals):
         raise _RunCancelled
 
 class _RunControlPolicyError(ValueError):
@@ -101,13 +102,15 @@ class _SessionRunControlMixin:
 
     @contextmanager
     def _observe_request_admission_cancellation(self) -> Iterator[None]:
-        signals = tuple(
+        signals = [
             event for event in (self._run_cancel_event, self.default_cancel_event) if event is not None
-        )
+        ]
         token = _request_admission_cancel_signals.set(signals)
         try:
             yield
         finally:
+            # Tasks spawned during completion can keep a copy of this context.
+            signals.clear()
             _request_admission_cancel_signals.reset(token)
 
     async def _stop_for_run_cancellation(self) -> None:
@@ -146,6 +149,8 @@ class _SessionRunControlMixin:
             aid=self.state.aid, used_tokens=self.state.used_tokens, steps=self.state.step_count,
             data=copy.deepcopy(data),
         )
+        # Tasks started by host observers own their request admission.
+        token = _request_admission_cancel_signals.set(None)
         try:
             result = receiver(event)
             if inspect.isawaitable(result):
@@ -156,6 +161,8 @@ class _SessionRunControlMixin:
         except (Exception, asyncio.CancelledError) as exc:
             self._run_observation_errors.append(f"{event_type}: {type(exc).__name__}: {exc}")
             logger.error("run event receiver failed: %s", exc)
+        finally:
+            _request_admission_cancel_signals.reset(token)
 
     def _observe_runtime_event(self, event: Any) -> None:
         if getattr(event, "type", None) == "error":

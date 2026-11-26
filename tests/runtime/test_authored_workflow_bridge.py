@@ -10,8 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from opencollab.adapters import _env_local, _env_vm
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
-from opencollab.adapters.env import DockerEnvironment, LocalEnvironment
+from opencollab.adapters.env import DockerEnvironment, LocalEnvironment, VMEnvironment
 from opencollab.adapters.hooks import ShellHookRunner
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.errors import TransientProviderError
@@ -21,6 +22,7 @@ from opencollab.adapters.session_environments import SessionEnvironmentPool
 from opencollab.adapters.tools import base
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileWriteTool
+from opencollab.adapters.vm_config import VMConnection
 from opencollab.application._session_run_shared import _TeamBudgetStop, _TokenBudgetStop
 from opencollab.application.ports import (
     ContextTokenEstimatorPort,
@@ -57,6 +59,58 @@ def test_bridge_restores_usage_on_control_errors(error):
     assert type(restored) is type(error)
     assert str(restored) == str(error)
     assert vars(restored) == {**vars(error), "usage": usage}
+
+@pytest.mark.parametrize(("backend", "path", "content", "error_type", "message"), [
+    ("local", "oversized", "x" * 4097, OSError, "local file exceeds write limit of 4096 bytes: oversized"),
+    ("local", "directory", "payload", OSError, "atomic output target is not a regular file: directory"),
+    ("vm", "oversized", "x" * 4097, ValueError, "VM file exceeds write limit"),
+])
+async def test_bridge_write_rejection_restores_native_error(tmp_path, monkeypatch, backend, path, content,
+                                                           error_type, message):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "directory").mkdir()
+    mailbox = LocalEnvironment(str(tmp_path))
+    destination = mailbox
+    if backend == "local":
+        monkeypatch.setattr(_env_local, "LOCAL_FILE_WRITE_LIMIT_BYTES", 4096)
+    else:
+        monkeypatch.setattr(_env_vm, "ENV_FILE_WRITE_LIMIT_BYTES", 4096)
+        destination = VMEnvironment(VMConnection("guest", "worker"), str(tmp_path),
+                                    state_directory="/var/tmp/oc-test", run_id="bridge-rejection")
+
+        async def unexpected_rpc(payload):
+            raise AssertionError(f"unexpected VM call {payload['method']}")
+
+        monkeypatch.setattr(destination, "_rpc", unexpected_rpc)
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    bridge = AuthoredWorkflowBridge(
+        mailbox, str(artifacts), SessionEnvironmentPool(str(tmp_path), isolation="shared", base_environment=mailbox),
+        {}, ToolRuntime(mailbox, None, None), allow_unisolated_shell=True,
+    )
+    bridge._environments[1] = destination
+    client = BridgeClient(artifacts, bridge.options())
+    proxy = BridgeEnvironment(client, {"handle": 1, "workspace": destination.workspace, "process_isolated": False})
+
+    async def serve():
+        while True:
+            await bridge.poll()
+            await asyncio.sleep(0.005)
+
+    server = asyncio.create_task(serve())
+    try:
+        with pytest.raises(error_type, match=message) as error:
+            await proxy.write_file(path, content)
+        assert type(error.value) is error_type
+        reply = json.loads((artifacts / "bridge" / "1.json").read_text())
+        assert reply == {"error": {"type": error_type.__name__, "message": message}}
+        assert not (tmp_path / "oversized").exists()
+    finally:
+        server.cancel()
+        await asyncio.gather(server, return_exceptions=True)
+        await bridge.aclose()
+        await mailbox.cleanup()
 
 
 @pytest.mark.parametrize("writer_kind", ["bridge", "authored-process", "tool-hook"])

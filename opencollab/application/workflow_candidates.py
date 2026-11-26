@@ -351,12 +351,13 @@ class WorkflowCandidatesMixin:
         timeout: float | None = None,
         tool_choice: Any = None,
         thinking: bool | None = None,
+        require_isolated_shell: bool = False,
     ) -> CandidateRun:
+        """Run a candidate, with Bash restricted to a dedicated sandbox when requested."""
         self._raise_if_environment_revoked()
         if self._candidate_workspace is None:
             raise RuntimeError("candidate workspaces are not available")
         timeout = self._normalize_timeout(timeout)
-        selected_tools = _candidate_verification_tools(tools or ())
         budget_lease: _BudgetLease
 
         async def run_candidate() -> CandidateRun:
@@ -371,6 +372,13 @@ class WorkflowCandidatesMixin:
             preserve_lease = False
             try:
                 self._raise_if_environment_revoked()
+                candidate_tools = tools or ()
+                if require_isolated_shell and (
+                    getattr(lease, "shares_source_execution", False)
+                    or not getattr(lease.environment, "process_isolated", False)
+                ):
+                    candidate_tools = tuple(tool for tool in candidate_tools if tool.name != "bash")
+                selected_tools = _candidate_verification_tools(candidate_tools)
                 budget_lease = await self._refresh_budget_lease(
                     budget_lease, cap=budget, over_budget_ok=False, label=label,
                 )

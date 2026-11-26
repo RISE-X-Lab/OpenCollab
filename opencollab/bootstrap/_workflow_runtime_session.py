@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
+from opencollab.adapters.docker_candidate_workspace import DockerCandidateWorkspace, supports_docker_candidate_leases
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.providers import RESPONSES
 from opencollab.adapters.llm.retry import RetryTimeBudget
@@ -184,6 +185,7 @@ class WorkflowSessionFactory:
         self._worktree_pool: WorktreePool | None = None
         self._candidate_isolation_leases: list[tuple[Any, Any]] = []
         self._owned_source_environment: LocalEnvironment | None = None
+        self._owned_docker_candidate_workspace: DockerCandidateWorkspace | None = None
 
     def model_request_window(self) -> tuple[float | None, float]:
         return self._llm_timeout, self._provider_error_time_budget
@@ -282,8 +284,12 @@ class WorkflowSessionFactory:
                 else:
                     self._strategy_envs.remove((owner, env))
             if environment is None and not errors:
-                await self._strategy_pool.release()
-                self._strategy_pool = None
+                try:
+                    await self._strategy_pool.release()
+                except Exception as exc:
+                    errors.append(exc)
+                else:
+                    self._strategy_pool = None
         for owner, lease in tuple(self._candidate_isolation_leases):
             if environment is not None and owner is not environment:
                 continue
@@ -298,6 +304,13 @@ class WorkflowSessionFactory:
                 await self._worktree_pool.release()
             except Exception as exc:
                 errors.append(exc)
+        if environment is None and self._owned_docker_candidate_workspace is not None:
+            try:
+                await self._owned_docker_candidate_workspace.retry_cleanup()
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                self._owned_docker_candidate_workspace = None
         # Keep the source usable until all candidate and isolated workspace
         # owners have finished. Borrowed environments stay with their caller.
         if environment is None and not errors and self._owned_source_environment is not None:
@@ -595,12 +608,19 @@ def build_workflow_context(
         if candidate_workspace is not None
         else EnvWorkingTreeProbe(probe_env)
     )
-    if candidate_workspace is None:
-        candidate_workspace = (
-            EnvCandidateWorkspace(probe_env, workspace=candidate_root, owned_save_dir=save_dir)
-            if isinstance(candidate_root, str) and candidate_root
-            else None
-        )
+    if candidate_workspace is None and isinstance(candidate_root, str) and candidate_root:
+        if factory.default_isolation == "docker-session" and supports_docker_candidate_leases(
+            environment_providers.get("docker-session")
+        ):
+            candidate_workspace = DockerCandidateWorkspace(
+                probe_env, workspace=candidate_root, owned_save_dir=save_dir,
+                providers=environment_providers,
+            )
+            factory._owned_docker_candidate_workspace = candidate_workspace
+        else:
+            candidate_workspace = EnvCandidateWorkspace(
+                probe_env, workspace=candidate_root, owned_save_dir=save_dir,
+            )
         if save_dir is not None and isinstance(probe_env, LocalEnvironment) and candidate_workspace is not None:
             # Source evidence and candidate tracking share the run-record filter.
             tree_probe = _CandidateSourceTreeProbe(

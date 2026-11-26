@@ -23,6 +23,8 @@ from opencollab.adapters._env_base import (
     Environment,
     ExecResult,
     TextFileRange,
+    _encode_write_payload,
+    _mark_write_rejected,
 )
 from opencollab.adapters._env_process import (
     PROCESS_OUTPUT_CAPTURE_BYTES,
@@ -829,8 +831,12 @@ class DockerEnvironment(Environment):
         await self._bind_attached()
         if self._container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
-        target = self._validate_container_path(path)
-        target = await self._resolve_write_target(target, containment_root=containment_root)
+        try:
+            target = self._validate_container_path(path)
+            target = await self._resolve_write_target(target, containment_root=containment_root)
+        except (OSError, ValueError) as error:
+            _mark_write_rejected(error)
+            raise
         async with self._resolved_file_write_lock(target):
             yield target
 
@@ -893,11 +899,11 @@ class DockerEnvironment(Environment):
         observe_change: bool,
         containment_root: str | None = None,
     ) -> bool | None:
-        payload = content.encode("utf-8")
+        payload = _encode_write_payload(content)
         if len(payload) > ENV_FILE_WRITE_LIMIT_BYTES:
-            raise OSError(
-                f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {path}"
-            )
+            raise _mark_write_rejected(OSError(
+                f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {path}",
+            ))
         async with self._target_file_write_lock(path, containment_root=containment_root) as target:
             if containment_root == "/tmp":
                 self._temporary_files.add(path)
@@ -1086,10 +1092,12 @@ class DockerEnvironment(Environment):
         )
         command = (
             'target=$1; temporary=$2; expected_bytes=$3; expected_digest=$4; '
-            'cleanup() { rm -f -- "$temporary"; }; trap cleanup EXIT HUP INT TERM; '
+            'parent=$(dirname -- "$target"); creating_parents=0; staged=0; publishing=0; interrupted=0; '
+            'cleanup() { [ "$staged" = 0 ] || rm -f -- "$temporary"; }; '
+            'trap cleanup EXIT; trap \'interrupted=1; cleanup\' HUP INT TERM; '
             '[ ! -d "$target" ] && '
-            'mkdir -p -- "$(dirname -- "$target")" && '
-            '(umask 077; set -C; : > "$temporary") && '
+            '{ [ -d "$parent" ] || { creating_parents=1; mkdir -p -- "$parent"; }; } && '
+            '(umask 077; set -C; : > "$temporary") && staged=1 && '
             'cat > "$temporary" && '
             'verified=$temporary && ' + verification + comparison +
             # Read the mode only from a regular target. Replacing a symlink
@@ -1098,16 +1106,20 @@ class DockerEnvironment(Environment):
             'mode=$(stat -c %a -- "$target" 2>/dev/null || stat -f %Lp -- "$target") && '
             'chmod -- "$mode" "$temporary"; else :; fi; } && '
             '[ ! -d "$target" ] && '
-            'mv -f -- "$temporary" "$target" && '
+            'publishing=1 && mv -f -- "$temporary" "$target" && '
             '[ -f "$target" ] && [ ! -L "$target" ] && '
             'verified=$target && ' + verification +
-            'trap - EXIT HUP INT TERM && ' + confirmation
+            'trap - EXIT HUP INT TERM && ' + confirmation + '; status=$?; '
+            'if [ "$status" -ne 0 ] && [ "$creating_parents" = 0 ] && [ "$publishing" = 0 ] && '
+            '[ "$interrupted" = 0 ] && cleanup; then '
+            'trap - EXIT HUP INT TERM; printf "%s\\t%s\\trejected\\n" "$expected_bytes" "$expected_digest"; fi; '
+            'exit "$status"'
         )
         wrapped = (
             f"bash -c {shlex.quote(command)} opencollab-write {shlex.quote(target)} "
             f"{shlex.quote(temporary)} {len(payload)} {digest}"
         )
-        committed = False
+        settled = False
         try:
             result = await self._exec(
                 wrapped,
@@ -1118,13 +1130,20 @@ class DockerEnvironment(Environment):
             expected = f"{len(payload)}\t{digest}"
             receipt = _write_receipt(result.stdout, expected, observe_change=observe_change)
             if result.returncode != 0 or receipt is None:
-                raise OSError(f"docker write verification failed for {target}")
-            committed = True
+                error = OSError(f"docker write verification failed for {target}")
+                if (
+                    result.returncode > 0 and not result.timed_out and not result.stdout_truncated
+                    and result.stdout.rstrip("\n") == f"{expected}\trejected"
+                ):
+                    settled = True
+                    _mark_write_rejected(error)
+                raise error
+            settled = True
             if not observe_change:
                 return None
             return {"equal": False, "different": True}.get(receipt.split("\t")[2])
         finally:
-            if not committed:
+            if not settled:
                 await await_owned_operation(
                     self._discard_write_temporary(temporary),
                     propagate_cancellation=False,

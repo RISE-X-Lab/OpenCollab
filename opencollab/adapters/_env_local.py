@@ -15,6 +15,8 @@ from opencollab.adapters._env_base import (
     Environment,
     ExecResult,
     TextFileRange,
+    _encode_write_payload,
+    _mark_write_rejected,
 )
 from opencollab.adapters._env_process import (
     PROCESS_OUTPUT_CAPTURE_BYTES,
@@ -167,33 +169,33 @@ class LocalEnvironment(Environment):
         )
 
     async def write_file(self, path: str, content: str) -> None:
-        self._ensure_active()
-        payload = content.encode("utf-8")
-        if len(payload) > LOCAL_FILE_WRITE_LIMIT_BYTES:
-            raise OSError(f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}")
-        await self._run_file_operation(
-            write_regular_bytes_atomic,
-            self._root_fd(),
-            self.workspace,
-            self._relative_path(path),
-            payload,
-            max_bytes=LOCAL_FILE_WRITE_LIMIT_BYTES,
-        )
+        await self._write_file(path, content, observe_change=False)
 
     async def write_file_with_change(self, path: str, content: str) -> bool | None:
         """Publish the same atomic write and report a bounded content comparison."""
+        return await self._write_file(path, content, observe_change=True)
+
+    async def _write_file(self, path: str, content: str, *, observe_change: bool) -> bool | None:
         self._ensure_active()
-        payload = content.encode("utf-8")
+        payload = _encode_write_payload(content)
         if len(payload) > LOCAL_FILE_WRITE_LIMIT_BYTES:
-            raise OSError(f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}")
+            raise _mark_write_rejected(OSError(
+                f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}",
+            ))
+        root_fd = self._root_fd()
+        try:
+            relative_path = self._relative_path(path)
+        except (OSError, ValueError) as error:
+            _mark_write_rejected(error)
+            raise
         return await self._run_file_operation(
             write_regular_bytes_atomic,
-            self._root_fd(),
+            root_fd,
             self.workspace,
-            self._relative_path(path),
+            relative_path,
             payload,
             max_bytes=LOCAL_FILE_WRITE_LIMIT_BYTES,
-            observe_change=True,
+            observe_change=observe_change,
         )
 
     async def write_temp_file(

@@ -725,8 +725,8 @@ def _team_agent_failures(scheduler: Any) -> tuple[dict[str, Any], ...]:
             {
                 "label": label,
                 "exception_type": exception_type,
-                "status_code": None,
-                "provider_error_type": None,
+                "status_code": getattr(scb, "provider_status_code", None) if phase == "error" else None,
+                "provider_error_type": getattr(scb, "provider_error_code", None) if phase == "error" else None,
             }
         )
     return tuple(failures)

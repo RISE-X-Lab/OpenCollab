@@ -10,10 +10,12 @@ import pytest
 from opencollab import OpenCollab
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.types import LLMResponse, Usage
+from tests.support.duo_sandbox_test_support import simulate_candidate_sandbox
 from tests.workflows.test_workflow_candidate_workspace import _git, _repository
 
 
 async def _run(tmp_path, monkeypatch, initial, final, *, crlf=False, mutation=None):
+    simulate_candidate_sandbox(monkeypatch)
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", "")
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
     source = _repository(tmp_path)

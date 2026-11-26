@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import BinaryIO
 
-from opencollab.adapters._env_base import TextFileRange
+from opencollab.adapters._env_base import TextFileRange, _mark_write_rejected
 from opencollab.adapters._safe_file_common import (
     _RANGE_TOTAL_COUNT_LIMIT_BYTES,
     _READ_CHUNK_BYTES,
@@ -89,19 +89,31 @@ def open_parent_beneath(
     create: bool,
 ) -> tuple[int, str]:
     """Open a target parent without resolving a component by pathname."""
+    parent_fd, name, _ = _open_parent_beneath(root_fd, root_path, path, create=create)
+    return parent_fd, name
+
+def _open_parent_beneath(
+    root_fd: int,
+    root_path: str | os.PathLike[str],
+    path: str | os.PathLike[str],
+    *,
+    create: bool,
+) -> tuple[int, str, bool]:
     _require_anchor_path(root_fd, root_path)
-    parents, name = _relative_components(path)
-    # A directory followed by .. must exist and keep its parent descriptor open.
-    existing_only: set[int] = set()
-    parent_steps = 0
-    for index in range(len(parents) - 1, -1, -1):
-        if parents[index] == "..":
-            parent_steps += 1
-        elif parent_steps:
-            existing_only.add(index)
-            parent_steps -= 1
-    opened = [os.dup(root_fd)]
+    opened: list[int] = []
+    created_parent = False
     try:
+        parents, name = _relative_components(path)
+        # A directory followed by .. must exist and keep its parent descriptor open.
+        existing_only: set[int] = set()
+        parent_steps = 0
+        for index in range(len(parents) - 1, -1, -1):
+            if parents[index] == "..":
+                parent_steps += 1
+            elif parent_steps:
+                existing_only.add(index)
+                parent_steps -= 1
+        opened.append(os.dup(root_fd))
         for index, component in enumerate(parents):
             if component == "..":
                 os.close(opened.pop())
@@ -120,6 +132,8 @@ def open_parent_beneath(
                     os.mkdir(component, 0o700, dir_fd=current_fd)
                 except FileExistsError:
                     pass
+                else:
+                    created_parent = True
                 next_fd = os.open(
                     component,
                     _directory_open_flags(),
@@ -128,7 +142,11 @@ def open_parent_beneath(
             if index not in existing_only:
                 os.close(opened.pop())
             opened.append(next_fd)
-        return opened.pop(), name
+        return opened.pop(), name, created_parent
+    except (OSError, ValueError) as error:
+        if create and not created_parent:
+            _mark_write_rejected(error)
+        raise
     finally:
         for fd in opened:
             os.close(fd)
@@ -340,7 +358,7 @@ def write_regular_file_atomic_at(
 ) -> bool | None:
     """Atomically publish one file beneath a pinned directory descriptor."""
     limit = _require_limit(max_bytes)
-    parent_fd, name = open_parent_beneath(
+    parent_fd, name, created_parent = _open_parent_beneath(
         root_fd,
         root_path,
         path,
@@ -348,6 +366,8 @@ def write_regular_file_atomic_at(
     )
     temporary = f".oc-{uuid.uuid4().hex}.tmp"
     fd = -1
+    staged = False
+    publication_attempted = False
     try:
         current = _current_regular_at(parent_fd, name, context=context)
         if create_only and current is not None:
@@ -359,6 +379,7 @@ def write_regular_file_atomic_at(
             publish_mode,
             dir_fd=parent_fd,
         )
+        staged = True
         if current is not None:
             os.fchmod(fd, publish_mode)
         with os.fdopen(fd, "w+b") as handle:
@@ -379,6 +400,7 @@ def write_regular_file_atomic_at(
                     changed = None
             except OSError:
                 changed = None
+        publication_attempted = True
         if create_only:
             os.link(
                 temporary,
@@ -397,16 +419,22 @@ def write_regular_file_atomic_at(
             )
         os.fsync(parent_fd)
         return changed
+    except (OSError, ValueError) as error:
+        # A cleanup failure in finally replaces the rejection with its own error.
+        if not created_parent and not publication_attempted:
+            _mark_write_rejected(error)
+        raise
     finally:
         try:
             if fd >= 0:
                 os.close(fd)
         finally:
             try:
-                try:
-                    os.unlink(temporary, dir_fd=parent_fd)
-                except FileNotFoundError:
-                    pass
+                if staged:
+                    try:
+                        os.unlink(temporary, dir_fd=parent_fd)
+                    except FileNotFoundError:
+                        pass
             finally:
                 os.close(parent_fd)
 

@@ -9,6 +9,7 @@ from opencollab.adapters.env import LocalEnvironment
 from opencollab.bootstrap import load_session
 from opencollab.domain.agent import Agent
 from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
+from tests.support.responses_provider_test_support import function_item, message_item
 from tests.support.session_characterization_test_support import FakeLLMClient
 
 _INTERIM = "I will inspect the inventory before reporting a subtotal."
@@ -167,3 +168,158 @@ async def test_team_lead_returns_only_visible_filtered_text(
 
     assert (result.output, result.status, result.reason, result.tokens) == (output, status, reason, 8)
     assert len(requests) == 2
+
+
+@pytest.mark.parametrize(("initial_answer", "finish_reason", "content", "output"), [
+    pytest.param(_VISIBLE, "stop", "Updated subtotal.", "Updated subtotal.", id="completed-followup"),
+    pytest.param(_VISIBLE, "content_filter", None, _VISIBLE, id="empty-filter"),
+    pytest.param(_VISIBLE, "content_filter", _REFUSAL, _REFUSAL, id="visible-filter"),
+    pytest.param(None, "content_filter", None, None, id="interim-only"),
+])
+async def test_team_keeps_completed_lead_answer_after_empty_filtered_followup(
+    tmp_path, monkeypatch, initial_answer, finish_reason, content, output,
+):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    team = tmp_path / "team.yaml"
+    team.write_text(
+        "entry: lead\nroles:\n"
+        "  lead:\n    model: fixture-lead\n    prompt: Report the inventory.\n    tools: [message_agent]\n"
+        "  worker:\n    model: fixture-worker\n    prompt: Send delivery updates.\n    tools: [message_agent]\n"
+        "topology:\n  lead: [worker]\n  worker: [lead]\n",
+        encoding="utf-8",
+    )
+    notice = "The delivery audit is pending."
+    lead_requests = []
+    worker_requests = []
+
+    def message_call(call_id, to_role, text, interim=None):
+        return {"content": interim, "tool_calls": [{
+            "id": call_id, "type": "function", "function": {"name": "message_agent",
+                "arguments": json.dumps({"to_role": to_role, "summary": "Delivery status", "content": text}),
+            },
+        }]}
+
+    def handler(request):
+        body = json.loads(request.content)
+        model = body["model"]
+        messages = body["messages"]
+        if model == "fixture-worker":
+            worker_requests.append(messages)
+            if len(worker_requests) == 1:
+                return _chat_reply(request, model, 1, "tool_calls", message_call("notify-lead", "lead", notice))
+            assert any("Message queued to aid 0" in row["content"] for row in messages if row["role"] == "tool")
+            return completion_http_response(request, text="Notification sent.")
+        lead_requests.append(messages)
+        if any(notice in row.get("content", "") for row in messages if row["role"] == "user"):
+            return _chat_reply(request, model, len(lead_requests), finish_reason, {"content": content})
+        if len(lead_requests) == 1:
+            return _chat_reply(
+                request, model, 1, "tool_calls",
+                message_call("ask-worker", "worker", "Send a separate delivery update.", interim=_INTERIM),
+            )
+        return _chat_reply(request, model, len(lead_requests), "stop", {"content": initial_answer})
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    app = OpenCollab(
+        tmp_path, model="fixture-lead", provider="openai", api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://fixture.invalid/v1",
+        config={"llm_max_retries": 0, "wire_protocol": "chat_completions", "llm_stream_chat": False},
+    )
+    artifacts = tmp_path / "artifacts"
+    result = await app.team(
+        "Report the verified inventory subtotal.", config=team, artifacts=artifacts, trace=True,
+        use_worktrees=False, prebuild_team=True, serialize_turns=True, budget=100_000, timeout=5,
+    )
+    assert len(lead_requests) == (4 if initial_answer is None else 3)
+    assert len(worker_requests) == 2
+    rows = [json.loads(line) for line in (artifacts / "trajectory.jsonl").read_text(encoding="utf-8").splitlines()]
+    lead_completed = next(
+        row["step"] for row in rows if row["type"] == "agent_completed" and row["payload"]["aid"] == 0
+    )
+    worker_sent = next(
+        row["step"] for row in rows if row["type"] == "message_sent" and row["payload"]["from_aid"] == 1
+    )
+    assert lead_completed < worker_sent
+    filtered = finish_reason == "content_filter"
+    assert (result.output, result.status, result.reason) == (
+        output, "stopped" if filtered else "completed", _FILTER_REASON if filtered else None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("code", "exception_type", "status_code"),
+    [
+        ("content_filter", "ResponsesTerminalEventError", None),
+        ("invalid_prompt", "ResponsesTerminalEventError", None),
+        ("rate_limit_exceeded", "ResponsesTransientEventError", 429),
+    ],
+)
+async def test_team_keeps_typed_responses_failure_metadata(tmp_path, monkeypatch, code, exception_type, status_code):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    team = tmp_path / "team.yaml"
+    team.write_text(
+        "entry: lead\nroles:\n"
+        "  lead:\n    model: gpt-4o\n    prompt: Delegate the inventory review.\n    tools: [spawn_agent]\n"
+        "  reviewer:\n    model: gpt-4o-mini\n    prompt: Review the inventory.\n    tools: []\n"
+        "topology:\n  lead: [reviewer]\n",
+        encoding="utf-8",
+    )
+    requests = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert request.url.path.endswith("/responses")
+        requests.append(body)
+        model = body["model"]
+        if len(requests) == 3:
+            assert model == "gpt-4o"
+            assert any(row.get("type") == "function_call_output" for row in body["input"])
+            return completion_http_response(request, text="Recorded the reviewer's outcome.")
+        status = "completed"
+        error = None
+        incomplete = None
+        if len(requests) == 1:
+            assert model == "gpt-4o"
+            items = [function_item("delegate", "spawn_agent", '{"role":"reviewer","task":"Review the subtotal."}')]
+        else:
+            assert len(requests) == 2 and model == "gpt-4o-mini"
+            if code == "content_filter":
+                status = "incomplete"
+                incomplete = {"reason": code}
+                items = [message_item(_VISIBLE)]
+            else:
+                status = "failed"
+                error = {"code": code, "message": "The inventory provider reported an error."}
+                items = []
+        response = {
+            "id": f"inventory-{len(requests)}", "object": "response", "model": model,
+            "status": status, "error": error, "incomplete_details": incomplete, "output": items,
+            "usage": {"input_tokens": 2, "output_tokens": 2, "total_tokens": 4},
+        }
+        events = [{"type": "response.output_item.done", "output_index": index, "item": item}
+                  for index, item in enumerate(items)]
+        events.append({"type": f"response.{status}", "response": response})
+        frames = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+        return http_response(request, 200, headers={"Content-Type": "text/event-stream"}, text=frames)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    app = OpenCollab(
+        tmp_path, model="gpt-4o", provider="openai", api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://fixture.invalid/v1",
+        config={"llm_max_retries": 0, "wire_protocol": "responses"},
+    )
+    result = await app.team(
+        "Report the inventory subtotal.", config=team, trace=False, use_worktrees=False,
+        budget=100_000, timeout=5,
+    )
+
+    assert len(requests) == 3
+    assert (result.status, result.output, result.tokens) == ("completed", "Recorded the reviewer's outcome.", 12)
+    assert result.agent_failures == ({
+        "label": "reviewer",
+        "exception_type": exception_type,
+        "status_code": status_code,
+        "provider_error_type": code,
+    },)

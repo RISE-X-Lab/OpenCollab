@@ -20,6 +20,7 @@ from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.application.workflow_candidates import CandidateAdoptionRecoveryError
 from opencollab.workflows import CandidateRun
+from tests.support.duo_sandbox_test_support import simulate_candidate_sandbox
 from tests.workflows.test_workflow_candidate_workspace import _git
 
 
@@ -807,7 +808,8 @@ class _DuoModel:
 
 @pytest.mark.parametrize("independent", [False, True])
 @pytest.mark.parametrize("recovery_failure", [False, True])
-async def test_duo_fallback_requires_recovered_source(tmp_path, independent, recovery_failure):
+async def test_duo_fallback_requires_recovered_source(tmp_path, monkeypatch, independent, recovery_failure):
+    simulate_candidate_sandbox(monkeypatch)
     repo = _repository(tmp_path, cache=True)
     before = _contents(repo)
     index = (repo / ".git/index").read_bytes()

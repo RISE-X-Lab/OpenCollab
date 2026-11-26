@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from opencollab import OpenCollab, RunError, workflow
+from opencollab.adapters import _env_local, _env_vm
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.application.workflow import WorkflowBudgetExceeded
@@ -24,6 +25,7 @@ from opencollab.bootstrap import (
     programmatic,
 )
 from opencollab.bootstrap.programmatic import ProgrammaticLifecycleError, ProgrammaticResult
+from opencollab.environments import VMConnection, VMEnvironment, local_environment
 from opencollab.sdk import client as sdk_client
 from tests.support.environment_test_support import local_environment_factory as local_environment_factory
 
@@ -593,6 +595,58 @@ async def test_workflow_execution_failure_is_a_result(tmp_path: Path) -> None:
     assert manifest["evidence_complete"] is True
     with pytest.raises(RunError, match="bad workflow"):
         result.raise_for_status()
+
+@pytest.mark.parametrize(("backend", "content", "error_type", "message"), [
+    pytest.param("local-directory", "report\n", OSError, "atomic output target is not a regular file: report",
+                 id="local-directory"),
+    pytest.param(
+        "local", "\u754c" * 23, OSError, "local file exceeds write limit of 64 bytes: report", id="local-limit",
+    ),
+    pytest.param("vm", "\u754c" * 23, ValueError, "VM file exceeds write limit", id="vm-limit"),
+])
+async def test_workflow_write_rejection_preserves_public_error(
+    tmp_path, monkeypatch, backend, content, error_type, message,
+):
+    report = tmp_path / "report"
+    if backend == "vm":
+        environment = VMEnvironment(
+            VMConnection("guest", "worker"), str(tmp_path), state_directory="/var/tmp/oc-test",
+            run_id="rejected-workflow-write",
+        )
+        monkeypatch.setattr(_env_vm, "ENV_FILE_WRITE_LIMIT_BYTES", 64)
+
+        async def unexpected_rpc(payload):
+            pytest.fail(f"unexpected VM call {payload['method']}")
+
+        monkeypatch.setattr(environment, "_rpc", unexpected_rpc)
+    else:
+        environment = local_environment(tmp_path)
+        monkeypatch.setattr(_env_local, "LOCAL_FILE_WRITE_LIMIT_BYTES", 64)
+        if backend == "local-directory":
+            report.mkdir()
+
+    async def export_report(_ctx, _inputs):
+        await environment.write_file("report", content)
+
+    artifacts = tmp_path / "failed-workflow"
+    try:
+        result = await OpenCollab(tmp_path, environment=environment).workflow(
+            export_report, artifacts=artifacts, trace=False,
+        )
+    finally:
+        await environment.cleanup()
+    assert result.status == "failed"
+    assert result.reason == message
+    assert type(result.error) is error_type
+    assert result.error.__cause__ is None
+    manifest = json.loads((artifacts / "workflow.json").read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["failure_type"] == error_type.__name__
+    assert manifest["evidence_complete"] is True
+    if backend == "local-directory":
+        assert list(report.iterdir()) == []
+    else:
+        assert not report.exists()
 
 async def test_workflow_timeout_is_a_stopped_result(tmp_path: Path) -> None:
     @workflow

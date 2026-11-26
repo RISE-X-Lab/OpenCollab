@@ -5,11 +5,14 @@ import base64
 import math
 import sys
 import threading
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from opencollab import __version__
-from opencollab.adapters import _env_process, _env_vm
+from opencollab.adapters import _env_process, _env_vm, _vm_remote
+from opencollab.adapters._env_base import _is_write_rejected
 from opencollab.adapters.env import ExecResult, VMEnvironment, VMOperationError, VMTransportError
 from opencollab.adapters.vm_config import VMConnection
 
@@ -18,6 +21,58 @@ def _env():
     return VMEnvironment(VMConnection("guest", "worker"), "/workspace/repo",
                          state_directory="/var/tmp/oc-state", run_id="test")
 
+async def test_vm_guest_nonregular_write_keeps_oserror_receipt(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "directory").mkdir()
+    operation = tmp_path / "operation"
+    operation.mkdir()
+    info = workspace.stat()
+    identity = {"workspace": str(workspace), "device": info.st_dev, "inode": info.st_ino, "boot_id": "fixture"}
+    monkeypatch.setattr(_vm_remote, "_identity", lambda path: identity)
+    kernel = SimpleNamespace(prctl=lambda *args: 0)
+    monkeypatch.setattr(_vm_remote, "ctypes", SimpleNamespace(CDLL=lambda *args, **kwargs: kernel))
+    monkeypatch.setattr(_vm_remote.os, "pidfd_open", lambda *args: None, raising=False)
+    monkeypatch.setattr(_vm_remote.signal, "pidfd_send_signal", lambda *args: None, raising=False)
+    monkeypatch.setattr(_vm_remote, "_process", lambda pid: (0, 11, b"S"))
+    read_text = Path.read_text
+
+    def mock_boot_id(path, *args, **kwargs):
+        if str(path) == "/proc/sys/kernel/random/boot_id":
+            return "fixture"
+        return read_text(path, *args, **kwargs)
+
+    async def no_descendants():
+        pass
+
+    monkeypatch.setattr(Path, "read_text", mock_boot_id)
+    monkeypatch.setattr(_vm_remote, "_stop_descendants", no_descendants)
+    _vm_remote._write(operation, "request.json", {
+        "workspace": str(workspace), "identity": identity, "action": "write",
+        "args": {"path": "directory", "content": "payload"},
+    })
+    await _vm_remote._work(operation)
+    receipt = _vm_remote._read(operation, "result.json")
+    message = "atomic output target is not a regular file: directory"
+    assert receipt == {
+        "status": "failed", "error": "OSError", "message": message, "action": "write", "args": {},
+        "write_rejected": True,
+    }
+    with pytest.raises(OSError, match=message) as error:
+        await _env()._wait("operation", receipt)
+    assert type(error.value) is OSError
+    assert _is_write_rejected(error.value)
+
+@pytest.mark.parametrize("error_type", [OSError, ValueError, PermissionError])
+@pytest.mark.parametrize("reported", [False, True])
+async def test_vm_failed_write_preserves_existing_error_and_uses_optional_rejection(error_type, reported):
+    status = {"status": "failed", "error": error_type.__name__, "message": "write failed", "action": "write"}
+    if reported:
+        status["write_rejected"] = True
+    with pytest.raises(error_type, match="write failed") as error:
+        await _env()._wait("operation", status)
+    assert type(error.value) is error_type
+    assert _is_write_rejected(error.value) is reported
 
 @pytest.mark.parametrize("kwargs", [{"host": "-oProxyCommand=evil"}, {"user": "a b"}, {"port": True},
                                     {"port": 0}, {"connect_timeout": math.inf}, {"python": "a\nb"}])
