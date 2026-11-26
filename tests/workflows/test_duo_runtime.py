@@ -532,6 +532,7 @@ async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monk
 async def test_duo_delivers_current_verified_a_when_budget_refuses_b(
     tmp_path, monkeypatch, submission, evidence, budget,
 ):
+    simulate_candidate_sandbox(monkeypatch)
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
     repo = _repository(tmp_path / "repo", both_pass=False)
@@ -611,7 +612,7 @@ async def test_duo_delivers_current_verified_a_when_budget_refuses_b(
 
     artifacts = tmp_path / "artifacts"
     result = await OpenCollab(repo, model="scripted-local-model", config={"max_output_tokens": 128}).workflow(
-        flow, {"goal": "Make value() return 3", "allow_unisolated_shell": True, "submission_mode": submission},
+        flow, {"goal": "Make value() return 3", "submission_mode": submission},
         llm=Model(), budget=budget, max_steps=5, concurrency=2, timeout=20, trace=True,
         artifacts=artifacts, limit_mode="explicit",
     )
@@ -662,6 +663,7 @@ async def test_duo_delivers_current_verified_a_when_budget_refuses_b(
 
 
 async def test_duo_can_start_b_after_a_budget_refusal_and_reservation_release(tmp_path, monkeypatch):
+    simulate_candidate_sandbox(monkeypatch)
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
     repo = _repository(tmp_path / "repo", both_pass=False)
@@ -717,7 +719,7 @@ async def test_duo_can_start_b_after_a_budget_refusal_and_reservation_release(tm
             await preparation
 
     result = await OpenCollab(repo, model="scripted-local-model", config={"max_output_tokens": 128}).workflow(
-        flow, {"goal": "Make value() return 3", "allow_unisolated_shell": True},
+        flow, {"goal": "Make value() return 3"},
         llm=Model(), budget=20_000, concurrency=2, max_steps=5, timeout=20,
         trace=False, limit_mode="explicit",
     )
