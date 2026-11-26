@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, TypeVar
 
 from opencollab.adapters.llm._chat_response import (
@@ -18,6 +19,7 @@ from opencollab.adapters.llm._transport_wait import _TransportInterruption, _wai
 from opencollab.adapters.llm.errors import StreamedUsageUnavailableError, TransientProviderError
 from opencollab.adapters.llm.first_token import CHAT_STREAM, begin_attempt, mark_first_token
 from opencollab.adapters.llm.types import LLMResponse
+from opencollab.application.async_timeout import await_owned_operation
 
 # Streaming request fields stay framework-controlled so ``extra_body``
 # cannot enable streaming. Omit both fields for non-streamed requests.
@@ -294,7 +296,7 @@ async def _next_chunk(
             f"chat completion {stage} timeout {detail}"
         ) from exc
 
-async def _close_stream(stream: Any) -> None:
+async def _close_stream(stream: Any, *, preserve_cancellation: bool = False) -> None:
     """Release the socket without replacing a finished read or its original error."""
     close = getattr(stream, "close", None)
     if close is None:
@@ -302,7 +304,10 @@ async def _close_stream(stream: Any) -> None:
     try:
         result = close()
         if asyncio.iscoroutine(result):
-            await result
+            await await_owned_operation(result, propagate_cancellation=not preserve_cancellation)
+    except asyncio.CancelledError:
+        if not preserve_cancellation:
+            raise
     except Exception:
         logging.getLogger(__name__).debug("chat stream close failed", exc_info=True)
 
@@ -331,6 +336,7 @@ async def _drain_chat_stream(
 ) -> None:
     iterator = stream.__aiter__()
     first = True
+    cancelled = False
     try:
         while True:
             try:
@@ -348,8 +354,11 @@ async def _drain_chat_stream(
                 mark_first_token(CHAT_STREAM)
             first = False
             _absorb_chunk(chunk, state)
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     finally:
-        await _close_stream(stream)
+        await _close_stream(stream, preserve_cancellation=cancelled)
 
 async def _create_and_consume_chat_stream(
     client: Any,
@@ -367,7 +376,7 @@ async def _create_and_consume_chat_stream(
             event_stream = await _wait_for_chat_transport(
                 client.chat.completions.create(**kwargs),
                 first_chunk_timeout,
-                _close_stream,
+                partial(_close_stream, preserve_cancellation=True),
             )
     except asyncio.TimeoutError as exc:
         detail = "from the provider transport" if first_chunk_timeout is None else f"after {first_chunk_timeout:g}s"

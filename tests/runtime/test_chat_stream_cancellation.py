@@ -12,8 +12,18 @@ from opencollab.adapters.llm.client import LLMClient
 from tests.support.provider_sdk_http import install_sdk_transport, provider_http
 
 
-@pytest.mark.parametrize("mode", ["timer-cancel", "header-cancel", "late-frame-cancel", "direct-cancel", "no-cancel"])
-async def test_chat_usage_frame_cancel_preserves_allowance_for_another_call(tmp_path, monkeypatch, mode):
+@pytest.mark.parametrize(("mode", "cancel_during_close"), [
+    ("timer-cancel", False),
+    ("header-cancel", False),
+    ("late-frame-cancel", False),
+    ("direct-cancel", False),
+    ("no-cancel", False),
+    ("timer-cancel", True),
+    ("header-cancel", True),
+])
+async def test_chat_usage_frame_cancel_preserves_allowance_for_another_call(
+    tmp_path, monkeypatch, mode, cancel_during_close,
+):
     mode_requests = []
     accepted_cancellations = []
     caller_errors = []
@@ -26,6 +36,8 @@ async def test_chat_usage_frame_cancel_preserves_allowance_for_another_call(tmp_
     loop = asyncio.get_running_loop()
     caller = None
     waiting_for_late_frame = asyncio.Event()
+    closing = asyncio.Event()
+    release_close = asyncio.Event()
 
     def cancel_first(_done=None):
         accepted_cancellations.append(caller.cancel("withdraw first answer"))
@@ -74,6 +86,9 @@ async def test_chat_usage_frame_cancel_preserves_allowance_for_another_call(tmp_
             yield b"data: [DONE]\n\n"
 
         async def aclose(self):
+            if cancel_during_close and self.actor == "first" and self.attempt == 1:
+                closing.set()
+                await release_close.wait()
             stream_closures.append((self.actor, self.attempt))
 
     async def handler(request):
@@ -123,6 +138,13 @@ async def test_chat_usage_frame_cancel_preserves_allowance_for_another_call(tmp_
         if mode == "late-frame-cancel":
             await asyncio.wait_for(waiting_for_late_frame.wait(), 2)
             cancel_first()
+        if cancel_during_close:
+            try:
+                await asyncio.wait_for(closing.wait(), 2)
+                assert caller.cancel("withdraw again during HTTP close")
+                await asyncio.sleep(0)
+            finally:
+                release_close.set()
         done, _ = await asyncio.wait({caller}, timeout=4)
         assert caller in done
         try:
