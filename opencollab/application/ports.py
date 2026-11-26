@@ -646,6 +646,12 @@ class SnapshotStorePort(Protocol):
         ...
 
 @runtime_checkable
+class AutosaveOwnershipStorePort(Protocol):
+    def try_autosave_lock(self, path: str, *, writing: bool) -> Callable[[], None] | None:
+        """Return a release callback for exclusive or shared access, or None if busy."""
+        ...
+
+@runtime_checkable
 class JournalSnapshotStorePort(Protocol):
     """Optional incremental autosave writer with atomic compaction."""
 

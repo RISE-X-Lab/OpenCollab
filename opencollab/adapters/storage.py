@@ -6,10 +6,10 @@ import json
 import logging
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, TextIO
 
 from opencollab.adapters.safe_files import (
     _open_regular_read,
@@ -36,6 +36,7 @@ _AUTOSAVE_SEQUENCE_KEY = "_autosave_sequence"
 _AUTOSAVE_JOURNAL_VERSION = 1
 _AUTOSAVE_JOURNAL_SUFFIX = ".journal"
 _AUTOSAVE_JOURNAL_LOCK_SUFFIX = ".lock"
+_AUTOSAVE_OWNERSHIP_LOCK_SUFFIX = ".autosave.lock"
 _JOURNAL_LOCK_TIMEOUT_SECONDS = 10.0
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,31 @@ class _BoundedUTF8Writer:
 
 class SessionStore:
     allowed_roles = {"system", "developer", "user", "assistant", "tool"}
+
+    def try_autosave_lock(self, path: str, *, writing: bool) -> Callable[[], None] | None:
+        # Keep the sidecar inode stable while snapshots and journals are replaced.
+        lock_path = f"{path}{_AUTOSAVE_OWNERSHIP_LOCK_SUFFIX}"
+        handle: BinaryIO | TextIO
+        if writing:
+            handle = open_regular_text_append(lock_path)
+        else:
+            try:
+                handle = os.fdopen(_open_regular_read(lock_path), "rb")
+            except FileNotFoundError:
+                return lambda: None
+
+        locked = False
+        lock_mode = fcntl.LOCK_EX if writing else fcntl.LOCK_SH
+        try:
+            fcntl.flock(handle.fileno(), lock_mode | fcntl.LOCK_NB)
+            locked = True
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                raise
+        finally:
+            if not locked:
+                handle.close()
+        return handle.close if locked else None
 
     def has_snapshot(self, path: str) -> bool:
         """Return whether a base or recoverable journal sidecar is present."""
