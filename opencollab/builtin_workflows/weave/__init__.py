@@ -9,7 +9,6 @@ import math
 import time
 import uuid
 from collections.abc import Mapping, Sequence
-from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -455,6 +454,7 @@ class _WeaveRun:
             return BudgetDecision(cap, final_prompt=prompt)
 
         heartbeat = asyncio.create_task(self.heartbeat(label))
+        primary_error: BaseException | None = None
         try:
             result = await self.ctx.agent_run(
                 prompt, tools=adapter.tools(label), budget=hard, timeout=seconds, max_steps=steps,
@@ -463,10 +463,16 @@ class _WeaveRun:
                                        history_trigger_tokens=config.history_trigger_tokens,
                                        tool_cancellation_cleanup_timeout=config.tool_cleanup_seconds),
             )
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
             heartbeat.cancel()
-            with suppress(asyncio.CancelledError):
-                await heartbeat
+            heartbeat_result, = await asyncio.gather(heartbeat, return_exceptions=True)
+            if isinstance(heartbeat_result, Exception):
+                if primary_error is None:
+                    raise heartbeat_result
+                add_exception_note(primary_error, f"Weave heartbeat failed: {heartbeat_result}")
         if result.session_id:
             state.observe(label, result.session_id, result.tokens, result.steps)
         if not result.cleanup_complete or not result.workspace_ready:

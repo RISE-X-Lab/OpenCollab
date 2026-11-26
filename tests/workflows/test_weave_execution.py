@@ -775,6 +775,68 @@ async def test_error_checkpoint_preserves_the_verifier_error(tmp_path):
     assert str(result.error) == "cannot read the verifier report"
     assert any("cannot write the stopped snapshot" in note for note in result.error.__notes__)
 
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_failed_repair_heartbeat_preserves_the_solver_exit(tmp_path, cancelled):
+    heartbeat_failed, awaiting_cancel = asyncio.Event(), asyncio.Event()
+    errors = []
+
+    class BrokenHeartbeat(FileChecks):
+        fail_snapshot = False
+
+        def on_update(self, kind, state, data):
+            if kind == "heartbeat" and data["phase"] == "repair-1":
+                self.fail_snapshot = True
+            super().on_update(kind, state, data)
+
+        def save_state(self, data):
+            if self.fail_snapshot:
+                self.fail_snapshot = False
+                heartbeat_failed.set()
+                raise OSError("heartbeat checkpoint unavailable")
+            super().save_state(data)
+
+    class WaitingSolver(FileModel):
+        async def complete(self, messages, tools=None, **kwargs):
+            response = await super().complete(messages, tools, **kwargs)
+            prompt = next(message["content"] for message in messages if message["role"] == "user")
+            if response.finish_reason == "stop" and prompt.startswith("repair-stage"):
+                await asyncio.wait_for(heartbeat_failed.wait(), 5)
+                if cancelled:
+                    awaiting_cancel.set()
+                    await asyncio.Event().wait()
+            return response
+
+    adapter, model = BrokenHeartbeat(tmp_path), WaitingSolver()
+
+    async def flow(ctx, _args):
+        try:
+            return await run_weave(ctx, [WeaveGroup("result", "write-stage")],
+                                   config=_config(), adapter=adapter)
+        except BaseException as error:
+            errors.append(error)
+            raise
+
+    running = asyncio.create_task(_client(tmp_path).workflow(
+        flow, llm=model, budget=20_000, trace=False,
+    ))
+    if cancelled:
+        try:
+            await asyncio.wait_for(awaiting_cancel.wait(), 5)
+        finally:
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+        error, = errors
+        assert isinstance(error, asyncio.CancelledError)
+        assert any("heartbeat checkpoint unavailable" in note for note in error.__notes__)
+        assert adapter.saved[-1]["status"] == "cancelled"
+    else:
+        result = await running
+        assert result.status == "failed" and isinstance(result.error, OSError)
+        assert str(result.error) == "heartbeat checkpoint unavailable"
+        assert adapter.saved[-1]["status"] == "failed"
+    assert (tmp_path / "result.txt").read_text() == "correct\n"
+
 async def test_cancelled_writer_settles_before_return_without_later_group_or_check(tmp_path):
     writing, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
