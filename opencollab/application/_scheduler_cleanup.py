@@ -78,9 +78,15 @@ class SchedulerCleanupMixin:
         persistence_sessions = tuple(self._sessions.values())
         startup_aids = set(self._startup_tasks)
         origins = {**self._startup_origin, **self._spawn_origin}
+        # A cancelled recovery waiter can mark its suspended turn stopped before teardown.
         suspended_aids = {
             aid for aid, scb in self.table.entries.items()
             if scb.state.phase is SessionPhase.AWAITING_EVENTS
+            or (
+                scb.state.phase is SessionPhase.STOPPED
+                and scb.state.terminal_reason == _CLEANUP_CANCELLED_WORK
+                and not scb.state.pending_events.is_empty()
+            )
         }
         interrupted_deliveries = set(self._message_delivery_tasks)
         public_run_tasks = _unique_task_owners(
