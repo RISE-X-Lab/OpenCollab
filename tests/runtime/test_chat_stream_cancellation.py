@@ -17,6 +17,7 @@ from tests.support.provider_sdk_http import install_sdk_transport, provider_http
     ("header-cancel", False),
     ("late-frame-cancel", False),
     ("direct-cancel", False),
+    ("timeout-cancel", False),
     ("no-cancel", False),
     ("timer-cancel", True),
     ("header-cancel", True),
@@ -36,6 +37,7 @@ async def test_chat_usage_frame_cancel_preserves_allowance_for_another_call(
     loop = asyncio.get_running_loop()
     caller = None
     waiting_for_late_frame = asyncio.Event()
+    read_timed_out = asyncio.Event()
     closing = asyncio.Event()
     release_close = asyncio.Event()
 
@@ -75,6 +77,12 @@ async def test_chat_usage_frame_cancel_preserves_allowance_for_another_call(
                 except asyncio.CancelledError:
                     # The local transport can finish this frame while unwinding.
                     pass
+            if self.actor == "first" and self.attempt == 1 and mode == "timeout-cancel":
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    read_timed_out.set()
+                    await asyncio.Event().wait()
             usage = {"prompt_tokens": self.total - 7, "completion_tokens": 7, "total_tokens": self.total}
             yield f"data: {json.dumps({**common, 'choices': [], 'usage': usage})}\n\n".encode()
 
@@ -118,7 +126,8 @@ async def test_chat_usage_frame_cancel_preserves_allowance_for_another_call(
             tmp_path, model="gpt-4o", provider="openai", api_key=tmp_path.name,
             base_url="https://fixture.invalid/v1",
             config={"llm_stream_chat": True, "llm_first_event_timeout": 3,
-                    "llm_stream_idle_timeout": 3, "llm_max_retries": 1, "provider_error_time_budget": 1.6},
+                    "llm_stream_idle_timeout": 0.25 if mode == "timeout-cancel" else 3,
+                    "llm_max_retries": 1, "provider_error_time_budget": 1.6},
         ).create_model_client()
 
     async with client:
@@ -137,6 +146,9 @@ async def test_chat_usage_frame_cancel_preserves_allowance_for_another_call(
         caller = asyncio.create_task(complete("first"))
         if mode == "late-frame-cancel":
             await asyncio.wait_for(waiting_for_late_frame.wait(), 2)
+            cancel_first()
+        if mode == "timeout-cancel":
+            await asyncio.wait_for(read_timed_out.wait(), 2)
             cancel_first()
         if cancel_during_close:
             try:
@@ -176,7 +188,7 @@ async def test_chat_usage_frame_cancel_preserves_allowance_for_another_call(
     assert after_first == 1.6
     assert first == ("CancelledError", "withdraw first answer")
     assert mode_requests == ["first", "second", "second"]
-    expected_first = 0 if mode == "header-cancel" else 27
+    expected_first = 0 if mode in {"header-cancel", "timeout-cancel"} else 27
     assert reports == {"first": [expected_first] if expected_first else [], "second": [42]}
     assert second == ("LLMResponse", "second finished")
     assert ledger_history == [("error", expected_first, "CancelledError"), ("success", 42, None)]

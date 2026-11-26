@@ -36,8 +36,12 @@ async def _wait_for_transport(
         task.cancel()
         while not task.done():
             try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
+                await asyncio.wait((task,))
+            except asyncio.CancelledError as cancellation:
+                if isinstance(interruption, asyncio.TimeoutError):
+                    interruption = cancellation
+                    if on_interrupt is not None:
+                        on_interrupt(interruption)
                 if not task.done():
                     task.cancel()
         if task.cancelled():
