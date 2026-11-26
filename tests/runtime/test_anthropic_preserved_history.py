@@ -16,6 +16,7 @@ from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool
 from opencollab.application._anthropic_history import _anthropic_history_input, _remember_anthropic_history
+from opencollab.application.session import SessionBusyError
 from opencollab.application.session_snapshot import _restore_anthropic_history
 from opencollab.application.shaping import AutoCompactShaper, PerToolResultBudgetShaper, ToolOutputClearShaper
 from opencollab.application.steering import READS_NUDGE_HARD
@@ -1059,7 +1060,15 @@ async def test_first_native_autosave_preserves_a_compacted_peer(
                 assert await asyncio.to_thread(fallback_started.wait, 10)
 
             writer.messages = [*writer.messages, {"role": "user", "content": "peer checkpoint evidence"}]
-            writer.save(str(path))
+            before = OpenCollab.read_session_snapshot(path)
+            with pytest.raises(SessionBusyError):
+                writer.save(str(path))
+            assert OpenCollab.read_session_snapshot(path) == before
+
+            # Simulate a legacy writer to exercise the stale checkpoint and fallback checks.
+            with monkeypatch.context() as legacy_writer:
+                legacy_writer.setattr(writer.store, "try_autosave_lock", lambda *args, **kwargs: lambda: None)
+                writer.save(str(path))
             published = OpenCollab.read_session_snapshot(path)
             release_fallback.set()
             reply_to_first.set()
