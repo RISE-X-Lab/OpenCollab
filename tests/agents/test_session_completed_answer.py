@@ -17,6 +17,42 @@ from tests.support.asyncio_test_support import assert_cancel_reason
 from tests.support.session_characterization_test_support import FakeLLMClient, llm_response, tool_call
 
 
+@pytest.mark.parametrize("text", [None, "Visible subtotal. The next"])
+async def test_truncated_standalone_answer_still_allows_generation_after_restore(tmp_path, text):
+    (tmp_path / "inventory.txt").write_text("apples: 42\n", encoding="utf-8")
+    agent = Agent(name="assistant", system_prompt="Count the inventory.", tools=[FileReadTool()])
+    planning = "I will read the inventory."
+    model = FakeLLMClient([
+        llm_response(content=planning, tool_calls=[tool_call("read", "file_read", '{"path":"inventory.txt"}')]),
+        llm_response(content=text, finish_reason="length"),
+    ])
+    env = LocalEnvironment(str(tmp_path))
+    source = build_session(agent=agent, llm=model, env=env)
+    restored = None
+    try:
+        await source.add_user_message("What is the subtotal?")
+        assert await source.run_loop() == (text or planning)
+        assert source.phase is SessionPhase.STOPPED
+        path = tmp_path / "stopped.json"
+        source.save(str(path))
+
+        resume_model = FakeLLMClient([llm_response(content="The inventory contains 42 apples.")])
+        restored = load_session(str(path), agent=agent, llm=resume_model, env=env)
+        assert restored.phase is SessionPhase.STOPPED
+        assert await restored.run_loop() == "The inventory contains 42 apples."
+        assert restored.phase is SessionPhase.DONE
+        assert len(resume_model.calls) == 1
+        history = resume_model.calls[0]["messages"]
+        assert [message["content"] for message in history if message["role"] == "assistant"] == (
+            [planning] + ([text] if text else [])
+        )
+    finally:
+        if restored is not None:
+            await restored.aclose()
+        await source.aclose()
+        await env.cleanup()
+
+
 @pytest.mark.parametrize("expected", ["pear", ""])
 async def test_final_step_autosave_restores_the_completed_answer(tmp_path, expected):
     path = tmp_path / "automatic.json"

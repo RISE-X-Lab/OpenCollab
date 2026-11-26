@@ -17,6 +17,7 @@ from opencollab.application._session_run_shared import (
     _INCOMPLETE_RESPONSE_REASONS,
     _OUTPUT_LIMIT_REASONS,
     _REQUEST_BUDGET_REFUSAL_PREFIX,
+    _TRUNCATED_OUTPUT_REASON,
     _WIND_DOWN_NUDGE,
     _WIND_DOWN_RETRY,
     DEFAULT_COMMIT_RESERVE,
@@ -815,9 +816,9 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             isinstance(response.content, str)
             and bool(response.content.strip())
         )
+        reply_start = len(self.state.messages) - int(has_content)
         if response.finish_reason == "content_filter":
             # Settle the filtered reply before observers can suspend the turn.
-            reply_start = len(self.state.messages) - int(has_content)
             self.state.append_message({
                 "role": "system", "content": "[Output filtered by the provider. Session stopped.]",
             })
@@ -843,7 +844,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
                 )
                 self.state.transition_to(SessionPhase.AUTOSAVING)
                 return
-            reason = "output truncated: provider reached its generation limit"
+            reason = _TRUNCATED_OUTPUT_REASON
             self.state.append_message({
                 "role": "system",
                 "content": "[Output truncated by the provider. Partial response preserved; session stopped.]",
@@ -851,6 +852,10 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self.event_publisher.emit(self.event_factory.error(reason))
             self.clear_pending_step()
             self.state.transition_to(SessionPhase.STOPPED, reason=reason)
+            if has_content and not getattr(response, "content_from_reasoning", False):
+                # Team failure delivery reads this reply while the public turn keeps its answer lookup.
+                self.state.start_active_turn(reply_start)
+                self.state.clear_active_turn(retain_answer=True)
             await self.finish_step(pending.latency)
             return
 

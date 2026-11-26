@@ -13,7 +13,11 @@ import re
 import time
 from typing import Any
 
-from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
+from opencollab.application._session_run_shared import (
+    _FILTERED_OUTPUT_REASON,
+    _TRUNCATED_OUTPUT_REASON,
+    _last_assistant_answer,
+)
 from opencollab.application.ports import ProviderTerminalEventError
 from opencollab.application.provider_failure import provider_http_failure_metadata
 from opencollab.application.scheduler_types import LaunchSpec
@@ -504,9 +508,16 @@ class LifecycleMixin:
 
         terminal_failure = self._terminal_failure_result(scb, result)
         if terminal_failure is not None:
+            partial_response = ""
+            if scb.state.terminal_reason == _FILTERED_OUTPUT_REASON:
+                partial_response = result
+            elif scb.state.terminal_reason == _TRUNCATED_OUTPUT_REASON:
+                partial_response = _last_assistant_answer(
+                    scb.state.messages, scb.state.completed_turn_start_message_index,
+                )
             failure_result = terminal_failure
-            if scb.state.terminal_reason == _FILTERED_OUTPUT_REASON and result:
-                failure_result = f"{terminal_failure}\n\n[Partial response]\n{result}"
+            if partial_response:
+                failure_result = f"{terminal_failure}\n\n[Partial response]\n{partial_response}"
             result = await self._append_partial_worktree_diff(aid, scb, session, failure_result)
             scb.result = result
             await self._safe_emit_scheduler_event(

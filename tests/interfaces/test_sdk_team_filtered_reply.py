@@ -14,9 +14,11 @@ from tests.support.session_characterization_test_support import FakeLLMClient
 
 _INTERIM = "I will inspect the inventory before reporting a subtotal."
 _VISIBLE = "Verified inventory subtotal is 42."
+_PARTIAL = _VISIBLE + " The next section"
 _REFUSAL = "I can share the verified subtotal of 42."
+_REASONING = "I should check whether the inventory is complete."
 _FILTER_REASON = "provider filtered the output"
-_FILTER_ERROR = f"Error: agent stopped: {_FILTER_REASON}"
+_TRUNCATED_REASON = "output truncated: provider reached its generation limit"
 
 
 def _chat_reply(request, model, step, reason, message):
@@ -34,14 +36,18 @@ def _inventory_read():
     }]}
 
 
-@pytest.mark.parametrize(("finish_reason", "content", "refusal", "visible"), [
-    pytest.param("stop", _VISIBLE, None, _VISIBLE, id="completed"),
-    pytest.param("content_filter", _VISIBLE, None, _VISIBLE, id="partial"),
-    pytest.param("content_filter", None, _REFUSAL, _REFUSAL, id="refusal"),
-    pytest.param("content_filter", None, None, "", id="empty-after-tool"),
+@pytest.mark.parametrize(("finish_reason", "terminal_reply", "visible"), [
+    pytest.param("stop", {"content": _VISIBLE}, _VISIBLE, id="completed"),
+    pytest.param("content_filter", {"content": _VISIBLE}, _VISIBLE, id="partial"),
+    pytest.param("content_filter", {"content": None, "refusal": _REFUSAL}, _REFUSAL, id="refusal"),
+    pytest.param("content_filter", {"content": None}, "", id="empty-after-tool"),
+    pytest.param("length", {"content": _PARTIAL}, _PARTIAL, id="truncated"),
+    pytest.param("length", {"content": None}, "", id="truncated-empty-after-tool"),
+    pytest.param("length", {"content": None, "reasoning_content": _REASONING}, "", id="truncated-reasoning-only"),
+    pytest.param("model_context_window_exceeded", {"content": _PARTIAL}, _PARTIAL, id="context-limited"),
 ])
-async def test_team_passes_filtered_reply_text_to_the_delegating_agent(
-    tmp_path, monkeypatch, finish_reason, content, refusal, visible,
+async def test_team_delivers_member_reply_text_to_the_delegating_agent(
+    tmp_path, monkeypatch, finish_reason, terminal_reply, visible,
 ):
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
@@ -76,7 +82,7 @@ async def test_team_passes_filtered_reply_text_to_the_delegating_agent(
         else:
             assert "verified inventory: 42" in tool_results[-1]
             reason = finish_reason
-            message = {"content": content, "refusal": refusal}
+            message = terminal_reply
         return _chat_reply(request, model, len(requests), reason, message)
 
     install_sdk_transport(monkeypatch, "openai", handler)
@@ -91,9 +97,13 @@ async def test_team_passes_filtered_reply_text_to_the_delegating_agent(
         artifacts=artifacts, use_worktrees=False, budget=100_000, timeout=5,
     )
 
-    filtered = finish_reason == "content_filter"
-    expected_delivery = _FILTER_ERROR if filtered else visible
-    if filtered and visible:
+    stop_reason = {
+        "content_filter": _FILTER_REASON,
+        "length": _TRUNCATED_REASON,
+        "model_context_window_exceeded": _TRUNCATED_REASON,
+    }.get(finish_reason)
+    expected_delivery = f"Error: agent stopped: {stop_reason}" if stop_reason else visible
+    if stop_reason and visible:
         expected_delivery += f"\n\n[Partial response]\n{visible}"
     assert [row["model"] for row in requests] == [
         "fixture-lead", "fixture-reviewer", "fixture-reviewer", "fixture-lead",
@@ -102,21 +112,27 @@ async def test_team_passes_filtered_reply_text_to_the_delegating_agent(
     assert result.status == "completed"
     assert result.output == f"Lead received: {expected_delivery}"
     assert result.tokens == 16
-    assert [row["exception_type"] for row in result.agent_failures] == (["AgentStopped"] if filtered else [])
+    assert [row["exception_type"] for row in result.agent_failures] == (["AgentStopped"] if stop_reason else [])
 
     path = next(artifacts.glob("agent_1_*.json"))
     snapshot = app.read_session_snapshot(path)
-    assert snapshot["session_state"]["phase"] == ("stopped" if filtered else "done")
-    assert snapshot["session_state"]["terminal_reason"] == (_FILTER_REASON if filtered else "completed")
+    assert snapshot["session_state"]["phase"] == ("stopped" if stop_reason else "done")
+    assert snapshot["session_state"]["terminal_reason"] == (stop_reason or "completed")
+    recorded_text = terminal_reply.get("reasoning_content", visible)
     assert [row["content"] for row in snapshot["messages"] if row["role"] == "assistant"] == (
-        [_INTERIM, visible] if visible else [_INTERIM]
+        [_INTERIM, recorded_text] if recorded_text else [_INTERIM]
     )
     model = FakeLLMClient()
     env = LocalEnvironment(str(tmp_path))
     restored = load_session(str(path), agent=Agent(name="reviewer", system_prompt="Read the inventory."),
                             llm=model, env=env)
     try:
-        assert await restored.run_loop() == visible
+        if stop_reason == _TRUNCATED_REASON:
+            cursor = restored.state.completed_turn_start_message_index
+            terminal_text = snapshot["messages"][cursor]["content"] if cursor is not None else ""
+            assert terminal_text == visible
+        else:
+            assert await restored.run_loop() == visible
         assert model.calls == []
     finally:
         await restored.aclose()
@@ -126,8 +142,7 @@ async def test_team_passes_filtered_reply_text_to_the_delegating_agent(
 @pytest.mark.parametrize(("finish_reason", "content", "output", "status", "reason"), [
     pytest.param("content_filter", None, None, "stopped", _FILTER_REASON, id="empty-filter"),
     pytest.param("content_filter", _VISIBLE, _VISIBLE, "stopped", _FILTER_REASON, id="partial-filter"),
-    pytest.param("length", None, _INTERIM, "stopped",
-                 "output truncated: provider reached its generation limit", id="length-stop"),
+    pytest.param("length", None, _INTERIM, "stopped", _TRUNCATED_REASON, id="length-stop"),
     pytest.param("stop", _VISIBLE, _VISIBLE, "completed", None, id="completed"),
 ])
 async def test_team_lead_returns_only_visible_filtered_text(

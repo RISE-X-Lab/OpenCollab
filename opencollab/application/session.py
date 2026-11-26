@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _TRUNCATED_OUTPUT_REASON
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
@@ -803,6 +803,11 @@ class Session:
             )
             restored.completed_turn_start_message_index = (
                 completed_turn_start if completed_turn_start is not None else restored_turn_start
+            )
+        elif restored.phase is SessionPhase.STOPPED and restored.terminal_reason == _TRUNCATED_OUTPUT_REASON:
+            # Legacy stopped snapshots only had a whole-turn boundary.
+            restored.completed_turn_start_message_index = _restore_active_turn_start(
+                raw_state.get("completed_turn_start_message_index"), restored.messages,
             )
 
     def _normalize_forked_state(self, state: SessionState, raw_state: dict[str, Any]) -> None:
