@@ -7,11 +7,13 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import openai
 import pytest
 
 from opencollab import OpenCollab, RunControl
+from opencollab.adapters.llm import retry
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.llm.types import LLMResponse, Usage
@@ -45,8 +47,6 @@ class RateLimits:
 
 @pytest.fixture
 def rate_limits(monkeypatch):
-    from opencollab.adapters.llm import retry
-
     monkeypatch.setattr(retry.random, "uniform", lambda *_args: 0.0)
     for name in ("OPENCOLLAB_UNBOUNDED_LIMITS", "OPENCOLLAB_API_USAGE_LOG",
                  "OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION"):
@@ -204,6 +204,47 @@ async def test_summary_and_completion_share_the_workflow_allowance(tmp_path, mon
     finally:
         await model.close()
 
+@pytest.mark.parametrize("mode", ["chat", "responses", "anthropic"])
+@pytest.mark.parametrize("first_waited", [False, True], ids=["declined-delay", "spent-time"])
+async def test_denied_backoff_keeps_unused_workflow_retry_time(
+    tmp_path, monkeypatch, rate_limits, mode, first_waited,
+):
+    allowance = 1.0
+
+    async def handle(request):
+        first = b"scope-task-first-0" in request.content
+        response = rate_limits(request)
+        if response.status_code == 429:
+            if first and first_waited:
+                await asyncio.sleep(allowance + 0.1)
+            response.headers["retry-after"] = "120" if first and not first_waited else "0"
+        return response
+
+    install_sdk_transport(monkeypatch, "anthropic" if mode == "anthropic" else "openai", handle)
+    oc = client(tmp_path, mode=mode, allowance=allowance)
+    model = await prepare(oc.create_model_client())
+
+    async def flow(ctx, _inputs):
+        first = await ctx.agent_run("scope-task-first-0", tools=())
+        second = await ctx.agent_run("scope-task-second-0", tools=())
+        return first, second
+
+    try:
+        result = await oc.workflow(flow, llm=model, trace=False, timeout=10)
+        assert result.ok
+        first, second = result.output
+        assert (first.status, first.tokens) == ("failed", 0)
+        if first_waited:
+            assert (second.status, second.tokens) == ("failed", 0)
+            assert result.tokens == 0
+        else:
+            assert (second.status, second.output, second.tokens) == ("completed", "done", 4)
+            assert result.tokens == 4
+        assert rate_limits.counts == {"scope-task-first-0": 1, "scope-task-second-0": 1 if first_waited else 2}
+        assert model.provider_retry_budget.remaining_seconds == allowance
+    finally:
+        await model.close()
+
 async def test_nested_public_run_is_independent_and_restores_the_outer_allowance(tmp_path, monkeypatch, rate_limits):
     install_sdk_transport(monkeypatch, "openai", rate_limits)
     oc = client(tmp_path)
@@ -227,6 +268,7 @@ async def test_nested_public_run_is_independent_and_restores_the_outer_allowance
         await model.close()
 
 async def test_direct_native_calls_keep_their_existing_lifetime_budget(tmp_path, monkeypatch, rate_limits):
+    monkeypatch.setattr(retry, "time", SimpleNamespace(monotonic=lambda: 0.0))
     install_sdk_transport(monkeypatch, "openai", rate_limits)
     oc = client(tmp_path)
     model = await prepare(oc.create_model_client())
@@ -234,7 +276,7 @@ async def test_direct_native_calls_keep_their_existing_lifetime_budget(tmp_path,
         assert (await model.complete([{"role": "user", "content": "scope-task-direct-0"}])).content == "done"
         with pytest.raises(openai.RateLimitError):
             await model.complete([{"role": "user", "content": "scope-task-direct-1"}])
-        assert model.provider_retry_budget.remaining_seconds == 0
+        assert model.provider_retry_budget.remaining_seconds == 0.5
         assert (await run(oc, model, "scope-task-agent-0", "agent")).ok
         with pytest.raises(openai.RateLimitError):
             await model.complete([{"role": "user", "content": "scope-task-direct-2"}])
@@ -245,6 +287,7 @@ async def test_direct_native_calls_keep_their_existing_lifetime_budget(tmp_path,
 
 @pytest.mark.parametrize("concurrent", [False, True])
 async def test_explicit_shared_budget_preserves_its_cross_run_limit(tmp_path, monkeypatch, rate_limits, concurrent):
+    monkeypatch.setattr(retry, "time", SimpleNamespace(monotonic=lambda: 0.0))
     install_sdk_transport(monkeypatch, "openai", rate_limits)
     shared = RetryTimeBudget(1.5)
     model = await prepare(LLMClient(
@@ -263,7 +306,7 @@ async def test_explicit_shared_budget_preserves_its_cross_run_limit(tmp_path, mo
                        await run(oc, model, "scope-task-shared-1", "workflow")]
         assert [result.status for result in results] == ["completed", "failed"]
         assert model.provider_retry_budget is shared
-        assert shared.remaining_seconds == 0
+        assert shared.remaining_seconds == 0.5
         assert rate_limits.counts == {"scope-task-shared-0": 2, "scope-task-shared-1": 1}
     finally:
         await model.close()

@@ -174,7 +174,9 @@ async def with_retry(
                 MAX_EXPONENTIAL_RETRY_DELAY_SECONDS,
             )
             delay = max(0.0, base + random.uniform(0.0, RETRY_JITTER_MAX_SECONDS))
-            if retry_time_budget is not None and not retry_time_budget.consume(delay):
+            if retry_time_budget is not None and (
+                delay > retry_time_budget.remaining_seconds or not retry_time_budget.consume(delay)
+            ):
                 raise
             await asyncio.sleep(delay)
             attempt += 1
