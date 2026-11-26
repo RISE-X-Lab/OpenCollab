@@ -84,7 +84,7 @@ class RetryTimeBudget:
     """Shared retry-only time allowance for one agent or workflow run."""
 
     total_seconds: float
-    remaining_seconds: float = field(init=False)
+    _balance_seconds: float = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if (
@@ -93,15 +93,30 @@ class RetryTimeBudget:
             or self.total_seconds < 0
         ):
             raise ValueError("retry time budget must be a finite non-negative number")
-        self.remaining_seconds = float(self.total_seconds)
+        self._balance_seconds = float(self.total_seconds)
+
+    @property
+    def remaining_seconds(self) -> float:
+        return max(0.0, self._balance_seconds)
 
     def consume(self, seconds: float) -> bool:
         """Consume retry time atomically between event-loop suspension points."""
         seconds = max(0.0, seconds)
-        if seconds > self.remaining_seconds:
-            self.remaining_seconds = 0.0
+        fits = seconds <= self._balance_seconds
+        # Retain overruns when another caller has reserved a wait it can still cancel.
+        self._balance_seconds -= seconds
+        return fits
+
+    async def _wait_for_retry(self, delay: float) -> bool:
+        if delay > self.remaining_seconds or not self.consume(delay):
             return False
-        self.remaining_seconds -= seconds
+        started = time.monotonic()
+        try:
+            await asyncio.sleep(delay)
+        except BaseException:
+            elapsed = max(0.0, time.monotonic() - started)
+            self._balance_seconds += max(0.0, delay - elapsed)
+            raise
         return True
 
 _P = ParamSpec("_P")
@@ -174,11 +189,10 @@ async def with_retry(
                 MAX_EXPONENTIAL_RETRY_DELAY_SECONDS,
             )
             delay = max(0.0, base + random.uniform(0.0, RETRY_JITTER_MAX_SECONDS))
-            if retry_time_budget is not None and (
-                delay > retry_time_budget.remaining_seconds or not retry_time_budget.consume(delay)
-            ):
+            if retry_time_budget is None:
+                await asyncio.sleep(delay)
+            elif not await retry_time_budget._wait_for_retry(delay):
                 raise
-            await asyncio.sleep(delay)
             attempt += 1
 
 def _http_status_of(error: BaseException) -> int | None:

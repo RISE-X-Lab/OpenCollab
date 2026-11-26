@@ -245,6 +245,85 @@ async def test_denied_backoff_keeps_unused_workflow_retry_time(
     finally:
         await model.close()
 
+@pytest.mark.parametrize("mode", ["chat", "responses", "anthropic"])
+@pytest.mark.parametrize("cancel", [True, False], ids=["cancel-wait", "finish-wait"])
+async def test_competing_roles_keep_spent_retry_time_after_wait_settlement(
+    tmp_path, monkeypatch, rate_limits, mode, cancel,
+):
+    waiting = asyncio.Event()
+    release = asyncio.Event()
+    clock = SimpleNamespace(now=0.0)
+    delays = []
+    retry_after = {
+        "scope-task-first-0": "8",
+        "scope-task-competing-0": "0",
+        "scope-task-long-0": "3",
+        "scope-task-exact-0": "2",
+    }
+
+    async def sleep(delay):
+        delays.append(delay)
+        if delay == 8:
+            waiting.set()
+            await release.wait()
+        else:
+            clock.now += delay
+
+    def handle(request):
+        response = rate_limits(request)
+        if response.status_code == 429:
+            label = re.search(rb"scope-task-[a-z]+-\d+", request.content).group().decode()
+            if label == "scope-task-competing-0":
+                clock.now += 4
+            response.headers["retry-after"] = retry_after[label]
+        return response
+
+    monkeypatch.setattr(retry, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(retry, "asyncio", SimpleNamespace(sleep=sleep))
+    install_sdk_transport(monkeypatch, "anthropic" if mode == "anthropic" else "openai", handle)
+    oc = client(tmp_path, mode=mode, allowance=10)
+    model = await prepare(oc.create_model_client())
+
+    async def flow(ctx, _inputs):
+        first = asyncio.create_task(ctx.agent_run("scope-task-first-0", budget=10_000, tools=()))
+        try:
+            await asyncio.wait_for(waiting.wait(), 5)
+            competing = await ctx.agent_run("scope-task-competing-0", tools=())
+            assert competing.status == "failed"
+            if cancel:
+                first.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await first
+            else:
+                clock.now = 8.0
+                release.set()
+                assert (await first).status == "completed"
+        finally:
+            if not first.done():
+                first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+        larger = await ctx.agent_run("scope-task-long-0", tools=())
+        exact = await ctx.agent_run("scope-task-exact-0", tools=())
+        return larger, exact
+
+    try:
+        result = await oc.workflow(flow, llm=model, trace=False, timeout=15)
+        assert result.ok
+        larger, exact = result.output
+        assert larger.status == "failed"
+        assert exact.status == ("completed" if cancel else "failed")
+        assert result.tokens == 4
+        assert delays == ([8, 2] if cancel else [8])
+        assert rate_limits.counts == {
+            "scope-task-first-0": 1 if cancel else 2,
+            "scope-task-competing-0": 1,
+            "scope-task-long-0": 1,
+            "scope-task-exact-0": 2 if cancel else 1,
+        }
+        assert model.provider_retry_budget.remaining_seconds == 10
+    finally:
+        await model.close()
+
 async def test_nested_public_run_is_independent_and_restores_the_outer_allowance(tmp_path, monkeypatch, rate_limits):
     install_sdk_transport(monkeypatch, "openai", rate_limits)
     oc = client(tmp_path)
