@@ -130,6 +130,7 @@ async def test_stale_writable_session_rejects_turn_until_restored(
     [
         ("base_rename", False, True),
         ("base_sync", False, True),
+        ("base_sync_read", False, True),
         ("journal_reset", False, True),
         ("base_sync", False, False),
         ("journal_reset", False, False),
@@ -174,6 +175,8 @@ async def test_manual_checkpoint_can_retry_its_own_failed_publication(
         error = OSError(errno.EIO, f"checkpoint {failure_stage} failed")
         replace_file = os.replace
         sync_directory = safe_files._fsync_directory
+        read_snapshot_text = session.store._read_snapshot_text
+        sync_failed = False
 
         def fail_rename(source, destination):
             failing_path = path if failure_stage == "base_rename" else journal
@@ -182,13 +185,22 @@ async def test_manual_checkpoint_can_retry_its_own_failed_publication(
             return replace_file(source, destination)
 
         def fail_base_sync(directory):
+            nonlocal sync_failed
             if directory == path.parent:
+                sync_failed = True
                 raise error
             return sync_directory(directory)
 
+        def read_during_fault(name):
+            if sync_failed and name == autosave:
+                raise OSError(errno.EIO, "snapshot temporarily unavailable")
+            return read_snapshot_text(name)
+
         with monkeypatch.context() as fault:
-            if failure_stage == "base_sync":
+            if failure_stage in {"base_sync", "base_sync_read"}:
                 fault.setattr(safe_files, "_fsync_directory", fail_base_sync)
+                if failure_stage == "base_sync_read":
+                    fault.setattr(session.store, "_read_snapshot_text", read_during_fault)
             else:
                 fault.setattr(os, "replace", fail_rename)
             with pytest.raises(OSError) as failure:

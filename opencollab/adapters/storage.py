@@ -737,20 +737,9 @@ class SessionStore:
         if publication is not None and (publication.path != path or defer_journal_reset):
             publication = None
         try:
-            try:
-                self._atomic_json_write(path, snapshot)
-            except SnapshotCapacityError:
-                self._atomic_json_write(path, snapshot, indent=None)
-        except OSError:
-            if publication is not None:
-                # Directory sync can fail after the rename has made the candidate visible.
-                try:
-                    visible = json.loads(self._read_snapshot_text(path))
-                except (OSError, ValueError):
-                    pass
-                else:
-                    publication.visible = same_snapshot_value(visible, snapshot)
-            raise
+            self._atomic_json_write(path, snapshot)
+        except SnapshotCapacityError:
+            self._atomic_json_write(path, snapshot, indent=None)
         if publication is not None:
             publication.synced = True
         journal_path = self._journal_path(path)
@@ -998,6 +987,12 @@ class SessionStore:
     @staticmethod
     def _atomic_json_write(path: str, value: Any, *, indent: int | None = 2) -> None:
         """Durably replace one JSON file without exposing a partial snapshot."""
+        publication = _checkpoint_publication.get()
+
+        def mark_replaced() -> None:
+            if publication is not None and publication.path == path:
+                publication.visible = True
+
         def serialize(handle: BinaryIO) -> None:
             writer = _BoundedUTF8Writer(handle, path=path)
             if indent is None:
@@ -1010,4 +1005,5 @@ class SessionStore:
             serialize,
             max_bytes=MAX_SESSION_SNAPSHOT_BYTES,
             context="session snapshot",
+            on_replace=mark_replaced if publication is not None else None,
         )
