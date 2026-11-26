@@ -6,6 +6,8 @@ import inspect
 import logging
 import os
 import threading
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -17,6 +19,7 @@ from opencollab.application.event_bus import EventBus
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import (
     _AUTOSAVE_EXPORT_SOURCE_SEQUENCE,
+    AutosaveOwnershipStorePort,
     EnvironmentPort,
     JournalSnapshotStorePort,
     LLMPort,
@@ -164,6 +167,8 @@ class Session:
         self._auto_save_rewrite_from: int | None = 0
         self._auto_save_rewrite_revision = 0
         self._auto_save_lock = threading.Lock()
+        self._autosave_writer: Callable[[], None] | None = None
+        self._autosave_writer_references = 0
         self._auto_save_checkpoint_lock = threading.RLock()
         self._auto_save_pending_checkpoints: set[int] = set()
         self._auto_save_seen_result_hashes: set[str] = set()
@@ -379,61 +384,113 @@ class Session:
     def phase(self, value: SessionPhase) -> None:
         self.state.set_phase(value)
 
+    @contextmanager
+    def _autosave_access(
+        self, path: str | None, *, writing: bool, settle: bool = False,
+    ) -> Iterator[None]:
+        store = self.store
+        if not path or not isinstance(store, AutosaveOwnershipStorePort):
+            yield
+            return
+
+        def acquire() -> Callable[[], None]:
+            release = store.try_autosave_lock(path, writing=writing)
+            if release is None:
+                raise SessionBusyError(f"autosave has an active writer: {path}")
+            return release
+
+        if writing and _same_snapshot_path(path, self._auto_save_path):
+            with self._auto_save_lock:
+                if self._autosave_writer is None:
+                    self._autosave_writer = acquire()
+                self._autosave_writer_references += 1
+            release = self._release_autosave_writer
+        else:
+            release = acquire()
+
+        try:
+            yield
+        finally:
+            if settle:
+                self._release_after_autosave_settles(release)
+            else:
+                release()
+
+    def _release_autosave_writer(self) -> None:
+        with self._auto_save_lock:
+            self._autosave_writer_references -= 1
+            if self._autosave_writer_references == 0:
+                assert self._autosave_writer is not None
+                self._autosave_writer()
+                self._autosave_writer = None
+
+    def _release_after_autosave_settles(self, release: Callable[[], None]) -> None:
+        pending = self.pending_cleanup_tasks
+        if pending:
+            # Recheck after existing completion callbacks can queue the late usage write.
+            pending[0].add_done_callback(lambda _: self._release_after_autosave_settles(release))
+        else:
+            release()
+
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         if self._turn_lock.locked() or self.runner.pending_cleanup_tasks:
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            primary_error: BaseException | None = None
+            with self._autosave_access(self._auto_save_path, writing=True, settle=True):
+                return await self._run_turn(cancel_event)
+
+    async def _run_turn(self, cancel_event: asyncio.Event | None) -> str:
+        primary_error: BaseException | None = None
+        try:
+            return await self.runner.run_loop(cancel_event)
+        except asyncio.CancelledError as exc:
+            # Direct task cancellation must terminalize the FSM before propagating,
+            # otherwise the facade rejects the next user turn as permanently busy.
+            primary_error = exc
+            if not self.state.phase.is_terminal():
+                self.state.cancel()
+            self._append_restore_results_for_open_tool_calls(
+                content=(
+                    "Tool execution interrupted by session cancellation. "
+                    "The execution outcome is unknown."
+                ),
+                exclude_ids=set(self.state.pending_events.rows),
+                completed_results=self._completed_tool_results(),
+            )
+            raise
+        except BaseException as exc:
+            primary_error = exc
+            # Cancellation closes this exchange itself. Any other failure leaves
+            # the assistant tool call in history, so the next request is invalid
+            # unless those ids are answered before the exception propagates.
             try:
-                return await self.runner.run_loop(cancel_event)
-            except asyncio.CancelledError as exc:
-                # Direct task cancellation must terminalize the FSM before propagating,
-                # otherwise the facade rejects the next user turn as permanently busy.
-                primary_error = exc
-                if not self.state.phase.is_terminal():
-                    self.state.cancel()
-                self._append_restore_results_for_open_tool_calls(
-                    content=(
-                        "Tool execution interrupted by session cancellation. "
-                        "The execution outcome is unknown."
-                    ),
-                    exclude_ids=set(self.state.pending_events.rows),
-                    completed_results=self._completed_tool_results(),
+                self._close_failed_tool_exchange()
+            except Exception as close_error:
+                add_exception_note(
+                    exc,
+                    "open tool calls could not be closed: "
+                    f"{type(close_error).__name__}: {close_error}",
                 )
-                raise
-            except BaseException as exc:
-                primary_error = exc
-                # Cancellation closes this exchange itself. Any other failure leaves
-                # the assistant tool call in history, so the next request is invalid
-                # unless those ids are answered before the exception propagates.
+            raise
+        finally:
+            if self.state.phase.is_terminal() or primary_error is not None:
                 try:
-                    self._close_failed_tool_exchange()
-                except Exception as close_error:
-                    add_exception_note(
-                        exc,
-                        "open tool calls could not be closed: "
-                        f"{type(close_error).__name__}: {close_error}",
-                    )
-                raise
-            finally:
-                if self.state.phase.is_terminal() or primary_error is not None:
-                    try:
-                        await self._close_owned_runtimes()
-                    except BaseException as cleanup_error:
-                        if primary_error is None:
-                            raise
-                        add_exception_note(primary_error, f"owned runtime cleanup also failed: {cleanup_error}")
-                self.runner._record_run_terminal()
-                try:
-                    await self._checkpoint_terminal_snapshot(defer_journal_reset=primary_error is None)
-                except Exception as checkpoint_error:
+                    await self._close_owned_runtimes()
+                except BaseException as cleanup_error:
                     if primary_error is None:
                         raise
-                    add_exception_note(
-                        primary_error,
-                        "terminal checkpoint also failed: "
-                        f"{type(checkpoint_error).__name__}: {checkpoint_error}",
-                    )
+                    add_exception_note(primary_error, f"owned runtime cleanup also failed: {cleanup_error}")
+            self.runner._record_run_terminal()
+            try:
+                await self._checkpoint_terminal_snapshot(defer_journal_reset=primary_error is None)
+            except Exception as checkpoint_error:
+                if primary_error is None:
+                    raise
+                add_exception_note(
+                    primary_error,
+                    "terminal checkpoint also failed: "
+                    f"{type(checkpoint_error).__name__}: {checkpoint_error}",
+                )
 
     async def _checkpoint_terminal_snapshot(self, *, defer_journal_reset: bool = False) -> None:
         if not self.state.phase.is_terminal() and self.state.phase is not SessionPhase.AWAITING_EVENTS:
@@ -489,12 +546,13 @@ class Session:
         ):
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            self.state.append_queued_external_user_turn(
-                content, defer=not self.state.pending_events.is_empty()
-            )
-            self.state.reset_for_user_turn()
-            self.runner.reset_runtime_for_user_turn()
-            await self.event_bus.emit(SessionEvent(type="user_message_appended"))
+            with self._autosave_access(self._auto_save_path, writing=True, settle=True):
+                self.state.append_queued_external_user_turn(
+                    content, defer=not self.state.pending_events.is_empty()
+                )
+                self.state.reset_for_user_turn()
+                self.runner.reset_runtime_for_user_turn()
+                await self.event_bus.emit(SessionEvent(type="user_message_appended"))
 
     def apply_launch(self, launch: "LaunchSpec") -> None:
         """Apply launch-time persistence as a one-shot lifecycle step.
@@ -541,6 +599,13 @@ class Session:
         """Restore a snapshot or legacy transcript, with an optional agent ID override."""
         if self._turn_lock.locked() or self.pending_cleanup_tasks:
             raise SessionBusyError("session cannot be restored while runtime work is active")
+        with ExitStack() as access:
+            if not _same_snapshot_path(path, self._auto_save_path):
+                access.enter_context(self._autosave_access(path, writing=False))
+            access.enter_context(self._autosave_access(self._auto_save_path, writing=True))
+            self._restore_snapshot(path, aid=aid)
+
+    def _restore_snapshot(self, path: str, *, aid: int | None) -> None:
         if isinstance(self.store, SnapshotStorePort):
             snapshot = self.store.load_snapshot(path, self.agent.system_prompt)
         else:
@@ -986,6 +1051,10 @@ class Session:
         saving_autosave = _same_snapshot_path(path, self._auto_save_path)
         if not saving_autosave and self.state.phase.is_terminal() and self.runner.pending_cleanup_tasks:
             raise SessionBusyError("cannot export a terminal session while provider requests are still draining")
+        with self._autosave_access(path, writing=True):
+            self._save_snapshot(path, saving_autosave=saving_autosave)
+
+    def _save_snapshot(self, path: str, *, saving_autosave: bool) -> None:
         if saving_autosave and isinstance(self.store, JournalSnapshotStorePort):
             # Freeze and publish after every operation already submitted by
             # this session. An older append may finish later, but replay will
