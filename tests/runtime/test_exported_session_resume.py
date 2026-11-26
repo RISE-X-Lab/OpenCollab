@@ -37,6 +37,60 @@ def transcript(snapshot):
     return [{key: value for key, value in row.items() if key != "timestamp"}
             for row in snapshot["messages"]]
 
+
+@pytest.mark.parametrize(("borrow_env", "borrow_llm", "close_fails"), [
+    (False, False, False), (False, True, False),
+    (True, False, False), (True, True, False),
+    (False, False, True),
+])
+async def test_failed_load_releases_only_owned_resources(tmp_path, monkeypatch, borrow_env, borrow_llm, close_fails):
+    monkeypatch.chdir(tmp_path)
+    source = str(tmp_path / "export.json")
+    target = str(tmp_path / "autosave.json")
+    store = SessionStore()
+    store.checkpoint_snapshot(source, [{"role": "user", "content": "old request"}], meta={}, sequence=2)
+    store.checkpoint_snapshot(target, [{"role": "user", "content": "new request"}], meta={}, sequence=9)
+    (tmp_path / "sample.txt").write_text("17")
+    env = LocalEnvironment(str(tmp_path)) if borrow_env else None
+    llm = LLMClient(model="offline", provider="openai", api_key=__name__) if borrow_llm else None
+    agent = Agent(name="reader", system_prompt="Read the sample.", model="offline",
+                  provider="openai", api_key=__name__)
+    original_cleanup = LocalEnvironment.cleanup
+    original_close = LLMClient.close
+    cleaned, closed = [], []
+
+    async def cleanup(environment):
+        await original_cleanup(environment)
+        cleaned.append(environment)
+
+    async def close(client):
+        release = store.try_autosave_lock(target)
+        assert release is not None
+        release()
+        await original_close(client)
+        closed.append(client)
+        if close_fails:
+            raise OSError("model close failed")
+
+    monkeypatch.setattr(LocalEnvironment, "cleanup", cleanup)
+    monkeypatch.setattr(LLMClient, "close", close)
+    try:
+        with pytest.raises(SnapshotSequenceConflict, match="refusing stale checkpoint sequence") as caught:
+            load_session(source, agent, env=env, llm=llm, store=store, auto_save_path=target)
+        assert len(cleaned) == int(not borrow_env)
+        assert len(closed) == int(not borrow_llm)
+        assert store.load_snapshot(target, agent.system_prompt)["messages"][-1]["content"] == "new request"
+        if env is not None:
+            assert await env.read_file("sample.txt") == "17"
+        if close_fails:
+            assert any("model close failed" in note for note in caught.value.__notes__)
+    finally:
+        if env is not None:
+            await original_cleanup(env)
+        if llm is not None:
+            await original_close(llm)
+
+
 @pytest.mark.parametrize("turns", [1, 4])
 @pytest.mark.parametrize("entry", ["restore", "load_session"])
 @pytest.mark.parametrize("save_twice", [False, True])

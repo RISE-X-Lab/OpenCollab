@@ -280,14 +280,37 @@ def load_session(
     if store is None:
         store = SessionStore()
     target = kwargs.get("auto_save_path")
-    with ExitStack() as ownership:
-        if target and isinstance(store, AutosaveOwnershipStorePort):
-            ownership.callback(_acquire_autosave_writer(store, target))
-        snapshot = _read_session_snapshot(store, path, agent.system_prompt)
-        options = {**_snapshot_identity(snapshot), **kwargs, "store": store}
-        session = build_session(agent=agent, **options)
-        session._restore_snapshot(path, snapshot, aid=kwargs.get("aid"))
-        return session
+    session = None
+    try:
+        with ExitStack() as ownership:
+            if target and isinstance(store, AutosaveOwnershipStorePort):
+                ownership.callback(_acquire_autosave_writer(store, target))
+            snapshot = _read_session_snapshot(store, path, agent.system_prompt)
+            options = {**_snapshot_identity(snapshot), **kwargs, "store": store}
+            session = build_session(agent=agent, **options)
+            session._restore_snapshot(path, snapshot, aid=kwargs.get("aid"))
+            return session
+    except BaseException as error:
+        if session is not None:
+            restore_error = error
+
+            async def rollback() -> None:
+                operations = [("session", session.aclose)]
+                if kwargs.get("env") is None and session.env is not None:
+                    operations.append(("environment", session.env.cleanup))
+                for label, close in operations:
+                    try:
+                        await close()
+                    except BaseException as failure:
+                        add_exception_note(
+                            restore_error, f"restore {label} cleanup also failed: {type(failure).__name__}: {failure}",
+                        )
+
+            try:
+                run_coro_blocking(rollback)
+            except BaseException as failure:
+                add_exception_note(error, f"restore rollback also failed: {type(failure).__name__}: {failure}")
+        raise
 
 def _snapshot_identity(snapshot: dict[str, Any]) -> dict[str, Any]:
     identity: dict[str, Any] = {}
