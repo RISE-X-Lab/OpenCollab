@@ -442,7 +442,7 @@ class LLMClient:
                             before_attempt=prepare_attempt,
                             on_attempt_usage=on_attempt_usage,
                             # Session owners capture late replies even after their caller stops.
-                            on_cancelled_result=retain_cancellation if usage_origin is None else None,
+                            on_cancelled=retain_cancellation if usage_origin is None else None,
                         )
                     else:
                         response = await complete_openai(
@@ -467,7 +467,8 @@ class LLMClient:
                         )
                 except BaseException as exc:
                     provider_error = exc
-                    raise
+                    if caller_cancellation is None or not isinstance(exc, Exception):
+                        raise
                 finally:
                     outcome = response if response is not None else provider_error
                     settled_usage = getattr(outcome, "usage", None)
@@ -518,5 +519,5 @@ class LLMClient:
                     raise settlement_error
         if caller_cancellation is not None:
             caller_cancellation.usage = settled_usage
-            raise caller_cancellation
+            raise caller_cancellation from provider_error
         return response

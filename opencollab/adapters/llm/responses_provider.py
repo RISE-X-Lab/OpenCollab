@@ -269,7 +269,11 @@ async def _wait_for_transport(
     # Retain terminal usage when a cancelled transport still delivers a result.
     task = asyncio.ensure_future(operation)
     try:
-        return await asyncio.wait_for(asyncio.shield(task), timeout)
+        # Older wait_for implementations can consume a concurrent caller cancellation.
+        if not task.done() and (timeout is None or timeout > 0):
+            await asyncio.wait((task,), timeout=timeout)
+        if not task.done():
+            raise asyncio.TimeoutError
     except (asyncio.CancelledError, asyncio.TimeoutError) as interruption:
         if task.done():
             if on_interrupt is not None and isinstance(interruption, asyncio.CancelledError) and not task.cancelled():
@@ -286,7 +290,7 @@ async def _wait_for_transport(
                     task.cancel()
         if task.cancelled():
             raise interruption
-        return task.result()
+    return task.result()
 
 async def _next_event(iterator: Any, timeout: float | None, *, stage: str) -> Any:
     try:
@@ -726,7 +730,7 @@ async def complete_responses(
     stream: bool = True,
     before_attempt: Callable[[], int | None] | None = None,
     on_attempt_usage: Callable[[Usage], None] | None = None,
-    on_cancelled_result: Callable[[asyncio.CancelledError], None] | None = None,
+    on_cancelled: Callable[[asyncio.CancelledError], None] | None = None,
 ) -> LLMResponse:
     """Run one locally replayable Responses request and require typed completion."""
     external_isolation = os.environ.get("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION") == "1"
@@ -759,6 +763,8 @@ async def complete_responses(
     def interrupt_round(exc: _TransportInterruption) -> None:
         nonlocal round_interruption
         round_interruption = exc
+        if on_cancelled is not None and isinstance(exc, asyncio.CancelledError):
+            on_cancelled(exc)
 
     def prepare_attempt() -> None:
         nonlocal attempt_usage, callback_timeout
@@ -854,6 +860,4 @@ async def complete_responses(
         raise
     if failed_usages:
         response.usage = _combine_responses_usage([*failed_usages, response.usage])
-    if on_cancelled_result is not None and isinstance(round_interruption, asyncio.CancelledError):
-        on_cancelled_result(round_interruption)
     return response

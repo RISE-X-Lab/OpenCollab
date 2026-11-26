@@ -16,7 +16,7 @@ from opencollab import OpenCollab
 from opencollab.adapters.llm import client as client_module
 from opencollab.adapters.llm import retry
 from opencollab.adapters.llm.client import LLMClient
-from opencollab.adapters.llm.responses_errors import ResponsesProtocolError
+from opencollab.adapters.llm.responses_errors import ResponsesProtocolError, ResponsesTransientEventError
 from opencollab.adapters.llm.responses_provider import _wait_for_transport
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.trace import Tracer
@@ -470,6 +470,49 @@ async def test_completed_transport_reports_simultaneous_caller_cancellation():
     interruption, = interruptions
     assert isinstance(interruption, asyncio.CancelledError)
     assert interruption.args == ("caller moved on",)
+
+@pytest.mark.parametrize("kind", ["answer", "failed"])
+async def test_direct_responses_cancellation_races_with_terminal_result(monkeypatch, tmp_path, usage_log, kind):
+    requests, reported, cancellations = [], [], []
+
+    def cancel_after_terminal(_task):
+        cancellations.append(caller.cancel("caller moved on"))
+
+    async def handler(request):
+        requests.append(request.url.path)
+        assert asyncio.current_task() is not caller
+        asyncio.current_task().add_done_callback(cancel_after_terminal)
+        content_type, payload = _payload(json.loads(request.content), {"kind": kind})
+        return http_response(request, 200, headers={"content-type": content_type}, content=payload)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    async with LLMClient(
+        model="gpt-4o", wire_protocol="responses", api_key=tmp_path.name,
+        base_url="https://offline.invalid/v1", max_retries=0, request_timeout=8.0,
+        first_event_timeout=None, stream_idle_timeout=None,
+    ) as client:
+        async def invoke():
+            try:
+                return await client.complete([{"role": "user", "content": "Reply briefly"}], on_usage=reported.append)
+            except asyncio.CancelledError as exc:
+                assert exc.args == ("caller moved on",)
+                assert exc.usage.total_tokens == 37
+                if kind == "failed":
+                    assert isinstance(exc.__cause__, ResponsesTransientEventError)
+                raise
+
+        caller = asyncio.create_task(invoke())
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+
+    assert cancellations == [True]
+    assert requests == ["/v1/responses"]
+    assert [usage.total_tokens for usage in reported] == [37]
+    record, = _records(usage_log)
+    assert record["usage"]["total_tokens"] == 37
+    assert record["status"] == ("error" if kind == "failed" else "success")
+    if kind == "failed":
+        assert record["error"]["type"] == "ResponsesTransientEventError"
 
 @pytest.mark.parametrize("summary", [False, True])
 @pytest.mark.parametrize(("trigger", "session_timeout"), [
