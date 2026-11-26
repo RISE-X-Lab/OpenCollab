@@ -51,8 +51,6 @@ async def _coder_candidate(
         budget=None,
         timeout=coder_role_timeout_seconds(ctx),
     )
-    if raw.initial_budget_refusal is not None:
-        raise WorkflowBudgetExceeded(raw.initial_budget_refusal)
     records = [
         dual._public_record(record)
         for record in raw.test_records
@@ -204,6 +202,8 @@ async def run_dual_coder(
             allow_unisolated_shell=allow_unisolated_shell,
             rules=role_rules,
         )
+        if candidate_b.initial_budget_refusal is not None:
+            raise WorkflowBudgetExceeded(candidate_b.initial_budget_refusal)
     except WorkflowBudgetExceeded:
         if not dual._verified_for_budget_fallback(candidate_a):
             raise

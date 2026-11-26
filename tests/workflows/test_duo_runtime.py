@@ -464,3 +464,72 @@ async def test_duo_delivers_current_verified_a_when_budget_refuses_b(
     assert [line.splitlines()[0] for line in executed] == (
         ["Exit code: 0", "Exit code: 1"] if runs_b else [f"Exit code: {int(evidence == 'red')}"]
     )
+
+
+async def test_duo_can_start_b_after_a_budget_refusal_and_reservation_release(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    repo = _repository(tmp_path / "repo", both_pass=False)
+    command = f"{shlex.quote(sys.executable)} -m pytest -q -rA -p no:cacheprovider test_public.py"
+    initial_worktrees = _git(repo, "worktree", "list", "--porcelain")
+    preparing, release = asyncio.Event(), asyncio.Event()
+    prepare_prompt = "Prepare release notes."
+    calls = []
+
+    class Model:
+        def estimate_request_tokens(self, messages, tools, **kwargs):
+            return 100
+
+        async def complete(self, messages, tools=None, **kwargs):
+            prompt = next(row["content"] for row in messages if row["role"] == "user")
+            if prompt == prepare_prompt:
+                calls.append(("prepare", 0))
+                preparing.set()
+                await release.wait()
+                return LLMResponse(content="Notes completed.", usage=Usage(90, 10))
+            assert "You are candidate B" in prompt
+            step = sum(row["role"] == "tool" for row in messages)
+            calls.append(("B", step))
+            if step == 0:
+                response = _tool_response("file_write", {
+                    "path": "source.py", "mode": "create", "content": "def value():\n    return 3\n",
+                }, step)
+            elif step == 1:
+                response = _tool_response("bash", {"command": command}, step)
+            else:
+                response = LLMResponse(content="Verified three.", usage=Usage(90, 10))
+            response.usage = Usage(90, 10)
+            return response
+
+    async def flow(ctx, args):
+        preparation = asyncio.create_task(ctx.agent_run(prepare_prompt, tools=[], budget=19_950))
+        phase = ctx.phase
+
+        async def release_before_b(label):
+            await phase(label)
+            if label == "dual-coder-b":
+                release.set()
+                assert (await preparation).output == "Notes completed."
+                assert ctx.tokens_remaining() == 19_900
+
+        monkeypatch.setattr(ctx, "phase", release_before_b)
+        try:
+            await asyncio.wait_for(preparing.wait(), 5)
+            assert ctx.tokens_remaining() == 50
+            return await duo(ctx, args)
+        finally:
+            release.set()
+            await preparation
+
+    result = await OpenCollab(repo, model="scripted-local-model", config={"max_output_tokens": 128}).workflow(
+        flow, {"goal": "Make value() return 3", "allow_unisolated_shell": True},
+        llm=Model(), budget=20_000, concurrency=2, max_steps=5, timeout=20,
+        trace=False, limit_mode="explicit",
+    )
+    assert result.ok and result.output["status"] == "done"
+    assert calls == [("prepare", 0), ("B", 0), ("B", 1), ("B", 2)]
+    assert result.tokens == 400
+    assert result.output["adopted"] == "B" and result.output["selection_reason"] == "only-b-nonempty"
+    assert result.output["candidates"]["B"]["public_test_records"][0]["verified"]
+    assert (repo / "source.py").read_text() == "def value():\n    return 3\n"
+    assert _git(repo, "worktree", "list", "--porcelain") == initial_worktrees
