@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from contextlib import AsyncExitStack
 
 import pytest
 
@@ -198,6 +199,82 @@ async def test_reusing_export_path_does_not_promote_source_history(
         for session in (original, reader, restored):
             if session is not None:
                 await session.aclose()
+
+
+@pytest.mark.parametrize("target_update", ["unchanged", "checkpoint", "accounting", "concurrent"])
+async def test_reexport_restores_its_immediate_autosave_only_if_equivalent(
+    tmp_path, local_environment_factory, monkeypatch, target_update,
+):
+    original_path, working_path, backup_path = (
+        str(tmp_path / name) for name in ("original.json", "working.json", "backup.json")
+    )
+    agent = Agent(name="reviewer", system_prompt="Remember the current draft.")
+    store = SessionStore()
+    options = {"agent": agent, "store": store, "env": local_environment_factory(str(tmp_path))}
+
+    def inspect(path):
+        return store.load_snapshot(path, agent.system_prompt)
+
+    async with AsyncExitStack() as sessions:
+        for path, message in ((original_path, "Current draft."), (working_path, "Earlier draft.")):
+            session = build_session(**options, llm=model(), auto_save_path=path)
+            sessions.push_async_callback(session.aclose)
+            await session.add_user_message(message)
+            await session.run_loop()
+            await session.aclose()
+        original = inspect(original_path)
+        exporter = load_session(original_path, **options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(exporter.aclose)
+        exporter.save(working_path)
+        working = load_session(working_path, **options, llm=model(), auto_save_path=working_path)
+        sessions.push_async_callback(working.aclose)
+        if target_update in {"checkpoint", "concurrent"}:
+            working.save(working_path)
+        working.save(backup_path)
+
+        if target_update == "accounting":
+            working.used_tokens += 9
+            working.save(working_path)
+        current = inspect(working_path)
+        if target_update == "concurrent":
+            checkpoint = store.checkpoint_snapshot
+            peer = SessionStore()
+            local_sequence = current["_autosave_sequence"]
+
+            def publish_before_retry(path, messages, *, meta, sequence):
+                if sequence == local_sequence:
+                    peer_meta = {**meta, "session_state": {**meta["session_state"], "used_tokens": 31}}
+                    peer.checkpoint_snapshot(path, messages, meta=peer_meta, sequence=local_sequence + 1)
+                return checkpoint(path, messages, meta=meta, sequence=sequence)
+
+            monkeypatch.setattr(store, "checkpoint_snapshot", publish_before_retry)
+
+        continuation = model()
+        if target_update in {"accounting", "concurrent"}:
+            with pytest.raises(SnapshotSequenceConflict):
+                load_session(backup_path, **options, llm=continuation, auto_save_path=working_path)
+            expected = copy.deepcopy(current)
+            if target_update == "concurrent":
+                expected["_autosave_sequence"] += 1
+                expected["session_state"]["used_tokens"] = 31
+            assert inspect(working_path) == expected
+            assert continuation.calls == []
+            return
+
+        restored = load_session(backup_path, **options, llm=continuation, auto_save_path=working_path)
+        sessions.push_async_callback(restored.aclose)
+        assert inspect(working_path) == current
+        assert restored.messages == transcript(original)
+        assert restored.used_tokens == 7
+        restored.save(backup_path)
+        restored_original = load_session(backup_path, **options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(restored_original.aclose)
+        assert inspect(original_path)["_autosave_sequence"] == original["_autosave_sequence"] + 1
+        await restored.add_user_message("Continue the review.")
+        await restored.run_loop()
+        assert continuation.calls[0]["messages"][:len(original["messages"])] == transcript(original)
+        assert inspect(working_path)["session_state"]["used_tokens"] == 14
+
 
 async def test_older_export_still_cannot_replace_a_newer_autosave(tmp_path):
     automatic = tmp_path / "automatic.json"

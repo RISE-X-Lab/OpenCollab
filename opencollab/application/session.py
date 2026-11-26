@@ -895,27 +895,45 @@ class Session:
             try:
                 self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
             except SnapshotSequenceConflict:
-                saved_message_count = len(snapshot.get("messages", ()))
-                if saved_message_count >= len(messages) or not isinstance(self.store, SnapshotStorePort):
+                if not isinstance(self.store, SnapshotStorePort):
                     raise
                 previous = self.store.load_snapshot(target_path, self.agent.system_prompt)
+                previous_sequence = _snapshot_nonnegative_int(previous.get("_autosave_sequence"))
+                previous_source_sequence = previous.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE)
+                saved_message_count = len(snapshot.get("messages", ()))
+                recovered_rows = saved_message_count < len(messages)
+                if (
+                    type(previous_source_sequence) is int
+                    and previous_source_sequence == sequence - 1
+                    and previous_sequence >= sequence
+                ):
+                    # Recheck equivalent exports at the target's local cursor under the journal lock.
+                    sequence = previous_sequence
+                    meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = previous_source_sequence
+                elif not recovered_rows or previous_sequence != sequence:
+                    raise
                 previous_messages = previous["messages"]
-                if previous.get("_autosave_sequence") != sequence or len(previous_messages) != len(messages):
+                if len(previous_messages) != len(messages):
                     raise
-                # A retry regenerates recovery rows with a new wall-clock time.
-                # The checkpoint still compares their content and every source row.
-                timestamps = [message.get("timestamp") for message in previous_messages[saved_message_count:]]
-                if not all(isinstance(timestamp, str) for timestamp in timestamps):
-                    raise
-                for message, timestamp in zip(messages[saved_message_count:], timestamps):
-                    message["timestamp"] = timestamp
+                timestamps = []
+                if recovered_rows:
+                    # A retry regenerates recovery rows with a new wall-clock time.
+                    # The checkpoint still compares their content and every source row.
+                    timestamps = [message.get("timestamp") for message in previous_messages[saved_message_count:]]
+                    if not all(isinstance(timestamp, str) for timestamp in timestamps):
+                        raise
+                    for message, timestamp in zip(messages[saved_message_count:], timestamps):
+                        message["timestamp"] = timestamp
                 self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
-                restored.message_timestamps[saved_message_count:] = timestamps
+                if timestamps:
+                    restored.message_timestamps[saved_message_count:] = timestamps
         else:
             meta["_autosave_sequence"] = sequence
             self.store.save(target_path, messages, meta=meta)
         recovered = {**snapshot, "_autosave_sequence": sequence, "messages": messages}
         recovered.pop(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE, None)
+        if _AUTOSAVE_EXPORT_SOURCE_SEQUENCE in meta:
+            recovered[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE]
         return recovered
 
     def _publish_restored_state(
