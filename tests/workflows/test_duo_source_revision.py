@@ -15,6 +15,7 @@ from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.application.workflow_candidates import CandidateWorkspaceTrackingError
 from opencollab.bootstrap import _workflow_runtime_session as wiring
 from opencollab.tools import evidence_tools
+from tests.support.duo_sandbox_test_support import simulate_candidate_sandbox
 
 
 def git(repo, *args):
@@ -39,6 +40,7 @@ def response(name, arguments, sequence):
     ("duo", False, True), ("duo", True, True),
 ])
 async def test_duo_source_revision_survives_coder_wrapper(tmp_path, monkeypatch, mode, mutate, physical):
+    simulate_candidate_sandbox(monkeypatch)
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", "")
     repo = tmp_path / "repo"

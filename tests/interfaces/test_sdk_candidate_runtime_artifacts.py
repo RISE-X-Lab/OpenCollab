@@ -15,6 +15,7 @@ from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.working_tree import MAX_WORKING_TREE_DIFF_CHARS
 from opencollab.application.workflow_candidates import CandidateWorkspaceTrackingError
 from opencollab.tools import builtin_tools
+from tests.support.duo_sandbox_test_support import simulate_candidate_sandbox
 from tests.workflows.test_workflow_candidate_workspace import _git, _repository
 
 
@@ -129,7 +130,8 @@ async def test_saved_candidate_still_rejects_concurrent_user_changes(tmp_path, m
 
 @pytest.mark.parametrize("trace", [False, True])
 @pytest.mark.parametrize("internal", [False, True])
-async def test_builtin_duo_selects_and_adopts_with_saved_runtime_records(tmp_path, trace, internal):
+async def test_builtin_duo_selects_and_adopts_with_saved_runtime_records(tmp_path, monkeypatch, trace, internal):
+    simulate_candidate_sandbox(monkeypatch)
     repo = _repository(tmp_path)
     (repo / "test_public.py").write_text("from source import value\ndef test_value():\n    assert value == 2\n")
     (repo / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n")

@@ -49,7 +49,7 @@ async def duo(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     Each adjudication creates its own retained evidence directory.
     ``submission_mode="working_tree"`` declares caller-owned patch capture and
     later submission. The default ``"task"`` follows task-specific delivery.
-    ``allow_unisolated_shell`` defaults to false and follows the caller's shell policy.
+    Shell execution requires a candidate backend with a separate sandbox.
     """
     evidence_parent = args.get("candidate_evidence_dir")
     evidence_root = _source_evidence_root(ctx, evidence_parent)

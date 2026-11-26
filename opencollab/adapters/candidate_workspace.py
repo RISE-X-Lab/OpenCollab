@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from opencollab.adapters._candidate_adoption import _mounted_recovery_paths
 from opencollab.adapters._candidate_increment import _apply_increment as _apply_increment
@@ -142,6 +142,7 @@ async def _assert_patchable_submodules(
 
 @dataclass(slots=True)
 class _CandidateLease:
+    shares_source_execution: ClassVar[bool] = True
     base_environment: Any
     environment: Any | None
     source_workspace: str

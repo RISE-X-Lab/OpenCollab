@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
@@ -21,11 +22,12 @@ from ._prompts import (
 )
 from ._rules import SHARED_RULES, _complete_goal, coder_role_timeout_seconds, structured_role_timeout_seconds
 
+logger = logging.getLogger(__name__)
 
-def _coder_tools(*, allow_unisolated_shell: bool = False) -> list[Any]:
+
+def _coder_tools() -> list[Any]:
     return list(evidence_tools(
         "bash", "file_read", "file_write", "apply_patch", "grep", "git_diff",
-        headless=not allow_unisolated_shell,
     ))
 
 async def _coder_candidate(
@@ -35,10 +37,9 @@ async def _coder_candidate(
     prompt: str,
     goal: str,
     shared_command: str = "",
-    allow_unisolated_shell: bool = False,
     rules: str = SHARED_RULES,
 ) -> CandidateRun:
-    tools = _coder_tools(allow_unisolated_shell=allow_unisolated_shell)
+    tools = _coder_tools()
     raw = await ctx.candidate_agent(
         prompt.format(
             rules=rules,
@@ -47,6 +48,7 @@ async def _coder_candidate(
         ),
         label=label,
         tools=tools,
+        require_isolated_shell=True,
         budget=None,
         timeout=coder_role_timeout_seconds(ctx),
     )
@@ -149,6 +151,11 @@ async def run_dual_coder(
     submission_mode = args.get("submission_mode", "task")
     if submission_mode not in ("task", "working_tree"):
         raise ValueError("submission_mode must be task or working_tree")
+    if allow_unisolated_shell:
+        logger.warning(
+            "Duo ignores allow_unisolated_shell=True. "
+            "Candidate Bash requires a dedicated sandbox such as docker-session."
+        )
     if submission_mode == "working_tree":
         role_rules = f"{role_rules}\n\n{WORKING_TREE_SUBMISSION_RULES}"
 
@@ -164,7 +171,6 @@ async def run_dual_coder(
         label="dual-coder-contract-a",
         prompt=prompts[0],
         goal=goal,
-        allow_unisolated_shell=allow_unisolated_shell,
         rules=role_rules,
     )
     shared_command = dual._candidate_command(candidate_a)
@@ -176,7 +182,6 @@ async def run_dual_coder(
         prompt=prompts[1],
         goal=goal,
         shared_command=shared_command,
-        allow_unisolated_shell=allow_unisolated_shell,
         rules=role_rules,
     )
 
