@@ -21,13 +21,16 @@ async def _settle_autosave(session: Session) -> None:
         await asyncio.gather(*tasks)
 
 
-@pytest.mark.parametrize("queued_prompt", [False, True], ids=["new-prompt", "queued-prompt"])
+@pytest.mark.parametrize("entry", ["new-prompt", "queued-prompt", "enqueue-autosave"])
 async def test_stale_writable_session_rejects_turn_until_restored(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, queued_prompt: bool,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str,
 ) -> None:
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
-    autosave = str(tmp_path / "autosave.json")
+    autosave_path = tmp_path / "autosave.json"
+    journal_path = tmp_path / "autosave.json.journal"
+    autosave = str(autosave_path)
+    queued_prompt = entry == "queued-prompt"
     initial_prompt = "Review the first section."
     second_prompt = "Review the second section."
     follow_up = "Summarize the complete review."
@@ -79,22 +82,27 @@ async def test_stale_writable_session_rejects_turn_until_restored(
         assert await original.run_loop() == "Second section reviewed."
         before = OpenCollab.read_session_snapshot(autosave)
         assert before["session_state"]["used_tokens"] == 30
+        saved_bytes = autosave_path.read_bytes(), journal_path.read_bytes()
         stale_messages = deepcopy(resumed.messages)
         stale_turn = resumed.state.checkpoint_user_turn()
         stale_steps = resumed.step_count
 
         with pytest.raises(SnapshotSequenceConflict):
-            if queued_prompt:
+            if entry == "new-prompt":
+                await resumed.add_user_message(follow_up)
+            elif queued_prompt:
                 await resumed.run_loop()
             else:
-                await resumed.add_user_message(follow_up)
+                resumed.enqueue_auto_save()
 
+        await _settle_autosave(resumed)
         assert resumed_llm.calls == []
         assert resumed.messages == stale_messages
         assert resumed.state.checkpoint_user_turn() == stale_turn
         assert resumed.used_tokens == 10
         assert resumed.step_count == stale_steps
         assert OpenCollab.read_session_snapshot(autosave) == before
+        assert (autosave_path.read_bytes(), journal_path.read_bytes()) == saved_bytes
 
         resumed.restore(autosave)
         assert resumed.used_tokens == 30
