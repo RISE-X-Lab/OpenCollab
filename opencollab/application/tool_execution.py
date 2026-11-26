@@ -38,6 +38,7 @@ from opencollab.application.tool_execution_runtime import (
 from opencollab.application.tool_execution_runtime import (
     ToolRuntime as ToolRuntime,
 )
+from opencollab.domain.json_data import loads_finite_json
 from opencollab.domain.session import SessionState
 from opencollab.domain.tool_facts import ToolFactsCollector
 from opencollab.domain.tools import MAX_CALL_HASH_WINDOW as MAX_CALL_HASH_WINDOW
@@ -47,12 +48,6 @@ logger = logging.getLogger(__name__)
 
 MAX_SIMILAR_CALLS = 3
 MAX_TOOL_CALLS_PER_BATCH = 32
-
-def _finite_json_float(token: str) -> float:
-    number = float(token)
-    if not math.isfinite(number):
-        raise json.JSONDecodeError("tool arguments require finite JSON numbers", token, 0)
-    return number
 
 def _require_positive_finite_timeout(value: Any, *, name: str) -> float:
     if isinstance(value, bool):
@@ -730,10 +725,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
             return dict(args_str)
         if not isinstance(args_str, str):
             raise ValueError("tool arguments must be a JSON object")
-        args = (
-            json.loads(args_str, parse_float=_finite_json_float, parse_constant=_finite_json_float)
-            if args_str else {}
-        )
+        args = loads_finite_json(args_str) if args_str else {}
         if not isinstance(args, dict):
             raise ValueError("tool arguments must be a JSON object")
         return args

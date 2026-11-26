@@ -29,6 +29,7 @@ from opencollab.application.ports import EventPublisherPort
 from opencollab.application.workflow_registry import Registry
 from opencollab.bootstrap.session_factory import WORKFLOW_RUN_PREFIX, make_run_dir
 from opencollab.bootstrap.workflow_runtime import discover_workflows, run_workflow
+from opencollab.domain.json_data import loads_finite_json
 
 app = typer.Typer(name="workflow", help="Run deterministic Python workflows.")
 console = Console()
@@ -130,7 +131,7 @@ def run_cmd(
         raise typer.Exit(code=1) from None
 
     try:
-        parsed_args = json.loads(args)
+        parsed_args = loads_finite_json(args)
     except json.JSONDecodeError as exc:
         console.print(f"[red]Invalid --args JSON:[/red] {exc}")
         raise typer.Exit(code=1) from None
@@ -196,7 +197,12 @@ def run_cmd(
         if trace:
             trace_path = os.path.join(save_dir, "orchestration.jsonl")
             console.print(f"[dim]== orchestration at {trace_path}[/dim]")
-    typer.echo(json.dumps(result.output, indent=2, default=str))
+    try:
+        output = json.dumps(result.output, indent=2, default=str, allow_nan=False)
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        typer.echo(f"Could not serialize workflow result as JSON. {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(output)
     if result.stop_reason is not None:
         raise typer.Exit(code=1)
 
