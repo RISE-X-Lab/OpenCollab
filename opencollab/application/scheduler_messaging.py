@@ -517,9 +517,14 @@ class MessagingMixin:
         await asyncio.gather(
             *(self._drain_message_inbox(aid) for aid in ready_aids)
         )
+        current = asyncio.current_task()
         for aid in tuple(self._unanswered):
             stopped = self.table.get(aid)
             if stopped is not None and stopped.state.phase in {SessionPhase.STOPPED, SessionPhase.ERROR}:
+                driver = self._tasks.get(aid)
+                # The driver sends the terminal reply after collecting its evidence.
+                if driver is not None and driver is not current and not driver.done():
+                    continue
                 await self.notify_unanswered_senders(aid, stopped.state.terminal_reason or stopped.state.phase.value)
 
     async def _drain_message_inbox_locked(
