@@ -48,6 +48,12 @@ logger = logging.getLogger(__name__)
 MAX_SIMILAR_CALLS = 3
 MAX_TOOL_CALLS_PER_BATCH = 32
 
+def _finite_json_float(token: str) -> float:
+    number = float(token)
+    if not math.isfinite(number):
+        raise json.JSONDecodeError("tool arguments require finite JSON numbers", token, 0)
+    return number
+
 def _require_positive_finite_timeout(value: Any, *, name: str) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be a finite positive number")
@@ -717,10 +723,17 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
     def parse_tool_args(self, func: dict) -> dict:
         args_str = func.get("arguments", "")
         if isinstance(args_str, dict):
+            try:
+                json.dumps(args_str, allow_nan=False)
+            except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+                raise json.JSONDecodeError("tool arguments are not JSON-serializable", "", 0) from exc
             return dict(args_str)
         if not isinstance(args_str, str):
             raise ValueError("tool arguments must be a JSON object")
-        args = json.loads(args_str) if args_str else {}
+        args = (
+            json.loads(args_str, parse_float=_finite_json_float, parse_constant=_finite_json_float)
+            if args_str else {}
+        )
         if not isinstance(args, dict):
             raise ValueError("tool arguments must be a JSON object")
         return args

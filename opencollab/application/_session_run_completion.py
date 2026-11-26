@@ -26,6 +26,7 @@ from opencollab.application._session_run_shared import (
     _WRITE_TOOLS,
     GenerationTimeoutError,
     _ContextOverflowStop,
+    _recorded_tool_call,
     _request_tool_names,
     _RequestBudgetRecovery,
     _submit_tool_choice,
@@ -1270,7 +1271,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if has_content:
             assistant_msg["content"] = response.content
         if response.tool_calls:
-            assistant_msg["tool_calls"] = response.tool_calls
+            assistant_msg["tool_calls"] = [_recorded_tool_call(call) for call in response.tool_calls]
         provider_items = getattr(response, "provider_items", None)
         if provider_items:
             assistant_msg["response_items"] = provider_items

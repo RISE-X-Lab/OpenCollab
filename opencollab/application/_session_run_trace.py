@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from opencollab.application._session_run_shared import _recorded_tool_call
 from opencollab.application.ports import CompletionResponse
 from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.shaping.pipeline import context_token_estimator
@@ -106,7 +107,7 @@ class _SessionRunTraceMixin:
                         "name": tc.get("function", {}).get("name"),
                         "arguments": tc.get("function", {}).get("arguments", ""),
                     }
-                    for tc in tool_calls
+                    for tc in map(_recorded_tool_call, tool_calls)
                 ]
             usage = getattr(result, "usage", None)
             input_tokens = getattr(usage, "input_tokens", 0)

@@ -291,11 +291,13 @@ def test_tool_execution_use_case_handles_non_string_and_preparsed_arguments():
     use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
 
     invalid = run(use_case.process([tool_call(arguments=7)]))
+    nonfinite = run(use_case.process([tool_call(arguments={"sample": [float("nan")]})]))
     valid = run(use_case.process([tool_call(arguments={"value": 1})]))
 
     assert "must be a JSON object" in invalid.messages_to_append[0]["content"]
+    assert "invalid JSON arguments" in nonfinite.messages_to_append[0]["content"]
     assert valid.messages_to_append[0]["content"] == "runtime result"
-    assert tool.runtime_calls[0][0] == {"value": 1}
+    assert [call[0] for call in tool.runtime_calls] == [{"value": 1}]
 
 def test_terminal_structured_output_skips_later_side_effect_and_answers_every_call():
     terminal = StructuredOutputTool(

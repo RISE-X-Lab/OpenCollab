@@ -544,8 +544,14 @@ async def test_workflow_manifest_stays_incomplete_until_owned_environment_cleanu
     assert manifest["reason"] == "environment_cleanup_failed"
     assert manifest["evidence_complete"] is False
 
+@pytest.mark.parametrize("inputs", [
+    {"path": Path("not-json-serializable")},
+    {"report": {"samples": [float("nan")]}},
+    {"report": {"samples": [float("inf")]}},
+    {"report": {"samples": [float("-inf")]}},
+])
 async def test_workflow_rejects_non_json_inputs_before_claiming_artifacts(
-    tmp_path: Path,
+    tmp_path: Path, inputs,
 ) -> None:
     invoked = False
 
@@ -554,7 +560,6 @@ async def test_workflow_rejects_non_json_inputs_before_claiming_artifacts(
         invoked = True
         return "completed before the old late manifest failure"
 
-    inputs = {"path": Path("not-json-serializable")}
     result = await OpenCollab(tmp_path).workflow(plain, inputs, trace=False)
     assert result.output == "completed before the old late manifest failure"
     assert invoked is True

@@ -221,7 +221,7 @@ def _verify_artifact_claim(path: Path | None) -> None:
 def _require_json_workflow_inputs(inputs: Mapping[str, Any]) -> None:
     """Reject inputs that the workflow artifact manifest could not persist."""
     try:
-        json.dumps(inputs)
+        json.dumps(inputs, allow_nan=False)
     except (TypeError, ValueError, OverflowError, RecursionError) as exc:
         raise ValueError(
             "workflow inputs must be JSON-serializable when artifacts are enabled"

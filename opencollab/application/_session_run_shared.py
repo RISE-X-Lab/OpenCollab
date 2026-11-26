@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -10,6 +11,18 @@ from typing import Any
 from opencollab.application.ports import CompletionResponse
 
 DEFAULT_DEFERRABLE_TOOLS = frozenset({"spawn_agent"})
+
+def _recorded_tool_call(call: dict[str, Any]) -> dict[str, Any]:
+    function = call.get("function", {})
+    arguments = function.get("arguments")
+    if not isinstance(arguments, dict):
+        return call
+    # Argument text is recorded even when execution rejects its contents.
+    try:
+        text = json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        text = repr(arguments)
+    return {**call, "function": {**function, "arguments": text}}
 
 class GenerationTimeoutError(asyncio.TimeoutError):
     """A single provider generation exceeded its per-call ceiling."""
