@@ -65,6 +65,7 @@ changed or uncertain content clears `verified_targets`, marks earlier records
 `applicability="unknown"`, and appends the attempted path to `post_test_edits`.
 The result is uncertain when the content comparison is unavailable or when
 an error or cancellation interrupts an attempted write.
+A write rejected before it could change the workspace keeps prior evidence.
 A Bash command outside the recognized executable test form also clears current
 evidence and is retained in `post_test_commands`, including commands that fail
 or are interrupted. Writes with a confirmed unchanged result and native

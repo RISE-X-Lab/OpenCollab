@@ -62,18 +62,26 @@ class _CaptureEnvironment(_Proxy):
         return result
 
 class _CommandProbe(_Proxy):
-    def __init__(self) -> None:
+    def __init__(self, *, show_passed_output: bool, deadline: float) -> None:
         super().__init__(evidence_tools("bash", headless=False)[0])
         self.results: list[Any] = []
+        self.executed_command: str | None = None
+        self._show_passed_output = show_passed_output
+        self._deadline = deadline
 
     async def execute_with_runtime(self, params: dict[str, Any], runtime: Any) -> str:
+        command = self._delegate.with_pass_reporting(params["command"], show_passed_output=self._show_passed_output)
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            return "Error: verification time exhausted before command execution."
         captured = _Proxy(runtime)
         environment = runtime.environment
         captured.environment = _CaptureEnvironment(environment, self.results) if environment is not None else None
+        self.executed_command = command
+        params = params | {"command": command}
+        if math.isfinite(remaining):
+            params["timeout"] = remaining
         return await self._delegate.execute_with_runtime(params, captured)
-
-    def prepare_command(self, command: str, *, expected_output: str | None) -> str:
-        return self._delegate.with_pass_reporting(command, show_passed_output=expected_output is not None)
 
     def requires_test_evidence(self, command: str) -> bool:
         return any(self._delegate.invokes_pytest(_command_words(shlex.split(segment)))
@@ -309,17 +317,13 @@ async def _verify_commands(ctx: Any, commands: Sequence[Any], seconds: float | N
             row["reason"] = "unverified command or exhausted verification time"
             checks.append(row)
             continue
-        tool = _CommandProbe()
-        executed_command = tool.prepare_command(command, expected_output=expected)
-        if executed_command != command:
-            row["executed_command"] = executed_command
-        params: dict[str, Any] = {"command": executed_command}
-        if math.isfinite(remaining):
-            params["timeout"] = remaining
-        row["output"] = await ctx.execute_verification(tool, params)
+        tool = _CommandProbe(show_passed_output=expected is not None, deadline=deadline)
+        row["output"] = await ctx.execute_verification(tool, {"command": command})
         records = list(tool.verification_records)
         row["test_records"] = records
         if tool.results:
+            if tool.executed_command != command:
+                row["executed_command"] = tool.executed_command
             result = tool.results[-1]
             row["executed"] = True
             row["exit_code"] = result.returncode

@@ -9,10 +9,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import time
 from typing import Any
 
-from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
+from opencollab.application.ports import ProviderTerminalEventError
 from opencollab.application.scheduler_types import LaunchSpec
 from opencollab.domain.identity import role_collision_key, validate_role_identity
 from opencollab.domain.pending import PendingRowError, RowStatus
@@ -402,6 +404,8 @@ class LifecycleMixin:
             return
 
         scb.answer = None
+        scb.provider_error_code = None
+        scb.provider_status_code = None
         start = self._turn_started_at.setdefault(aid, time.monotonic())
 
         try:
@@ -451,6 +455,13 @@ class LifecycleMixin:
             raise
         except Exception as exc:
             self._release_leases(aid)
+            if isinstance(exc, ProviderTerminalEventError):
+                code = exc.code
+                if isinstance(code, str) and re.fullmatch(r"[\w.-]{1,128}", code):
+                    scb.provider_error_code = code
+                status_code = getattr(exc, "status_code", None)
+                if type(status_code) is int:
+                    scb.provider_status_code = status_code
             terminal_reason = scb.state.terminal_reason or f"{type(exc).__name__}: {exc}"
             scb.state.fail(terminal_reason)
             reason = f"Error: {terminal_reason}"
@@ -539,6 +550,13 @@ class LifecycleMixin:
         if self._shutting_down:
             self._finalize_cleanup_failure(aid)
             return
+
+        if scb.answer and aid in self._completed_public_turn_answers:
+            answer = _last_assistant_answer(
+                scb.state.messages, scb.state.completed_turn_start_message_index, include_tool_call_text=False,
+            )
+            if answer:
+                self._completed_public_turn_answers[aid] = answer
 
         # Store the same post-diff artifact that is delivered to the parent so
         # spawn_with_review gives the reviewer the actual implementation diff.

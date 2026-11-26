@@ -2,24 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 import shlex
 import shutil
 import sys
+import time
 
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters import _env_local
+from opencollab.adapters.env import LocalEnvironment
+from opencollab.application.workflow import WorkflowContext
 from opencollab.builtin_workflows import WeaveAdapter
 from opencollab.builtin_workflows.weave._execution import _static_printer_supplies, _verification_mode
 from tests.workflows.test_weave_execution import FileModel
 
 
-async def _check(workspace, command, seconds=10):
+async def _check(workspace, command, seconds=10, workflow_timeout=20):
     async def flow(ctx, _args):
-        check = await WeaveAdapter(check_commands=[command]).verify(ctx, None, seconds)
+        commands = command if isinstance(command, list) else [command]
+        check = await WeaveAdapter(check_commands=commands).verify(ctx, None, seconds)
         return {"ok": check.ok, "executed": check.executed, "report": check.report}
 
-    result = await OpenCollab(workspace, model="offline").workflow(flow, trace=False, timeout=20)
+    result = await OpenCollab(workspace, model="offline").workflow(flow, trace=False, timeout=workflow_timeout)
     assert result.ok, result.reason
     return result.output
 
@@ -506,6 +512,83 @@ async def test_timed_out_behavior_probe_retains_execution_without_passing(tmp_pa
     assert not (tmp_path / "late").exists()
     assert output["executed"] is True and output["ok"] is False
     assert output["report"]["checks"][0]["exit_code"] != 0
+
+
+@pytest.mark.parametrize("with_followup", [False, True], ids=["single", "serial"])
+async def test_pytest_checks_complete_without_config_preflight(tmp_path, monkeypatch, with_followup):
+    (tmp_path / "selected.ini").write_text("[pytest]\naddopts = -rP\n", encoding="utf-8")
+    (tmp_path / "test_result.py").write_text(
+        "from pathlib import Path\n"
+        "def test_result():\n"
+        "    Path('test-executed').write_text('yes')\n"
+        "    print('Captured inventory total')\n",
+        encoding="utf-8",
+    )
+    command = (f"PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 {shlex.quote(sys.executable)} -m pytest "
+               "-c selected.ini -q -p no:cacheprovider test_result.py")
+    commands = [command]
+    if with_followup:
+        (tmp_path / "followup.ini").write_text("[pytest]\naddopts = -rP\n", encoding="utf-8")
+        (tmp_path / "test_followup.py").write_text(
+            "from pathlib import Path\n"
+            "def test_followup():\n"
+            "    Path('followup-executed').write_text('yes')\n"
+            "    print('Follow-up inventory total')\n",
+            encoding="utf-8",
+        )
+        commands.append(command.replace("selected.ini", "followup.ini").replace("test_result.py", "test_followup.py")
+                        + " -rP")
+    config_reads = []
+    read = _env_local.read_regular_bytes
+    exec_cmd = LocalEnvironment.exec_cmd
+    executed = []
+
+    def slow_config(root_fd, workspace, path, *args, **kwargs):
+        if str(path) == "selected.ini":
+            config_reads.append(path)
+            time.sleep(4.5)
+        return read(root_fd, workspace, path, *args, **kwargs)
+
+    async def record_execution(environment, cmd, timeout=120.0, **kwargs):
+        if cmd.startswith(command):
+            executed.append((cmd, timeout))
+        return await exec_cmd(environment, cmd, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(_env_local, "read_regular_bytes", slow_config)
+    monkeypatch.setattr(LocalEnvironment, "exec_cmd", record_execution)
+    output = await _check(tmp_path, commands, seconds=3, workflow_timeout=4)
+    row = output["report"]["checks"][0]
+    (actual_command, actual_timeout), = executed
+    assert 0 < actual_timeout <= 3
+    assert row["command"] == command
+    assert row["executed_command"] == actual_command == command + " -rap"
+    assert row["test_records"][0]["command"] == actual_command
+    assert output["executed"] and output["ok"]
+    assert (tmp_path / "test-executed").read_text() == "yes"
+    assert "Captured inventory total" not in row["output"]
+    assert config_reads == []
+    if with_followup:
+        assert (tmp_path / "followup-executed").read_text() == "yes"
+        assert "Follow-up inventory total" in output["report"]["checks"][1]["output"]
+
+
+async def test_expired_verification_deadline_does_not_start_pytest(tmp_path, monkeypatch):
+    (tmp_path / "test_result.py").write_text("def test_result():\n    assert True\n", encoding="utf-8")
+    command = (f"PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 {shlex.quote(sys.executable)} -m pytest "
+               "-q -p no:cacheprovider test_result.py")
+    execute_verification = WorkflowContext.execute_verification
+
+    async def delay_verification(context, tool, params):
+        await asyncio.sleep(0.15)
+        return await execute_verification(context, tool, params)
+
+    monkeypatch.setattr(WorkflowContext, "execute_verification", delay_verification)
+    output = await _check(tmp_path, command, seconds=0.1)
+    row, = output["report"]["checks"]
+    assert not output["executed"] and not output["ok"]
+    assert row["command"] == command
+    assert "executed_command" not in row
+    assert "verification time exhausted" in row["output"]
 
 
 async def test_truncated_pytest_output_retains_failed_evidence(tmp_path, monkeypatch):

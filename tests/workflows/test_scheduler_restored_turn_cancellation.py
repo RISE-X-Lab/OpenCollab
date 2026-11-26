@@ -184,6 +184,34 @@ async def test_failed_restored_turn_keeps_error_visible_and_accepts_new_request(
         await team.cleanup()
         await close_original(original, old_factory, old_model, old_active)
 
+async def test_empty_filtered_turn_excludes_recovered_and_previous_public_answers(tmp_path):
+    path, original, old_factory, old_model, old_active = await saved_recovery(tmp_path, "queued")
+    team, _factory = make_scheduler(tmp_path, name="resumed")
+    model = FakeLLMClient([
+        llm_response(content="recovered answer"),
+        llm_response(finish_reason="content_filter"),
+        llm_response(content="completed answer"),
+        llm_response(finish_reason="content_filter"),
+    ])
+    restored = load_session(
+        str(path), agent=Agent(name="lead", system_prompt="Finish the task."), llm=model,
+        env=LocalEnvironment(str(tmp_path)),
+    )
+    team.register_lead(restored)
+    try:
+        with pytest.raises(SchedulerTurnError, match="provider filtered the output") as first:
+            await team.run("new request")
+        assert first.value.partial_answer is None
+        assert all(message.get("content") != "new request" for message in model.calls[0]["messages"])
+        assert await team.run("second request") == "completed answer"
+        with pytest.raises(SchedulerTurnError, match="provider filtered the output") as second:
+            await team.run("third request")
+        assert second.value.partial_answer is None
+        assert len(model.calls) == 4
+    finally:
+        await team.cleanup()
+        await close_original(original, old_factory, old_model, old_active)
+
 @pytest.mark.parametrize(
     ("replies", "expected_answer"),
     [

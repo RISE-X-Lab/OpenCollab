@@ -162,6 +162,128 @@ async def test_native_tests_and_expected_output_jointly_verify_delivery(tmp_path
     assert row["ok"] is (passed and row["matched"])
     assert result.output["delivery_ok"] is row["ok"]
 
+@pytest.mark.parametrize(
+    ("filename", "config", "prefix", "options", "show_passed_output"),
+    [
+        pytest.param("pytest.ini", "[pytest]\n", "", "", False, id="default"),
+        pytest.param("selected.ini", "[pytest]\naddopts = -rA\n", "", "-c selected.ini", False, id="ini"),
+        pytest.param("selected.ini", "[pytest]\naddopts = -rA\n", "", "-c selected.ini -rP", True, id="ini-explicit"),
+        pytest.param(
+            "selected.ini", "[pytest] # options [shared]\naddopts = -rP\n", "", "-c selected.ini", False,
+            id="ini-section-comment",
+        ),
+        pytest.param(
+            "setup.cfg", "[tool:pytest]\naddopts = -rP\n", "", "--config-file=setup.cfg", False, id="cfg",
+        ),
+        pytest.param(
+            "pyproject.toml", '[tool.pytest.ini_options]\naddopts = "-rA"\n', "", "-c pyproject.toml",
+            False, id="toml",
+        ),
+        pytest.param(
+            "pytest.toml", '[pytest]\naddopts = ["-rP"]\n', "", "-c pytest.toml",
+            False, id="toml-array",
+            marks=pytest.mark.skipif(int(pytest.__version__.split(".")[0]) < 9, reason="native pytest TOML"),
+        ),
+        pytest.param("pytest.ini", "[pytest]\n", "PYTEST_ADDOPTS='-q -rA' ", "", False, id="environment-report"),
+        pytest.param("pytest.ini", "[pytest]\n", "env PYTEST_ADDOPTS='-qrP' ", "", False, id="env-wrapper-report"),
+        pytest.param("pytest.ini", "[pytest]\n", "PYTEST_ADDOPTS=-q ", "", False, id="environment-quiet"),
+        pytest.param(
+            "pytest.ini", "[pytest]\n", "PYTEST_ADDOPTS='-o addopts=-rP' ", "", False, id="environment-override",
+        ),
+        pytest.param(
+            "selected.ini", "[pytest]\naddopts = -rA\n", "", "-c selected.ini -o addopts=-rs",
+            True, id="override-config-report",
+        ),
+        pytest.param(
+            "selected.ini", "[pytest]\naddopts = -rA\n", "PYTEST_ADDOPTS='-c selected.ini' ", "-rs",
+            True, id="command-overrides-environment-config-report",
+        ),
+        pytest.param(
+            "pytest.ini", "[pytest]\n", "", '-r "$report_flags"', True, id="report-shell-variable",
+        ),
+        pytest.param(
+            "pytest.ini", "[pytest]\n", "", '-o "addopts=$report_options"',
+            True, id="override-shell-variable",
+        ),
+    ],
+)
+async def test_native_pytest_reporting_uses_explicit_command_options(
+    tmp_path, monkeypatch, filename, config, prefix, options, show_passed_output,
+):
+    monkeypatch.setenv("report_flags", "P")
+    monkeypatch.setenv("report_options", "-rP")
+    (tmp_path / filename).write_text(config, encoding="utf-8")
+    (tmp_path / "test_result.py").write_text(
+        "from pathlib import Path\n"
+        "def test_result():\n"
+        "    assert Path('result.txt').read_text() == 'correct\\n'\n"
+        "    print('Calculated inventory total is 42')\n",
+        encoding="utf-8",
+    )
+    command = (
+        f"{prefix}PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 {shlex.quote(sys.executable)} "
+        f"-B -m pytest -p no:cacheprovider {options} test_result.py"
+    )
+    result = await _client(tmp_path).workflow(
+        "weave", {
+            "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
+            "check_commands": [command],
+            "config": {"max_steps": 4, "max_repair_rounds": 0},
+        }, llm=FileModel(initial="correct\n"), budget=20_000, limit_mode="explicit", trace=False,
+    )
+    assert result.ok and result.output["delivery_ok"]
+    row, = result.output["verification"]["report"]["checks"]
+    assert row["executed"] and row["exit_code"] == 0
+    assert "PASSED test_result.py::test_result" in row["output"]
+    assert ("Calculated inventory total is 42" in row["output"]) is show_passed_output
+
+@pytest.mark.parametrize(("prefix", "options", "config_options"), [
+    ("", "-c selected.ini", ""),
+    ("", "--config-file=selected.ini", ""),
+    ("PYTEST_ADDOPTS='-c selected.ini' ", "", ""),
+    ("PYTEST_ADDOPTS='-o cache_dir=.local-cache' ", "", ""),
+    ("PYTEST_ADDOPTS=-rs ", "", ""),
+    ("", "-c selected.ini", "addopts = -rP\n"),
+    ("PYTEST_ADDOPTS=-rP ", "", ""),
+    ("PYTEST_ADDOPTS=-rN ", "-c selected.ini", "addopts = -rP\n"),
+])
+async def test_native_pytest_concise_options_verify_nested_suite(tmp_path, prefix, options, config_options):
+    (tmp_path / "selected.ini").write_text("[pytest]\n" + config_options, encoding="utf-8")
+    (tmp_path / "child_suite.py").write_text(
+        "from pathlib import Path\n"
+        "def test_child():\n"
+        "    assert Path('result.txt').read_text() == 'correct\\n'\n"
+        "    Path('child-ran.txt').write_text('yes')\n",
+        encoding="utf-8",
+    )
+    child_args = ["-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", "child_suite.py"]
+    (tmp_path / "test_harness.py").write_text(
+        "import os\n"
+        "import subprocess\n"
+        "import sys\n"
+        "def test_harness():\n"
+        "    env = {**os.environ, 'PYTEST_ADDOPTS': ''}\n"
+        f"    subprocess.run([sys.executable, *{child_args!r}], check=True, env=env)\n",
+        encoding="utf-8",
+    )
+    command = (
+        f"{prefix}PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 {shlex.quote(sys.executable)} "
+        f"-B -m pytest -p no:cacheprovider {options} test_harness.py"
+    )
+    result = await _client(tmp_path).workflow(
+        "weave", {
+            "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
+            "check_commands": [command],
+            "config": {"max_steps": 4, "max_repair_rounds": 0},
+        }, llm=FileModel(initial="correct\n"), budget=20_000, limit_mode="explicit", trace=False,
+    )
+    assert result.ok and result.output["delivery_ok"]
+    assert (tmp_path / "child-ran.txt").read_text(encoding="utf-8") == "yes"
+    row, = result.output["verification"]["report"]["checks"]
+    assert row["exit_code"] == 0
+    assert row["executed_command"].endswith(" -rap")
+    assert "Captured stdout call" not in row["output"]
+
 @pytest.mark.parametrize(("outer_color", "child_color", "child_passed", "outer_passed", "capture", "quiet_child"), [
     ("no", "no", True, True, "", False),
     ("no", "yes", True, True, "", False),

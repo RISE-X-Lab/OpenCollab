@@ -9,6 +9,22 @@ from dataclasses import dataclass, field
 from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
 
 ENV_FILE_WRITE_LIMIT_BYTES = 4 * 1024 * 1024
+_WRITE_REJECTED_ATTR = "_opencollab_write_rejected"
+
+def _mark_write_rejected(error: OSError | ValueError) -> OSError | ValueError:
+    """Mark a native write rejected before it could change the workspace."""
+    setattr(error, _WRITE_REJECTED_ATTR, True)
+    return error
+
+def _is_write_rejected(error: OSError | ValueError) -> bool:
+    return getattr(error, _WRITE_REJECTED_ATTR, False) is True
+
+def _encode_write_payload(content: str) -> bytes:
+    try:
+        return content.encode("utf-8")
+    except UnicodeEncodeError as error:
+        _mark_write_rejected(error)
+        raise
 
 @dataclass(slots=True)
 class ExecResult:

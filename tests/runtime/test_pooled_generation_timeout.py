@@ -282,6 +282,150 @@ async def test_cooperative_interrupt_settles_before_the_model_slot_is_released(
             await session.aclose()
 
 
+async def test_summary_observer_can_start_an_independent_pooled_request(
+    tmp_path, monkeypatch, local_environment_factory,
+):
+    previous_turn_cancel = asyncio.Event()
+    release_report = asyncio.Event()
+    requests = []
+    report_task = None
+
+    async def serve(request):
+        body = json.loads(request.content)
+        if body["model"] == "gpt-4o-mini":
+            text = "Independent report"
+        elif "create a detailed summary of the conversation" in body["messages"][-1]["content"]:
+            text = "<summary>Earlier context.</summary>"
+        else:
+            text = "Answer"
+        requests.append(text)
+        return completion_http_response(request, text=text)
+
+    install_sdk_transport(monkeypatch, "openai", serve)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", "")
+    config = dict(
+        api_key="controlled-test", base_url="https://test-model.invalid/v1",  # pragma: allowlist secret
+        max_retries=0, context_window=40_000,
+    )
+    async with (
+        LLMClient(**config, model="gpt-4o") as client,
+        LLMClient(**config, model="gpt-4o-mini", request_pool=str(tmp_path), request_capacity=1) as reporter,
+    ):
+        async def generate_report():
+            await release_report.wait()
+            return await reporter.complete([{"role": "user", "content": "Prepare a separate report."}])
+
+        def observe(event):
+            nonlocal report_task
+            if event.type == "usage" and event.data["purpose"] == "summary":
+                report_task = asyncio.create_task(generate_report())
+
+        session = build_session(
+            agent=Agent(name="answer", system_prompt="system"), llm=client,
+            env=local_environment_factory(str(tmp_path)), run_control=RunControl(on_event=observe),
+        )
+        session.messages = history()
+        try:
+            assert await asyncio.wait_for(session.run_loop(previous_turn_cancel), 2) == "Answer"
+            assert report_task is not None
+            previous_turn_cancel.set()
+            release_report.set()
+            assert (await asyncio.wait_for(report_task, 2)).content == "Independent report"
+            assert requests == ["<summary>Earlier context.</summary>", "Answer", "Independent report"]
+            assert session.used_tokens == 8
+        finally:
+            if report_task is not None:
+                report_task.cancel()
+                await asyncio.gather(report_task, return_exceptions=True)
+            await session.aclose()
+
+
+@pytest.mark.parametrize("source", ["turn", "session"])
+async def test_summary_observer_request_survives_cancellation_during_client_close(
+    tmp_path, monkeypatch, local_environment_factory, source,
+):
+    cancelled = asyncio.Event()
+    closing_summary = asyncio.Event()
+    release_close = asyncio.Event()
+    report_waiting = asyncio.Event()
+    requests = []
+    report_task = operation = None
+    pool = str(tmp_path)
+    summary_model = "gpt-4o"
+    close = LLMClient.close
+
+    async def close_client(client):
+        if client.model == summary_model and not closing_summary.is_set():
+            closing_summary.set()
+            await release_close.wait()
+        await close(client)
+
+    @asynccontextmanager
+    async def observe_slot(directory, capacity):
+        if directory == pool:
+            report_waiting.set()
+        async with request_slot(directory, capacity):
+            yield
+
+    async def serve(request):
+        body = json.loads(request.content)
+        if body["model"] == "gpt-4o-mini":
+            text = "Independent report"
+        elif "create a detailed summary of the conversation" in body["messages"][-1]["content"]:
+            text = "<summary>Earlier context.</summary>"
+        else:
+            text = "Answer"
+        requests.append(text)
+        return completion_http_response(request, text=text)
+
+    install_sdk_transport(monkeypatch, "openai", serve)
+    monkeypatch.setattr(LLMClient, "close", close_client)
+    monkeypatch.setattr(transport, "request_slot", observe_slot)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", "")
+    config = dict(
+        api_key="controlled-test", base_url="https://test-model.invalid/v1",  # pragma: allowlist secret
+        context_window=40_000,
+    )
+    async with LLMClient(
+        **config, model="gpt-4o-mini", max_retries=0, request_pool=pool, request_capacity=1,
+    ) as reporter:
+        def observe(event):
+            nonlocal report_task
+            if event.type == "usage" and event.data["purpose"] == "summary":
+                report_task = asyncio.create_task(
+                    reporter.complete([{"role": "user", "content": "Prepare a separate report."}])
+                )
+
+        session = build_session(
+            agent=Agent(name="answer", model=summary_model, system_prompt="system", llm_max_retries=0, **config),
+            env=local_environment_factory(str(tmp_path)), run_control=RunControl(on_event=observe),
+            default_cancel_event=cancelled if source == "session" else None,
+        )
+        session.messages = history()
+        try:
+            async with request_slot(pool, 1):
+                operation = asyncio.create_task(session.run_loop(cancelled if source == "turn" else None))
+                await asyncio.wait_for(closing_summary.wait(), 2)
+                await asyncio.wait_for(report_waiting.wait(), 2)
+                assert requests == ["<summary>Earlier context.</summary>"]
+                cancelled.set()
+            assert report_task is not None
+            assert (await asyncio.wait_for(report_task, 2)).content == "Independent report"
+            assert not operation.done()
+            release_close.set()
+            assert await asyncio.wait_for(operation, 2) == ""
+            assert session.state.terminal_reason == "interrupted by user"
+            assert session.used_tokens == 4
+            assert requests == ["<summary>Earlier context.</summary>", "Independent report"]
+        finally:
+            release_close.set()
+            tasks = [task for task in (operation, report_task) if task is not None]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await session.aclose()
+
+
 @pytest.mark.parametrize("summary", [False, True])
 @pytest.mark.parametrize("proxy", [False, True], ids=["direct-client", "attribute-proxy"])
 async def test_legacy_pooled_forwarder_keeps_its_wrapped_signature(
