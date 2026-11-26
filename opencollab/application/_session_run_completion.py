@@ -913,20 +913,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             if recoverable:
                 self._raise_if_run_cancelled()
             raise
-        original_text = response.content
-        replacement_text = replacement.content
-        replacement_has_text = isinstance(replacement_text, str) and bool(replacement_text.strip())
-        if (
-            isinstance(original_text, str)
-            and isinstance(replacement_text, str)
-            and original_text.strip()
-            and not getattr(response, "content_from_reasoning", False)
-        ):
+        original_text = response.content.strip() if isinstance(response.content, str) else ""
+        replacement_text = replacement.content.strip() if isinstance(replacement.content, str) else ""
+        replacement_has_text = bool(replacement_text)
+        if original_text and not getattr(response, "content_from_reasoning", False):
             replacement_has_text = replacement_has_text and not getattr(replacement, "content_from_reasoning", False)
             if replacement.finish_reason == _CONTEXT_WINDOW_LIMIT_REASON:
                 replacement_has_text = replacement_has_text and (
-                    replacement_text.startswith(original_text)
-                    and bool(replacement_text[len(original_text):].strip())
+                    len(replacement_text) > len(original_text) and replacement_text.startswith(original_text)
                 )
             elif replacement.finish_reason in _OUTPUT_LIMIT_REASONS:
                 replacement_has_text = replacement_has_text and not (

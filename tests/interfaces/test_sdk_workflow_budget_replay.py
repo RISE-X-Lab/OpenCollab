@@ -91,9 +91,12 @@ async def _wait(event):
         ("anthropic", "decoded_context", 100, [32, 128], "stopped", "Useful partial", [6000, 5980]),
         ("anthropic", "decoded_context_extension", 100, [32, 128], "stopped", "Useful partial with counts",
          [6000, 5980]),
+        ("anthropic", "decoded_context_padded_extension", 100, [32, 128], "stopped",
+         "\nUseful partial with counts  ", [6000, 5980]),
         ("anthropic", "decoded_context_after_empty", 100, [32, 128], "stopped", "Review findings", [6000, 5980]),
         ("anthropic", "decoded_context_after_reasoning", 100, [32, 128], "stopped", "Review findings", [6000, 5980]),
         ("anthropic", "clipped_prefix", 100, [32, 128], "stopped", "Useful partial", [6000, 6096]),
+        ("anthropic", "clipped_padded_prefix", 100, [32, 128], "stopped", "Useful partial", [6000, 6096]),
         ("anthropic", "completed_prefix", 100, [32, 128], "completed", "Useful", [6000, 5992]),
         ("chat_sse", "reasoning_complete", 100, [32, 128], "stopped", "Useful partial", [6000, 5992]),
         ("chat_sse", "partial", 100, [32, 128], "stopped", "More useful partial", [6000, 6096]),
@@ -171,12 +174,15 @@ async def test_budget_replay_preserves_first_partial_when_it_cannot_improve(
                 content = {
                     "decoded_context": "Review introduction",
                     "decoded_context_extension": "Useful partial with counts",
+                    "decoded_context_padded_extension": "\nUseful partial with counts  ",
                 }.get(outcome, "Review findings")
                 inputs, outputs = review_inputs, 12
-            elif outcome in {"clipped_prefix", "completed_prefix"}:
-                is_clipped = outcome == "clipped_prefix"
+            elif outcome.endswith("prefix"):
+                is_clipped = outcome != "completed_prefix"
                 finish_reason = "length" if is_clipped else "stop"
                 content, inputs, outputs = "Useful", review_inputs, limit if is_clipped else 24
+                if outcome == "clipped_padded_prefix":
+                    content = "\nUseful  "
             elif outcome == "empty" or limit < 128:
                 finish_reason = "length"
                 content, inputs, outputs = "", 5990, limit
@@ -262,7 +268,7 @@ async def test_budget_replay_preserves_first_partial_when_it_cannot_improve(
     if len(review_limits) > 1:
         input_key = "input" if wire == "responses" else "messages"
         assert review_payloads[0][input_key] == review_payloads[1][input_key]
-    if outcome.startswith(("reasoning", "decoded_context")) or outcome in {"clipped_prefix", "completed_prefix"}:
+    if outcome.startswith(("reasoning", "decoded_context")) or outcome.endswith("prefix"):
         assert assistant_history == [output]
         ledger_usage = [json.loads(line)["usage"]["total_tokens"] for line in ledger.read_text().splitlines()]
         assert sorted(ledger_usage) == sorted([3000, sibling_tokens, *usage])
@@ -270,11 +276,12 @@ async def test_budget_replay_preserves_first_partial_when_it_cannot_improve(
         discarded = [row for row in completions if row["payload"].get("reasoning") == REASONING]
         assert len(discarded) == 1
         assert discarded[0]["payload"]["purpose"] == "budget_recovery"
-    if outcome in {"decoded_context", "clipped_prefix"}:
+    if outcome in {"decoded_context", "clipped_prefix", "clipped_padded_prefix"}:
         [discarded] = [row for row in completions if row["payload"].get("purpose") == "budget_recovery"]
         assert (discarded["payload"]["finish_reason"], discarded["payload"]["content"]) == {
             "decoded_context": ("model_context_window_exceeded", "Review introduction"),
             "clipped_prefix": ("max_tokens", "Useful"),
+            "clipped_padded_prefix": ("max_tokens", "\nUseful  "),
         }[outcome]
     if outcome == "filtered":
         assert row.reason == "provider filtered the output"
