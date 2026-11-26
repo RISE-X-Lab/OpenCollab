@@ -54,7 +54,7 @@ class _TaskConcurrencyPermit:
 
     owner: asyncio.Task[Any] | None
     state: _TaskPermitState
-    child_lock: asyncio.Lock
+    child_slot: asyncio.Semaphore
     closed: bool = False
 
 class WorkflowCollectionsMixin:
@@ -67,6 +67,41 @@ class WorkflowCollectionsMixin:
         await state.borrowers_done.wait()
         self._task_semaphore.release()
 
+    async def _acquire_child_task_slot(self, inherited: asyncio.Semaphore) -> asyncio.Semaphore:
+        shared = self._task_semaphore
+        if self._task_concurrency == 1 or not inherited.locked():
+            await inherited.acquire()
+            return inherited
+        if not shared.locked():
+            await shared.acquire()
+            return shared
+
+        requests = {asyncio.create_task(slot.acquire()): slot for slot in (inherited, shared)}
+        selected = None
+
+        async def release_unused() -> None:
+            unused = [task for task in requests if task is not selected]
+            for task in unused:
+                task.cancel()
+            await asyncio.gather(*unused, return_exceptions=True)
+            for task in unused:
+                if not task.cancelled() and task.exception() is None:
+                    requests[task].release()
+
+        try:
+            done, _ = await asyncio.wait(requests, return_when=asyncio.FIRST_COMPLETED)
+            winner = next(task for task in requests if task in done)
+            winner.result()
+            selected = winner
+            return requests[winner]
+        finally:
+            # Both reservations can succeed before the waiting task is scheduled.
+            try:
+                await await_owned_operation(release_unused(), propagate_cancellation=True)
+            except BaseException:
+                if selected is not None:
+                    requests[selected].release()
+                raise
     async def _run_with_task_concurrency_permit(
         self,
         operation: Callable[[], Awaitable[Any]],
@@ -78,10 +113,11 @@ class WorkflowCollectionsMixin:
             if active.owner is current:
                 return await operation()
 
-            # ContextVars are copied into child Tasks. Let one child at a time
-            # borrow the parent's live slot, which keeps nested gather()
-            # compositions deadlock-free at task_concurrency=1.
-            async with active.child_lock:
+            # Child tasks may borrow a parent's slot or use spare global capacity.
+            slot = await self._acquire_child_task_slot(active.child_slot)
+            if slot is self._task_semaphore:
+                return await self._run_with_acquired_task_slot(operation)
+            try:
                 if not active.closed:
                     state = active.state
                     state.borrowers += 1
@@ -89,7 +125,7 @@ class WorkflowCollectionsMixin:
                     borrowed = _TaskConcurrencyPermit(
                         owner=current,
                         state=state,
-                        child_lock=asyncio.Lock(),
+                        child_slot=asyncio.Semaphore(1),
                     )
                     token = self._active_task_concurrency_permit.set(borrowed)
                     try:
@@ -100,6 +136,8 @@ class WorkflowCollectionsMixin:
                         state.borrowers -= 1
                         if state.borrowers == 0:
                             state.borrowers_done.set()
+            finally:
+                slot.release()
 
         await self._task_semaphore.acquire()
         return await self._run_with_acquired_task_slot(operation)
@@ -119,7 +157,7 @@ class WorkflowCollectionsMixin:
         permit = _TaskConcurrencyPermit(
             owner=current,
             state=state,
-            child_lock=asyncio.Lock(),
+            child_slot=asyncio.Semaphore(1),
         )
         token = self._active_task_concurrency_permit.set(permit)
         try:

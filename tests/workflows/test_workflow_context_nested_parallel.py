@@ -250,3 +250,27 @@ async def test_extra_task_slot_released_when_worker_cancelled_before_start():
 
     assert await asyncio.wait_for(ctx.parallel([lambda: asyncio.sleep(0, result="next")]), 2.0) == ["next"]
     assert ctx._task_semaphore._value == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_ready_inherited_and_shared_slots_are_released_once(cancel):
+    ctx = WorkflowContext(FakeFactory([]), task_concurrency=2)
+    inherited = asyncio.Semaphore(0)
+    shared = ctx._task_semaphore
+    await shared.acquire()
+    await shared.acquire()
+    waiting = asyncio.create_task(ctx._acquire_child_task_slot(inherited))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    inherited.release()
+    shared.release()
+    await asyncio.sleep(0)
+    if cancel:
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+    else:
+        selected = await waiting
+        selected.release()
+    assert inherited._value == shared._value == 1
