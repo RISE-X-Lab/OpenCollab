@@ -327,6 +327,11 @@ async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monk
     ("task", "red", 20_000),
     ("task", "stale", 20_000),
     ("task", "empty", 20_000),
+    ("task", "green", 20_050),
+    ("working_tree", "green", 20_050),
+    ("task", "red", 20_050),
+    ("task", "stale", 20_050),
+    ("task", "empty", 20_050),
     ("task", "green", 22_000),
 ])
 async def test_duo_delivers_current_verified_a_when_budget_refuses_b(
@@ -390,7 +395,8 @@ async def test_duo_delivers_current_verified_a_when_budget_refuses_b(
                 response = _tool_response("bash", {"command": command}, step)
                 response.usage = Usage(inputs, 40)
                 return response
-            return LLMResponse(content="I ran the public test.", usage=Usage(inputs, max_output_tokens))
+            outputs = 21 if role == "A" else max_output_tokens
+            return LLMResponse(content="I ran the public test.", usage=Usage(inputs, outputs))
 
     async def flow(ctx, args):
         preparation = asyncio.create_task(ctx.agent_run(prepare_prompt, budget=12_000, tools=[]))
@@ -414,7 +420,7 @@ async def test_duo_delivers_current_verified_a_when_budget_refuses_b(
         llm=Model(), budget=budget, max_steps=5, concurrency=2, timeout=20, trace=True,
         artifacts=artifacts, limit_mode="explicit",
     )
-    runs_b = budget > 20_000
+    runs_b = budget >= 22_000
     output = result.output
     if evidence == "green":
         assert result.status == "completed"
@@ -452,7 +458,7 @@ async def test_duo_delivers_current_verified_a_when_budget_refuses_b(
         assert result.tokens == 20_000
     traces = [json.loads(line) for line in (artifacts / "orchestration.jsonl").read_text().splitlines()]
     refusals = [row["payload"]["label"] for row in traces if row["type"] == "budget_refusal"]
-    assert refusals == ([] if runs_b else ["dual-coder-contract-b"])
+    assert refusals == (["dual-coder-contract-b"] if budget == 20_000 else [])
     executed = [row["payload"]["result"] for row in traces if row["type"] == "tool_exec"
                 and row["payload"]["tool"] == "bash"]
     assert [line.splitlines()[0] for line in executed] == (

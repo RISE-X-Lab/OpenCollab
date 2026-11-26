@@ -51,6 +51,8 @@ async def _coder_candidate(
         budget=None,
         timeout=coder_role_timeout_seconds(ctx),
     )
+    if raw.initial_budget_refusal is not None:
+        raise WorkflowBudgetExceeded(raw.initial_budget_refusal)
     records = [
         dual._public_record(record)
         for record in raw.test_records

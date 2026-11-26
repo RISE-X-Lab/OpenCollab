@@ -67,6 +67,8 @@ _EMPTY_STOP_PLACEHOLDER = "[no output produced this turn]"
 _OUTPUT_LIMIT_REASONS = frozenset({"length", "max_tokens"})
 _INCOMPLETE_RESPONSE_REASONS = _OUTPUT_LIMIT_REASONS | {"model_context_window_exceeded", "content_filter"}
 _FILTERED_OUTPUT_REASON = "provider filtered the output"
+_BUDGET_EXCEEDED_PREFIX = "budget exceeded:"
+_REQUEST_BUDGET_REFUSAL_PREFIX = "budget exhausted before model call:"
 
 def _last_assistant_answer(messages: list[dict[str, Any]], turn_start: int | None) -> str:
     if turn_start is None:

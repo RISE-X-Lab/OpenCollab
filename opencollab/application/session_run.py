@@ -10,11 +10,13 @@ from typing import Any, Callable
 
 from opencollab.application._session_run_completion import _SessionRunCompletionMixin
 from opencollab.application._session_run_shared import (
+    _BUDGET_EXCEEDED_PREFIX,
     _EMPTY_STOP_NUDGE,
     _EMPTY_STOP_PLACEHOLDER,
     _FILTERED_OUTPUT_REASON,
     _INCOMPLETE_RESPONSE_REASONS,
     _OUTPUT_LIMIT_REASONS,
+    _REQUEST_BUDGET_REFUSAL_PREFIX,
     _WIND_DOWN_NUDGE,
     _WIND_DOWN_RETRY,
     DEFAULT_COMMIT_RESERVE,
@@ -682,7 +684,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         ):
             recovery = self._budget_recovery_authority()
             if self.state.used_tokens > self.max_budget_tokens or recovery is None or recovery.available() <= 0:
-                reason = f"budget exceeded: {self.state.used_tokens} tokens used"
+                reason = f"{_BUDGET_EXCEEDED_PREFIX} {self.state.used_tokens} tokens used"
                 await self._stop_precheck(reason)
                 return
 
@@ -741,7 +743,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
                 if exc.minimum_output_tokens > 1 else "leaving no output headroom"
             )
             reason = (
-                "budget exhausted before model call: conservative input reservation "
+                f"{_REQUEST_BUDGET_REFUSAL_PREFIX} conservative input reservation "
                 f"requires {exc.reserved_input_tokens} of {exc.remaining_budget} "
                 f"remaining tokens, {output_shortfall}"
             )

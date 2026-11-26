@@ -10,9 +10,11 @@ from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from typing import Any
 
+from opencollab.application._session_run_shared import _BUDGET_EXCEEDED_PREFIX, _REQUEST_BUDGET_REFUSAL_PREFIX
 from opencollab.application.async_timeout import CallerTimeoutError, await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.workflow_budget import _BudgetLease
+from opencollab.domain.session import SessionPhase
 
 
 def _candidate_budget_total(budget: int | None, limit_mode: str = "environment") -> int | None:
@@ -62,12 +64,26 @@ class CandidateRun:
     delivery_diff: str | None = None
     delivery_paths: tuple[str, ...] = ()
     delivery_source_diff: str | None = None
+    initial_budget_refusal: str | None = None
 
     @property
     def effective_diff(self) -> str:
         if self.delivery_diff is None or self.delivery_source_diff != self.diff:
             return self.diff
         return self.delivery_diff
+
+def _initial_budget_refusal(session: Any) -> str | None:
+    state = getattr(session, "state", None)
+    reason = getattr(state, "terminal_reason", None)
+    if (
+        getattr(state, "phase", None) is SessionPhase.STOPPED
+        and getattr(state, "step_count", None) == 0
+        and getattr(state, "used_tokens", None) == 0
+        and isinstance(reason, str)
+        and reason.startswith((_BUDGET_EXCEEDED_PREFIX, _REQUEST_BUDGET_REFUSAL_PREFIX))
+    ):
+        return reason
+    return None
 
 class CandidateCaptureError(RuntimeError):
     """A candidate worktree survived but its diff could not be captured."""
@@ -432,6 +448,7 @@ class WorkflowCandidatesMixin:
                     delivery_diff=getattr(lease, "delivery_diff", None),
                     delivery_paths=getattr(lease, "delivery_paths", ()),
                     delivery_source_diff=diff if getattr(lease, "delivery_diff", None) is not None else None,
+                    initial_budget_refusal=_initial_budget_refusal(session),
                 )
             except BaseException as exc:
                 failure = exc
