@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -11,7 +12,9 @@ from typing import Any, Literal
 
 from opencollab.adapters.env import Environment
 from opencollab.adapters.trace import Tracer
+from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
+from opencollab.application.scheduler import Scheduler
 from opencollab.application.scheduler_types import SchedulerTurnError
 from opencollab.bootstrap import programmatic as _programmatic
 from opencollab.bootstrap.environment_profiles import environment_cleanup_timeout
@@ -24,6 +27,33 @@ from opencollab.bootstrap.runtime_context import build_runtime_context
 from opencollab.bootstrap.session_factory import SESSION_MAX_STEPS
 from opencollab.bootstrap.team_config import load_team_config
 from opencollab.domain.session import SessionPhase
+
+
+async def _run_before_deadline(scheduler: Scheduler, prompt: str, timeout: float) -> str:
+    if sys.version_info >= (3, 12):
+        return await asyncio.wait_for(scheduler.run(prompt), timeout=timeout)
+    if timeout <= 0:
+        raise asyncio.TimeoutError
+
+    # Older wait_for can swallow caller cancellation when the owner has just finished.
+    owner = asyncio.create_task(scheduler.run(prompt))
+    try:
+        done, _ = await asyncio.wait({owner}, timeout=timeout)
+    except asyncio.CancelledError as cancellation:
+        owner.cancel(*cancellation.args)
+        await await_owned_operation(asyncio.gather(owner, return_exceptions=True))
+        raise
+    if done:
+        return owner.result()
+
+    owner.cancel()
+    await await_owned_operation(
+        asyncio.gather(owner, return_exceptions=True), propagate_cancellation=True,
+    )
+    try:
+        return owner.result()
+    except asyncio.CancelledError as cancellation:
+        raise asyncio.TimeoutError from cancellation
 
 
 async def run_team(
@@ -122,7 +152,7 @@ async def run_team(
             if timeout is None:
                 output = await scheduler.run(prompt)
             else:
-                output = await asyncio.wait_for(scheduler.run(prompt), timeout=timeout)
+                output = await _run_before_deadline(scheduler, prompt, timeout)
         except asyncio.TimeoutError as exc:
             status = "stopped"
             reason = "timeout"
