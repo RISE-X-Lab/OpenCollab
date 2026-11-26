@@ -65,7 +65,8 @@ _EMPTY_STOP_NUDGE = (
 _EMPTY_STOP_PLACEHOLDER = "[no output produced this turn]"
 
 _OUTPUT_LIMIT_REASONS = frozenset({"length", "max_tokens"})
-_INCOMPLETE_RESPONSE_REASONS = _OUTPUT_LIMIT_REASONS | {"model_context_window_exceeded", "content_filter"}
+_CONTEXT_WINDOW_LIMIT_REASON = "model_context_window_exceeded"
+_INCOMPLETE_RESPONSE_REASONS = _OUTPUT_LIMIT_REASONS | {_CONTEXT_WINDOW_LIMIT_REASON, "content_filter"}
 _FILTERED_OUTPUT_REASON = "provider filtered the output"
 _BUDGET_EXCEEDED_PREFIX = "budget exceeded:"
 _REQUEST_BUDGET_REFUSAL_PREFIX = "budget exhausted before model call:"

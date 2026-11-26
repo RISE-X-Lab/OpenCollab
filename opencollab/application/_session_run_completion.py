@@ -19,6 +19,7 @@ from opencollab.application._anthropic_history import (
     _strip_anthropic_thinking,
 )
 from opencollab.application._session_run_shared import (
+    _CONTEXT_WINDOW_LIMIT_REASON,
     _INCOMPLETE_RESPONSE_REASONS,
     _OUTPUT_LIMIT_REASONS,
     _STRUCTURED_OUTPUT_TOOL,
@@ -912,14 +913,25 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             if recoverable:
                 self._raise_if_run_cancelled()
             raise
-        replacement_has_text = isinstance(replacement.content, str) and bool(replacement.content.strip())
-        if getattr(replacement, "content_from_reasoning", False):
-            original_has_answer = (
-                isinstance(response.content, str)
-                and bool(response.content.strip())
-                and not getattr(response, "content_from_reasoning", False)
-            )
-            replacement_has_text = replacement_has_text and not original_has_answer
+        original_text = response.content
+        replacement_text = replacement.content
+        replacement_has_text = isinstance(replacement_text, str) and bool(replacement_text.strip())
+        if (
+            isinstance(original_text, str)
+            and isinstance(replacement_text, str)
+            and original_text.strip()
+            and not getattr(response, "content_from_reasoning", False)
+        ):
+            replacement_has_text = replacement_has_text and not getattr(replacement, "content_from_reasoning", False)
+            if replacement.finish_reason == _CONTEXT_WINDOW_LIMIT_REASON:
+                replacement_has_text = replacement_has_text and (
+                    replacement_text.startswith(original_text)
+                    and bool(replacement_text[len(original_text):].strip())
+                )
+            elif replacement.finish_reason in _OUTPUT_LIMIT_REASONS:
+                replacement_has_text = replacement_has_text and not (
+                    len(replacement_text) < len(original_text) and original_text.startswith(replacement_text)
+                )
         replacement_has_action = (
             replacement.tool_calls and replacement.finish_reason not in _INCOMPLETE_RESPONSE_REASONS
         )
