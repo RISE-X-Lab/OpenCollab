@@ -6,10 +6,8 @@ import asyncio
 import hashlib
 import logging
 import os
-import sys
-from collections.abc import Awaitable
 from dataclasses import dataclass, field
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable
 
 from opencollab.adapters.llm._responses_instructions import _check_instructions_echo
 from opencollab.adapters.llm._responses_output import (
@@ -21,6 +19,7 @@ from opencollab.adapters.llm._responses_output import (
 from opencollab.adapters.llm._responses_output import (
     _semantic_output_item as _semantic_output_item,
 )
+from opencollab.adapters.llm._transport_wait import _TransportInterruption, _wait_for_transport
 from opencollab.adapters.llm.errors import TransientProviderError
 from opencollab.adapters.llm.first_token import NOT_STREAMED, RESPONSES_STREAM, begin_attempt, mark_first_token
 from opencollab.adapters.llm.openai_provider import _FRAMEWORK_CONTROLLED_THINKING_FIELDS, _thinking_request_params
@@ -254,43 +253,6 @@ def _build_request_kwargs(
     if params and not native_openai:
         kwargs["extra_body"] = params
     return kwargs
-
-_T = TypeVar("_T")
-_TransportInterruption = asyncio.CancelledError | asyncio.TimeoutError
-
-async def _wait_for_transport(
-    operation: Awaitable[_T],
-    timeout: float | None,
-    *,
-    on_interrupt: Callable[[_TransportInterruption], None] | None = None,
-) -> _T:
-    if sys.version_info >= (3, 12) and on_interrupt is None:
-        return await asyncio.wait_for(operation, timeout)
-    # Retain terminal usage when a cancelled transport still delivers a result.
-    task = asyncio.ensure_future(operation)
-    try:
-        # Older wait_for implementations can consume a concurrent caller cancellation.
-        if not task.done() and (timeout is None or timeout > 0):
-            await asyncio.wait((task,), timeout=timeout)
-        if not task.done():
-            raise asyncio.TimeoutError
-    except (asyncio.CancelledError, asyncio.TimeoutError) as interruption:
-        if task.done():
-            if on_interrupt is not None and isinstance(interruption, asyncio.CancelledError) and not task.cancelled():
-                on_interrupt(interruption)
-            return task.result()
-        if on_interrupt is not None:
-            on_interrupt(interruption)
-        task.cancel()
-        while not task.done():
-            try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
-                if not task.done():
-                    task.cancel()
-        if task.cancelled():
-            raise interruption
-    return task.result()
 
 async def _next_event(iterator: Any, timeout: float | None, *, stage: str) -> Any:
     try:

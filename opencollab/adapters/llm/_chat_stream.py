@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from opencollab.adapters.llm._chat_response import (
     _build_chat_response,
@@ -13,6 +14,7 @@ from opencollab.adapters.llm._chat_response import (
     _normalize_tool_arguments,
     _reported_chat_usage,
 )
+from opencollab.adapters.llm._transport_wait import _TransportInterruption, _wait_for_transport
 from opencollab.adapters.llm.errors import StreamedUsageUnavailableError, TransientProviderError
 from opencollab.adapters.llm.first_token import CHAT_STREAM, begin_attempt, mark_first_token
 from opencollab.adapters.llm.types import LLMResponse
@@ -249,11 +251,43 @@ def _stream_state_to_response(
         )
     return response
 
-async def _next_chunk(iterator: Any, budget: float | None, *, stage: str) -> Any:
+_T = TypeVar("_T")
+
+async def _wait_for_chat_transport(
+    operation: Awaitable[_T],
+    timeout: float,
+    settle_cancelled: Callable[[_T], Awaitable[None]],
+) -> _T:
+    cancellation: asyncio.CancelledError | None = None
+
+    def observe(interruption: _TransportInterruption) -> None:
+        nonlocal cancellation
+        if isinstance(interruption, asyncio.CancelledError):
+            cancellation = interruption
+
+    try:
+        result = await _wait_for_transport(operation, timeout, on_interrupt=observe)
+    except (Exception, asyncio.CancelledError) as exc:
+        if cancellation is not None and exc is not cancellation:
+            raise cancellation from exc
+        raise
+    if cancellation is not None:
+        await settle_cancelled(result)
+        raise cancellation
+    return result
+
+async def _next_chunk(
+    iterator: Any, budget: float | None, *, stage: str, state: _ChatStreamState,
+) -> Any:
+    async def settle_usage(chunk: Any) -> None:
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            state.usage_object = usage
+
     try:
         if budget is None:
             return await iterator.__anext__()
-        return await asyncio.wait_for(iterator.__anext__(), timeout=budget)
+        return await _wait_for_chat_transport(iterator.__anext__(), budget, settle_usage)
     except asyncio.TimeoutError as exc:
         detail = "from the provider transport" if budget is None else f"after {budget:g}s"
         raise TransientProviderError(
@@ -304,6 +338,7 @@ async def _drain_chat_stream(
                     iterator,
                     first_chunk_timeout if first else idle_timeout,
                     stage="first-chunk" if first else "stream-idle",
+                    state=state,
                 )
             except StopAsyncIteration:
                 break
@@ -329,9 +364,10 @@ async def _create_and_consume_chat_stream(
         if first_chunk_timeout is None:
             event_stream = await client.chat.completions.create(**kwargs)
         else:
-            event_stream = await asyncio.wait_for(
+            event_stream = await _wait_for_chat_transport(
                 client.chat.completions.create(**kwargs),
-                timeout=first_chunk_timeout,
+                first_chunk_timeout,
+                _close_stream,
             )
     except asyncio.TimeoutError as exc:
         detail = "from the provider transport" if first_chunk_timeout is None else f"after {first_chunk_timeout:g}s"
