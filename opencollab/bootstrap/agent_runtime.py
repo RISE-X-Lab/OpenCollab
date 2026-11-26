@@ -130,8 +130,10 @@ async def _finalize_session(
     )
     llm_quiesced = await close_session_resources((session,), timeout=timeout)
     if quiesced and persistence_quiesced and cleanup_quiesced and llm_quiesced:
-        runner = getattr(session, "runner", None)
-        if runner is not None:
+        finish = getattr(session, "_finish_run_control", None)
+        if finish is not None:
+            finish()
+        elif (runner := getattr(session, "runner", None)) is not None:
             runner.finish_run_control()
     return (
         quiesced

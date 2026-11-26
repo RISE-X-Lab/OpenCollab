@@ -169,6 +169,7 @@ class Session:
         self._auto_save_lock = threading.Lock()
         self._autosave_writer: Callable[[], None] | None = None
         self._autosave_writer_references = 0
+        self._run_cleanup_loop: asyncio.AbstractEventLoop | None = None
         self._auto_save_checkpoint_lock = threading.RLock()
         self._auto_save_pending_checkpoints: set[int] = set()
         self._auto_save_seen_result_hashes: set[str] = set()
@@ -285,13 +286,13 @@ class Session:
         if self._llm_close_error is not None:
             raise self._llm_close_error
         if not self._owns_llm or self._llm_closed:
-            self.runner.finish_run_control(lambda: self.pending_cleanup_tasks)
+            self._finish_run_control()
             return
         self._llm_closed = True
         if self._shared_llm_ownership is not None:
             self._shared_llm_ownership.owners -= 1
             if self._shared_llm_ownership.owners:
-                self.runner.finish_run_control(lambda: self.pending_cleanup_tasks)
+                self._finish_run_control()
                 return
         close = getattr(self._llm, "close", None)
         if not callable(close):
@@ -305,6 +306,14 @@ class Session:
                 self._llm_close_error = exc
                 self.runner._emit_run_event("error", error_type=type(exc).__name__, message=str(exc))
                 raise
+        self._finish_run_control()
+
+    def _finish_run_control(self) -> None:
+        with self._auto_save_lock:
+            if self._autosave_writer is not None:
+                # Cleanup observers can reopen the autosave as soon as they are notified.
+                self._run_cleanup_loop = asyncio.get_running_loop()
+                return
         self.runner.finish_run_control(lambda: self.pending_cleanup_tasks)
 
     def _share_llm_ownership(self, snapshot: Session) -> None:
@@ -419,10 +428,15 @@ class Session:
     def _release_autosave_writer(self) -> None:
         with self._auto_save_lock:
             self._autosave_writer_references -= 1
-            if self._autosave_writer_references == 0:
-                assert self._autosave_writer is not None
-                self._autosave_writer()
-                self._autosave_writer = None
+            if self._autosave_writer_references:
+                return
+            assert self._autosave_writer is not None
+            self._autosave_writer()
+            self._autosave_writer = None
+            cleanup_loop = self._run_cleanup_loop
+            self._run_cleanup_loop = None
+        if cleanup_loop is not None and not cleanup_loop.is_closed():
+            cleanup_loop.call_soon_threadsafe(self._finish_run_control)
 
     def _release_after_autosave_settles(self, release: Callable[[], None]) -> None:
         pending = self.pending_cleanup_tasks
@@ -1322,7 +1336,8 @@ class Session:
     def enqueue_auto_save(self) -> asyncio.Task[None] | None:
         if self._auto_save_subscriber is None:
             return None
-        return self._auto_save_subscriber.enqueue()
+        with self._autosave_access(self._auto_save_path, writing=True, settle=True):
+            return self._auto_save_subscriber.enqueue()
 
     def _track_tool_results(self, completed_results: list[dict]) -> None:
         pending = [

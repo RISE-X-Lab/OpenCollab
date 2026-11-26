@@ -170,6 +170,50 @@ async def test_autosave_handoff_between_processes(tmp_path: Path, monkeypatch: p
     finally:
         await _kill_worker(owner)
 
+async def test_queued_autosave_cannot_replace_a_live_turn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    path = tmp_path / _AUTOSAVE
+    admitted, release = asyncio.Event(), asyncio.Event()
+
+    class WaitingProvider(FakeLLM):
+        async def complete(self, *args, **kwargs):
+            admitted.set()
+            await release.wait()
+            return await super().complete(*args, **kwargs)
+
+    older = build_session(**_session_options(
+        tmp_path, FakeLLM([llm_response(content="Recorded one task.", total_tokens=10)]),
+    ))
+    newer = turn = None
+    try:
+        await older.add_user_message("Review the first section.")
+        assert await older.run_loop() == "Recorded one task."
+        newer = load_session(str(path), **_session_options(
+            tmp_path, WaitingProvider([llm_response(content="Recorded the second task.", total_tokens=20)]),
+        ))
+        await newer.add_user_message("Review the second section.")
+        turn = asyncio.create_task(newer.run_loop())
+        await asyncio.wait_for(admitted.wait(), _TIMEOUT)
+        await asyncio.gather(*newer.event_bus.pending_tasks)
+        before = OpenCollab.read_session_snapshot(path)
+        assert any(row["content"] == "Review the second section." for row in before["messages"])
+        with pytest.raises(SessionBusyError, match="active writer"):
+            older.enqueue_auto_save()
+        assert OpenCollab.read_session_snapshot(path) == before
+        release.set()
+        assert await asyncio.wait_for(turn, _TIMEOUT) == "Recorded the second task."
+        assert _saved_state(tmp_path) == ("done", 30)
+    finally:
+        release.set()
+        if turn is not None:
+            await asyncio.gather(turn, return_exceptions=True)
+        if newer is not None:
+            await newer.aclose()
+            await newer.env.cleanup()
+        await older.aclose()
+        await older.env.cleanup()
+
 
 if __name__ == "__main__":
     workers = {"hold": _hold_autosave, "resume": _resume_autosave}
