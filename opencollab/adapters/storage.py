@@ -9,7 +9,7 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
-from typing import Any, BinaryIO, TextIO
+from typing import Any, BinaryIO
 
 from opencollab.adapters.safe_files import (
     _open_regular_read,
@@ -154,30 +154,18 @@ class _BoundedUTF8Writer:
 class SessionStore:
     allowed_roles = {"system", "developer", "user", "assistant", "tool"}
 
-    def try_autosave_lock(self, path: str, *, writing: bool) -> Callable[[], None] | None:
+    def try_autosave_lock(self, path: str) -> Callable[[], None] | None:
         # Keep the sidecar inode stable while snapshots and journals are replaced.
         lock_path = f"{path}{_AUTOSAVE_OWNERSHIP_LOCK_SUFFIX}"
-        handle: BinaryIO | TextIO
-        if writing:
-            handle = open_regular_text_append(lock_path)
-        else:
-            try:
-                handle = os.fdopen(_open_regular_read(lock_path), "rb")
-            except FileNotFoundError:
-                return lambda: None
-
-        locked = False
-        lock_mode = fcntl.LOCK_EX if writing else fcntl.LOCK_SH
+        handle = open_regular_text_append(lock_path)
         try:
-            fcntl.flock(handle.fileno(), lock_mode | fcntl.LOCK_NB)
-            locked = True
-        except OSError as exc:
-            if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
-                raise
-        finally:
-            if not locked:
-                handle.close()
-        return handle.close if locked else None
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BaseException as exc:
+            handle.close()
+            if isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                return None
+            raise
+        return handle.close
 
     def has_snapshot(self, path: str) -> bool:
         """Return whether a base or recoverable journal sidecar is present."""

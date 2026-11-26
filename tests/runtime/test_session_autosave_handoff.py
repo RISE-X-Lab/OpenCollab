@@ -145,6 +145,17 @@ async def test_autosave_handoff_between_processes(tmp_path: Path, monkeypatch: p
     try:
         await _expect_worker_line(owner, b"waiting for provider\n")
         assert _saved_state(tmp_path) == ("stopped", 10)
+        for destination in (None, str(tmp_path / "copy.json")):
+            options = _session_options(tmp_path, FakeLLM())
+            options["auto_save_path"] = destination
+            observer = load_session(str(tmp_path / _AUTOSAVE), **options)
+            try:
+                assert observer.used_tokens == 10
+                if destination is not None:
+                    assert OpenCollab.read_session_snapshot(destination)["session_state"]["used_tokens"] == 10
+            finally:
+                await observer.aclose()
+                await observer.env.cleanup()
         contender = await _start_worker("resume", tmp_path)
         assert await _finish_worker(contender) == "busy"
         assert _saved_state(tmp_path) == ("stopped", 10)

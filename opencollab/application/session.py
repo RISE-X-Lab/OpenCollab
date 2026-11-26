@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -395,7 +395,7 @@ class Session:
 
     @contextmanager
     def _autosave_access(
-        self, path: str | None, *, writing: bool, settle: bool = False,
+        self, path: str | None, *, settle: bool = False,
     ) -> Iterator[None]:
         store = self.store
         if not path or not isinstance(store, AutosaveOwnershipStorePort):
@@ -403,12 +403,12 @@ class Session:
             return
 
         def acquire() -> Callable[[], None]:
-            release = store.try_autosave_lock(path, writing=writing)
+            release = store.try_autosave_lock(path)
             if release is None:
                 raise SessionBusyError(f"autosave has an active writer: {path}")
             return release
 
-        if writing and _same_snapshot_path(path, self._auto_save_path):
+        if _same_snapshot_path(path, self._auto_save_path):
             with self._auto_save_lock:
                 if self._autosave_writer is None:
                     self._autosave_writer = acquire()
@@ -450,7 +450,7 @@ class Session:
         if self._turn_lock.locked() or self.runner.pending_cleanup_tasks:
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            with self._autosave_access(self._auto_save_path, writing=True, settle=True):
+            with self._autosave_access(self._auto_save_path, settle=True):
                 return await self._run_turn(cancel_event)
 
     async def _run_turn(self, cancel_event: asyncio.Event | None) -> str:
@@ -560,7 +560,7 @@ class Session:
         ):
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            with self._autosave_access(self._auto_save_path, writing=True, settle=True):
+            with self._autosave_access(self._auto_save_path, settle=True):
                 self.state.append_queued_external_user_turn(
                     content, defer=not self.state.pending_events.is_empty()
                 )
@@ -613,10 +613,7 @@ class Session:
         """Restore a snapshot or legacy transcript, with an optional agent ID override."""
         if self._turn_lock.locked() or self.pending_cleanup_tasks:
             raise SessionBusyError("session cannot be restored while runtime work is active")
-        with ExitStack() as access:
-            if not _same_snapshot_path(path, self._auto_save_path):
-                access.enter_context(self._autosave_access(path, writing=False))
-            access.enter_context(self._autosave_access(self._auto_save_path, writing=True))
+        with self._autosave_access(self._auto_save_path):
             self._restore_snapshot(path, aid=aid)
 
     def _restore_snapshot(self, path: str, *, aid: int | None) -> None:
@@ -1065,7 +1062,7 @@ class Session:
         saving_autosave = _same_snapshot_path(path, self._auto_save_path)
         if not saving_autosave and self.state.phase.is_terminal() and self.runner.pending_cleanup_tasks:
             raise SessionBusyError("cannot export a terminal session while provider requests are still draining")
-        with self._autosave_access(path, writing=True):
+        with self._autosave_access(path):
             self._save_snapshot(path, saving_autosave=saving_autosave)
 
     def _save_snapshot(self, path: str, *, saving_autosave: bool) -> None:
@@ -1336,7 +1333,7 @@ class Session:
     def enqueue_auto_save(self) -> asyncio.Task[None] | None:
         if self._auto_save_subscriber is None:
             return None
-        with self._autosave_access(self._auto_save_path, writing=True, settle=True):
+        with self._autosave_access(self._auto_save_path, settle=True):
             return self._auto_save_subscriber.enqueue()
 
     def _track_tool_results(self, completed_results: list[dict]) -> None:
