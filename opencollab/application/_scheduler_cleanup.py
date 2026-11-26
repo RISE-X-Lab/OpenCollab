@@ -327,8 +327,7 @@ class SchedulerCleanupMixin:
                     logger.debug("cleanup could not fail pending row %s on aid %s", tool_call_id, parent_aid)
         scb = self.table.get(aid)
         if scb is not None:
-            scb.state.cancel(reason)
-            scb.result = reason
+            self._record_agent_cancellation(scb, reason, reason=reason)
 
     async def _abort_session_environments(self, aids: set[int], *, timeout: float) -> bool:
         environments: list[tuple[int, Any]] = []

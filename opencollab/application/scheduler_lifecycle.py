@@ -432,9 +432,8 @@ class LifecycleMixin:
                 self._turn_waiters.discard(aid)
         except asyncio.CancelledError:
             self._release_leases(aid)
-            scb.state.cancel()
             reason = "Error: agent cancelled before completing delegated work"
-            scb.result = reason
+            self._record_agent_cancellation(scb, reason)
             try:
                 await self.emit_scheduler_event(
                     self._events.agent_cancelled(aid, scb.agent.name)
@@ -754,8 +753,7 @@ class LifecycleMixin:
                     status = RowStatus.FAILED
                     fill_error = result
                     if child_scb is not None:
-                        child_scb.state.cancel(result)
-                        child_scb.result = result
+                        self._record_agent_cancellation(child_scb, result, reason=result)
             table.fill(
                 tool_call_id,
                 result=result,
@@ -773,6 +771,14 @@ class LifecycleMixin:
             await self._safe_emit_scheduler_event(
                 self._events.agent_resumed(parent_aid, self._role_of(parent_aid))
             )
+
+    def _record_agent_cancellation(
+        self, scb: SessionControlBlock, result: str, *, reason: str | None = None,
+    ) -> None:
+        if scb.state.phase is SessionPhase.STOPPED and scb.aid in self._cancelled_turn_inbox_holds:
+            return
+        scb.state.cancel(reason)
+        scb.result = result
 
     def _resume_completed_parent_locked(
         self,

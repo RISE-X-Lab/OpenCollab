@@ -14,6 +14,7 @@ from opencollab.application.scheduler_types import SchedulerTurnError
 from opencollab.bootstrap import build_scheduler
 from opencollab.bootstrap.config import build_config
 from opencollab.bootstrap.runtime_context import build_runtime_context
+from opencollab.domain.session import SessionPhase
 from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
 
 
@@ -292,6 +293,24 @@ async def test_fresh_team_interrupt_then_exit_keeps_accepted_submission(tmp_path
         context, use_worktrees=False, interactive=True, team_config_path=team,
         save_dir=artifacts, cleanup_timeout=2,
     )
+    lead = scheduler.lead_session
+    checkpoint = lead._checkpoint_terminal_snapshot
+    checkpoint_published = asyncio.Event()
+    driver_cancelled = asyncio.Event()
+
+    async def checkpoint_then_hold(**kwargs):
+        suspended = lead.state.phase is SessionPhase.AWAITING_EVENTS
+        await checkpoint(**kwargs)
+        if suspended:
+            checkpoint_published.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                driver_cancelled.set()
+
+    if exit_input != "after_drain":
+        monkeypatch.setattr(lead, "_checkpoint_terminal_snapshot", checkpoint_then_hold)
+
     completed_interrupts = []
     hard_cancellations = []
 
@@ -308,6 +327,8 @@ async def test_fresh_team_interrupt_then_exit_keeps_accepted_submission(tmp_path
 
     async def wait_for_submitted_turn():
         await started.wait()
+        if exit_input != "after_drain":
+            await checkpoint_published.wait()
         while True:
             for path in artifacts.glob("agent_0_*.json"):
                 snapshot = OpenCollab.read_session_snapshot(path)
@@ -371,6 +392,7 @@ async def test_fresh_team_interrupt_then_exit_keeps_accepted_submission(tmp_path
     else:
         assert not completed_interrupts
         assert len(hard_cancellations) == 1
+        assert driver_cancelled.is_set()
 
     path = next(artifacts.glob("agent_0_*.json"))
     saved = OpenCollab.read_session_snapshot(path)
