@@ -12,6 +12,7 @@ from tests.support.provider_sdk_http import install_sdk_transport, provider_http
 
 @pytest.mark.parametrize("scene", [
     "healthy", "close-reset", "paid-read-reset", "read-and-close-reset", "no-finish", "no-usage", "cancel-close",
+    "close-idle", "read-and-close-idle", "no-usage-close-idle",
 ])
 async def test_native_chat_close_error_is_distinct_from_an_unfinished_read(tmp_path, monkeypatch, scene):
     usage_path = tmp_path / "usage.jsonl"
@@ -34,11 +35,12 @@ async def test_native_chat_close_error_is_distinct_from_an_unfinished_read(tmp_p
 
         async def __aiter__(self):
             answer = "First answer" if self.attempt == 1 else "Retried answer"
-            finish_reason = None if self.mode in {"read-and-close-reset", "no-finish"} else "stop"
+            read_fails = self.mode in {"read-and-close-reset", "read-and-close-idle"}
+            finish_reason = None if read_fails or self.mode == "no-finish" else "stop"
             yield chunk(choices=[{"index": 0, "delta": {"content": answer}, "finish_reason": finish_reason}])
-            if self.mode == "read-and-close-reset":
+            if read_fails:
                 raise http.ReadError("read reset")
-            if self.mode != "no-usage":
+            if self.mode not in {"no-usage", "no-usage-close-idle"}:
                 yield chunk(choices=[], usage={"prompt_tokens": 24, "completion_tokens": 7, "total_tokens": 31})
             if self.mode == "paid-read-reset":
                 raise http.ReadError("read reset after usage")
@@ -46,7 +48,7 @@ async def test_native_chat_close_error_is_distinct_from_an_unfinished_read(tmp_p
 
         async def aclose(self):
             closes.append(self.attempt)
-            if self.mode == "cancel-close":
+            if self.mode in {"cancel-close", "close-idle", "read-and-close-idle", "no-usage-close-idle"}:
                 close_started.set()
                 try:
                     await asyncio.Event().wait()
@@ -66,7 +68,8 @@ async def test_native_chat_close_error_is_distinct_from_an_unfinished_read(tmp_p
     app = OpenCollab(
         tmp_path, provider="openai", model="gpt-4o", api_key=tmp_path.name, base_url="https://fixture.invalid/v1",
         config={"wire_protocol": "chat_completions", "llm_stream_chat": True,
-                "llm_max_retries": int(scene in {"close-reset", "paid-read-reset"})},
+                "llm_stream_idle_timeout": 0.15,
+                "llm_max_retries": int(scene in {"close-reset", "close-idle", "paid-read-reset"})},
     )
     async with app.create_model_client() as client:
         messages = [{"role": "user", "content": "Report the result."}]
@@ -91,17 +94,24 @@ async def test_native_chat_close_error_is_distinct_from_an_unfinished_read(tmp_p
                     await asyncio.gather(task, return_exceptions=True)
             assert close_cancelled.is_set()
             assert cancellations == [("withdraw reply",)]
-        elif scene in {"read-and-close-reset", "no-finish", "no-usage"}:
-            message = "read reset" if scene == "read-and-close-reset" else "close reset"
+        elif scene in {"read-and-close-reset", "read-and-close-idle", "no-finish", "no-usage"}:
+            message = "read reset" if scene.startswith("read-and-close") else "close reset"
             with pytest.raises(http.ReadError, match=f"^{message}$"):
+                await complete()
+        elif scene == "no-usage-close-idle":
+            with pytest.raises(asyncio.TimeoutError):
                 await complete()
         else:
             response = await complete()
             assert response.content == ("Retried answer" if scene == "paid-read-reset" else "First answer")
 
-    expected_usage = {"paid-read-reset": 62, "read-and-close-reset": 0, "no-usage": 0}.get(scene, 31)
+    zero_usage = {"read-and-close-reset", "read-and-close-idle", "no-usage", "no-usage-close-idle"}
+    expected_usage = 0 if scene in zero_usage else 62 if scene == "paid-read-reset" else 31
     assert observed_usage == ([expected_usage] if expected_usage else [])
     assert closes == ([1, 2] if scene == "paid-read-reset" else [1])
+    cancelled_closes = {"cancel-close", "close-idle", "read-and-close-idle", "no-usage-close-idle"}
+    assert close_cancelled.is_set() is (scene in cancelled_closes)
     ledger, = map(json.loads, usage_path.read_text().splitlines())
     assert ledger["usage"]["total_tokens"] == expected_usage
-    assert ledger["status"] == ("success" if scene in {"healthy", "close-reset", "paid-read-reset"} else "error")
+    successes = {"healthy", "close-reset", "close-idle", "paid-read-reset"}
+    assert ledger["status"] == ("success" if scene in successes else "error")

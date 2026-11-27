@@ -261,8 +261,8 @@ _T = TypeVar("_T")
 
 async def _wait_for_chat_transport(
     operation: Awaitable[_T],
-    timeout: float,
-    settle_cancelled: Callable[[_T], Awaitable[None]],
+    timeout: float | None,
+    settle_cancelled: Callable[[_T], Awaitable[object]] | None = None,
 ) -> _T:
     cancellation: asyncio.CancelledError | None = None
 
@@ -278,7 +278,8 @@ async def _wait_for_chat_transport(
             raise cancellation from exc
         raise
     if cancellation is not None:
-        await settle_cancelled(result)
+        if settle_cancelled is not None:
+            await settle_cancelled(result)
         raise cancellation
     return result
 
@@ -300,40 +301,44 @@ async def _next_chunk(
             f"chat completion {stage} timeout {detail}"
         ) from exc
 
-async def _close_stream(stream: Any, *, preserve_cancellation: bool = False) -> None:
-    """Release the socket without replacing a finished read or its original error."""
+async def _close_stream(
+    stream: Any, *, timeout: float | None, preserve_cancellation: bool = False,
+) -> Exception | None:
     close = getattr(stream, "close", None)
     if close is None:
-        return
+        return None
+    native = isinstance(stream, AsyncStream)
     try:
         result = close()
         if asyncio.iscoroutine(result):
-            await await_owned_operation(result, propagate_cancellation=not preserve_cancellation)
+            if native:
+                await _wait_for_chat_transport(result, timeout)
+            else:
+                await await_owned_operation(result, propagate_cancellation=not preserve_cancellation)
     except asyncio.CancelledError:
         if not preserve_cancellation:
             raise
-    except Exception:
+    except Exception as exc:
         logging.getLogger(__name__).debug("chat stream close failed", exc_info=True)
+        if native:
+            return exc
+    return None
 
 @contextmanager
-def _capture_native_close_error(stream: Any, state: _ChatStreamState) -> Iterator[None]:
+def _defer_native_close(stream: Any) -> Iterator[None]:
     if not isinstance(stream, AsyncStream):
         yield
         return
 
-    # The SDK closes the HTTP response inside its event iterator.
+    # Keep SDK-owned HTTP close out of the timed chunk iterator.
     response = stream.response
     close = response.aclose
     has_override = "aclose" in vars(response)
 
-    async def capture_close() -> None:
-        try:
-            await close()
-        except Exception as exc:
-            state.close_error = exc
-            logging.getLogger(__name__).debug("chat HTTP response close failed", exc_info=True)
+    async def defer_close() -> None:
+        return None
 
-    response.aclose = capture_close
+    response.aclose = defer_close
     try:
         yield
     finally:
@@ -369,7 +374,7 @@ async def _drain_chat_stream(
     first = True
     cancelled = False
     try:
-        with _capture_native_close_error(stream, state):
+        with _defer_native_close(stream):
             while True:
                 try:
                     chunk = await _next_chunk(
@@ -390,7 +395,7 @@ async def _drain_chat_stream(
         cancelled = True
         raise
     finally:
-        await _close_stream(stream, preserve_cancellation=cancelled)
+        state.close_error = await _close_stream(stream, timeout=idle_timeout, preserve_cancellation=cancelled)
 
 async def _create_and_consume_chat_stream(
     client: Any,
@@ -408,7 +413,7 @@ async def _create_and_consume_chat_stream(
             event_stream = await _wait_for_chat_transport(
                 client.chat.completions.create(**kwargs),
                 first_chunk_timeout,
-                partial(_close_stream, preserve_cancellation=True),
+                partial(_close_stream, timeout=idle_timeout, preserve_cancellation=True),
             )
     except asyncio.TimeoutError as exc:
         detail = "from the provider transport" if first_chunk_timeout is None else f"after {first_chunk_timeout:g}s"
@@ -417,7 +422,7 @@ async def _create_and_consume_chat_stream(
     # Opening the stream spends part of the first-chunk allowance; charge it.
     remaining = None if deadline is None else deadline - loop.time()
     if remaining is not None and remaining <= 0:
-        await _close_stream(event_stream)
+        await _close_stream(event_stream, timeout=idle_timeout)
         raise TransientProviderError(
             f"chat completion first-chunk timeout after {first_chunk_timeout:g}s"
         )
