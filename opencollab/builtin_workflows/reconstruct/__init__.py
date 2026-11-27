@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.workflows import workflow
 
 from ._coverage import describe
@@ -450,9 +451,12 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         archive = _archive_candidate(program, candidates_dir, iteration) if program.is_file() else None
         try:
             fails = await failures(archive)
-        except BaseException:
+        except BaseException as error:
             if archive is not None:
-                archive.unlink(missing_ok=True)
+                try:
+                    archive.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    add_exception_note(error, f"candidate archive cleanup failed for {archive.name} ({cleanup_error})")
             raise
         passed = len(examples) - len(fails) if archive is not None else 0
         score = None

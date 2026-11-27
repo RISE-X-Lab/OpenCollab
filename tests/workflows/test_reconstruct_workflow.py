@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -543,6 +544,59 @@ async def test_evaluated_candidate_survives_edit_to_live_program(tmp_path: Path)
     assert result["final_score"] == 1.0
     assert evaluated_paths == [archived, archived]
     assert archived.read_text(encoding="utf-8") == program.read_text(encoding="utf-8") == CORRECT
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["failure", "cancel"])
+async def test_failed_archive_cleanup_preserves_evaluator_exit(tmp_path, monkeypatch, cancel):
+    archive = tmp_path / ".oc_candidates" / "iter_001.py"
+    started = asyncio.Event()
+    evaluator_failure = RuntimeError("candidate evaluator lost its output stream")
+    unlink = Path.unlink
+
+    def fail_cleanup(path, *args, **kwargs):
+        if path == archive:
+            raise OSError(errno.EIO, "archive unlink failed")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_cleanup)
+
+    async def evaluate(path, inputs):
+        assert path == archive
+        assert all(row["ok"] for row in await _evaluate(path, inputs))
+        started.set()
+        if cancel:
+            await asyncio.Event().wait()
+        raise evaluator_failure
+
+    task = make_task(tmp_path, evaluate=evaluate)
+
+    async def run():
+        try:
+            await reconstruct(ScriptedContext(tmp_path), {"task": register_task(task)})
+        except (RuntimeError, asyncio.CancelledError) as error:
+            return error
+
+    job = asyncio.create_task(run())
+    try:
+        if cancel:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            job.cancel("cancel candidate evaluation")
+        error = await job
+        if cancel:
+            assert isinstance(error, asyncio.CancelledError)
+            assert str(error) == "cancel candidate evaluation"
+        else:
+            assert error is evaluator_failure
+    finally:
+        if not job.done():
+            job.cancel()
+        await asyncio.gather(job, return_exceptions=True)
+
+    note, = error.__notes__
+    assert "candidate archive cleanup failed for iter_001.py" in note
+    assert "archive unlink failed" in note
+    assert archive.read_text(encoding="utf-8") == CORRECT
+    assert (tmp_path / "candidate.py").read_text(encoding="utf-8") == CORRECT
 
 
 @pytest.mark.parametrize("overlap", [False, True], ids=["sequential", "parallel"])
