@@ -722,6 +722,14 @@ class SessionStore:
             if persisted_sequence == sequence > 0:
                 # A peer can own this sequence in either the base or the journal.
                 persisted = self._load_snapshot_unlocked(path, "")
+                source_sequence = obj.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE)
+                if (
+                    _AUTOSAVE_EXPORT_SOURCE_SEQUENCE not in persisted
+                    and type(source_sequence) is int
+                    and source_sequence == sequence - 1
+                ):
+                    # Older restores left this provenance implicit in their local cursor.
+                    persisted[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = source_sequence
                 if not self._checkpoint_states_equal(persisted, obj):
                     source = "journal" if same_sequence_records else "snapshot"
                     raise SnapshotSequenceConflict(

@@ -880,10 +880,13 @@ class Session:
             return snapshot
         with self._auto_save_lock:
             messages, meta = self._snapshot_for_save(state=restored)
-        sequence = _snapshot_nonnegative_int(
+        source_sequence = _snapshot_nonnegative_int(
             snapshot.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE, snapshot.get("_autosave_sequence")),
         )
+        sequence = source_sequence
         if isinstance(self.store, JournalSnapshotStorePort):
+            # Opening a writable copy advances its local cursor without advancing its source.
+            meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = source_sequence
             sequence += 1
             try:
                 self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
@@ -897,12 +900,11 @@ class Session:
                 recovered_rows = saved_message_count < len(messages)
                 if (
                     type(previous_source_sequence) is int
-                    and previous_source_sequence == sequence - 1
+                    and previous_source_sequence == source_sequence
                     and previous_sequence >= sequence
                 ):
                     # Recheck equivalent exports at the target's local cursor under the journal lock.
                     sequence = previous_sequence
-                    meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = previous_source_sequence
                 elif not recovered_rows or previous_sequence != sequence:
                     raise
                 previous_messages = previous["messages"]
@@ -1262,6 +1264,17 @@ class Session:
         ):
             replacement_store = self.store
         messages, meta = self._snapshot_for_save(replace_from)
+        source_sequence = self._auto_save_export_source_sequence
+        if (
+            source_sequence is not None
+            and (self.state.phase is SessionPhase.IDLE or self.state.phase.is_terminal())
+            and self.state.pending_external_user_turn is None
+            and self.state.pending_events.is_empty()
+            and message_count == self._auto_save_message_count
+            and self._auto_save_rewrite_from is None
+        ):
+            # Autosaving a readback of a restored answer doesn't advance the source.
+            meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = source_sequence
         tracked_messages = [*stored_messages[:replace_from], *messages] if track_messages else None
         current_seen_hashes = set(self.state.turn.seen_result_hashes)
         seen_hashes_reset = preceding_write_pending or not self._auto_save_seen_result_hashes.issubset(
@@ -1280,7 +1293,7 @@ class Session:
 
         def advance_cursor() -> None:
             self._auto_save_sequence = sequence
-            self._auto_save_export_source_sequence = None
+            self._auto_save_export_source_sequence = meta.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE)
             self._auto_save_message_count = message_count
             self._auto_save_messages = tracked_messages
             if self._auto_save_rewrite_revision == rewrite_revision:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from contextlib import AsyncExitStack
@@ -175,6 +176,88 @@ async def test_export_preserves_source_cursor_when_overwriting_an_old_autosave(t
     finally:
         await restored.aclose()
         await restored.env.cleanup()
+
+
+@pytest.mark.parametrize("copy_mode", ["fresh", "reopened", "legacy", "read-answer"])
+@pytest.mark.parametrize("source_advances", [False, True])
+async def test_writable_restore_copy_reexports_the_original_source_order(
+    tmp_path, local_environment_factory, copy_mode, source_advances,
+):
+    original_path, first_export, copy_path, backup_path = (
+        str(tmp_path / f"{name}.json") for name in ("original", "first", "copy", "backup")
+    )
+    agent = Agent(name="reviewer", system_prompt="Remember the requests.")
+    store = SessionStore()
+    options = {"agent": agent, "env": local_environment_factory(str(tmp_path)), "store": store}
+
+    def inspect(path):
+        return store.load_snapshot(path, agent.system_prompt)
+
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        original.save(first_export)
+        source = inspect(first_export)
+
+        copied = load_session(first_export, **options, llm=model(), auto_save_path=copy_path)
+        sessions.push_async_callback(copied.aclose)
+        if copy_mode == "legacy":
+            legacy = inspect(copy_path)
+            del legacy["_autosave_export_source_sequence"]
+            (tmp_path / "copy.json").write_text(json.dumps(legacy), encoding="utf-8")
+            copied = load_session(first_export, **options, llm=model(), auto_save_path=copy_path)
+            sessions.push_async_callback(copied.aclose)
+        elif copy_mode == "reopened":
+            copied = load_session(copy_path, **options, llm=model(), auto_save_path=copy_path)
+            sessions.push_async_callback(copied.aclose)
+        elif copy_mode == "read-answer":
+            assert await copied.run_loop() == "Completed request 0."
+            copied = load_session(copy_path, **options, llm=model(), auto_save_path=copy_path)
+            sessions.push_async_callback(copied.aclose)
+        copied.save(backup_path)
+        assert inspect(backup_path)["_autosave_sequence"] == source["_autosave_sequence"]
+
+        if source_advances:
+            await original.add_user_message("Remember the new requirement.")
+            while original.pending_cleanup_tasks:
+                await asyncio.gather(*original.pending_cleanup_tasks)
+            newer = inspect(original_path)
+            assert newer["_autosave_sequence"] == source["_autosave_sequence"] + 1
+            assert newer["messages"][-1]["content"] == "Remember the new requirement."
+            with pytest.raises(SnapshotSequenceConflict):
+                load_session(backup_path, **options, llm=model(), auto_save_path=original_path)
+            assert inspect(original_path) == newer
+        else:
+            restored = load_session(backup_path, **options, llm=model(), auto_save_path=original_path)
+            sessions.push_async_callback(restored.aclose)
+            assert restored.messages == transcript(source)
+            assert restored.used_tokens == 7
+
+
+async def test_writable_restore_copy_can_publish_new_work(tmp_path, local_environment_factory):
+    original_path, first_export, copy_path, backup_path = (
+        str(tmp_path / f"{name}.json") for name in ("original", "first", "copy", "backup")
+    )
+    agent = Agent(name="reviewer", system_prompt="Remember the requests.")
+    store = SessionStore()
+    options = {"agent": agent, "env": local_environment_factory(str(tmp_path)), "store": store}
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        original.save(first_export)
+
+        copied = load_session(first_export, **options, llm=model(), auto_save_path=copy_path)
+        sessions.push_async_callback(copied.aclose)
+        await copied.add_user_message("Remember what changed on the copy.")
+        await copied.run_loop()
+        copied.save(backup_path)
+
+        restored = load_session(backup_path, **options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(restored.aclose)
+        assert restored.messages == copied.messages
+        assert restored.used_tokens == 14
 
 
 async def test_export_keeps_original_autosave_bytes_unchanged(tmp_path):
