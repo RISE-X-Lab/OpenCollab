@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import json
+import stat
 from pathlib import Path
 from typing import Any, Callable
 
@@ -62,7 +63,7 @@ class _Generator:
 
 
 async def _evaluate(program: Path, inputs: list[Any]) -> list[dict[str, Any]]:
-    namespace: dict[str, Any] = {}
+    namespace: dict[str, Any] = {"__file__": str(program)}
     exec(program.read_text(encoding="utf-8"), namespace)  # noqa: S102 - test-authored candidates only
     results = []
     for inp in inputs:
@@ -516,11 +517,31 @@ def test_selection_ignores_candidates_left_by_an_earlier_run(tmp_path: Path) -> 
 
 
 async def test_evaluated_candidate_survives_edit_to_live_program(tmp_path: Path) -> None:
-    program = tmp_path / "candidate.py"
+    candidate_file = "src/candidate.py"
+    program = tmp_path / candidate_file
+    program.parent.mkdir()
+    (program.parent / "offset.txt").write_text("5\n", encoding="utf-8")
+    source = (
+        "from pathlib import Path\n"
+        "def solve(xs):\n"
+        "    offset = int(Path(__file__).with_name('offset.txt').read_text())\n"
+        "    return sum(abs(x) for x in xs) + offset\n"
+    )
     evaluated, edited = asyncio.Event(), asyncio.Event()
     evaluated_paths = []
 
+    class ExecutableCandidate(ScriptedContext):
+        async def agent(self, *args, **kwargs):
+            value = await super().agent(*args, **kwargs)
+            if program.is_file():
+                program.chmod(0o750)
+            return value
+
     async def evaluate(path: Path, inputs: list[Any]) -> list[dict[str, Any]]:
+        assert path != program
+        assert path.parent == program.parent and path.suffix == program.suffix
+        assert stat.S_IMODE(path.stat().st_mode) == 0o750
+        assert path.read_text(encoding="utf-8") == source
         results = await _evaluate(path, inputs)
         evaluated_paths.append(path)
         if len(evaluated_paths) == 1:
@@ -533,35 +554,46 @@ async def test_evaluated_candidate_survives_edit_to_live_program(tmp_path: Path)
         program.write_text("def solve(xs):\n    return 0\n", encoding="utf-8")
         edited.set()
 
-    task = make_task(tmp_path, evaluate=evaluate)
+    task = make_task(
+        tmp_path, candidate_file=candidate_file, evaluate=evaluate, oracle=lambda value: _oracle(value) + 5,
+    )
+    context = ExecutableCandidate(tmp_path, programs=[source], candidate_file=candidate_file)
     result, _ = await asyncio.wait_for(asyncio.gather(
-        reconstruct(ScriptedContext(tmp_path), {"task": register_task(task), "early_stop": 1}),
+        reconstruct(context, {"task": register_task(task), "early_stop": 1}),
         edit_program(),
     ), timeout=5)
     archived = tmp_path / ".oc_candidates" / result["final_program"]
     assert result["promotions"] == 1
     assert result["stop_reason"] == "early_stop"
     assert result["final_score"] == 1.0
-    assert evaluated_paths == [archived, archived]
-    assert archived.read_text(encoding="utf-8") == program.read_text(encoding="utf-8") == CORRECT
+    assert len(set(evaluated_paths)) == 2
+    assert all(not path.exists() for path in evaluated_paths)
+    assert set(program.parent.iterdir()) == {program, program.parent / "offset.txt"}
+    assert archived.read_text(encoding="utf-8") == program.read_text(encoding="utf-8") == source
+    assert stat.S_IMODE(archived.stat().st_mode) == stat.S_IMODE(program.stat().st_mode) == 0o750
 
 
 @pytest.mark.parametrize("cancel", [False, True], ids=["failure", "cancel"])
-async def test_failed_archive_cleanup_preserves_evaluator_exit(tmp_path, monkeypatch, cancel):
+@pytest.mark.parametrize("kind", ["archive", "evaluation copy"])
+async def test_failed_archive_cleanup_preserves_evaluator_exit(tmp_path, monkeypatch, cancel, kind):
     archive = tmp_path / ".oc_candidates" / "iter_001.py"
     started = asyncio.Event()
     evaluator_failure = RuntimeError("candidate evaluator lost its output stream")
     unlink = Path.unlink
+    evaluated_paths = []
 
     def fail_cleanup(path, *args, **kwargs):
-        if path == archive:
-            raise OSError(errno.EIO, "archive unlink failed")
+        blocked = path == archive if kind == "archive" else path in evaluated_paths
+        if blocked:
+            raise OSError(errno.EIO, "candidate unlink failed")
         return unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", fail_cleanup)
 
     async def evaluate(path, inputs):
-        assert path == archive
+        assert path.parent == tmp_path
+        assert path.read_text(encoding="utf-8") == archive.read_text(encoding="utf-8")
+        evaluated_paths.append(path)
         assert all(row["ok"] for row in await _evaluate(path, inputs))
         started.set()
         if cancel:
@@ -593,9 +625,12 @@ async def test_failed_archive_cleanup_preserves_evaluator_exit(tmp_path, monkeyp
         await asyncio.gather(job, return_exceptions=True)
 
     note, = error.__notes__
-    assert "candidate archive cleanup failed for iter_001.py" in note
-    assert "archive unlink failed" in note
-    assert archive.read_text(encoding="utf-8") == CORRECT
+    evaluation_path, = evaluated_paths
+    blocked = archive if kind == "archive" else evaluation_path
+    assert f"candidate {kind} cleanup failed for {blocked.name}" in note
+    assert "candidate unlink failed" in note
+    assert blocked.read_text(encoding="utf-8") == CORRECT
+    assert (evaluation_path if kind == "archive" else archive).exists() is False
     assert (tmp_path / "candidate.py").read_text(encoding="utf-8") == CORRECT
 
 

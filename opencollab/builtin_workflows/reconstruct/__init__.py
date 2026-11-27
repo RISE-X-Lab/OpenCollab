@@ -18,9 +18,12 @@ import importlib
 import json
 import shutil
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any, Awaitable, Callable, Sequence
 
 from opencollab.application.exception_notes import add_exception_note
@@ -123,8 +126,9 @@ class ReconstructionTask:
     ``oracle`` returns the hidden program's output for an input (raise for an
     invalid input). ``evaluate`` runs a candidate file on inputs and returns
     one ``{"ok": True, "output": ...}`` or ``{"ok": False, "error": ...}``
-    per input; it should execute the candidate where the agent's own code
-    runs, never in the harness process. ``tools`` are handed to every coding
+    per input. The evaluator receives a temporary copy next to the editable
+    candidate for the duration of the call. Execute it where the agent's own
+    code runs, never in the harness process. ``tools`` are handed to every coding
     session. ``random_inputs(k, exclude)`` draws fresh inputs from a source
     independent of the agent (the benchmark's generator); it is required
     when ``random_share`` is positive. ``on_example`` is told about every
@@ -220,6 +224,15 @@ def _input_key(value: Any) -> str:
         return repr(value)
 
 
+def _remove_candidate_file(path: Path, kind: str, error: BaseException | None = None) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as cleanup_error:
+        if error is None:
+            raise
+        add_exception_note(error, f"candidate {kind} cleanup failed for {path.name} ({cleanup_error})")
+
+
 def _archive_candidate(program: Path, candidates_dir: Path, iteration: int) -> Path:
     stem = f"iter_{iteration:03d}"
     path = candidates_dir / f"{stem}.py"
@@ -235,10 +248,28 @@ def _archive_candidate(program: Path, candidates_dir: Path, iteration: int) -> P
             with destination, program.open("rb") as source:
                 shutil.copyfileobj(source, destination)
             shutil.copymode(program, path)
-        except BaseException:
-            path.unlink(missing_ok=True)
+        except BaseException as error:
+            _remove_candidate_file(path, "archive", error)
             raise
         return path
+
+
+@contextmanager
+def _evaluation_copy(archive: Path, program: Path) -> Iterator[Path]:
+    destination = NamedTemporaryFile(
+        dir=program.parent, prefix=".oc-evaluate-", suffix=program.suffix, delete=False,
+    )
+    path = Path(destination.name)
+    try:
+        with destination, archive.open("rb") as source:
+            shutil.copyfileobj(source, destination)
+        shutil.copymode(archive, path)
+        yield path
+    except BaseException as error:
+        _remove_candidate_file(path, "evaluation copy", error)
+        raise
+    else:
+        _remove_candidate_file(path, "evaluation copy")
 
 
 @workflow(
@@ -321,18 +352,19 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     async def failures(path: Path | None) -> list[str]:
         if path is None or not path.is_file():
             return [f"{task.candidate_file} is missing"]
-        results = await task.evaluate(path, [i for i, _ in examples])
-        if len(results) != len(examples):
-            raise RuntimeError(
-                f"candidate evaluator returned {len(results)} results for {len(examples)} inputs"
-            )
-        out = []
-        for (inp, expected), res in zip(examples, results):
-            if not res.get("ok"):
-                out.append(f"{inp!r}: expected {expected!r}, got {res.get('error')}")
-            elif not task.outputs_match(res.get("output"), jsonable(expected)):
-                out.append(f"{inp!r}: expected {expected!r}, got {res.get('output')!r}")
-        return out
+        with _evaluation_copy(path, program) as evaluation_path:
+            results = await task.evaluate(evaluation_path, [i for i, _ in examples])
+            if len(results) != len(examples):
+                raise RuntimeError(
+                    f"candidate evaluator returned {len(results)} results for {len(examples)} inputs"
+                )
+            out = []
+            for (inp, expected), res in zip(examples, results):
+                if not res.get("ok"):
+                    out.append(f"{inp!r}: expected {expected!r}, got {res.get('error')}")
+                elif not task.outputs_match(res.get("output"), jsonable(expected)):
+                    out.append(f"{inp!r}: expected {expected!r}, got {res.get('output')!r}")
+            return out
 
     async def request_examples(n: int, round_no: int) -> bool:
         """Fill a batch of n new inputs: a random share first, the rest proposed by the agent."""
@@ -453,10 +485,7 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             fails = await failures(archive)
         except BaseException as error:
             if archive is not None:
-                try:
-                    archive.unlink(missing_ok=True)
-                except OSError as cleanup_error:
-                    add_exception_note(error, f"candidate archive cleanup failed for {archive.name} ({cleanup_error})")
+                _remove_candidate_file(archive, "archive", error)
             raise
         passed = len(examples) - len(fails) if archive is not None else 0
         score = None

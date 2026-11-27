@@ -68,8 +68,10 @@ task = ReconstructionTask(
 )
 ```
 
-`evaluate` should run the candidate where the agent's own code runs (for
-example inside the agent's Docker container), never in the harness process.
+`evaluate` receives a temporary copy of the archived candidate in the editable
+candidate's directory, with the same suffix and permissions. Run that copy in
+the agent's execution environment, never in the harness process. The copy is
+removed when the evaluation ends.
 `kind` is one of `list`, `two_lists`, `int`, `pair`, `string`, `points` or
 `other`; `other` disables the coverage gate and the domain check.
 
