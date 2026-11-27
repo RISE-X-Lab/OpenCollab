@@ -13,7 +13,8 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from opencollab.application.async_timeout import (
@@ -26,6 +27,18 @@ DEFAULT_INTERNAL_COMMIT_TIMEOUT_SECONDS = 120.0
 
 class WorkflowRuntimeMixin:
     """Call cleanup, concurrency permits, and timeout helpers."""
+
+    @contextmanager
+    def _own_workflow_call(self) -> Iterator[None]:
+        current = asyncio.current_task()
+        already_owned = current in self._active_call_tasks
+        if current is not None:
+            self._active_call_tasks.add(current)
+        try:
+            yield
+        finally:
+            if current is not None and not already_owned:
+                self._active_call_tasks.discard(current)
 
     @staticmethod
     def _lease_cleanup_tasks(

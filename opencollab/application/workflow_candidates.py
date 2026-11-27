@@ -274,20 +274,6 @@ def _candidate_verification_tools(tools: Sequence[Any]) -> list[Any]:
 class WorkflowCandidatesMixin:
     """Runs agent sessions in candidate leases and adopts a selected diff."""
 
-    async def _run_owned_candidate_call(
-        self, operation: Callable[[], Awaitable[CandidateRun]],
-    ) -> CandidateRun:
-        """Own acquisition, execution, capture, and cleanup as one call."""
-        current = asyncio.current_task()
-        already_owned = current in self._active_call_tasks
-        if current is not None:
-            self._active_call_tasks.add(current)
-        try:
-            return await operation()
-        finally:
-            if current is not None and not already_owned:
-                self._active_call_tasks.discard(current)
-
     async def _candidate_source_state(self) -> tuple[str | None, str, str | None]:
         read_revision = getattr(self._candidate_workspace, "source_revision", None)
         revision = await read_revision() if callable(read_revision) else None
@@ -496,7 +482,8 @@ class WorkflowCandidatesMixin:
             finally:
                 self.budget.release(budget_lease)
 
-        return await self._run_owned_candidate_call(run)
+        with self._own_workflow_call():
+            return await run()
 
     async def candidate_workflow(
         self,
@@ -678,7 +665,8 @@ class WorkflowCandidatesMixin:
                 cleanup_quiesced=cleanup_quiesced,
             )
 
-        return await self._run_owned_candidate_call(run)
+        with self._own_workflow_call():
+            return await run()
 
     async def adopt_candidate(
         self,

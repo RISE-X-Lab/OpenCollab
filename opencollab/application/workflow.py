@@ -241,7 +241,8 @@ class WorkflowContext(
             raise TypeError("tool must satisfy the verification tool contract")
         if not isinstance(params, Mapping):
             raise TypeError("verification params must be a mapping")
-        return await self._factory.execute_verification(tool, dict(params))
+        with self._own_workflow_call():
+            return await self._factory.execute_verification(tool, dict(params))
 
     async def tree_changed(self) -> bool | None:
         """Whether the working tree has uncommitted changes.
