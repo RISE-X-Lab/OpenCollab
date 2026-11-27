@@ -312,9 +312,8 @@ async def _close_stream(
         result = close()
         if asyncio.iscoroutine(result):
             if native:
-                await _wait_for_chat_transport(result, timeout)
-            else:
-                await await_owned_operation(result, propagate_cancellation=not preserve_cancellation)
+                result = _wait_for_chat_transport(result, timeout)
+            await await_owned_operation(result, propagate_cancellation=not preserve_cancellation)
     except asyncio.CancelledError:
         if not preserve_cancellation:
             raise
