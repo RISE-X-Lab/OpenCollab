@@ -82,6 +82,7 @@ async def run_workflow(
     tracer: TracePort | None = None,
     event_sink: EventPublisherPort | None = None,
     budget: int | None = None,
+    allow_budget_escape: bool = True,
     max_concurrency: int = 4,
     task_concurrency: int | None = None,
     max_steps: int | None = None,
@@ -156,6 +157,7 @@ async def run_workflow(
             deadline_margin_seconds=deadline_margin_seconds,
         )
         ctx._cleanup_environment = cleanup_environment
+        ctx._budget_escape_state.allowed = allow_budget_escape
     except BaseException as exc:
         close_failure = _close_tracer_capture(tracer) if owns_tracer else None
         _note_failure(exc, "owned workflow tracer close also failed", close_failure)

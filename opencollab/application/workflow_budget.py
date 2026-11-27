@@ -146,6 +146,7 @@ class _BudgetEscapeState:
 
     lock: asyncio.Lock
     used: bool = False
+    allowed: bool = True
 
 @dataclass(eq=False)
 class _BudgetLease:
@@ -290,12 +291,13 @@ class WorkflowBudgetMixin:
                 available = max(0, int(remaining))
                 recoverable = max(0, int(remaining) + self.budget._parent_recovery_room())
                 initial = available or min(1, recoverable)
-                if initial <= 0 and not over_budget_ok:
+                if initial <= 0 and not (over_budget_ok and self._budget_escape_state.allowed):
                     self._trace_budget_decision(
                         "budget_refusal",
                         cap=cap,
                         remaining=remaining,
                         label=label,
+                        over_budget_ok=over_budget_ok,
                     )
                     raise WorkflowBudgetExceeded(
                         f"workflow budget exhausted: spent {self.budget.spent()} "
