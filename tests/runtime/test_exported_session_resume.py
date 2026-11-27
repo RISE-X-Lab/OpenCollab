@@ -6,6 +6,7 @@ import asyncio
 import copy
 import errno
 import json
+import threading
 from contextlib import AsyncExitStack
 
 import pytest
@@ -313,7 +314,8 @@ async def test_writable_restore_copy_reexports_the_original_source_order(
             assert restored.used_tokens == 7
 
 
-async def test_writable_restore_copy_can_publish_new_work(tmp_path, local_environment_factory):
+@pytest.mark.parametrize("already_queued", [False, True])
+async def test_writable_restore_copy_can_publish_new_work(tmp_path, local_environment_factory, already_queued):
     original_path, first_export, copy_path, backup_path = (
         str(tmp_path / f"{name}.json") for name in ("original", "first", "copy", "backup")
     )
@@ -324,18 +326,131 @@ async def test_writable_restore_copy_can_publish_new_work(tmp_path, local_enviro
         original = build_session(**options, llm=model(), auto_save_path=original_path)
         sessions.push_async_callback(original.aclose)
         await converse(original, 1)
+        request = "Remember the new requirement."
+        if already_queued:
+            await original.add_user_message(request)
         original.save(first_export)
+        while original.pending_cleanup_tasks:
+            await asyncio.gather(*original.pending_cleanup_tasks)
 
-        copied = load_session(first_export, **options, llm=model(), auto_save_path=copy_path)
+        reply = "New requirement recorded."
+        continuation = FakeLLM([llm_response(content=reply, total_tokens=7, input_tokens=5)])
+        copied = load_session(first_export, **options, llm=continuation, auto_save_path=copy_path)
         sessions.push_async_callback(copied.aclose)
-        await copied.add_user_message("Remember what changed on the copy.")
-        await copied.run_loop()
+        if not already_queued:
+            await copied.add_user_message(request)
+        assert await copied.run_loop() == reply
+        assert len(continuation.calls) == 1
         copied.save(backup_path)
 
-        restored = load_session(backup_path, **options, llm=model(), auto_save_path=original_path)
+        readback = model()
+        restored = load_session(backup_path, **options, llm=readback, auto_save_path=original_path)
         sessions.push_async_callback(restored.aclose)
         assert restored.messages == copied.messages
         assert restored.used_tokens == 14
+        assert await restored.run_loop() == reply
+        assert readback.calls == []
+
+
+@pytest.mark.parametrize(
+    "publication", ["before-prepare", "pending", "settled", "failed", "checkpointed", "overlapping"],
+)
+async def test_exported_working_copy_preserves_a_new_queued_turn(
+    tmp_path, local_environment_factory, monkeypatch, publication,
+):
+    source, export, working, backup = (
+        str(tmp_path / f"{name}.json") for name in ("source", "export", "working", "backup")
+    )
+    store = SessionStore()
+    options = {
+        "agent": Agent(name="reviewer", system_prompt="Remember each request."),
+        "env": local_environment_factory(str(tmp_path)),
+        "store": store,
+    }
+
+    async def settle(session):
+        while session.pending_cleanup_tasks:
+            await asyncio.gather(*session.pending_cleanup_tasks)
+
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, llm=model(), auto_save_path=source)
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        original.save(export)
+
+        copy_session = load_session(export, **options, llm=model(), auto_save_path=working)
+        sessions.push_async_callback(copy_session.aclose)
+        previous = OpenCollab.read_session_snapshot(working)
+        next_request = "Remember the new requirement."
+
+        def fail_append(*args, **kwargs):
+            raise OSError(errno.EIO, "queued autosave failed")
+
+        earlier_started, earlier_release = threading.Event(), threading.Event()
+        queued_started, queued_release = threading.Event(), threading.Event()
+        pauses = iter(((earlier_started, earlier_release), (queued_started, queued_release)))
+        append = store.append_snapshot_delta
+
+        def pause_append(path, **kwargs):
+            signals = next(pauses, None)
+            if signals is not None:
+                started, release = signals
+                started.set()
+                assert release.wait(timeout=3)
+            return append(path, **kwargs)
+
+        with monkeypatch.context() as patch:
+            try:
+                if publication == "failed":
+                    patch.setattr(store, "append_snapshot_delta", fail_append)
+                elif publication in {"before-prepare", "overlapping"}:
+                    patch.setattr(store, "append_snapshot_delta", pause_append)
+                    copy_session.enqueue_auto_save()
+                    assert await asyncio.to_thread(earlier_started.wait, 3)
+                await copy_session.add_user_message(next_request)
+                assert copy_session.pending_cleanup_tasks
+                if publication == "settled":
+                    await settle(copy_session)
+                elif publication == "checkpointed":
+                    copy_session.save(working)
+                elif publication == "overlapping":
+                    earlier_release.set()
+                    assert await asyncio.to_thread(queued_started.wait, 3)
+                copy_session.save(backup)
+            finally:
+                earlier_release.set()
+                queued_release.set()
+                await settle(copy_session)
+
+        saved = OpenCollab.read_session_snapshot(backup)
+        automatic = OpenCollab.read_session_snapshot(working)
+        queued = saved["session_state"]["pending_external_user_turn"]
+        assert queued["content"] == next_request
+        if publication == "failed":
+            assert automatic == previous
+            assert str(copy_session.persistence_errors[0]).endswith("queued autosave failed")
+        else:
+            assert automatic["messages"] == saved["messages"]
+            assert automatic["session_state"] == saved["session_state"]
+
+        continuation = FakeLLM([llm_response(content="New requirement recorded.", total_tokens=7, input_tokens=5)])
+        resumed = load_session(backup, **options, llm=continuation, auto_save_path=working)
+        sessions.push_async_callback(resumed.aclose)
+        assert continuation.calls == []
+        assert await resumed.run_loop() == "New requirement recorded."
+        assert await resumed.run_loop() == "New requirement recorded."
+        assert len(continuation.calls) == 1
+        user_requests = [
+            row["content"].splitlines()[0] for row in continuation.calls[0]["messages"] if row["role"] == "user"
+        ]
+        assert user_requests == ["Remember requirement 0.", next_request]
+
+        finished = OpenCollab.read_session_snapshot(working)
+        assert finished["session_state"]["used_tokens"] == 14
+        for outdated in (export, backup):
+            with pytest.raises(SnapshotSequenceConflict, match="refusing stale checkpoint"):
+                load_session(outdated, **options, llm=model(), auto_save_path=working)
+            assert OpenCollab.read_session_snapshot(working) == finished
 
 
 async def test_export_keeps_original_autosave_bytes_unchanged(tmp_path):

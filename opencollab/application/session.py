@@ -573,7 +573,21 @@ class Session:
                 self.state.reset_for_user_turn()
                 self.runner.reset_runtime_for_user_turn()
                 self._completed_turn_output = None
+                with self._auto_save_lock:
+                    self._auto_save_export_source_sequence = None
                 await self.event_bus.emit(SessionEvent(type="user_message_appended"))
+
+    def _checkpoint_user_turn(self) -> Callable[[], None]:
+        state = self.state.checkpoint_user_turn()
+        with self._auto_save_lock:
+            source_sequence = self._auto_save_export_source_sequence
+
+        def restore() -> None:
+            self.state.restore_user_turn(state)
+            with self._auto_save_lock:
+                self._auto_save_export_source_sequence = source_sequence
+
+        return restore
 
     def apply_launch(self, launch: "LaunchSpec") -> None:
         """Apply launch-time persistence as a one-shot lifecycle step.
@@ -811,8 +825,10 @@ class Session:
             restored.completed_turn_start_message_index = (
                 completed_turn_start if completed_turn_start is not None else restored_turn_start
             )
-        elif restored.phase is SessionPhase.STOPPED and restored.terminal_reason == _TRUNCATED_OUTPUT_REASON:
-            # Legacy stopped snapshots only had a whole-turn boundary.
+        elif (
+            (restored.phase is SessionPhase.STOPPED and restored.terminal_reason == _TRUNCATED_OUTPUT_REASON)
+            or (restored.phase is SessionPhase.IDLE and restored.pending_external_user_turn is not None)
+        ):
             restored.completed_turn_start_message_index = _restore_active_turn_start(
                 raw_state.get("completed_turn_start_message_index"), restored.messages,
             )
@@ -1286,10 +1302,10 @@ class Session:
             and (self.state.phase is SessionPhase.IDLE or self.state.phase.is_terminal())
             and self.state.pending_external_user_turn is None
             and self.state.pending_events.is_empty()
-            and message_count == self._auto_save_message_count
+            and message_count <= self._auto_save_message_count
             and self._auto_save_rewrite_from is None
         ):
-            # Autosaving a readback of a restored answer doesn't advance the source.
+            # Readbacks and rollbacks of a provisional append keep the restored source.
             meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = source_sequence
         tracked_messages = [*stored_messages[:replace_from], *messages] if track_messages else None
         current_seen_hashes = set(self.state.turn.seen_result_hashes)
@@ -1309,7 +1325,12 @@ class Session:
 
         def advance_cursor() -> None:
             self._auto_save_sequence = sequence
-            self._auto_save_export_source_sequence = meta.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE)
+            # A provisional snapshot cannot clear provenance reinstated by turn rollback.
+            if (
+                source_sequence == self._auto_save_export_source_sequence
+                and _AUTOSAVE_EXPORT_SOURCE_SEQUENCE not in meta
+            ):
+                self._auto_save_export_source_sequence = None
             self._auto_save_message_count = message_count
             self._auto_save_messages = tracked_messages
             if self._auto_save_rewrite_revision == rewrite_revision:
