@@ -5,7 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
+from opencollab.application._session_run_shared import (
+    _FILTERED_OUTPUT_REASON,
+    _TRUNCATED_OUTPUT_REASON,
+    _last_assistant_answer,
+)
 from opencollab.application.async_timeout import consume_task_result
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.scheduler_types import SchedulerStalledError, SchedulerTurnError
@@ -15,7 +19,12 @@ from opencollab.domain.session import SessionPhase, SessionState
 logger = logging.getLogger(__name__)
 
 def _turn_answer(state: SessionState, turn_start: int, *, completed_answer: str = "") -> str:
-    if state.phase is SessionPhase.STOPPED and state.terminal_reason == _FILTERED_OUTPUT_REASON:
+    if state.phase is SessionPhase.ERROR and completed_answer:
+        return completed_answer
+    if state.phase is SessionPhase.STOPPED and (
+        state.terminal_reason == _FILTERED_OUTPUT_REASON
+        or (completed_answer and state.terminal_reason == _TRUNCATED_OUTPUT_REASON)
+    ):
         reply_start = state.completed_turn_start_message_index
         if reply_start is None:
             return completed_answer

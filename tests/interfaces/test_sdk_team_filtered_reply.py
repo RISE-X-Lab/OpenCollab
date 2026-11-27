@@ -295,27 +295,35 @@ async def test_team_lead_returns_only_visible_filtered_text(
     assert len(requests) == 2
 
 
-@pytest.mark.parametrize(("initial_answer", "finish_reason", "content", "output"), [
-    pytest.param(_VISIBLE, "stop", "Updated subtotal.", "Updated subtotal.", id="completed-followup"),
-    pytest.param(_VISIBLE, "content_filter", None, _VISIBLE, id="empty-filter"),
-    pytest.param(_VISIBLE, "content_filter", _REFUSAL, _REFUSAL, id="visible-filter"),
-    pytest.param(None, "content_filter", None, None, id="interim-only"),
+@pytest.mark.parametrize(("initial_answer", "finish_reason", "message", "output"), [
+    pytest.param(_VISIBLE, "stop", {"content": "Updated subtotal."}, "Updated subtotal.", id="completed-followup"),
+    pytest.param(_VISIBLE, "content_filter", {"content": None}, _VISIBLE, id="empty-filter"),
+    pytest.param(_VISIBLE, "content_filter", {"content": _REFUSAL}, _REFUSAL, id="visible-filter"),
+    pytest.param(None, "content_filter", {"content": None}, None, id="interim-only"),
+    pytest.param(_VISIBLE, "length", {"content": None}, _VISIBLE, id="empty-truncation"),
+    pytest.param(_VISIBLE, "length", {"content": None, "reasoning_content": _REASONING}, _VISIBLE,
+                 id="reasoning-truncation"),
+    pytest.param(_VISIBLE, "length", {"content": _PARTIAL}, _PARTIAL, id="visible-truncation"),
+    pytest.param(_VISIBLE, "provider-error", {}, _VISIBLE, id="provider-error"),
 ])
-async def test_team_keeps_completed_lead_answer_after_empty_filtered_followup(
-    tmp_path, monkeypatch, initial_answer, finish_reason, content, output,
+async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible_reply(
+    tmp_path, monkeypatch, initial_answer, finish_reason, message, output,
 ):
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
     monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    (tmp_path / "inventory.txt").write_text("verified inventory: 42\n", encoding="utf-8")
     team = tmp_path / "team.yaml"
     team.write_text(
         "entry: lead\nroles:\n"
-        "  lead:\n    model: fixture-lead\n    prompt: Report the inventory.\n    tools: [message_agent]\n"
+        "  lead:\n    model: fixture-lead\n    prompt: Report the inventory.\n    tools: [message_agent, file_read]\n"
         "  worker:\n    model: fixture-worker\n    prompt: Send delivery updates.\n    tools: [message_agent]\n"
         "topology:\n  lead: [worker]\n  worker: [lead]\n",
         encoding="utf-8",
     )
     notice = "The delivery audit is pending."
+    reads_inventory = finish_reason in {"length", "provider-error"}
+    provider_message = "Optional reconciliation is temporarily unavailable."
     lead_requests = []
     worker_requests = []
 
@@ -338,7 +346,20 @@ async def test_team_keeps_completed_lead_answer_after_empty_filtered_followup(
             return completion_http_response(request, text="Notification sent.")
         lead_requests.append(messages)
         if any(notice in row.get("content", "") for row in messages if row["role"] == "user"):
-            return _chat_reply(request, model, len(lead_requests), finish_reason, {"content": content})
+            if reads_inventory:
+                if len(lead_requests) == 3:
+                    return _chat_reply(request, model, 3, "tool_calls", _inventory_read())
+                assert len(lead_requests) == 4
+                assert any(
+                    row["role"] == "tool" and row["tool_call_id"] == "read-inventory"
+                    and "verified inventory: 42" in row["content"]
+                    for row in messages
+                )
+            if finish_reason == "provider-error":
+                return http_response(request, 503, json={"error": {
+                    "message": provider_message, "type": "server_error", "code": "service_unavailable",
+                }})
+            return _chat_reply(request, model, len(lead_requests), finish_reason, message)
         if len(lead_requests) == 1:
             return _chat_reply(
                 request, model, 1, "tool_calls",
@@ -357,7 +378,7 @@ async def test_team_keeps_completed_lead_answer_after_empty_filtered_followup(
         "Report the verified inventory subtotal.", config=team, artifacts=artifacts, trace=True,
         use_worktrees=False, prebuild_team=True, serialize_turns=True, budget=100_000, timeout=5,
     )
-    assert len(lead_requests) == (4 if initial_answer is None else 3)
+    assert len(lead_requests) == (4 if initial_answer is None or reads_inventory else 3)
     assert len(worker_requests) == 2
     rows = [json.loads(line) for line in (artifacts / "trajectory.jsonl").read_text(encoding="utf-8").splitlines()]
     lead_completed = next(
@@ -367,10 +388,12 @@ async def test_team_keeps_completed_lead_answer_after_empty_filtered_followup(
         row["step"] for row in rows if row["type"] == "message_sent" and row["payload"]["from_aid"] == 1
     )
     assert lead_completed < worker_sent
-    filtered = finish_reason == "content_filter"
-    assert (result.output, result.status, result.reason) == (
-        output, "stopped" if filtered else "completed", _FILTER_REASON if filtered else None,
-    )
+    assert result.output == output
+    if finish_reason == "provider-error":
+        assert result.status == "failed" and provider_message in result.reason
+    else:
+        reason = {"content_filter": _FILTER_REASON, "length": _TRUNCATED_REASON}.get(finish_reason)
+        assert (result.status, result.reason) == ("stopped" if reason else "completed", reason)
 
 
 @pytest.mark.parametrize(
