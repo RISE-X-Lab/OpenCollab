@@ -15,8 +15,9 @@ async def _wait_for_transport(
     timeout: float | None,
     *,
     on_interrupt: Callable[[_TransportInterruption], None] | None = None,
+    repeat_cancellation: bool = True,
 ) -> _T:
-    if sys.version_info >= (3, 12) and on_interrupt is None:
+    if sys.version_info >= (3, 12) and on_interrupt is None and repeat_cancellation:
         return await asyncio.wait_for(operation, timeout)
     # Retain terminal usage when a cancelled transport still delivers a result.
     task = asyncio.ensure_future(operation)
@@ -42,7 +43,7 @@ async def _wait_for_transport(
                     interruption = cancellation
                     if on_interrupt is not None:
                         on_interrupt(interruption)
-                if not task.done():
+                if repeat_cancellation and not task.done():
                     task.cancel()
         if task.cancelled():
             raise interruption

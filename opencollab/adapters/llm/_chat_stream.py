@@ -263,6 +263,8 @@ async def _wait_for_chat_transport(
     operation: Awaitable[_T],
     timeout: float | None,
     settle_cancelled: Callable[[_T], Awaitable[object]] | None = None,
+    *,
+    repeat_cancellation: bool = True,
 ) -> _T:
     cancellation: asyncio.CancelledError | None = None
 
@@ -272,7 +274,9 @@ async def _wait_for_chat_transport(
             cancellation = interruption
 
     try:
-        result = await _wait_for_transport(operation, timeout, on_interrupt=observe)
+        result = await _wait_for_transport(
+            operation, timeout, on_interrupt=observe, repeat_cancellation=repeat_cancellation,
+        )
     except (Exception, asyncio.CancelledError) as exc:
         if cancellation is not None and exc is not cancellation:
             raise cancellation from exc
@@ -312,8 +316,11 @@ async def _close_stream(
         result = close()
         if asyncio.iscoroutine(result):
             if native:
-                result = _wait_for_chat_transport(result, timeout)
-            await await_owned_operation(result, propagate_cancellation=not preserve_cancellation)
+                result = _wait_for_chat_transport(result, timeout, repeat_cancellation=False)
+            if native and not preserve_cancellation:
+                await result
+            else:
+                await await_owned_operation(result, propagate_cancellation=not preserve_cancellation)
     except asyncio.CancelledError:
         if not preserve_cancellation:
             raise
