@@ -643,7 +643,11 @@ async def run_workflow(
             ),
         )
         return ProgrammaticResult(
-            output=None,
+            output=(
+                details.output
+                if details is not None and details.evidence_complete and details.body_returned_before_deadline
+                else None
+            ),
             status="stopped",
             reason="timeout",
             tokens=0 if details is None else details.tokens,

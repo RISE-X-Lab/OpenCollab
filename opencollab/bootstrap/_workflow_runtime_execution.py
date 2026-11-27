@@ -44,6 +44,7 @@ def _runtime_result(
     name: str,
     stop_reason: Literal["budget_exceeded"] | None,
     evidence_complete: bool,
+    body_returned_before_deadline: bool,
 ) -> WorkflowRuntimeResult:
     sessions = tuple(ctx.sessions)
     tokens = ctx.budget.spent()
@@ -62,6 +63,7 @@ def _runtime_result(
         agent_failures=ctx.agent_failures,
         stop_reason=stop_reason,
         evidence_complete=evidence_complete,
+        body_returned_before_deadline=body_returned_before_deadline,
     )
 
 def _attach_runtime_result(
@@ -160,6 +162,7 @@ async def run_workflow(
         raise
 
     result: Any = None
+    body_returned_before_deadline = False
     stop_reason: Literal["budget_exceeded"] | None = None
     workflow_failure: BaseException | None = None
     cancellation: asyncio.CancelledError | None = None
@@ -167,6 +170,9 @@ async def run_workflow(
     ctx._workflow_imports = imports
     try:
         result = await fn(ctx, args)
+        body_returned_before_deadline = (
+            deadline_monotonic is None or asyncio.get_running_loop().time() < deadline_monotonic
+        )
     except WorkflowBudgetExceeded as exc:
         stop_reason = "budget_exceeded"
         result = {
@@ -261,6 +267,7 @@ async def run_workflow(
         name=name,
         stop_reason=stop_reason,
         evidence_complete=evidence_complete,
+        body_returned_before_deadline=body_returned_before_deadline,
     )
     _attach_runtime_result(cancellation, runtime_result)
     _attach_runtime_result(workflow_failure, runtime_result)
