@@ -46,7 +46,8 @@ def _response(body, spec):
     if "function_arguments" in spec:
         items = [function_item("call_usage", "structured_output", spec["function_arguments"])]
     return {
-        "id": "resp_usage_test", "object": "response", "created_at": 1, "model": body["model"],
+        "id": "resp_usage_test", "object": "response", "created_at": 1,
+        "model": spec.get("provider_model", body["model"]),
         "instructions": body.get("instructions"),
         "status": "incomplete" if kind == "filter" else "failed" if kind == "failed" else "completed",
         "error": (
@@ -165,7 +166,8 @@ async def test_reported_terminal_error_usage_reaches_session_and_ledger(
         **KNOWN_USAGE, "input_tokens_details": {"cached_tokens": 5},
         "output_tokens_details": {"reasoning_tokens": 2},
     }
-    base_url, requests = local_responses_server([{"kind": kind, "usage": reported}])
+    provider_model = f"{model}-provider-revision"
+    base_url, requests = local_responses_server([{"kind": kind, "usage": reported, "provider_model": provider_model}])
     async with _client(model, base_url) as client:
         session = build_session(
             env=local_environment_factory(),
@@ -181,6 +183,7 @@ async def test_reported_terminal_error_usage_reaches_session_and_ledger(
         assert captured.value.code == "server_error"
     else:
         assert "content_filter" in str(captured.value)
+    assert getattr(captured.value, "provider_model", None) == provider_model
     assert captured.value.usage.raw_usage == reported
     records = _records(usage_log)
     assert len(records) == 1
@@ -194,6 +197,7 @@ async def test_reported_terminal_error_usage_reaches_session_and_ledger(
     assert payload["error"] == {"type": type(captured.value).__name__, "message": str(captured.value)}
     assert payload["purpose"] == "completion"
     assert (payload["aid"], payload["session_step"], payload["model"]) == (7, 1, model)
+    assert payload["provider_model"] == provider_model
     assert payload["wire_protocol"] == "responses"
     assert payload["usage"] == {
         "input_tokens": 30, "output_tokens": 7, "total_tokens": 37,
@@ -201,6 +205,19 @@ async def test_reported_terminal_error_usage_reaches_session_and_ledger(
         "estimated": False, "reasoning_tokens": 2, "raw_usage": reported,
     }
     assert calls[0]["metrics"]["tokens"] == 37
+
+@pytest.mark.parametrize("kind", ["filter", "failed"])
+async def test_terminal_error_without_model_keeps_provider_identity_unknown(monkeypatch, usage_log, kind):
+    def respond(request):
+        content_type, body = _payload(json.loads(request.content), {"kind": kind, "provider_model": None})
+        return http_response(request, 200, headers={"content-type": content_type}, content=body)
+
+    install_sdk_transport(monkeypatch, "openai", respond)
+    async with _client("gpt-4o", "https://fixture.invalid/v1") as client:
+        with pytest.raises(ResponsesProtocolError) as captured:
+            await client.complete([{"role": "user", "content": "Report the measurement."}])
+    assert getattr(captured.value, "provider_model", None) is None
+    assert captured.value.usage.total_tokens == 37
 
 @pytest.mark.parametrize("model", ["gpt-4o", "o1-pro"])
 async def test_invalid_function_json_retains_terminal_usage(model, local_responses_server, usage_log):

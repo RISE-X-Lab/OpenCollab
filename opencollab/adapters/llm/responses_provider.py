@@ -295,7 +295,7 @@ def _error_message(error: Any) -> str:
         return str(error.get("message") or error.get("code") or error.get("reason") or "unknown Responses error")
     return str(error or "unknown Responses error")
 
-def _raise_response_error(error: Any) -> None:
+def _raise_response_error(error: Any, *, provider_model: str | None) -> None:
     message = _error_message(error)
     code = error.get("code") if isinstance(error, dict) else None
     param = error.get("param") if isinstance(error, dict) else None
@@ -303,13 +303,21 @@ def _raise_response_error(error: Any) -> None:
         fragment in message.lower() for fragment in _TRANSIENT_RESPONSE_MESSAGES
     ):
         status_code = 429 if code == "rate_limit_exceeded" else 503
-        raise ResponsesTransientEventError(message, code=code, status_code=status_code, param=param)
+        raise ResponsesTransientEventError(
+            message, code=code, status_code=status_code, param=param, provider_model=provider_model,
+        )
     status_code = 400 if code in {"context_length_exceeded", "string_above_max_length"} else None
-    raise ResponsesTerminalEventError(message, code=code, status_code=status_code, param=param)
+    raise ResponsesTerminalEventError(
+        message, code=code, status_code=status_code, param=param, provider_model=provider_model,
+    )
+
+def _reported_response_model(response: Any) -> str | None:
+    model = getattr(response, "model", None)
+    return model if isinstance(model, str) and model else None
 
 def _response_model(response: Any) -> str:
-    actual_model = getattr(response, "model", None)
-    if not isinstance(actual_model, str) or not actual_model:
+    actual_model = _reported_response_model(response)
+    if actual_model is None:
         raise ResponsesProtocolError("terminal Responses object is missing model identity")
     return actual_model
 
@@ -361,7 +369,9 @@ def _validate_terminal_response(
         if reason not in {"max_tokens", "max_output_tokens"}:
             message = f"incomplete Responses object has unsupported reason {reason!r}"
             if reason == "content_filter":
-                raise ResponsesTerminalEventError(message, code=reason)
+                raise ResponsesTerminalEventError(
+                    message, code=reason, provider_model=_reported_response_model(response),
+                )
             raise ResponsesProtocolError(message)
         finish_reason = "max_tokens"
     return _response_model(response), finish_reason
@@ -370,11 +380,15 @@ def _handle_event(event: Any, state: _StreamState, expected_model: str | None = 
     event_type = _event_type(event)
     if event_type in {"error", "response.failed"}:
         state.completed_response = getattr(event, "response", None)
-        _raise_response_error(_event_error_data(event))
+        _raise_response_error(
+            _event_error_data(event), provider_model=_reported_response_model(state.completed_response),
+        )
     if event_type == "response.incomplete":
         response = getattr(event, "response", None)
         if getattr(response, "status", None) != "incomplete":
-            raise ResponsesTerminalEventError(_error_message(_event_error_data(event)))
+            raise ResponsesTerminalEventError(
+                _error_message(_event_error_data(event)), provider_model=_reported_response_model(response),
+            )
         state.completed_response = response
         _validate_terminal_response(response, expected_model)
         return True
@@ -650,8 +664,8 @@ def parse_responses_response(
 ) -> LLMResponse:
     """Parse one terminal non-streaming Responses object."""
     if getattr(response, "status", None) == "failed":
-        _response_model(response)
-        _raise_response_error(to_plain_data(getattr(response, "error", None)))
+        provider_model = _response_model(response)
+        _raise_response_error(to_plain_data(getattr(response, "error", None)), provider_model=provider_model)
     _validate_terminal_response(response, expected_model)
     state = _StreamState(completed_response=response)
     output = to_plain_data(getattr(response, "output", None))
