@@ -192,6 +192,58 @@ async def test_agent_runtime_timeout_still_aborts_when_revoke_fails(monkeypatch)
         await _run_agent(environment, timeout_seconds=0.01, cleanup_environment=True)
     assert environment.abort_calls == 1
 
+@pytest.mark.parametrize("interrupt", ["deadline", "caller"])
+async def test_agent_runtime_rechecks_a_transient_abort_io_error_after_finalization(monkeypatch, interrupt):
+    class TransientAbortEnvironment(Environment):
+        async def abort(self) -> None:
+            await super().abort()
+            if self.abort_calls == 1:
+                raise OSError("temporary file cleanup failed")
+            assert self.cleanup_done.is_set()
+
+    session = Session(outcome="block")
+    _patch_session(monkeypatch, session)
+    environment = TransientAbortEnvironment()
+    if interrupt == "deadline":
+        result = await _run_agent(environment, timeout_seconds=0.01, cleanup_environment=True)
+        assert result.outcome == "timed_out"
+        assert result.environment_quiesced is True
+        assert result.tokens_spent == session.used_tokens
+    else:
+        messages = []
+
+        async def run():
+            try:
+                await _run_agent(environment, cleanup_environment=True)
+            except asyncio.CancelledError as cancellation:
+                messages.append(str(cancellation))
+                raise
+
+        owner = asyncio.create_task(run())
+        await session.started.wait()
+        owner.cancel("caller interrupted the run")
+        with pytest.raises(asyncio.CancelledError):
+            await owner
+        assert messages == ["caller interrupted the run"]
+        assert owner.cancelled()
+    assert environment.abort_calls == 2
+    assert environment.cleanup_calls == 1
+    assert session.close_calls == 1
+
+async def test_agent_runtime_keeps_an_abort_io_error_when_recheck_also_fails(monkeypatch):
+    class FailingAbortEnvironment(Environment):
+        async def abort(self) -> None:
+            await super().abort()
+            raise OSError("temporary file cleanup failed")
+
+    session = Session(outcome="block")
+    _patch_session(monkeypatch, session)
+    environment = FailingAbortEnvironment()
+    with pytest.raises(AgentRuntimeLifecycleError, match="quiescent"):
+        await _run_agent(environment, timeout_seconds=0.01, cleanup_environment=True)
+    assert environment.cleanup_done.is_set()
+    assert environment.abort_calls == 2
+
 async def test_agent_runtime_caller_cancellation_leaves_caller_environment_active(monkeypatch) -> None:
     session = Session(outcome="block")
     _patch_session(monkeypatch, session)

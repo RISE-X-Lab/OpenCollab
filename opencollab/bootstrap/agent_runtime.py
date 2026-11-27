@@ -286,15 +286,19 @@ async def run_agent(
         return False
 
     async def stop_owned() -> tuple[bool, bool, bool]:
-        aborted = True
-        if cleanup_environment:
-            aborted = await revoke_and_abort_environment(
-                environment,
-                cleanup_timeout_seconds,
-            )
+        abort_failure = (
+            await _environment_abort_failure(environment, cleanup_timeout_seconds)
+            if cleanup_environment else None
+        )
         terminal = await force_task_terminal(owner, timeout=cleanup_timeout_seconds)
         finalized = await finalize_with_retry()
-        return aborted, terminal, finalized
+        if (
+            terminal and finalized and isinstance(abort_failure, OSError)
+            and not isinstance(abort_failure, (TimeoutError, asyncio.TimeoutError))
+        ):
+            # A failed unlink can be repaired by finalization. Confirm abort on the settled owner.
+            abort_failure = await _environment_abort_failure(environment, cleanup_timeout_seconds)
+        return abort_failure is None, terminal, finalized
 
     async def stop_once(*, propagate_cancellation: bool) -> tuple[bool, bool, bool]:
         nonlocal stop_task
