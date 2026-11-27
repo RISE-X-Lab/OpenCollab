@@ -4,6 +4,7 @@ import json
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters.env import LocalEnvironment
 from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
 
 
@@ -78,3 +79,49 @@ async def test_team_deadline_returns_only_an_accepted_answer(tmp_path, monkeypat
         assert reader_cancelled.is_set()
 
     assert result.output == (None if outcome == "working" else answer)
+
+
+async def test_team_deadline_preserves_final_answer_during_diff_capture(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    team = tmp_path / "team.yaml"
+    team.write_text("entry: lead\nroles:\n  lead:\n    prompt: State the total.\n    tools: []\n", encoding="utf-8")
+    answer = "The total is twelve."
+    diff_started = asyncio.Event()
+    diff_cancelled = asyncio.Event()
+    requests = []
+
+    class SlowDiffEnvironment(LocalEnvironment):
+        async def get_diff(self):
+            diff_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                diff_cancelled.set()
+            return ""
+
+    def respond(request):
+        requests.append(request)
+        return completion_http_response(request, text=answer)
+
+    install_sdk_transport(monkeypatch, "openai", respond)
+    environment = SlowDiffEnvironment(str(tmp_path))
+    client = OpenCollab(
+        tmp_path, provider="openai", model="fixture-model", api_key=tmp_path.name,
+        base_url="https://fixture.invalid/v1", environment=environment,
+        config={"llm_max_retries": 0, "wire_protocol": "chat_completions", "llm_stream_chat": False},
+    )
+    artifacts = tmp_path / "artifacts"
+    try:
+        result = await client.team(
+            "Read the total.", config=team, artifacts=artifacts, budget=20000,
+            trace=False, use_worktrees=False, timeout=2.0, cleanup_timeout=1.0,
+        )
+        assert len(requests) == 1
+        assert diff_started.is_set() and diff_cancelled.is_set()
+        assert (result.status, result.reason, result.tokens) == ("stopped", "timeout", 4)
+        assert result.metrics["session_quiesced"] is True
+        snapshot = client.read_session_snapshot(next(artifacts.glob("agent_0_*.json")))
+        assert snapshot["messages"][-1]["content"] == answer
+        assert result.output == answer
+    finally:
+        await environment.cleanup()

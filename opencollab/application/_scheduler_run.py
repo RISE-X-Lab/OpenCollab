@@ -44,7 +44,16 @@ class SchedulerRunMixin:
         answer = self._completed_public_turn_answers.get(aid)
         if answer is None:
             return None
-        return self._sessions[aid].state.submitted_summary or answer or None
+        state = self._sessions[aid].state
+        if state.submitted_summary:
+            return state.submitted_summary
+        if state.phase is SessionPhase.DONE:
+            finished = _last_assistant_answer(
+                state.messages, state.completed_turn_start_message_index, include_tool_call_text=False,
+            )
+            if finished:
+                return finished
+        return answer or None
 
     async def run_turn(
         self,
