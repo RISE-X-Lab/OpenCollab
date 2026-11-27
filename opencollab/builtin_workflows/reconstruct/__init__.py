@@ -264,7 +264,7 @@ def _evaluation_copy(archive: Path, program: Path) -> Iterator[Path]:
         with destination, archive.open("rb") as source:
             shutil.copyfileobj(source, destination)
         shutil.copymode(archive, path)
-        yield path
+        yield program.parent / path.name
     except BaseException as error:
         _remove_candidate_file(path, "evaluation copy", error)
         raise

@@ -574,7 +574,10 @@ async def test_evaluated_candidate_survives_edit_to_live_program(tmp_path: Path)
     assert stat.S_IMODE(archived.stat().st_mode) == stat.S_IMODE(program.stat().st_mode) == 0o750
 
 
-async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path: Path) -> None:
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute-workspace", "relative-workspace"])
+async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path, monkeypatch, relative):
+    monkeypatch.chdir(tmp_path.parent)
+    workspace = Path(tmp_path.name) if relative else tmp_path
     source = CORRECT + (
         "if __name__ == '__main__':\n"
         "    import json, sys\n"
@@ -584,22 +587,24 @@ async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path:
 
     async def evaluate(path, inputs):
         evaluated.append(path)
+        module = path.relative_to(workspace).stem
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-B", "-m", path.stem, json.dumps(inputs),
-            cwd=path.parent, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            sys.executable, "-B", "-m", module, json.dumps(inputs),
+            cwd=workspace, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
         assert process.returncode == 0, stderr.decode()
         return [{"ok": True, "output": value} for value in json.loads(stdout)]
 
-    task = make_task(tmp_path, evaluate=evaluate)
+    task = make_task(workspace, evaluate=evaluate)
     result = await reconstruct(
-        ScriptedContext(tmp_path, programs=[source]), {"task": register_task(task), "early_stop": 1},
+        ScriptedContext(workspace, programs=[source]), {"task": register_task(task), "early_stop": 1},
     )
     assert result["promotions"] == 1 and result["stop_reason"] == "early_stop"
     assert len(evaluated) == 2
     assert all(not path.exists() for path in evaluated)
-    assert (tmp_path / "candidate.py").read_text(encoding="utf-8") == source
+    assert (workspace / "candidate.py").read_text(encoding="utf-8") == source
+    assert (workspace / ".oc_candidates" / result["final_program"]).read_text(encoding="utf-8") == source
 
 
 @pytest.mark.parametrize("cancel", [False, True], ids=["failure", "cancel"])
