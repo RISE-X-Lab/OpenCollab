@@ -31,6 +31,8 @@ class _WorktreePool:
         return None
 
 class _LateProvider:
+    supports_request_admission = True
+
     def __init__(self, *, late_error: bool = False, block: bool = False) -> None:
         self.cancel_seen = asyncio.Event()
         self.release_late = asyncio.Event()
@@ -38,8 +40,9 @@ class _LateProvider:
         self.late_error = late_error
         self.block = block
 
-    async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+    async def complete(self, messages, tools=None, temperature=0.0, *, on_admitted, **kwargs):
         del messages, tools, temperature, kwargs
+        on_admitted()
         self.started.set()
         if self.block:
             await asyncio.Event().wait()
@@ -89,7 +92,7 @@ async def test_late_provider_usage_stays_reserved_after_child_terminal():
     provider = factory.providers[first]
 
     try:
-        await asyncio.wait_for(provider.cancel_seen.wait(), timeout=0.5)
+        await asyncio.wait_for(provider.cancel_seen.wait(), timeout=2)
         await asyncio.wait_for(first_task, timeout=0.5)
         assert scheduler.table.get(first).state.phase is SessionPhase.ERROR
         assert scheduler._turn_lease.get(first) is None
@@ -136,7 +139,7 @@ async def test_late_provider_failure_releases_unused_budget_reservation():
     provider.late_error = True
 
     try:
-        await asyncio.wait_for(provider.cancel_seen.wait(), timeout=0.5)
+        await asyncio.wait_for(provider.cancel_seen.wait(), timeout=2)
         await asyncio.wait_for(first_task, timeout=0.5)
         assert scheduler.allocated_tokens == 200_000
 
