@@ -547,13 +547,27 @@ class SessionStore:
                 )
 
     def _parse_document(self, text: str) -> dict[str, Any] | list[dict[str, Any]]:
-        if not text.strip():
+        document = text.strip()
+        if not document:
             return []
         try:
             obj = json.loads(text)
         except json.JSONDecodeError:
             return self._parse_jsonl(text)
         if isinstance(obj, dict):
+            # A single JSONL message also parses as one JSON object.
+            snapshot_fields = {
+                "messages", "snapshot_version", "session_state", "pending_messages",
+                "aid", "run_id", "model", _AUTOSAVE_SEQUENCE_KEY, _AUTOSAVE_EXPORT_SOURCE_SEQUENCE,
+            }
+            role = obj.get("role")
+            if (
+                "\n" not in document
+                and isinstance(role, str) and role in self.allowed_roles
+                and ("content" in obj or (role == "assistant" and "tool_calls" in obj))
+                and obj.keys().isdisjoint(snapshot_fields)
+            ):
+                return [obj]
             return obj
         if isinstance(obj, list):
             return obj
