@@ -12,7 +12,7 @@ import tempfile
 import uuid
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args
 
@@ -57,6 +57,7 @@ class _Child:
     status: str = "running"
     tokens: int = 0
     reported_tokens: int = 0
+    accounting_settled: bool = False
     result: dict[str, Any] | None = None
     cleanup_error: Exception | None = None
     bridge: AuthoredWorkflowBridge | None = None
@@ -217,7 +218,7 @@ class AuthoredWorkflowTool(Tool):
         # Retain native spend while the child's usage file catches up.
         return sum(max(0, (item.budget or 0) - item.tokens,
                        (item.bridge.tokens if item.bridge is not None else item.tokens) - item.tokens)
-                   for item in self._children.values() if item.status == "running")
+                   for item in self._children.values() if item.status == "running" and not item.accounting_settled)
 
     def _remaining_child_budget(self, child: _Child) -> int | None:
         remaining = self._get_session().runner.remaining_budget_tokens
@@ -353,6 +354,8 @@ class AuthoredWorkflowTool(Tool):
         execution = None
         logs: dict[str, Any] = {}
         status = "running"
+        result: dict[str, Any] | None = None
+        saved_artifacts: str | None = None
         try:
             execution = asyncio.create_task(run())
             child.execution = execution
@@ -374,15 +377,15 @@ class AuthoredWorkflowTool(Tool):
                 await _copy_artifact_to_host(
                     child.environment, posixpath.join(child.artifacts, "result.json"), result_path,
                 )
-                child.result = json.loads(result_path.read_text(encoding="utf-8"))
-            self._account_usage(child, child.result["tokens"])
-            status = child.result["status"]
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+            self._account_usage(child, result["tokens"])
+            status = result["status"]
         except asyncio.CancelledError:
             status = "stopped"
-            child.result = {"status": "stopped", "output": None, "reason": "cancelled"}
+            result = {"status": "stopped", "output": None, "reason": "cancelled"}
         except Exception as exc:
             status = "failed"
-            child.result = {"status": "failed", "output": None, "reason": f"{type(exc).__name__}: {exc}"}
+            result = {"status": "failed", "output": None, "reason": f"{type(exc).__name__}: {exc}"}
         finally:
             if execution is not None:
                 cancelling = not execution.done()
@@ -392,8 +395,8 @@ class AuthoredWorkflowTool(Tool):
                 if isinstance(settled[0], ProcessCleanupError) or (cancelling and isinstance(settled[0], Exception)):
                     status = "failed"
                     child.cleanup_error = settled[0]
-                    child.result = {"status": "failed", "output": None,
-                                    "reason": f"child process cleanup failed: {settled[0]}"}
+                    result = {"status": "failed", "output": None,
+                              "reason": f"child process cleanup failed: {settled[0]}"}
             try:
                 assert child.bridge is not None
                 await await_owned_operation(child.bridge.aclose(), propagate_cancellation=False)
@@ -402,15 +405,16 @@ class AuthoredWorkflowTool(Tool):
             except Exception as exc:
                 status = "failed"
                 child.cleanup_error = exc
-                child.result = {"status": "failed", "output": None,
-                                "reason": f"{(child.result or {}).get('reason', '')}; child accounting failed: {exc}"}
-            if child.result is not None:
-                child.result["tokens"] = child.tokens
-            child.status = status
+                result = {"status": "failed", "output": None,
+                          "reason": f"{(result or {}).get('reason', '')}; child accounting failed: {exc}"}
+            if result is not None:
+                result["tokens"] = child.tokens
+            # Artifact export can outlast the token reservation.
+            child.accounting_settled = True
             if self._save_dir is not None:
                 try:
                     directory = Path(tempfile.mkdtemp(prefix=f"{child.id}-", dir=self._save_dir))
-                    native_files = (child.result or {}).get("artifact_files")
+                    native_files = (result or {}).get("artifact_files")
                     if native_files is None:
                         try:
                             native_files = json.loads(await child.environment.read_file(
@@ -429,15 +433,19 @@ class AuthoredWorkflowTool(Tool):
                             )
                         except FileNotFoundError:
                             continue
-                    child.saved_artifacts = str(directory)
-                    (directory / "result.json").write_text(json.dumps(self._snapshot(child, include_result=True)),
-                                                           encoding="utf-8")
+                    saved_artifacts = str(directory)
+                    terminal = replace(child, status=status, result=result, saved_artifacts=saved_artifacts)
                     (directory / "process.json").write_text(json.dumps(logs), encoding="utf-8")
+                    (directory / "result.json").write_text(json.dumps(self._snapshot(terminal, include_result=True)),
+                                                           encoding="utf-8")
                 except Exception as exc:
-                    child.status = "failed"
+                    status = "failed"
                     child.cleanup_error = exc
-                    child.result = {"status": "failed", "output": None,
-                                    "reason": f"child result persistence failed: {exc}", "tokens": child.tokens}
+                    result = {"status": "failed", "output": None,
+                              "reason": f"child result persistence failed: {exc}", "tokens": child.tokens}
+            child.saved_artifacts = saved_artifacts
+            child.result = result
+            child.status = status
 
     async def _stop(self, child: _Child) -> None:
         if child.task is None or child.task.done():
