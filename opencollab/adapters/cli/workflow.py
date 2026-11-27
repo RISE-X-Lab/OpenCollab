@@ -92,7 +92,7 @@ def run_cmd(
     budget: Optional[int] = typer.Option(
         None,
         "--budget",
-        help="Max token budget (default: max(config budget, 1000000); workflows fan out many sessions)",
+        help="Max token budget. An explicit value overrides unbounded mode. The bounded default is at least 1,000,000.",
     ),
     concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max concurrent agent sessions"),
     task_concurrency: Optional[int] = typer.Option(
@@ -175,6 +175,7 @@ def run_cmd(
             workspace=workspace,
             event_sink=event_sink,
             budget=budget,
+            limit_mode="explicit" if budget is not None else "environment",
             max_concurrency=concurrency,
             task_concurrency=task_concurrency,
             agent_profile=agent_profile,
