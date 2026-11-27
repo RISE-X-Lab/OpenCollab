@@ -6,6 +6,7 @@ import inspect
 import logging
 import os
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -159,6 +160,7 @@ class Session:
         self._llm_closed = False
         self._llm_close_error: BaseException | None = None
         self._terminal_checkpoint_error: Exception | None = None
+        self._completed_turn_output: tuple[float, str] | None = None
         self._auto_save_sequence = 0
         self._auto_save_reserved_sequence = 0
         self._auto_save_visible_sequence = 0
@@ -455,8 +457,12 @@ class Session:
 
     async def _run_turn(self, cancel_event: asyncio.Event | None) -> str:
         primary_error: BaseException | None = None
+        self._completed_turn_output = None
         try:
-            return await self.runner.run_loop(cancel_event)
+            output = await self.runner.run_loop(cancel_event)
+            if output and self.state.phase is SessionPhase.DONE:
+                self._completed_turn_output = (time.monotonic(), output)
+            return output
         except asyncio.CancelledError as exc:
             # Direct task cancellation must terminalize the FSM before propagating,
             # otherwise the facade rejects the next user turn as permanently busy.
@@ -566,6 +572,7 @@ class Session:
                 )
                 self.state.reset_for_user_turn()
                 self.runner.reset_runtime_for_user_turn()
+                self._completed_turn_output = None
                 await self.event_bus.emit(SessionEvent(type="user_message_appended"))
 
     def apply_launch(self, launch: "LaunchSpec") -> None:
@@ -947,6 +954,7 @@ class Session:
             snapshot = self._checkpoint_restored_auto_save_target(source_path, restored, snapshot)
             with self._auto_save_lock:
                 self.runner.reset_for_restore()
+                self._completed_turn_output = None
                 self.state.__dict__.clear()
                 self.state.__dict__.update(restored.__dict__)
                 self._loop_checkpoint_results = []

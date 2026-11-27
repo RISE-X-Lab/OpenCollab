@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from opencollab.application.async_timeout import CallerTimeoutError
+from opencollab.application.session_lifecycle import _completed_session_output_before
 from opencollab.application.workflow_budget import _positive_budget
 from opencollab.domain.tools import validate_unique_tool_names
 
@@ -135,9 +136,10 @@ class WorkflowAgentRunMixin:
                             and not bool(getattr(self._factory, "environment_revoked", False)),
                         )
                     self._track_session(session)
+                    deadline = self._timeout_deadline(timeout)
                     try:
                         output = await self._run_session_turn(
-                            session, prompt, deadline=self._timeout_deadline(timeout), label=label,
+                            session, prompt, deadline=deadline, label=label,
                         )
                     except CallerTimeoutError:
                         status, reason = "stopped", "timeout"
@@ -158,6 +160,8 @@ class WorkflowAgentRunMixin:
                         status, reason = "failed", "cleanup incomplete"
                     if getattr(session, "persistence_errors", ()):
                         status, reason = "failed", "session persistence failed"
+                    if status == "stopped" and reason == "timeout":
+                        output = _completed_session_output_before(session, deadline)
                     state = getattr(session, "state", None)
                     phase = getattr(getattr(state, "phase", None), "value", None)
                     terminal_reason = getattr(state, "terminal_reason", None)

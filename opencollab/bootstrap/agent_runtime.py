@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -17,7 +18,7 @@ from opencollab.application.async_timeout import (
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import LLMPort, TracePort
 from opencollab.application.run_control import RunControl
-from opencollab.application.session_lifecycle import close_session_resources
+from opencollab.application.session_lifecycle import _completed_session_output_before, close_session_resources
 from opencollab.bootstrap.container import build_workspace_safety_policy
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
@@ -310,6 +311,7 @@ async def run_agent(
         )
 
     try:
+        deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
         done, pending = await asyncio.wait({owner}, timeout=timeout_seconds)
         if pending:
             aborted, terminated, finalized = await stop_once(
@@ -321,7 +323,7 @@ async def run_agent(
                 )
             return _result(
                 session,
-                output=None,
+                output=_completed_session_output_before(session, deadline),
                 outcome="timed_out",
                 error=TimeoutError(f"agent exceeded {timeout_seconds:g} seconds"),
                 cleanup_quiesced=True,

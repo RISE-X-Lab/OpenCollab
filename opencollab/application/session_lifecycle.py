@@ -13,6 +13,14 @@ from opencollab.application.async_timeout import (
 )
 
 
+def _completed_session_output_before(session: Any, deadline: float | None) -> str | None:
+    completed = getattr(session, "_completed_turn_output", None)
+    if deadline is None or completed is None:
+        return None
+    finished_at, output = completed
+    return output if finished_at < deadline else None
+
+
 async def close_session_resources(
     sessions: Iterable[Any],
     *,
