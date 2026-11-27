@@ -679,24 +679,24 @@ class WorkflowCandidatesMixin:
             raise RuntimeError("candidate workspaces are not available")
         if not isinstance(candidate, CandidateRun):
             raise TypeError("candidate must be a CandidateRun")
-        read_revision = getattr(self._candidate_workspace, "source_revision", None)
-        if (
-            candidate.source_revision is not None
-            and callable(read_revision)
-            and await read_revision() != candidate.source_revision
-        ):
-            raise CandidateWorkspaceTrackingError(
-                f"source worktree changed before candidate adoption {candidate.label}"
-            )
-        self._raise_if_environment_revoked()
-        adopt_run = getattr(self._candidate_workspace, "adopt_run", None)
-        if callable(adopt_run):
-            # Full-environment backends must retain the chosen candidate's
-            # identity even when two candidates have identical file diffs.
-            operation = adopt_run(candidate, preserve_paths)
-        else:
-            operation = self._candidate_workspace.adopt(candidate.diff, preserve_paths)
-        await await_owned_operation(operation, propagate_cancellation=True)
+        with self._own_workflow_call():
+            read_revision = getattr(self._candidate_workspace, "source_revision", None)
+            if (
+                candidate.source_revision is not None
+                and callable(read_revision)
+                and await read_revision() != candidate.source_revision
+            ):
+                raise CandidateWorkspaceTrackingError(
+                    f"source worktree changed before candidate adoption {candidate.label}"
+                )
+            self._raise_if_environment_revoked()
+            adopt_run = getattr(self._candidate_workspace, "adopt_run", None)
+            if callable(adopt_run):
+                # Full-environment backends need the chosen identity even for identical diffs.
+                operation = adopt_run(candidate, preserve_paths)
+            else:
+                operation = self._candidate_workspace.adopt(candidate.diff, preserve_paths)
+            await await_owned_operation(operation, propagate_cancellation=True)
 
 __all__ = [
     "CandidateCaptureError",
