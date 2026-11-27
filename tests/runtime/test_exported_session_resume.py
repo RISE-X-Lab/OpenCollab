@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import errno
 import json
 from contextlib import AsyncExitStack
 
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters import storage
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.storage import SessionStore
@@ -90,6 +92,82 @@ async def test_failed_load_releases_only_owned_resources(tmp_path, monkeypatch, 
             await original_cleanup(env)
         if llm is not None:
             await original_close(llm)
+
+
+@pytest.mark.parametrize("entry", ["load_session", "restore"])
+@pytest.mark.parametrize("failure_stage", ["base", "journal"])
+async def test_restore_only_requires_the_new_checkpoint_to_be_durable(
+    tmp_path, local_environment_factory, monkeypatch, entry, failure_stage,
+):
+    exported, target = tmp_path / "backup.json", tmp_path / "target.json"
+    journal = tmp_path / "target.json.journal"
+    agent = Agent(name="reviewer", system_prompt="Remember the requests.")
+    store = SessionStore()
+    options = {"agent": agent, "env": local_environment_factory(str(tmp_path)), "store": store}
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, llm=model(), auto_save_path=str(tmp_path / "source.json"))
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        original.save(str(exported))
+
+        store.checkpoint_snapshot(str(target), [{"role": "user", "content": "Earlier note."}], meta={}, sequence=1)
+        store.append_snapshot_delta(
+            str(target), sequence=2, replace_from=1,
+            messages=[{"role": "assistant", "content": "Earlier answer."}], meta={},
+        )
+        before = target.read_bytes(), journal.read_bytes()
+        continuation = model()
+        existing = None
+        if entry == "restore":
+            existing = build_session(**options, llm=continuation, auto_save_path=str(target))
+            sessions.push_async_callback(existing.aclose)
+            existing.restore(str(target))
+        fault = OSError(errno.EIO, "checkpoint persistence failed")
+        failed = False
+        save_base = storage.SessionStore._atomic_json_write
+        save_bytes = storage.write_regular_bytes_atomic
+
+        def save_snapshot(path, value, **kwargs):
+            if failure_stage == "base" and path == str(target):
+                raise fault
+            return save_base(path, value, **kwargs)
+
+        def reset_journal(path, payload, **kwargs):
+            nonlocal failed
+            if failure_stage == "journal" and path == str(journal) and payload == b"" and not failed:
+                failed = True
+                assert json.loads(target.read_text())["messages"][-1]["content"] == "Completed request 0."
+                raise fault
+            return save_bytes(path, payload, **kwargs)
+
+        monkeypatch.setattr(storage.SessionStore, "_atomic_json_write", staticmethod(save_snapshot))
+        monkeypatch.setattr(storage, "write_regular_bytes_atomic", reset_journal)
+
+        def resume():
+            if existing is not None:
+                existing.restore(str(exported))
+                return existing
+            session = load_session(str(exported), **options, llm=continuation, auto_save_path=str(target))
+            sessions.push_async_callback(session.aclose)
+            return session
+
+        if failure_stage == "base":
+            with pytest.raises(OSError) as caught:
+                resume()
+            assert caught.value is fault
+            assert (target.read_bytes(), journal.read_bytes()) == before
+            if existing is not None:
+                assert existing.messages[-1]["content"] == "Earlier answer."
+            return
+
+        resumed = resume()
+        assert failed and journal.read_bytes() == before[1]
+        assert resumed.messages == original.messages
+        await resumed.add_user_message("Remember the new deadline.")
+        await resumed.run_loop()
+        persisted = store.load_snapshot(str(target), agent.system_prompt)
+        assert transcript(persisted) == resumed.messages
+        assert persisted["session_state"]["used_tokens"] == 14
 
 
 @pytest.mark.parametrize("turns", [1, 4])

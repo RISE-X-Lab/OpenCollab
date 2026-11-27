@@ -888,8 +888,16 @@ class Session:
             # Opening a writable copy advances its local cursor without advancing its source.
             meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = source_sequence
             sequence += 1
+
+            def checkpoint() -> None:
+                token = _checkpoint_publication.set(_CheckpointPublication(target_path, defer_journal_reset=True))
+                try:
+                    self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+                finally:
+                    _checkpoint_publication.reset(token)
+
             try:
-                self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+                checkpoint()
             except SnapshotSequenceConflict:
                 if not isinstance(self.store, SnapshotStorePort):
                     raise
@@ -919,7 +927,7 @@ class Session:
                         raise
                     for message, timestamp in zip(messages[saved_message_count:], timestamps):
                         message["timestamp"] = timestamp
-                self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+                checkpoint()
                 if timestamps:
                     restored.message_timestamps[saved_message_count:] = timestamps
         else:
