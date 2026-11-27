@@ -202,6 +202,9 @@ class SchedulerRunMixin:
                     await self._settle_cancelled_suspended_turn(aid)
                 pending = self._active_scheduler_tasks()
                 if not pending:
+                    # A terminal driver can exit before delivering its notice.
+                    if any(self._unanswered.values()) and self._quiescent():
+                        await self._drain_ready_message_inboxes()
                     if self._quiescent():
                         break
                     await self._wait_for_scheduler_progress(aid)

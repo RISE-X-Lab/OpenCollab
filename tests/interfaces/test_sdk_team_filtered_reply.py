@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -137,6 +138,115 @@ async def test_team_delivers_member_reply_text_to_the_delegating_agent(
     finally:
         await restored.aclose()
         await env.cleanup()
+
+
+@pytest.mark.parametrize("capture_cancelled", [False, True], ids=["io-error", "cancelled"])
+async def test_team_delivers_stop_notice_after_borrowed_environment_capture_fails(
+    tmp_path, monkeypatch, capture_cancelled,
+):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "inventory.txt").write_text("verified inventory: 42\n", encoding="utf-8")
+    team = tmp_path / "team.yaml"
+    team.write_text(
+        "entry: lead\nroles:\n"
+        "  lead:\n    model: fixture-lead\n    prompt: Ask for the subtotal.\n"
+        "    tools: [message_agent]\n    budget: {tokens: 16000}\n"
+        "  reviewer:\n    model: fixture-reviewer\n    prompt: Total the inventory.\n"
+        "    tools: [file_read, message_agent]\n    budget: {tokens: 8000}\n"
+        "  checker:\n    model: fixture-checker\n    prompt: Confirm the units.\n"
+        "    tools: [message_agent]\n    budget: {tokens: 8000}\n"
+        "topology:\n  lead: [reviewer, checker]\n  reviewer: [lead]\n  checker: [lead]\n",
+        encoding="utf-8",
+    )
+    initial_capture = asyncio.Event()
+    reviewer_capture = asyncio.Event()
+    checker_capture = asyncio.Event()
+    checker_driver = None
+    captures = 0
+
+    class BorrowedEnvironment(LocalEnvironment):
+        async def capture_changes(self):
+            nonlocal captures, checker_driver
+            captures += 1
+            if captures == 1:
+                initial_capture.set()
+            elif captures == 2:
+                reviewer_capture.set()
+                await checker_capture.wait()
+                assert checker_driver is not None
+                await asyncio.wait({checker_driver})
+                if not capture_cancelled:
+                    raise OSError("Capture I/O failed.")
+                worker = asyncio.create_task(asyncio.Event().wait())
+                worker.cancel()
+                await worker
+            elif captures == 3:
+                checker_driver = asyncio.current_task()
+                checker_capture.set()
+            return ""
+
+    calls = []
+    notices = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        model = body["model"]
+        calls.append(model)
+        count = calls.count(model)
+        if model == "fixture-lead":
+            if count == 1:
+                questions = [{
+                    "id": role, "type": "function", "function": {
+                        "name": "message_agent", "arguments": json.dumps({
+                            "to_role": role, "summary": "Inventory", "content": "Check the inventory.",
+                        }),
+                    },
+                } for role in ("reviewer", "checker")]
+                return _chat_reply(request, model, len(calls), "tool_calls", {"tool_calls": questions})
+            if count == 2:
+                return completion_http_response(request, text="Waiting for the subtotal.")
+            assert count == 3
+            notices.append(body["messages"][-1]["content"])
+            return completion_http_response(request, text="The Reviewer stopped.")
+        if model == "fixture-checker":
+            assert count == 1
+            await reviewer_capture.wait()
+            return completion_http_response(request, text="The inventory uses unit counts.")
+        assert model == "fixture-reviewer"
+        if count == 1:
+            return _chat_reply(request, model, len(calls), "tool_calls", _inventory_read())
+        assert count == 2
+        assert "verified inventory: 42" in body["messages"][-1]["content"]
+        await initial_capture.wait()
+        return _chat_reply(request, model, len(calls), "length", {"content": _PARTIAL})
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    env = BorrowedEnvironment(str(workspace))
+    app = OpenCollab(
+        workspace, environment=env, model="fixture-lead", provider="openai",
+        api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://fixture.invalid/v1",
+        config={"llm_max_retries": 0, "wire_protocol": "chat_completions", "llm_stream_chat": False},
+    )
+    try:
+        result = await app.team(
+            "Check the inventory.", config=team, artifacts=tmp_path / "artifacts",
+            use_worktrees=False, prebuild_team=True, serialize_turns=False, timeout=5,
+        )
+        assert await env.read_file("inventory.txt") == "verified inventory: 42\n"
+    finally:
+        await env.cleanup()
+
+    assert (result.status, result.output, result.tokens) == ("completed", "The Reviewer stopped.", 24)
+    assert [row["exception_type"] for row in result.agent_failures] == ["AgentStopped"]
+    notice, = notices
+    assert "<team-notice" in notice and _TRUNCATED_REASON in notice
+    if not capture_cancelled:
+        assert _PARTIAL in notice and "Capture I/O failed." in notice
 
 
 @pytest.mark.parametrize(("finish_reason", "content", "output", "status", "reason"), [
