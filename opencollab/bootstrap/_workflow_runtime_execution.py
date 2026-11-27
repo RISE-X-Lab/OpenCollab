@@ -46,10 +46,13 @@ def _runtime_result(
     evidence_complete: bool,
 ) -> WorkflowRuntimeResult:
     sessions = tuple(ctx.sessions)
+    tokens = ctx.budget.spent()
+    if stop_reason == "budget_exceeded":
+        output["tokens_spent"] = tokens
     return WorkflowRuntimeResult(
         output=output,
         name=name,
-        tokens=ctx.budget.spent(),
+        tokens=tokens,
         sessions=len(sessions),
         steps=sum(int(getattr(session, "step_count", 0)) for session in sessions),
         markup_recovered=sum(
@@ -169,7 +172,6 @@ async def run_workflow(
         result = {
             "status": "budget_exceeded",
             "error": str(exc),
-            "tokens_spent": ctx.budget.spent(),
             "budget_total": ctx.budget.total,
         }
     except BaseException as exc:
