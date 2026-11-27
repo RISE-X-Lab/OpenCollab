@@ -257,7 +257,7 @@ def _archive_candidate(program: Path, candidates_dir: Path, iteration: int) -> P
 @contextmanager
 def _evaluation_copy(archive: Path, program: Path) -> Iterator[Path]:
     destination = NamedTemporaryFile(
-        dir=program.parent, prefix=".oc-evaluate-", suffix=program.suffix, delete=False,
+        dir=program.parent, prefix="_oc_evaluate_", suffix=program.suffix, delete=False,
     )
     path = Path(destination.name)
     try:

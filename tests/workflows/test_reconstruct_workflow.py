@@ -6,6 +6,7 @@ import asyncio
 import errno
 import json
 import stat
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -571,6 +572,34 @@ async def test_evaluated_candidate_survives_edit_to_live_program(tmp_path: Path)
     assert set(program.parent.iterdir()) == {program, program.parent / "offset.txt"}
     assert archived.read_text(encoding="utf-8") == program.read_text(encoding="utf-8") == source
     assert stat.S_IMODE(archived.stat().st_mode) == stat.S_IMODE(program.stat().st_mode) == 0o750
+
+
+async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path: Path) -> None:
+    source = CORRECT + (
+        "if __name__ == '__main__':\n"
+        "    import json, sys\n"
+        "    print(json.dumps([solve(value) for value in json.loads(sys.argv[1])]))\n"
+    )
+    evaluated = []
+
+    async def evaluate(path, inputs):
+        evaluated.append(path)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-B", "-m", path.stem, json.dumps(inputs),
+            cwd=path.parent, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        assert process.returncode == 0, stderr.decode()
+        return [{"ok": True, "output": value} for value in json.loads(stdout)]
+
+    task = make_task(tmp_path, evaluate=evaluate)
+    result = await reconstruct(
+        ScriptedContext(tmp_path, programs=[source]), {"task": register_task(task), "early_stop": 1},
+    )
+    assert result["promotions"] == 1 and result["stop_reason"] == "early_stop"
+    assert len(evaluated) == 2
+    assert all(not path.exists() for path in evaluated)
+    assert (tmp_path / "candidate.py").read_text(encoding="utf-8") == source
 
 
 @pytest.mark.parametrize("cancel", [False, True], ids=["failure", "cancel"])
