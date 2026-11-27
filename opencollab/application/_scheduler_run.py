@@ -40,6 +40,12 @@ class SchedulerRunMixin:
         """Compatibility entry point for an external turn addressed to Lead."""
         return await self.run_turn(0, user_message, cancel_event=cancel_event)
 
+    def accepted_public_turn_answer(self, aid: int) -> str | None:
+        answer = self._completed_public_turn_answers.get(aid)
+        if answer is None:
+            return None
+        return self._sessions[aid].state.submitted_summary or answer or None
+
     async def run_turn(
         self,
         aid: int,
