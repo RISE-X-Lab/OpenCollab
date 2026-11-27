@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, TypeVar
+
+from openai import AsyncStream
 
 from opencollab.adapters.llm._chat_response import (
     _build_chat_response,
@@ -53,6 +56,7 @@ class _ChatStreamState:
     usage_object: Any = None
     provider_model: str | None = None
     chunk_count: int = 0
+    close_error: Exception | None = None
 
 @dataclass
 class _UsageCarrier:
@@ -311,6 +315,33 @@ async def _close_stream(stream: Any, *, preserve_cancellation: bool = False) -> 
     except Exception:
         logging.getLogger(__name__).debug("chat stream close failed", exc_info=True)
 
+@contextmanager
+def _capture_native_close_error(stream: Any, state: _ChatStreamState) -> Iterator[None]:
+    if not isinstance(stream, AsyncStream):
+        yield
+        return
+
+    # The SDK closes the HTTP response inside its event iterator.
+    response = stream.response
+    close = response.aclose
+    has_override = "aclose" in vars(response)
+
+    async def capture_close() -> None:
+        try:
+            await close()
+        except Exception as exc:
+            state.close_error = exc
+            logging.getLogger(__name__).debug("chat HTTP response close failed", exc_info=True)
+
+    response.aclose = capture_close
+    try:
+        yield
+    finally:
+        if has_override:
+            response.aclose = close
+        else:
+            del response.aclose
+
 async def _consume_chat_stream(
     stream: Any, first_chunk_timeout: float | None, idle_timeout: float | None
 ) -> _ChatStreamState:
@@ -338,22 +369,23 @@ async def _drain_chat_stream(
     first = True
     cancelled = False
     try:
-        while True:
-            try:
-                chunk = await _next_chunk(
-                    iterator,
-                    first_chunk_timeout if first else idle_timeout,
-                    stage="first-chunk" if first else "stream-idle",
-                    state=state,
-                )
-            except StopAsyncIteration:
-                break
-            if first:
-                # Before ``_absorb_chunk``: the measurement is when the bytes
-                # landed, not when parsing them finished.
-                mark_first_token(CHAT_STREAM)
-            first = False
-            _absorb_chunk(chunk, state)
+        with _capture_native_close_error(stream, state):
+            while True:
+                try:
+                    chunk = await _next_chunk(
+                        iterator,
+                        first_chunk_timeout if first else idle_timeout,
+                        stage="first-chunk" if first else "stream-idle",
+                        state=state,
+                    )
+                except StopAsyncIteration:
+                    break
+                if first:
+                    # Before ``_absorb_chunk``: the measurement is when the bytes
+                    # landed, not when parsing them finished.
+                    mark_first_token(CHAT_STREAM)
+                first = False
+                _absorb_chunk(chunk, state)
     except asyncio.CancelledError:
         cancelled = True
         raise
