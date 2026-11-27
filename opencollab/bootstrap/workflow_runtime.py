@@ -35,7 +35,7 @@ from opencollab.bootstrap.agent_profiles import (
     _PROFILE_TOOL_LIMITS,
     resolve_agent_profile,
 )
-from opencollab.bootstrap.agent_runtime import revoke_and_abort_environment
+from opencollab.bootstrap.agent_runtime import _environment_abort_failure
 from opencollab.bootstrap.environment_profiles import environment_cleanup_timeout
 from opencollab.bootstrap.session_factory import build_session
 
@@ -162,9 +162,9 @@ async def run_workflow(
             _PROFILE_TOOL_LIMITS.reset(tools_token)
 
     owner = asyncio.create_task(run_owner())
-    stop_task: asyncio.Task[tuple[bool, bool]] | None = None
+    stop_task: asyncio.Task[tuple[BaseException | None, bool]] | None = None
 
-    async def stop_owned(cancellation: asyncio.CancelledError) -> tuple[bool, bool]:
+    async def stop_owned(cancellation: asyncio.CancelledError) -> tuple[BaseException | None, bool]:
         if not owner.done():
             owner.cancel(*cancellation.args)
 
@@ -175,21 +175,17 @@ async def run_workflow(
         done, _pending = await asyncio.wait(
             {owner}, timeout=cleanup_timeout * _OWNER_CLEANUP_GRACE_PHASES
         )
-        aborted = True
-        if cleanup_environment:
-            aborted = env is None or bool(getattr(env, "revoked", False))
-            if not aborted:
-                aborted = await revoke_and_abort_environment(env, cleanup_timeout)
-        if done:
-            return aborted, True
-        terminal = await force_task_terminal(owner, timeout=cleanup_timeout)
-        return aborted, terminal
+        abort_failure = None
+        if cleanup_environment and env is not None and not getattr(env, "revoked", False):
+            abort_failure = await _environment_abort_failure(env, cleanup_timeout)
+        terminal = bool(done) or await force_task_terminal(owner, timeout=cleanup_timeout)
+        return abort_failure, terminal
 
     async def stop_once(
         cancellation: asyncio.CancelledError,
         *,
         propagate_cancellation: bool,
-    ) -> tuple[bool, bool]:
+    ) -> tuple[BaseException | None, bool]:
         nonlocal stop_task
         if stop_task is None:
             stop_task = asyncio.create_task(stop_owned(cancellation))
@@ -208,12 +204,15 @@ async def run_workflow(
         deadline_cancellation = asyncio.CancelledError(
             "workflow wall-clock deadline expired"
         )
-        aborted, terminated = await stop_once(
+        abort_failure, terminated = await stop_once(
             deadline_cancellation,
             propagate_cancellation=True,
         )
-        if not aborted or not terminated:
-            raise WorkflowLifecycleError("timed-out workflow did not reach a quiescent terminal state")
+        if abort_failure is not None or not terminated:
+            failure = WorkflowLifecycleError("timed-out workflow did not reach a quiescent terminal state")
+            deadline_error = WorkflowDeadlineExceeded(str(deadline_cancellation), result=cancelled_result)
+            failure.__context__ = deadline_error
+            raise failure from (abort_failure if abort_failure is not None else deadline_error)
         deadline_result = cancelled_result
         try:
             late_result = owner.result()
@@ -240,13 +239,16 @@ async def run_workflow(
             result=deadline_result,
         )
     except asyncio.CancelledError as cancellation:
-        aborted, terminated = await stop_once(
+        abort_failure, terminated = await stop_once(
             cancellation, propagate_cancellation=False
         )
-        if not aborted or not terminated:
-            raise WorkflowLifecycleError(
-                "cancelled workflow did not reach a quiescent terminal state"
-            ) from cancellation
+        if abort_failure is not None or not terminated:
+            failure = WorkflowLifecycleError("cancelled workflow did not reach a quiescent terminal state")
+            if abort_failure is not None:
+                add_exception_note(
+                    failure, f"environment abort also failed: {type(abort_failure).__name__}: {abort_failure}",
+                )
+            raise failure from cancellation
         if owner.done():
             try:
                 late_result = owner.result()

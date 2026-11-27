@@ -43,7 +43,7 @@ from opencollab.bootstrap.agent_profiles import SingleAgentProfile, resolve_agen
 from opencollab.bootstrap.agent_runtime import (
     AgentRuntimeLifecycleError,
     AgentRuntimeResult,
-    run_environment_hook,
+    _environment_hook_failure,
 )
 from opencollab.bootstrap.agent_runtime import (
     run_agent as _run_agent,
@@ -247,13 +247,11 @@ def _settle_programmatic_workflow_manifest(
     path = artifacts / "workflow.json"
     try:
         manifest = _require_json_object(path, "workflow manifest")
-        if cleanup_succeeded:
-            manifest["evidence_complete"] = True
-        else:
+        if not cleanup_succeeded and manifest.get("status") not in {"failed", "stopped"}:
             manifest["status"] = "failed"
             manifest["reason"] = "environment_cleanup_failed"
             manifest["failure_type"] = "ProgrammaticLifecycleError"
-            manifest["evidence_complete"] = False
+        manifest["evidence_complete"] = cleanup_succeeded
         SessionStore().save_manifest(path, manifest)
     except BaseException as exc:
         return exc
@@ -544,20 +542,26 @@ async def run_workflow(
     environment_quiesced: bool | None = None
 
     async def cleanup_owned_environment() -> None:
-        cleaned = await run_environment_hook(resolved_environment, "cleanup", timeout=cleanup_timeout)
-        if cleaned:
+        cleanup_failure = await _environment_hook_failure(resolved_environment, "cleanup", timeout=cleanup_timeout)
+        if cleanup_failure is None:
             if details is not None and details.evidence_complete:
                 _finalize_programmatic_workflow_manifest(artifacts)
             return
         manifest_failure = _settle_programmatic_workflow_manifest(artifacts, cleanup_succeeded=False)
         failure = ProgrammaticLifecycleError("workflow-owned environment cleanup failed")
+        if failed_error is not None:
+            failure.__context__ = failed_error
+            add_exception_note(
+                failure,
+                f"workflow execution also failed: {type(failed_error).__name__}: {failed_error}",
+            )
         if manifest_failure is not None:
             add_exception_note(
                 failure,
                 "workflow manifest downgrade also failed: "
                 f"{type(manifest_failure).__name__}: {manifest_failure}",
             )
-        raise failure from manifest_failure
+        raise failure from cleanup_failure
 
     try:
         try:
@@ -593,6 +597,7 @@ async def run_workflow(
             bootstrap_stopped_environment = True
             stopped_error = exc
         except WorkflowLifecycleError as exc:
+            failed_error = exc
             raise ProgrammaticLifecycleError(str(exc)) from exc
         except asyncio.CancelledError as cancellation:
             bootstrap_stopped_environment = True
@@ -607,12 +612,12 @@ async def run_workflow(
                     )
             raise
         except Exception as exc:
+            failed_error = exc
             details = getattr(exc, "runtime_result", None)
             if details is None or not details.evidence_complete:
                 raise ProgrammaticLifecycleError(
                     "workflow runtime failed without finalized execution evidence"
                 ) from exc
-            failed_error = exc
     finally:
         if owned_environment and not bootstrap_stopped_environment:
             await await_owned_operation(cleanup_owned_environment(), propagate_cancellation=True)

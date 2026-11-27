@@ -46,40 +46,49 @@ async def _run_session(session: Any, prompt: str) -> str:
     await session.add_user_message(prompt)
     return await session.run_loop()
 
-async def run_environment_hook(environment: Any, name: str, timeout: float) -> bool:
-    """Run one environment hook with bounded cancellation and honest failure."""
+async def _environment_hook_failure(environment: Any, name: str, timeout: float) -> BaseException | None:
     hook = getattr(environment, name, None)
     if not callable(hook):
-        return False
+        return RuntimeError(f"environment has no {name} hook")
     try:
         outcome = hook()
-    except Exception:
-        return False
+    except Exception as exc:
+        return exc
     if not inspect.isawaitable(outcome):
-        return True
+        return None
     owner = asyncio.ensure_future(outcome)
-    done, pending = await asyncio.wait({owner}, timeout=timeout)
+    _done, pending = await asyncio.wait({owner}, timeout=timeout)
     if pending:
         terminal = await force_task_terminal(owner, timeout=timeout)
         if not terminal:
             owner.add_done_callback(consume_task_result)
-        return False
+        return asyncio.TimeoutError(f"environment {name} hook exceeded its cleanup deadline")
     try:
         owner.result()
-    except BaseException:
-        return False
-    return True
+    except BaseException as exc:
+        return exc
+    return None
 
-async def revoke_and_abort_environment(environment: Any, timeout: float) -> bool:
+async def run_environment_hook(environment: Any, name: str, timeout: float) -> bool:
+    return await _environment_hook_failure(environment, name, timeout) is None
+
+async def _environment_abort_failure(environment: Any, timeout: float) -> BaseException | None:
     revoke = getattr(environment, "revoke", None)
-    revoked = True
+    revoke_failure: Exception | None = None
     if callable(revoke):
         try:
             revoke()
-        except Exception:
-            revoked = False
-    aborted = await run_environment_hook(environment, "abort", timeout)
-    return revoked and aborted
+        except Exception as exc:
+            revoke_failure = exc
+    abort_failure = await _environment_hook_failure(environment, "abort", timeout)
+    if revoke_failure is not None and abort_failure is not None:
+        add_exception_note(
+            abort_failure, f"environment revocation also failed: {type(revoke_failure).__name__}: {revoke_failure}",
+        )
+    return abort_failure or revoke_failure
+
+async def revoke_and_abort_environment(environment: Any, timeout: float) -> bool:
+    return await _environment_abort_failure(environment, timeout) is None
 
 async def _wait_session_tasks(session: Any, timeout: float) -> bool:
     pending = {
