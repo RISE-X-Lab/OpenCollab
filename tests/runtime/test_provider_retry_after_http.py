@@ -63,15 +63,19 @@ async def test_provider_retry_delay_fits_budget(monkeypatch, tmp_path, protocol,
     assert record["usage"]["total_tokens"] == 9
 
 
-@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize("protocol", ["chat", "responses", "anthropic"])
 @pytest.mark.parametrize(("status", "error_text", "retryable"), [
     (524, "A Timeout Occurred", True),
     (520, "Upstream temporarily unavailable", True),
+    (521, "Origin temporarily unavailable", True),
+    (521, "Origin rejected the configured connection", False),
+    (522, "Connection timed out", True),
+    (523, "Origin unreachable. Check the routing configuration.", False),
     (501, "The timeout option is not implemented for this endpoint", False),
     (400, "Invalid timeout parameter", False),
 ])
 async def test_gateway_status_and_error_text_control_retry(
-    monkeypatch, tmp_path, provider, status, error_text, retryable,
+    monkeypatch, tmp_path, protocol, status, error_text, retryable,
 ):
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.delenv("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION", raising=False)
@@ -91,9 +95,11 @@ async def test_gateway_status_and_error_text_control_retry(
 
     monkeypatch.setattr(retry, "asyncio", SimpleNamespace(sleep=record_delay))
     monkeypatch.setattr(retry, "RETRY_JITTER_MAX_SECONDS", 0)
+    provider = "anthropic" if protocol == "anthropic" else "openai"
     install_sdk_transport(monkeypatch, provider, handle)
     async with LLMClient(
         provider=provider, model="claude-sonnet-4-6" if provider == "anthropic" else "gpt-4o",
+        wire_protocol="responses" if protocol == "responses" else "chat_completions",
         api_key=tmp_path.name, base_url="https://controlled.invalid",
         max_retries=1,
     ) as client:

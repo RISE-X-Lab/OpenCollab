@@ -18,7 +18,7 @@ from opencollab.adapters.llm.errors import TransientProviderError, is_context_ov
 from opencollab.application.ports import ProviderTerminalEventError
 
 # HTTP statuses worth retrying: timeouts, conflicts, rate limits, server errors.
-RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504, 529}
+RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504, 522, 529}
 
 # Transient failure descriptions for statusless errors and gateway responses.
 RETRYABLE_MESSAGE_FRAGMENTS = (
@@ -222,7 +222,7 @@ def is_retryable_error(error: Exception) -> bool:
         if status is not None:
             if status in RETRYABLE_STATUS_CODES:
                 return True
-            if status in {520, 524}:
+            if status in {520, 521, 524}:
                 message = str(current).lower()
                 return any(fragment in message for fragment in RETRYABLE_MESSAGE_FRAGMENTS)
             return False
