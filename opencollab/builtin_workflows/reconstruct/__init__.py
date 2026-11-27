@@ -317,8 +317,8 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             if task.on_example is not None:
                 task.on_example(inp, out, source)
 
-    async def failures(path: Path) -> list[str]:
-        if not path.is_file():
+    async def failures(path: Path | None) -> list[str]:
+        if path is None or not path.is_file():
             return [f"{task.candidate_file} is missing"]
         results = await task.evaluate(path, [i for i, _ in examples])
         if len(results) != len(examples):
@@ -447,13 +447,17 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         await call_agent(prompt=prompt, label=f"code:{iteration}", tools=list(task.tools))
         if stop_reason:
             break
-        fails = await failures(program)
-        candidate_exists = program.is_file()
-        passed = len(examples) - len(fails) if candidate_exists else 0
+        archive = _archive_candidate(program, candidates_dir, iteration) if program.is_file() else None
+        try:
+            fails = await failures(archive)
+        except BaseException:
+            if archive is not None:
+                archive.unlink(missing_ok=True)
+            raise
+        passed = len(examples) - len(fails) if archive is not None else 0
         score = None
         source = ""
-        if candidate_exists:
-            archive = _archive_candidate(program, candidates_dir, iteration)
+        if archive is not None:
             archived.append(archive)
             source = archive.read_text(encoding="utf-8")
             score = round(stage_score(source, passed / len(examples) if examples else 0.0, examples), 4)
@@ -511,7 +515,7 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                     stop_reason = stop_reason or "proposer_failed"
                     break
                 next_batch += batch_step
-                new_fails = await failures(program)
+                new_fails = await failures(archive)
                 if new_fails:
                     feedback += "\nYour candidate fails these new examples:\n" + "\n".join(new_fails[:10])
                 continue
@@ -533,7 +537,7 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             stop_reason = stop_reason or "proposer_failed"
             break
         next_batch += batch_step
-        new_fails = await failures(program)
+        new_fails = await failures(archive)
         feedback = (
             "Your current candidate fails these known examples:\n" + "\n".join(new_fails[:10])
             if new_fails

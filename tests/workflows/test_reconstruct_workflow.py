@@ -86,6 +86,7 @@ def test_candidate_evaluator_must_cover_every_observed_input(
         _run(task, ctx, max_iterations=1, early_stop=1)
 
     assert (tmp_path / task.candidate_file).is_file()
+    assert not list((tmp_path / ".oc_candidates").iterdir())
 
 
 def test_missing_candidate_reports_no_examples_passed(tmp_path: Path) -> None:
@@ -511,6 +512,37 @@ def test_selection_ignores_candidates_left_by_an_earlier_run(tmp_path: Path) -> 
     assert out["final_program"] == "iter_001.py"
     assert (tmp_path / "candidate.py").read_text(encoding="utf-8") == CORRECT
     assert (stale_dir / "iter_050.py").read_text(encoding="utf-8") == stale  # left untouched
+
+
+async def test_evaluated_candidate_survives_edit_to_live_program(tmp_path: Path) -> None:
+    program = tmp_path / "candidate.py"
+    evaluated, edited = asyncio.Event(), asyncio.Event()
+    evaluated_paths = []
+
+    async def evaluate(path: Path, inputs: list[Any]) -> list[dict[str, Any]]:
+        results = await _evaluate(path, inputs)
+        evaluated_paths.append(path)
+        if len(evaluated_paths) == 1:
+            evaluated.set()
+            await edited.wait()
+        return results
+
+    async def edit_program() -> None:
+        await evaluated.wait()
+        program.write_text("def solve(xs):\n    return 0\n", encoding="utf-8")
+        edited.set()
+
+    task = make_task(tmp_path, evaluate=evaluate)
+    result, _ = await asyncio.wait_for(asyncio.gather(
+        reconstruct(ScriptedContext(tmp_path), {"task": register_task(task), "early_stop": 1}),
+        edit_program(),
+    ), timeout=5)
+    archived = tmp_path / ".oc_candidates" / result["final_program"]
+    assert result["promotions"] == 1
+    assert result["stop_reason"] == "early_stop"
+    assert result["final_score"] == 1.0
+    assert evaluated_paths == [archived, archived]
+    assert archived.read_text(encoding="utf-8") == program.read_text(encoding="utf-8") == CORRECT
 
 
 @pytest.mark.parametrize("overlap", [False, True], ids=["sequential", "parallel"])
