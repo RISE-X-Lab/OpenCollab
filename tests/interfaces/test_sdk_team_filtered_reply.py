@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -299,6 +302,7 @@ async def test_team_lead_returns_only_visible_filtered_text(
 @pytest.mark.parametrize(("initial_answer", "finish_reason", "message", "output"), [
     pytest.param(_VISIBLE, "stop", {"content": _UPDATED}, _UPDATED, id="completed-followup"),
     pytest.param(_VISIBLE, "diff-error", {"content": _UPDATED}, _UPDATED, id="completed-capture-error"),
+    pytest.param(_VISIBLE, "checkpoint-error", {"content": _UPDATED}, _UPDATED, id="completed-checkpoint-error"),
     pytest.param(_VISIBLE, "content_filter", {"content": None}, _VISIBLE, id="empty-filter"),
     pytest.param(_VISIBLE, "content_filter", {"content": _REFUSAL}, _REFUSAL, id="visible-filter"),
     pytest.param(None, "content_filter", {"content": None}, None, id="interim-only"),
@@ -376,6 +380,7 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
                 }})
             if finish_reason == "diff-error":
                 fail_next_capture = True
+            if finish_reason in {"diff-error", "checkpoint-error"}:
                 return _chat_reply(request, model, len(lead_requests), "stop", message)
             return _chat_reply(request, model, len(lead_requests), finish_reason, message)
         if len(lead_requests) == 1:
@@ -393,6 +398,31 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
         config={"llm_max_retries": 0, "wire_protocol": "chat_completions", "llm_stream_chat": False},
     )
     artifacts = tmp_path / "artifacts"
+    checkpoint_failed = False
+    replace = os.replace
+
+    def fail_terminal_checkpoint(source, destination, **kwargs):
+        nonlocal checkpoint_failed
+        target = Path(destination)
+        if not checkpoint_failed and target.parent == artifacts and target.match("agent_0_*.json"):
+            candidate = json.loads(Path(source).read_text(encoding="utf-8"))
+            if candidate["session_state"]["phase"] == "done" and candidate["messages"][-1]["content"] == _UPDATED:
+                journal = target.with_name(target.name + ".journal")
+                base = json.loads(target.read_text(encoding="utf-8"))
+                sequence = base["_autosave_sequence"]
+                phase = base["session_state"]["phase"]
+                for line in journal.read_text(encoding="utf-8").splitlines():
+                    record = json.loads(line)
+                    if record["sequence"] > sequence:
+                        sequence = record["sequence"]
+                        phase = record["meta"]["session_state"]["phase"]
+                if phase == "done" and sequence < candidate["_autosave_sequence"]:
+                    checkpoint_failed = True
+                    raise OSError(errno.EIO, "terminal checkpoint rename failed")
+        return replace(source, destination, **kwargs)
+
+    if finish_reason == "checkpoint-error":
+        monkeypatch.setattr(os, "replace", fail_terminal_checkpoint)
     try:
         result = await app.team(
             "Report the verified inventory subtotal.", config=team, artifacts=artifacts, trace=True,
@@ -419,15 +449,19 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
     assert result.tokens == sum(row["usage"]["total_tokens"] for row in usage)
     assert result.tokens == sum(snapshot["session_state"]["used_tokens"] for snapshot in snapshots)
     assert capture_failed == (finish_reason == "diff-error")
+    assert checkpoint_failed == (finish_reason == "checkpoint-error")
     if finish_reason == "provider-error":
         assert result.status == "failed" and provider_message in result.reason
         assert lead["messages"][-2]["content"] == _INTERIM
         assert lead["messages"][-2]["tool_calls"][0]["id"] == "read-inventory"
-    elif finish_reason == "diff-error":
+    elif finish_reason in {"diff-error", "checkpoint-error"}:
         assert result.status == "failed"
         assert lead["session_state"]["phase"] == "error"
         cursor = lead["session_state"]["completed_turn_start_message_index"]
         assert lead["messages"][cursor]["content"] == _UPDATED
+        if finish_reason == "checkpoint-error":
+            assert "terminal checkpoint rename failed" in result.reason
+            assert lead["session_state"]["terminal_reason"] == result.reason
     else:
         reason = {"content_filter": _FILTER_REASON, "length": _TRUNCATED_REASON}.get(finish_reason)
         assert (result.status, result.reason) == ("stopped" if reason else "completed", reason)

@@ -393,6 +393,15 @@ class LifecycleMixin:
                 finally:
                     self._turn_waiters.discard(parent_aid)
 
+    def _remember_completed_public_turn_answer(self, scb: SessionControlBlock) -> None:
+        if scb.aid not in self._completed_public_turn_answers:
+            return
+        answer = _last_assistant_answer(
+            scb.state.messages, scb.state.completed_turn_start_message_index, include_tool_call_text=False,
+        )
+        if answer:
+            self._completed_public_turn_answers[scb.aid] = answer
+
     async def _drive_agent(self, aid: int, session: Any, *, resumed: bool = False) -> None:
         """Run a session's loop once and finalize.
 
@@ -468,7 +477,12 @@ class LifecycleMixin:
                     scb.provider_status_code = status_code
             else:
                 scb.provider_status_code, scb.provider_error_code = provider_http_failure_metadata(exc)
-            terminal_reason = scb.state.terminal_reason or f"{type(exc).__name__}: {exc}"
+            terminal_reason = f"{type(exc).__name__}: {exc}"
+            if scb.state.phase is SessionPhase.DONE:
+                # Persistence can fail after the session has accepted the reply.
+                self._remember_completed_public_turn_answer(scb)
+            else:
+                terminal_reason = scb.state.terminal_reason or terminal_reason
             scb.state.fail(terminal_reason)
             reason = f"Error: {terminal_reason}"
             result = await self._append_partial_worktree_diff(aid, scb, session, reason)
@@ -537,14 +551,7 @@ class LifecycleMixin:
 
         if scb.state.phase is SessionPhase.DONE:
             scb.answer = result
-
-        # A failed change capture still leaves a completed reply.
-        if scb.answer and aid in self._completed_public_turn_answers:
-            answer = _last_assistant_answer(
-                scb.state.messages, scb.state.completed_turn_start_message_index, include_tool_call_text=False,
-            )
-            if answer:
-                self._completed_public_turn_answers[aid] = answer
+            self._remember_completed_public_turn_answer(scb)
 
         # A completed coding task still needs its patch evidence. Tracing and
         # event delivery are observational, but a missing diff is a technical
