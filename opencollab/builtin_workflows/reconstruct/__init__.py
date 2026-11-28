@@ -21,9 +21,10 @@ import os
 import shutil
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
+from glob import escape
 from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
 from typing import Any, Awaitable, Callable, Sequence
@@ -303,16 +304,28 @@ def _evaluation_copy(archive: Path, program: Path) -> Iterator[Path]:
             yield path
         return
     path = Path(destination.name)
-    try:
-        with destination, archive.open("rb") as source:
-            shutil.copyfileobj(source, destination)
-        shutil.copymode(archive, path)
-        yield program.parent / path.name
-    except BaseException as error:
-        _remove_candidate_file(path, "evaluation copy", error)
-        raise
-    else:
-        _remove_candidate_file(path, "evaluation copy")
+    error = None
+    with ExitStack() as cleanup:
+        def remove(temporary: Path, kind: str) -> None:
+            _remove_candidate_file(temporary, kind, error)
+
+        cleanup.callback(remove, path, "evaluation copy")
+        try:
+            with destination, archive.open("rb") as source:
+                shutil.copyfileobj(source, destination)
+            shutil.copymode(archive, path)
+            # A candidate may derive a resource path from its own filename.
+            prefix = f"{program.stem}."
+            for sibling in program.parent.glob(f"{escape(prefix)}*"):
+                if sibling == program or sibling.is_symlink() or not sibling.is_file():
+                    continue
+                alias = path.with_name(f"{path.stem}.{sibling.name.removeprefix(prefix)}")
+                alias.symlink_to(sibling.name)
+                cleanup.callback(remove, alias, "evaluation sidecar")
+            yield program.parent / path.name
+        except BaseException as exc:
+            error = exc
+            raise
 
 
 @workflow(

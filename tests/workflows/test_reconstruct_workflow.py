@@ -576,7 +576,8 @@ async def test_evaluated_candidate_survives_edit_to_live_program(tmp_path: Path)
 
 
 @pytest.mark.parametrize("relative", [False, True], ids=["absolute-workspace", "relative-workspace"])
-async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path, monkeypatch, relative):
+@pytest.mark.parametrize("sidecar", [False, True], ids=["plain-module", "same-stem-resource"])
+async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path, monkeypatch, relative, sidecar):
     monkeypatch.chdir(tmp_path.parent)
     workspace = Path(tmp_path.name) if relative else tmp_path
     candidate_file = "src/candidate.py"
@@ -584,8 +585,20 @@ async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path,
     package.mkdir()
     (package / "__init__.py").touch()
     (package / "helper.py").write_text("def measure(xs):\n    return sum(abs(x) for x in xs)\n")
-    source = (
-        "from .helper import measure as solve\n"
+    if sidecar:
+        (package / "candidate.json").write_text('{"offset": 5}', encoding="utf-8")
+    source = "from .helper import measure\n"
+    if sidecar:
+        source += (
+            "from pathlib import Path\n"
+            "import json\n"
+            "def solve(value):\n"
+            "    offset = json.loads(Path(__file__).with_suffix('.json').read_text())['offset']\n"
+            "    return measure(value) + offset\n"
+        )
+    else:
+        source += "solve = measure\n"
+    source += (
         "if __name__ == '__main__':\n"
         "    import json, sys\n"
         "    print(json.dumps([solve(value) for value in json.loads(sys.argv[1])]))\n"
@@ -603,7 +616,10 @@ async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path,
         assert process.returncode == 0, stderr.decode()
         return [{"ok": True, "output": value} for value in json.loads(stdout)]
 
-    task = make_task(workspace, candidate_file=candidate_file, evaluate=evaluate)
+    task = make_task(
+        workspace, candidate_file=candidate_file, evaluate=evaluate,
+        oracle=lambda value: _oracle(value) + (5 if sidecar else 0),
+    )
     result = await reconstruct(
         ScriptedContext(workspace, programs=[source], candidate_file=candidate_file),
         {"task": register_task(task), "early_stop": 1},
@@ -611,6 +627,7 @@ async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path,
     assert result["promotions"] == 1 and result["stop_reason"] == "early_stop"
     assert len(evaluated) == 2
     assert all(not path.exists() for path in evaluated)
+    assert all(not path.with_suffix(".json").is_symlink() for path in evaluated)
     assert (workspace / candidate_file).read_text(encoding="utf-8") == source
     assert (workspace / ".oc_candidates" / result["final_program"]).read_text(encoding="utf-8") == source
 
@@ -715,6 +732,8 @@ async def test_failed_archive_cleanup_preserves_evaluator_exit(tmp_path, monkeyp
     evaluator_failure = RuntimeError("candidate evaluator lost its output stream")
     unlink = Path.unlink
     evaluated_paths = []
+    sidecar = tmp_path / "candidate.json"
+    sidecar.write_text('{"offset": 0}', encoding="utf-8")
 
     def fail_cleanup(path, *args, **kwargs):
         blocked = path == archive if kind == "archive" else path in evaluated_paths
@@ -727,6 +746,7 @@ async def test_failed_archive_cleanup_preserves_evaluator_exit(tmp_path, monkeyp
     async def evaluate(path, inputs):
         assert path.parent == tmp_path
         assert path.read_text(encoding="utf-8") == archive.read_text(encoding="utf-8")
+        assert path.with_suffix(".json").read_bytes() == sidecar.read_bytes()
         evaluated_paths.append(path)
         assert all(row["ok"] for row in await _evaluate(path, inputs))
         started.set()
@@ -760,6 +780,8 @@ async def test_failed_archive_cleanup_preserves_evaluator_exit(tmp_path, monkeyp
 
     note, = error.__notes__
     evaluation_path, = evaluated_paths
+    assert not evaluation_path.with_suffix(".json").is_symlink()
+    assert sidecar.read_text(encoding="utf-8") == '{"offset": 0}'
     blocked = archive if kind == "archive" else evaluation_path
     assert f"candidate {kind} cleanup failed for {blocked.name}" in note
     assert "candidate unlink failed" in note
