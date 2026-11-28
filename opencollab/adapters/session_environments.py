@@ -38,9 +38,10 @@ class SessionEnvironmentPool:
         self._options = dict(owned_save_dir=owned_save_dir, enable_adoption=enable_adoption,
                              owned_output_paths=owned_output_paths)
         self._pools: dict[str, WorktreePoolPort] = {}
-        self._owners: dict[int, tuple[EnvironmentPort, WorktreePoolPort]] = {}
+        self._owners: dict[int, tuple[EnvironmentPort, WorktreePoolPort, asyncio.Lock]] = {}
         self._references: dict[int, int] = {}
         self._lifecycle = asyncio.Condition()
+        self._release_lock = asyncio.Lock()
         self._inflight = 0
         self._closed = False
         for name in (self._default, *self._roles.values()):
@@ -105,9 +106,11 @@ class SessionEnvironmentPool:
             base = self._source if source is None else source
             pool = self._pool(name, base)
             env = await pool.acquire(role, source=base)
-            if env is not base or id(env) in self._owners:
-                self._owners.setdefault(id(env), (env, pool))
-                self._references[id(env)] = self._references.get(id(env), 0) + 1
+            identity = id(env)
+            if env is not base or identity in self._owners:
+                if identity not in self._owners:
+                    self._owners[identity] = (env, pool, asyncio.Lock())
+                self._references[identity] = self._references.get(identity, 0) + 1
             if self._closed:
                 await self.release_env(env)
                 raise RuntimeError("session environment pool closed during acquisition")
@@ -137,14 +140,25 @@ class SessionEnvironmentPool:
         await self._delivery_pool().adopt_captured(patch, physical_paths)
 
     async def release_env(self, env: EnvironmentPort) -> None:
-        owner = self._owners.get(id(env))
-        if owner is not None:
-            if self._references[id(env)] > 1:
-                self._references[id(env)] -= 1
+        await self._release_env(env)
+
+    async def _release_env(self, env: EnvironmentPort, *, all_references: bool = False) -> None:
+        identity = id(env)
+        owner = self._owners.get(identity)
+        if owner is None:
+            return
+        _, pool, lock = owner
+        async with lock:
+            if self._owners.get(identity) is not owner:
                 return
-            await owner[1].release_env(env)
-            self._owners.pop(id(env), None)
-            self._references.pop(id(env), None)
+            if not all_references and self._references[identity] > 1:
+                self._references[identity] -= 1
+                return
+            # A failed final release stays available for scoped retry.
+            self._references[identity] = 1
+            await pool.release_env(env)
+            del self._owners[identity]
+            del self._references[identity]
 
     async def release(self) -> None:
         self._closed = True
@@ -152,16 +166,16 @@ class SessionEnvironmentPool:
         for pool in self._pools.values():
             if isinstance(pool, VMIsolationPool):
                 pool.stop_acquiring()
-        await await_owned_operation(self._release(), propagate_cancellation=True)
+        async with self._release_lock:
+            await await_owned_operation(self._release(), propagate_cancellation=True)
 
     async def _release(self) -> None:
         async with self._lifecycle:
             while self._inflight:
                 await self._lifecycle.wait()
         # A later environment may use an earlier strategy's workspace as its source.
-        for env, _pool in reversed(tuple(self._owners.values())):
-            self._references[id(env)] = 1
-            await self.release_env(env)
+        for env, _pool, _lock in reversed(tuple(self._owners.values())):
+            await self._release_env(env, all_references=True)
         failures = []
         for key, pool in reversed(tuple(self._pools.items())):
             try:

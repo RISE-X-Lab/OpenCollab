@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.adapters.session_environments import SessionEnvironmentPool
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.bootstrap import _workflow_runtime_session as wiring
 from opencollab.bootstrap import container
@@ -104,6 +106,97 @@ async def test_custom_provider_is_fresh_per_workflow_and_owns_cleanup(tmp_path):
         assert result.ok
     assert len(created) == 2 and all(pool.released for pool in created)
     assert not (tmp_path / "marker.txt").exists()
+
+
+async def test_workflow_workspace_release_is_safe_for_concurrent_callers(tmp_path):
+    _repo(tmp_path, dirty=False)
+    removed = []
+
+    class ObservedPool(WorktreePool):
+        async def release_env(self, env):
+            assert await env.read_file("marker.txt") == "marker"
+            removed.append(Path(env.workspace))
+            await super().release_env(env)
+
+    def provider(**kwargs):
+        return ObservedPool(use_worktrees=True, **kwargs)
+
+    async def flow(ctx, _args):
+        output = await ctx.agent("Write one note.", tools=list(builtin_tools("file_write")))
+        for session in ctx.sessions:
+            await session.aclose()
+        await asyncio.gather(
+            ctx.release_isolated_workspaces(),
+            ctx.release_isolated_workspaces(),
+        )
+        return output
+
+    client = OpenCollab(tmp_path, environment_providers={"custom": provider})
+    result = await client.workflow(flow, isolation="custom", llm=Writer(), trace=False)
+    assert result.ok and result.output == "finished"
+    checkout, = removed
+    assert not checkout.exists()
+    assert (tmp_path / "seed.txt").read_text() == "initial"
+
+
+async def test_concurrent_session_pool_shutdown_releases_each_backend_once(tmp_path):
+    _repo(tmp_path, dirty=False)
+    entered, finish = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    class ObservedPool(WorktreePool):
+        async def release(self):
+            calls.append("release")
+            entered.set()
+            await finish.wait()
+            await super().release()
+
+    def provider(**kwargs):
+        return ObservedPool(use_worktrees=True, **kwargs)
+
+    pool = SessionEnvironmentPool(str(tmp_path), isolation="custom", providers={"custom": provider})
+    workspace = await pool.acquire("worker")
+    first = asyncio.create_task(pool.release())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        second = asyncio.create_task(pool.release())
+        await asyncio.sleep(0)
+    finally:
+        finish.set()
+    await asyncio.gather(first, second)
+    assert calls == ["release"]
+    assert not Path(workspace.workspace).exists()
+
+
+@pytest.mark.parametrize("shutdown", [False, True])
+async def test_concurrent_release_waits_for_the_same_workspace_owner(tmp_path, shutdown):
+    _repo(tmp_path, dirty=False)
+    entered, finish = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    class ObservedPool(WorktreePool):
+        async def release_env(self, env):
+            calls.append(env)
+            entered.set()
+            await finish.wait()
+            await super().release_env(env)
+
+    def provider(**kwargs):
+        return ObservedPool(use_worktrees=True, **kwargs)
+
+    pool = SessionEnvironmentPool(str(tmp_path), isolation="custom", providers={"custom": provider})
+    workspace = await pool.acquire("worker")
+    first = asyncio.create_task(pool.release_env(workspace))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        second = asyncio.create_task(pool.release() if shutdown else pool.release_env(workspace))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    finally:
+        finish.set()
+    await asyncio.gather(first, second)
+    await pool.release()
+    assert calls == [workspace] and not Path(workspace.workspace).exists()
 
 
 @pytest.mark.parametrize("entry_isolation", ["shared", "worktree"])

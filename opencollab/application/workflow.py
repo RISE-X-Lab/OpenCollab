@@ -216,6 +216,7 @@ class WorkflowContext(
             _TaskConcurrencyPermit | None
         ] = contextvars.ContextVar("workflow_task_concurrency_permit", default=None)
         self._pending_cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self._workspace_release_lock = asyncio.Lock()
         self._workflow_imports: ExitStack | None = None
         self._active_call_tasks: set[asyncio.Task[Any]] = set()
         self._active_session_tasks: set[asyncio.Task[Any]] = set()
@@ -414,7 +415,8 @@ class WorkflowContext(
         """
         release = getattr(self._factory, "release_isolated_envs", None)
         if callable(release):
-            await release()
+            async with self._workspace_release_lock:
+                await release()
 
     def _record_agent_failure(self, label: str | None, exc: Exception) -> None:
         status_code, error_type = provider_http_failure_metadata(exc)
