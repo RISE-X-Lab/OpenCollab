@@ -14,15 +14,18 @@ from opencollab.application.async_timeout import await_owned_operation
 from tests.interfaces.test_session_isolation import _repo
 
 
-@pytest.mark.parametrize("stop,borrow_source", [
-    ("none", False),
-    ("stage", False),
-    ("deadline", False),
-    ("caller", False),
-    ("caller", True),
+@pytest.mark.parametrize("stop,borrow_source,entry", [
+    ("none", False, "managed"),
+    ("stage", False, "managed"),
+    ("deadline", False, "managed"),
+    ("caller", False, "managed"),
+    ("caller", True, "managed"),
+    ("stage", False, "plain"),
+    ("stage", False, "enforced"),
+    ("stage", False, "schema"),
 ])
 async def test_workflow_retains_ownership_while_an_isolated_agent_is_starting(
-    tmp_path, monkeypatch, stop, borrow_source,
+    tmp_path, monkeypatch, stop, borrow_source, entry,
 ):
     workspace = tmp_path / "source"
     workspace.mkdir()
@@ -33,6 +36,7 @@ async def test_workflow_retains_ownership_while_an_isolated_agent_is_starting(
     setup_state = {}
     requests = []
     stages = []
+    cancellations = []
 
     class InventoryModel:
         def context_window(self):
@@ -66,14 +70,20 @@ async def test_workflow_retains_ownership_while_an_isolated_agent_is_starting(
         return DelayedWorktreePool(use_worktrees=True, **options)
 
     async def flow(ctx, _):
-        stage = await ctx.agent_run(
-            "Check the inventory.", label="verifier", tools=[], isolation="inventory",
-            budget=15_000, timeout=.9 if stop == "stage" else 5, cleanup_timeout=.06,
-        )
+        options = dict(label="verifier", tools=[], isolation="inventory", budget=15_000,
+                       timeout=.9 if stop == "stage" else 5)
+        if entry == "managed":
+            stage = await ctx.agent_run("Check the inventory.", cleanup_timeout=.06, **options)
+        else:
+            if entry == "enforced":
+                options["enforcement_strength"] = "needs-enforcement"
+            if entry == "schema":
+                options["schema"] = {"type": "object", "properties": {"verified": {"type": "boolean"}}}
+            stage = await ctx.agent("Check the inventory.", **options)
         stages.append(stage)
         stage_finished.set()
         await return_stage.wait()
-        return stage.output
+        return stage.output if entry == "managed" else stage
 
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     borrowed = LocalEnvironment(str(workspace)) if borrow_source else None
@@ -84,10 +94,17 @@ async def test_workflow_retains_ownership_while_an_isolated_agent_is_starting(
     if stop == "none":
         continue_setup.set()
         return_stage.set()
-    operation = asyncio.create_task(client.workflow(
-        flow, llm=InventoryModel(), budget=30_000, limit_mode="explicit", artifacts=artifacts,
-        trace=False, timeout=1.6 if stop == "deadline" else None, cleanup_timeout=.08,
-    ))
+    async def run():
+        try:
+            return await client.workflow(
+                flow, llm=InventoryModel(), budget=30_000, limit_mode="explicit", artifacts=artifacts,
+                trace=False, timeout=1.6 if stop == "deadline" else None, cleanup_timeout=.08,
+            )
+        except asyncio.CancelledError as exc:
+            cancellations.append(exc.args)
+            raise
+
+    operation = asyncio.create_task(run())
     try:
         await asyncio.wait_for(entered.wait(), 5)
         checkout = Path(setup_state["env"].workspace)
@@ -95,14 +112,18 @@ async def test_workflow_retains_ownership_while_an_isolated_agent_is_starting(
         if stop == "stage":
             await asyncio.wait_for(stage_finished.wait(), 3)
             stage, = stages
-            assert (stage.status, stage.reason, stage.output, stage.tokens) == ("stopped", "timeout", None, 0)
-            assert not stage.cleanup_complete and not stage.workspace_ready
+            if entry == "managed":
+                assert (stage.status, stage.reason, stage.output, stage.tokens) == ("stopped", "timeout", None, 0)
+                assert not stage.cleanup_complete and not stage.workspace_ready
+            else:
+                assert stage is None
         elif stop == "caller":
             operation.cancel("caller stopped worktree preparation")
             done, _ = await asyncio.wait({operation}, timeout=3)
             assert operation in done
-            with pytest.raises(asyncio.CancelledError, match="caller stopped worktree preparation"):
+            with pytest.raises(asyncio.CancelledError):
                 await operation
+            assert cancellations == [("caller stopped worktree preparation",)]
         else:
             result = await asyncio.wait_for(asyncio.shield(operation), 3)
             if stop == "deadline":

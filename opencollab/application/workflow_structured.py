@@ -99,6 +99,7 @@ class WorkflowStructuredMixin:
                 tools=combined_tools,
                 isolation=isolation,
                 label=label,
+                startup_deadline=deadline,
                 # Inherit the run-wide reasoning setting rather than forcing it
                 # off. Hard-coding it off here exempted every schema-bound agent
                 # from a setting the run had declared, which reads back from the
@@ -107,6 +108,9 @@ class WorkflowStructuredMixin:
                 # on is trying to hold equal.
                 thinking=None,
             )
+        except CallerTimeoutError:
+            await self.log(f"structured agent timed out during workspace setup ({label or 'agent'})")
+            return None
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"structured agent build failed ({label or 'agent'}): {exc}")
@@ -204,6 +208,7 @@ class WorkflowStructuredMixin:
                 isolation=isolation,
                 label=label,
                 tool_choice=_named_tool_choice(capture_tool.name),
+                startup_deadline=deadline,
                 # Inherit here too, for the same reason as the first pass. The
                 # original rationale for forcing it off -- that reasoning makes
                 # the model answer in free text instead of calling the capture
@@ -213,6 +218,10 @@ class WorkflowStructuredMixin:
                 # the caller's own timeout already bounds.
                 thinking=None,
             )
+        except CallerTimeoutError:
+            await self.log(f"structured retry timed out during workspace setup ({label or 'agent'})")
+            captured = capture_tool.captured
+            return captured if _schema_satisfied(captured, schema) else None
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"structured retry build failed ({label or 'agent'}): {exc}")

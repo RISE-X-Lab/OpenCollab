@@ -677,7 +677,11 @@ class WorkflowContext(
                 label=label,
                 tool_choice=tool_choice,
                 thinking=thinking,
+                startup_deadline=deadline,
             )
+        except CallerTimeoutError:
+            await self.log(f"agent timed out during workspace setup ({label or 'agent'})")
+            return None
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"agent build failed ({label or 'agent'}): {exc}")
