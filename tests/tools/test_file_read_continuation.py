@@ -73,7 +73,7 @@ def test_long_single_line_read_explains_character_cut_without_next_line(tmp_path
 
 @pytest.mark.parametrize("backend", ["local", "default_range", "read_file_only"])
 async def test_truncated_line_still_links_to_later_rows(tmp_path, backend):
-    lines = ["résumé" * 5_100, "结果 \u2028正文", "结论"]
+    lines = ["résumé" * 5_100, "\u7ed3\u679c \u2028\u6b63\u6587", "\u7ed3\u8bba"]
     runtime = _runtime(tmp_path, "\r\n".join(lines), backend)
     tool = FileReadTool()
     received = []
@@ -94,7 +94,7 @@ async def test_truncated_line_still_links_to_later_rows(tmp_path, backend):
                 break
             offset = int(continuation.group(1))
         assert continuation is None
-        assert received == ["2\t结果 \u2028正文", "3\t结论"]
+        assert received == ["2\t\u7ed3\u679c \u2028\u6b63\u6587", "3\t\u7ed3\u8bba"]
     finally:
         await _cleanup(runtime)
 
