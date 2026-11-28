@@ -460,7 +460,12 @@ class Session:
         self._completed_turn_output = None
         try:
             output = await self.runner.run_loop(cancel_event)
-            if output and self.state.phase is SessionPhase.DONE:
+            truncated_answer = (
+                self.state.phase is SessionPhase.STOPPED
+                and self.state.terminal_reason == _TRUNCATED_OUTPUT_REASON
+                and self.state.completed_turn_start_message_index is not None
+            )
+            if output and (self.state.phase is SessionPhase.DONE or truncated_answer):
                 self._completed_turn_output = (time.monotonic(), output)
             return output
         except asyncio.CancelledError as exc:
