@@ -618,8 +618,8 @@ async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path,
 @pytest.mark.parametrize("relative", [False, True], ids=["absolute-workspace", "relative-workspace"])
 @pytest.mark.parametrize(
     ("neighbor", "evaluation_fails"),
-    [("import", False), ("resource", False), ("resource", True)],
-    ids=["sibling-import", "sibling-resource", "evaluator-error"],
+    [("import", False), ("package", False), ("resource", False), ("resource", True)],
+    ids=["sibling-import", "sibling-package", "sibling-resource", "evaluator-error"],
 )
 async def test_reconstruct_evaluates_a_writable_file_in_a_read_only_directory(
     tmp_path, monkeypatch, relative, neighbor, evaluation_fails,
@@ -632,13 +632,19 @@ async def test_reconstruct_evaluates_a_writable_file_in_a_read_only_directory(
     program.write_text("# Existing editable candidate.\n", encoding="utf-8")
     helper = program.with_name("sibling.py")
     helper.write_text("MULTIPLIER = 3\n", encoding="utf-8")
+    package = program.with_name("sibling_package")
+    package.mkdir()
+    (package / "__init__.py").write_text("from .arithmetic import MULTIPLIER\n", encoding="utf-8")
+    arithmetic = package / "arithmetic.py"
+    arithmetic.write_text("MULTIPLIER = 3\n", encoding="utf-8")
     resource = program.with_name("multiplier.txt")
     resource.write_text("3", encoding="utf-8")
-    dependency = (
-        "from sibling import MULTIPLIER\n" if neighbor == "import"
-        else "from pathlib import Path\n"
-        "MULTIPLIER = int(Path(__file__).with_name('multiplier.txt').read_text())\n"
-    )
+    dependency = {
+        "import": "from sibling import MULTIPLIER\n",
+        "package": "from sibling_package import MULTIPLIER\n",
+        "resource": "from pathlib import Path\n"
+        "MULTIPLIER = int(Path(__file__).with_name('multiplier.txt').read_text())\n",
+    }[neighbor]
     source = dependency + (
         "import json, sys\n"
         "def solve(xs):\n    return MULTIPLIER * sum(abs(x) for x in xs)\n"
@@ -661,6 +667,9 @@ async def test_reconstruct_evaluates_a_writable_file_in_a_read_only_directory(
             link = path.with_name(sibling.name)
             assert not link.readlink().is_absolute()
             assert link.read_bytes() == sibling.read_bytes()
+        package_link = path.with_name(package.name)
+        assert not package_link.readlink().is_absolute()
+        assert (package_link / arithmetic.name).read_bytes() == arithmetic.read_bytes()
         evaluated.append(path)
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-B", str(path.relative_to(workspace)), json.dumps(inputs),
@@ -693,7 +702,8 @@ async def test_reconstruct_evaluates_a_writable_file_in_a_read_only_directory(
         assert set(archives.iterdir()) == {archive}
         assert archive.read_text(encoding="utf-8") == source
     assert all(not path.parent.exists() for path in evaluated)
-    assert set(program.parent.iterdir()) == {program, resource, helper}
+    assert set(program.parent.iterdir()) == {program, resource, helper, package}
+    assert set(package.iterdir()) == {package / "__init__.py", arithmetic}
     assert program.read_text(encoding="utf-8") == source
 
 

@@ -130,7 +130,7 @@ class ReconstructionTask:
     one ``{"ok": True, "output": ...}`` or ``{"ok": False, "error": ...}``
     per input. The evaluator receives a temporary copy next to the editable
     candidate. If the source directory forbids creating files, a temporary
-    directory under the archive also links to the candidate's sibling files.
+    directory under the archive also links to the candidate's sibling files and packages.
     Execute the copy in the agent's environment, never in the harness process.
     ``tools`` are handed to every coding session.
     ``random_inputs(k, exclude)`` draws fresh inputs from a source
@@ -268,8 +268,13 @@ def _evaluation_directory(archive: Path, program: Path) -> Iterator[Path]:
         except PermissionError:
             siblings = []
         for sibling in siblings:
-            if sibling != program and sibling.is_file():
-                (directory / sibling.name).symlink_to(os.path.relpath(sibling, start=directory))
+            if sibling in (program, archive.parent):
+                continue
+            is_directory = sibling.is_dir()
+            if is_directory or sibling.is_file():
+                (directory / sibling.name).symlink_to(
+                    os.path.relpath(sibling, start=directory), target_is_directory=is_directory,
+                )
         shutil.copy(archive, directory / program.name)
         directory.chmod((archive.parent.stat().st_mode & 0o777) | 0o700)
         yield archive.parent / directory.name / program.name
