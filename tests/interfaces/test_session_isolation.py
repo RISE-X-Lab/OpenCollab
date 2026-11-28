@@ -201,6 +201,108 @@ async def test_concurrent_release_waits_for_the_same_workspace_owner(tmp_path, s
     assert calls == [workspace] and not Path(workspace.workspace).exists()
 
 
+@pytest.mark.parametrize("release_fault", [False, True])
+async def test_final_scoped_release_stops_new_shared_borrowers(tmp_path, release_fault):
+    _repo(tmp_path, dirty=False)
+    entered, finish = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    class ObservedPool(WorktreePool):
+        def __init__(self, **options):
+            super().__init__(use_worktrees=True, **options)
+
+        async def release_env(self, env):
+            calls.append(env)
+            if len(calls) == 1:
+                entered.set()
+                await finish.wait()
+                if release_fault:
+                    raise OSError("temporary checkout cleanup error")
+            await super().release_env(env)
+
+    pool = SessionEnvironmentPool(str(tmp_path), isolation="observed", providers={"observed": ObservedPool})
+    workspace = await pool.acquire("owner")
+    borrower = await pool.acquire("healthy", isolation="shared", source=workspace)
+    assert borrower is workspace
+    await pool.release_env(borrower)
+    assert not calls
+    assert await workspace.read_file("seed.txt") == "initial"
+
+    closing = asyncio.create_task(pool.release_env(workspace))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        with pytest.raises(RuntimeError, match="environment is unavailable"):
+            await pool.acquire("during", isolation="shared", source=workspace)
+        finish.set()
+        if release_fault:
+            with pytest.raises(OSError, match="temporary checkout cleanup error"):
+                await closing
+            assert await workspace.read_file("seed.txt") == "initial"
+            with pytest.raises(RuntimeError, match="environment is unavailable"):
+                await pool.acquire("before-retry", isolation="shared", source=workspace)
+            await pool.release_env(workspace)
+        else:
+            await closing
+        assert not Path(workspace.workspace).exists()
+        with pytest.raises(RuntimeError, match="environment is unavailable"):
+            await pool.acquire("after", isolation="shared", source=workspace)
+        replacement = await pool.acquire("replacement")
+        assert await replacement.read_file("seed.txt") == "initial"
+        await pool.release_env(replacement)
+    finally:
+        finish.set()
+        await asyncio.gather(closing, return_exceptions=True)
+        await pool.release()
+
+
+@pytest.mark.parametrize("release_completed", [False, True])
+async def test_acquisition_rejects_provider_alias_after_yielding(tmp_path, release_completed):
+    _repo(tmp_path, dirty=False)
+    release_entered, finish_release = asyncio.Event(), asyncio.Event()
+    acquire_entered, finish_acquire = asyncio.Event(), asyncio.Event()
+
+    class ReusingPool(WorktreePool):
+        def __init__(self, **options):
+            super().__init__(use_worktrees=True, **options)
+            self.environment = None
+
+        async def acquire(self, role, *, source=None):
+            if self.environment is None:
+                self.environment = await super().acquire(role, source=source)
+            else:
+                acquire_entered.set()
+                await finish_acquire.wait()
+            return self.environment
+
+        async def release_env(self, env):
+            release_entered.set()
+            await finish_release.wait()
+            await super().release_env(env)
+
+    pool = SessionEnvironmentPool(str(tmp_path), isolation="reusing", providers={"reusing": ReusingPool})
+    workspace = await pool.acquire("owner")
+    acquiring = asyncio.create_task(pool.acquire("alias"))
+    closing = None
+    try:
+        await asyncio.wait_for(acquire_entered.wait(), 5)
+        closing = asyncio.create_task(pool.release_env(workspace))
+        await asyncio.wait_for(release_entered.wait(), 5)
+        if release_completed:
+            finish_release.set()
+            await closing
+        finish_acquire.set()
+        with pytest.raises(RuntimeError, match="environment is unavailable"):
+            await acquiring
+        finish_release.set()
+        await closing
+        assert not Path(workspace.workspace).exists()
+    finally:
+        finish_release.set()
+        finish_acquire.set()
+        await asyncio.gather(acquiring, *(task for task in (closing,) if task is not None), return_exceptions=True)
+        await pool.release()
+
+
 async def test_pool_keeps_failed_child_source_and_releases_independent_worktree(tmp_path, monkeypatch):
     _repo(tmp_path, dirty=False)
 

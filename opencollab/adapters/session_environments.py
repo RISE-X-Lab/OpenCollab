@@ -103,6 +103,12 @@ class SessionEnvironmentPool:
             self._pools[key] = pool
         return self._pools[key]
 
+    def _borrowable_owner(self, env: EnvironmentPort) -> _EnvironmentOwner | None:
+        owner = self._owners.get(id(env))
+        if (owner is not None and owner.references == 0) or getattr(env, "revoked", False):
+            raise RuntimeError("session environment is unavailable for acquisition")
+        return owner
+
     async def acquire(
         self, role: str, *, source: EnvironmentPort | None = None,
         isolation: str | bool | None = None,
@@ -114,10 +120,11 @@ class SessionEnvironmentPool:
         try:
             name = isolation_name(isolation, default=self._roles.get(role) or self._default)
             base = self._source if source is None else source
+            self._borrowable_owner(base)
             pool = self._pool(name, base)
             env = await pool.acquire(role, source=base)
             identity = id(env)
-            owner = self._owners.get(identity)
+            owner = self._borrowable_owner(env)
             if env is not base:
                 if owner is None:
                     owner = self._owners[identity] = _EnvironmentOwner(env, pool)
@@ -166,8 +173,8 @@ class SessionEnvironmentPool:
             if not all_references and owner.references > 1:
                 owner.references -= 1
                 return
-            # A failed final release stays available for scoped retry.
-            owner.references = 1
+            # Keep failed cleanups available for retry without lending the workspace again.
+            owner.references = 0
             await owner.pool.release_env(env)
             del self._owners[identity]
 
