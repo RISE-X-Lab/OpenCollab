@@ -352,6 +352,9 @@ class OpenCollab:
         team configuration instead defines independent allowances and their total.
         Combining those allowances with an explicit budget raises ValueError.
 
+        ``timeout`` covers workspace preparation and the team turn. Cleanup has
+        its own ``cleanup_timeout``.
+
         ``record_delivery_tree`` adds ``metrics["tree_snapshots"]`` for agent 0's
         tree before turns and at accepted messages. Serialized boundaries support
         seat attribution. It defaults to False, omitting the metric and probe cost.
