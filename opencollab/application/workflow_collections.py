@@ -185,7 +185,8 @@ class WorkflowCollectionsMixin:
         async def run() -> Any:
             nonlocal started
             started = True
-            return await self._run_with_acquired_task_slot(operation)
+            with self._own_workflow_call():
+                return await self._run_with_acquired_task_slot(operation)
 
         def release_unstarted(_task: asyncio.Task[Any]) -> None:
             if not started:

@@ -116,7 +116,8 @@ async def test_independent_nested_collections_use_the_second_slot(tmp_path, rele
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("valid", [False, True])
-async def test_nested_collection_writer_finishes_before_result_delivery(tmp_path, valid):
+@pytest.mark.parametrize("layout", ["separate-collections", "allocated-worker"])
+async def test_nested_collection_writer_finishes_before_result_delivery(tmp_path, valid, layout):
     required = tmp_path / "metadata.txt"
     summary = tmp_path / "summary.txt"
     artifacts = tmp_path / "artifacts"
@@ -155,6 +156,14 @@ async def test_nested_collection_writer_finishes_before_result_delivery(tmp_path
 
     async def flow(ctx, _inputs):
         async def combined():
+            if layout == "allocated-worker":
+                async def stage(previous, item, index):
+                    if item == "check":
+                        return await check()
+                    return await write_summary(previous, item, index)
+
+                children.append(asyncio.create_task(ctx.pipeline(["check", "summary"], stage)))
+                return await asyncio.gather(*children, validate())
             children.extend((
                 asyncio.create_task(ctx.parallel([check])),
                 asyncio.create_task(ctx.pipeline(["summary"], write_summary)),
@@ -175,7 +184,13 @@ async def test_nested_collection_writer_finishes_before_result_delivery(tmp_path
         release_writer.set()
         result = await asyncio.wait_for(running, 3)
         assert result.status == "completed"
-        assert result.output == ([[["checked"], ["saved"], "approved"]] if valid else [None])
+        if not valid:
+            expected = [None]
+        elif layout == "allocated-worker":
+            expected = [[["checked", "saved"], "approved"]]
+        else:
+            expected = [[["checked"], ["saved"], "approved"]]
+        assert result.output == expected
         assert summary.read_text() == "summary"
         assert result.metrics["execution_quiesced"] is True
         manifest = json.loads((artifacts / "workflow.json").read_text())
