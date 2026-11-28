@@ -59,8 +59,9 @@ def _displayed_body(result):
     footer = re.search(r"\n\.\.\. (?:line \d+ was|(?:\d+ )?more lines below)", body)
     return body[:footer.start()] if footer else body
 
-def test_long_single_line_read_explains_character_cut_without_next_line(tmp_path):
-    (tmp_path / "minified.js").write_text("x" * 200, encoding="utf-8")
+@pytest.mark.parametrize("ending", ["", "\r\n"])
+def test_long_single_line_read_explains_character_cut_without_next_line(tmp_path, ending):
+    (tmp_path / "minified.js").write_bytes(("x" * 200 + ending).encode("utf-8"))
     runtime = ToolRuntime(environment=LocalEnvironment(str(tmp_path)), safety_policy=None, permission_policy=None)
 
     result = asyncio.run(FileReadTool(max_read_chars=100).execute_with_runtime({"path": "minified.js"}, runtime))
@@ -69,6 +70,33 @@ def test_long_single_line_read_explains_character_cut_without_next_line(tmp_path
     assert "max_read_chars" in result
     assert "more lines below" not in result
     assert "offset=2" not in result
+
+@pytest.mark.parametrize("backend", ["local", "default_range", "read_file_only"])
+async def test_truncated_line_still_links_to_later_rows(tmp_path, backend):
+    lines = ["résumé" * 5_100, "结果 \u2028正文", "结论"]
+    runtime = _runtime(tmp_path, "\r\n".join(lines), backend)
+    tool = FileReadTool()
+    received = []
+    offset = 1
+    try:
+        for _ in range(3):
+            page = await tool.execute_with_runtime(
+                {"path": "source.txt", "offset": offset, "limit": 1}, runtime,
+            )
+            if offset == 1:
+                assert "line 1 was character-truncated" in page
+                assert len(_displayed_body(page)) <= tool.max_read_chars
+            else:
+                assert "character-truncated" not in page
+                received.append(page.split("\n")[1])
+            continuation = re.search(r"Continue with offset=(\d+)", page)
+            if continuation is None:
+                break
+            offset = int(continuation.group(1))
+        assert continuation is None
+        assert received == ["2\t结果 \u2028正文", "3\t结论"]
+    finally:
+        await _cleanup(runtime)
 
 def test_complete_line_window_keeps_working_line_pagination(tmp_path):
     (tmp_path / "lines.txt").write_text("first\nsecond\nthird\n", encoding="utf-8")

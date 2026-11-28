@@ -46,7 +46,13 @@ def _read_text_line(
         if remaining is not None:
             if len(content) > remaining:
                 parts.append(content[:remaining])
-                return "".join(parts), False, True
+                at_eof = not ended and len(chunk) < _RANGE_READ_CHUNK_CHARS
+                if ended:
+                    try:
+                        at_eof = handle.read(1) == ""
+                    except UnicodeDecodeError:
+                        at_eof = False
+                return "".join(parts), at_eof, True
             parts.append(content)
             remaining -= len(content)
         if ended:

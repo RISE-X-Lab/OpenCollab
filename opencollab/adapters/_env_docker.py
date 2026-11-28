@@ -688,6 +688,7 @@ class DockerEnvironment(Environment):
         physical = await self._contained_file_path(path)
         quoted_path = shlex.quote(physical)
         marker = _output_marker()
+        stdout_byte_limit = byte_cap + len(marker.encode("utf-8")) + 1
         command = _framed(marker, (
             f"[ -f {quoted_path} ] && [ -r {quoted_path} ] || exit 66; "
             "command -v awk >/dev/null && command -v sed >/dev/null && command -v tr >/dev/null && "
@@ -703,7 +704,7 @@ class DockerEnvironment(Environment):
             command,
             timeout=120.0,
             strict_stdout=True,
-            stdout_byte_limit=byte_cap + len(marker.encode("utf-8")) + 1,
+            stdout_byte_limit=stdout_byte_limit,
             login=False,
         )
         if result.returncode != 0:
@@ -713,13 +714,22 @@ class DockerEnvironment(Environment):
         selected = lines[:limit]
         joined = "\n".join(selected)
         chars_truncated = len(joined) > max_chars or result.stdout_truncated
+        total_lines = None
         if chars_truncated:
             selected = joined[:max_chars].split("\n")
             has_more = True
+            # A complete capture with no lookahead row reached EOF.
+            if (
+                0 < len(lines) <= limit
+                and not result.stdout_truncated
+                and result.stdout_bytes is not None
+                and len(result.stdout_bytes) <= stdout_byte_limit
+            ):
+                total_lines = offset - 1 + len(lines)
         return TextFileRange(
             selected,
             offset,
-            None,
+            total_lines,
             has_more,
             chars_truncated=chars_truncated,
         )
