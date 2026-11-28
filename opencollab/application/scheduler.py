@@ -238,6 +238,9 @@ class Scheduler(
         self._manifest_subscriber: AutoSaveSubscriber | None = None
         self._shutting_down = False
         self._cleanup_task: asyncio.Task[None] | None = None
+        self._session_close_task: asyncio.Task[bool] | None = None
+        self._worktree_release_task: asyncio.Task[None] | None = None
+        self._deferred_worktree_release: asyncio.Task[None] | None = None
         self._fallback_autosavers: dict[int, AutoSaveSubscriber] = {}
         self._scheduler_persistence_errors: list[Exception] = []
         # Bootstrap-owned resources whose process/persistence state must be

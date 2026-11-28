@@ -196,10 +196,18 @@ class SchedulerCleanupMixin:
         if persistence_errors:
             failures.append("session persistence failed")
 
-        session_resources_closed = await close_session_resources(
-            self._persistence_sessions(persistence_sessions),
-            timeout=timeout,
-        )
+        close_task = self._session_close_task
+        if close_task is None or (
+            close_task.done()
+            and (close_task.cancelled() or close_task.exception() is not None or not close_task.result())
+        ):
+            close_task = asyncio.create_task(close_session_resources(
+                self._persistence_sessions(persistence_sessions), timeout=None,
+            ))
+            self._session_close_task = close_task
+            close_task.add_done_callback(consume_task_result)
+        closed, _ = await asyncio.wait({close_task}, timeout=timeout)
+        session_resources_closed = bool(closed) and close_task.result()
         if not session_resources_closed:
             failures.append("session resource close failed or timed out")
 
@@ -214,13 +222,10 @@ class SchedulerCleanupMixin:
             if isinstance(error, BaseException):
                 lifecycle_errors.append(error)
 
-        release_safe = (
-            not pending
-            and environments_aborted
-            and persistence_quiesced
-            and session_resources_closed
-            and lifecycle_quiesced
-        )
+        execution_settled = not pending and environments_aborted and persistence_quiesced
+        if execution_settled and not closed:
+            self._continue_worktree_release(close_task, persistence_sessions, timeout=timeout)
+        release_safe = execution_settled and session_resources_closed and lifecycle_quiesced
         worktrees_released = release_safe and await self._release_worktree_pool_bounded(timeout=timeout)
         if not worktrees_released:
             failures.append(
@@ -244,6 +249,25 @@ class SchedulerCleanupMixin:
                 seen.add(id(session))
                 sessions.append(session)
         return tuple(sessions)
+
+    def _continue_worktree_release(
+        self, close_task: asyncio.Task[bool], sessions: tuple[Any, ...], *, timeout: float,
+    ) -> None:
+        owner = self._deferred_worktree_release
+        if owner is not None and not owner.done():
+            return
+
+        async def release_after_close() -> None:
+            if not await asyncio.shield(close_task):
+                return
+            while tasks := self._pending_session_persistence_tasks(sessions):
+                await asyncio.wait(tasks)
+            if all(getattr(resource, "cleanup_quiesced", False) is True for _, resource in self._lifecycle_resources):
+                await self._release_worktree_pool_bounded(timeout=timeout)
+
+        owner = asyncio.create_task(release_after_close())
+        self._deferred_worktree_release = owner
+        owner.add_done_callback(consume_task_result)
 
     def _pending_session_persistence_tasks(
         self,
@@ -384,11 +408,16 @@ class SchedulerCleanupMixin:
         return succeeded
 
     async def _release_worktree_pool_bounded(self, *, timeout: float) -> bool:
-        try:
+        async def release_pool() -> None:
             result = self._worktree_pool.release()
-            if not inspect.isawaitable(result):
-                return True
-            task = asyncio.ensure_future(result)
+            if inspect.isawaitable(result):
+                await result
+
+        task = self._worktree_release_task
+        if task is None or (task.done() and (task.cancelled() or task.exception() is not None)):
+            task = asyncio.create_task(release_pool())
+            self._worktree_release_task = task
+        try:
             done, pending = await asyncio.wait({task}, timeout=timeout)
             if pending:
                 task.cancel()
