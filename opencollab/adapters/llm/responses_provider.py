@@ -600,11 +600,15 @@ def _parse_stream(
             _merge_terminal_projection(streamed, terminal)
             for streamed, terminal in zip(state.output_items, final_items, strict=True)
         ]
-    content = "".join(_output_text(item) for item in state.output_items) or None
     reasoning = "\n".join(text for text in (_reasoning_text(item) for item in state.output_items) if text) or None
+    answer_parts: list[str] = []
+    commentary_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     for item in state.output_items:
-        if item.get("type") == "function_call":
+        if item["type"] == "message":
+            parts = commentary_parts if item.get("phase") == "commentary" else answer_parts
+            parts.append(_output_text(item))
+        elif item["type"] == "function_call":
             tool_calls.append(
                 {
                     "id": item["call_id"],
@@ -612,6 +616,7 @@ def _parse_stream(
                     "function": {"name": item.get("name"), "arguments": item["arguments"]},
                 }
             )
+    content = "".join(answer_parts) or None
     if forced_text_tool is not None and tool_calls:
         raise ResponsesProtocolError("JSON Schema tool response unexpectedly contained function calls")
     if forced_text_tool is not None and finish_reason == "stop":
@@ -629,13 +634,16 @@ def _parse_stream(
         except ValueError as exc:
             raise ResponsesProtocolError(str(exc)) from exc
         tool_calls = [tool_call]
-        state.output_items = [item for item in state.output_items if item.get("type") == "reasoning"]
+        state.output_items = [
+            item for item in state.output_items
+            if item["type"] == "reasoning" or (item["type"] == "message" and item.get("phase") == "commentary")
+        ]
         state.output_items.append(synthetic_item)
         content = None
     usage = parse_responses_usage(
         state.completed_response,
         messages,
-        content,
+        "".join(commentary_parts) + (content or ""),
         tool_calls,
         tools,
         reasoning=reasoning,

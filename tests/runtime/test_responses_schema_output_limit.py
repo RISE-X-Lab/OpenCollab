@@ -21,8 +21,16 @@ TOOLS = [{"type": "function", "function": {"name": "structured_output", "paramet
 
 @pytest.mark.parametrize("streamed", [False, True])
 @pytest.mark.parametrize("text", [None, '{"result":', '{"result":"ok"}'])
-async def test_schema_limit_preserves_reported_usage_and_skips_projection(streamed, text):
-    items = [] if text is None else [{**message_item(text), "status": "incomplete"}]
+@pytest.mark.parametrize("phased", [False, True], ids=["unphased", "phased"])
+async def test_schema_limit_preserves_reported_usage_and_skips_projection(streamed, text, phased):
+    items = []
+    if phased:
+        items.append({**message_item("Collecting the result."), "id": "msg_progress", "phase": "commentary"})
+    if text is not None:
+        partial = {**message_item(text), "status": "incomplete"}
+        if phased:
+            partial["phase"] = "final_answer"
+        items.append(partial)
     terminal = completed_response(
         status="incomplete", incomplete_details={"reason": "max_output_tokens"}, output=items,
     )

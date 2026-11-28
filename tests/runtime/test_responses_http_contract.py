@@ -10,8 +10,11 @@ from typing import Any, Iterator
 
 import pytest
 
+from opencollab import OpenCollab
 from opencollab.adapters.llm.client import LLMClient
-from opencollab.domain.token_estimation import estimate_messages_tokens
+from opencollab.adapters.llm.responses_messages import messages_to_input
+from opencollab.domain.token_estimation import estimate_messages_tokens, estimate_tokens
+from tests.support.responses_provider_test_support import message_item
 
 
 def _response(response_id: str, *, include_usage: bool = True) -> dict[str, Any]:
@@ -77,13 +80,15 @@ HANG_GUARD_SECONDS = 60
 @contextmanager
 def fake_responses_server(
     scripts: list[list[dict[str, Any]]],
+    *,
+    bearer_value: str = "fake-key",
 ) -> Iterator[tuple[str, list[dict[str, Any]]]]:
     requests: list[dict[str, Any]] = []
     lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            if self.path != "/v1/responses" or self.headers.get("Authorization") != "Bearer fake-key":
+            if self.path != "/v1/responses" or self.headers.get("Authorization") != f"Bearer {bearer_value}":
                 self.send_error(404)
                 return
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
@@ -118,7 +123,8 @@ def fake_responses_server(
         thread.join(timeout=2)
 
 @pytest.mark.asyncio
-async def test_real_http_stream_replays_reasoning_function_call_and_output(monkeypatch):
+@pytest.mark.parametrize("phased", [False, True], ids=["unphased", "phased"])
+async def test_real_http_stream_replays_reasoning_function_call_and_output(monkeypatch, phased):
     monkeypatch.setenv("OPENCOLLAB_LLM_USER_AGENT", "codex_cli_rs/test")
     reasoning = {
         "id": "rs_1",
@@ -141,12 +147,13 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output(monke
         "status": "completed",
         "content": [{"type": "output_text", "text": "42", "annotations": []}],
     }
+    commentary = {**message_item("I'll look up the number."), "id": "msg_lookup", "phase": "commentary"}
+    first_items = [reasoning, commentary, call] if phased else [reasoning, call]
     scripts = [
         [
             {"type": "response.created", "sequence_number": 0, "response": _response("resp_1")},
-            _item_event(reasoning, 0),
-            _item_event(call, 1),
-            _completed_event("resp_1", 3, [reasoning, call]),
+            *(_item_event(item, index) for index, item in enumerate(first_items)),
+            _completed_event("resp_1", len(first_items) + 1, first_items),
         ],
         [
             {"type": "response.created", "sequence_number": 0, "response": _response("resp_2")},
@@ -199,6 +206,7 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output(monke
 
         await client.close()
 
+    assert first.content is None
     assert first.tool_calls[0]["id"] == "call_exact"
     assert second.content == "42"
     assert requests[0]["include"] == ["reasoning.encrypted_content"]
@@ -208,8 +216,7 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output(monke
     assert requests[0]["_user_agent"] == "codex_cli_rs/test"
     assert requests[0]["prompt_cache_key"] == requests[1]["prompt_cache_key"]
     replay = requests[1]["input"]
-    assert reasoning in replay
-    assert call in replay
+    assert replay[1:-1] == first_items
     assert replay[-1] == {
         "type": "function_call_output",
         "call_id": "call_exact",
@@ -310,8 +317,49 @@ async def test_real_http_missing_usage_estimates_encrypted_replay_and_registered
         prefer_response_items=True,
     )
 
+@pytest.mark.parametrize("phased", [False, True], ids=["unphased", "phased"])
+async def test_public_agent_uses_final_answer_and_replays_native_phases(tmp_path, monkeypatch, phased):
+    log = tmp_path / "usage.jsonl"
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(log))
+    final = message_item("391")
+    items = [final]
+    if phased:
+        final["phase"] = "final_answer"
+        items.insert(0, {
+            **message_item("I'll check the multiplication."),
+            "id": "msg_progress",
+            "phase": "commentary",
+        })
+    scripts = [[
+        *(_item_event(item, index) for index, item in enumerate(items)),
+        _completed_event("resp_phases", len(items) + 1, items),
+    ]]
+    artifacts = tmp_path / "artifacts"
+    with fake_responses_server(scripts, bearer_value=tmp_path.name) as (base_url, requests):
+        app = OpenCollab(
+            tmp_path, model="gpt-5.3-codex", api_key=tmp_path.name, base_url=base_url,
+            config={"wire_protocol": "responses", "llm_max_retries": 0},
+        )
+        result = await app.agent(
+            "What is 17 times 23?", tools=[], budget=10_000, max_steps=2,
+            timeout=HANG_GUARD_SECONDS, artifacts=artifacts, trace=False,
+        )
+
+    assert (result.status, result.output, result.tokens) == ("completed", "391", 25)
+    assert len(requests) == 1
+    assistant = app.read_session_snapshot(artifacts / "agent.json")["messages"][-1]
+    assert assistant["content"] == "391"
+    assert assistant["response_items"] == items
+    assert messages_to_input([assistant])[1] == items
+    record, = [json.loads(line) for line in log.read_text().splitlines()]
+    assert record["status"] == "success"
+    assert record["usage"]["total_tokens"] == 25
+    assert record["usage"]["estimated"] is False
+
 @pytest.mark.asyncio
-async def test_real_http_deepseek_named_tool_uses_json_schema_text_binding():
+@pytest.mark.parametrize("phased", [False, True], ids=["unphased", "phased"])
+@pytest.mark.parametrize("include_usage", [False, True], ids=["estimated-usage", "reported-usage"])
+async def test_real_http_deepseek_named_tool_uses_json_schema_text_binding(phased, include_usage):
     schema = {
         "type": "object",
         "required": ["findings"],
@@ -342,10 +390,19 @@ async def test_real_http_deepseek_named_tool_uses_json_schema_text_binding():
             }
         ],
     }
+    commentary = {
+        **message_item("I'll gather the findings."),
+        "id": "msg_progress",
+        "phase": "commentary",
+    }
+    items = [message]
+    if phased:
+        message["phase"] = "final_answer"
+        items.insert(0, commentary)
     scripts = [[
         {"type": "response.created", "sequence_number": 0, "response": _response("resp_schema")},
-        _item_event(message, 0),
-        _completed_event("resp_schema", 2, [message]),
+        *(_item_event(item, index) for index, item in enumerate(items)),
+        _completed_event("resp_schema", len(items) + 1, items, include_usage=include_usage),
     ]]
     with fake_responses_server(scripts) as (base_url, requests):
         client = LLMClient(
@@ -384,4 +441,16 @@ async def test_real_http_deepseek_named_tool_uses_json_schema_text_binding():
     assert request["reasoning"] == {"effort": "none"}
     assert result.content is None
     assert result.tool_calls[0]["function"]["name"] == "structured_output"
+    assert json.loads(result.tool_calls[0]["function"]["arguments"]) == {
+        "findings": [{"path": "a.py", "summary": "ok"}],
+    }
     assert result.provider_items[-1]["type"] == "function_call"
+    assert result.provider_items[:-1] == ([commentary] if phased else [])
+    if include_usage:
+        assert result.usage.total_tokens == 25
+        assert result.usage.estimated is False
+    else:
+        function = result.tool_calls[0]["function"]
+        prefix = commentary["content"][0]["text"] if phased else ""
+        assert result.usage.output_tokens == estimate_tokens(prefix + function["name"] + function["arguments"])
+        assert result.usage.estimated is True
