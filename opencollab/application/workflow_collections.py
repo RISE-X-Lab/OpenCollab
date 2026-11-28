@@ -116,7 +116,9 @@ class WorkflowCollectionsMixin:
             # Child tasks may borrow a parent's slot or use spare global capacity.
             slot = await self._acquire_child_task_slot(active.child_slot)
             if slot is self._task_semaphore:
-                return await self._run_with_acquired_task_slot(operation)
+                # Shared-slot work can outlive the parent that launched it.
+                with self._own_workflow_call():
+                    return await self._run_with_acquired_task_slot(operation)
             try:
                 if not active.closed:
                     state = active.state
