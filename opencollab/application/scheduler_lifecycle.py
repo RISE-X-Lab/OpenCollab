@@ -538,6 +538,14 @@ class LifecycleMixin:
         if scb.state.phase is SessionPhase.DONE:
             scb.answer = result
 
+        # A failed change capture still leaves a completed reply.
+        if scb.answer and aid in self._completed_public_turn_answers:
+            answer = _last_assistant_answer(
+                scb.state.messages, scb.state.completed_turn_start_message_index, include_tool_call_text=False,
+            )
+            if answer:
+                self._completed_public_turn_answers[aid] = answer
+
         # A completed coding task still needs its patch evidence. Tracing and
         # event delivery are observational, but a missing diff is a technical
         # failure because the parent cannot verify what changed.
@@ -563,13 +571,6 @@ class LifecycleMixin:
         if self._shutting_down:
             self._finalize_cleanup_failure(aid)
             return
-
-        if scb.answer and aid in self._completed_public_turn_answers:
-            answer = _last_assistant_answer(
-                scb.state.messages, scb.state.completed_turn_start_message_index, include_tool_call_text=False,
-            )
-            if answer:
-                self._completed_public_turn_answers[aid] = answer
 
         # Store the same post-diff artifact that is delivered to the parent so
         # spawn_with_review gives the reviewer the actual implementation diff.

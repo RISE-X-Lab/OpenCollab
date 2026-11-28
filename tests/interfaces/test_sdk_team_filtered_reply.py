@@ -15,6 +15,7 @@ from tests.support.session_characterization_test_support import FakeLLMClient
 
 _INTERIM = "I will inspect the inventory before reporting a subtotal."
 _VISIBLE = "Verified inventory subtotal is 42."
+_UPDATED = "Verified inventory subtotal is 43."
 _PARTIAL = _VISIBLE + " The next section"
 _REFUSAL = "I can share the verified subtotal of 42."
 _REASONING = "I should check whether the inventory is complete."
@@ -296,7 +297,8 @@ async def test_team_lead_returns_only_visible_filtered_text(
 
 
 @pytest.mark.parametrize(("initial_answer", "finish_reason", "message", "output"), [
-    pytest.param(_VISIBLE, "stop", {"content": "Updated subtotal."}, "Updated subtotal.", id="completed-followup"),
+    pytest.param(_VISIBLE, "stop", {"content": _UPDATED}, _UPDATED, id="completed-followup"),
+    pytest.param(_VISIBLE, "diff-error", {"content": _UPDATED}, _UPDATED, id="completed-capture-error"),
     pytest.param(_VISIBLE, "content_filter", {"content": None}, _VISIBLE, id="empty-filter"),
     pytest.param(_VISIBLE, "content_filter", {"content": _REFUSAL}, _REFUSAL, id="visible-filter"),
     pytest.param(None, "content_filter", {"content": None}, None, id="interim-only"),
@@ -306,8 +308,9 @@ async def test_team_lead_returns_only_visible_filtered_text(
     pytest.param(_VISIBLE, "length", {"content": _PARTIAL}, _PARTIAL, id="visible-truncation"),
     pytest.param(_VISIBLE, "provider-error", {}, _VISIBLE, id="provider-error"),
 ])
+@pytest.mark.parametrize("timeout", [5.0, None], ids=["deadline-set", "no-deadline"])
 async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible_reply(
-    tmp_path, monkeypatch, initial_answer, finish_reason, message, output,
+    tmp_path, monkeypatch, initial_answer, finish_reason, message, output, timeout,
 ):
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
@@ -326,6 +329,17 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
     provider_message = "Optional reconciliation is temporarily unavailable."
     lead_requests = []
     worker_requests = []
+    fail_next_capture = False
+    capture_failed = False
+
+    class EvidenceEnvironment(LocalEnvironment):
+        async def get_diff(self):
+            nonlocal fail_next_capture, capture_failed
+            if fail_next_capture:
+                fail_next_capture = False
+                capture_failed = True
+                raise OSError("Could not read the inventory evidence.")
+            return ""
 
     def message_call(call_id, to_role, text, interim=None):
         return {"content": interim, "tool_calls": [{
@@ -335,6 +349,7 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
         }]}
 
     def handler(request):
+        nonlocal fail_next_capture
         body = json.loads(request.content)
         model = body["model"]
         messages = body["messages"]
@@ -359,6 +374,9 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
                 return http_response(request, 503, json={"error": {
                     "message": provider_message, "type": "server_error", "code": "service_unavailable",
                 }})
+            if finish_reason == "diff-error":
+                fail_next_capture = True
+                return _chat_reply(request, model, len(lead_requests), "stop", message)
             return _chat_reply(request, model, len(lead_requests), finish_reason, message)
         if len(lead_requests) == 1:
             return _chat_reply(
@@ -368,16 +386,21 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
         return _chat_reply(request, model, len(lead_requests), "stop", {"content": initial_answer})
 
     install_sdk_transport(monkeypatch, "openai", handler)
+    environment = EvidenceEnvironment(str(tmp_path)) if finish_reason == "diff-error" else None
     app = OpenCollab(
         tmp_path, model="fixture-lead", provider="openai", api_key="controlled-test",  # pragma: allowlist secret
-        base_url="https://fixture.invalid/v1",
+        base_url="https://fixture.invalid/v1", environment=environment,
         config={"llm_max_retries": 0, "wire_protocol": "chat_completions", "llm_stream_chat": False},
     )
     artifacts = tmp_path / "artifacts"
-    result = await app.team(
-        "Report the verified inventory subtotal.", config=team, artifacts=artifacts, trace=True,
-        use_worktrees=False, prebuild_team=True, serialize_turns=True, budget=100_000, timeout=5,
-    )
+    try:
+        result = await app.team(
+            "Report the verified inventory subtotal.", config=team, artifacts=artifacts, trace=True,
+            use_worktrees=False, prebuild_team=True, serialize_turns=True, budget=100_000, timeout=timeout,
+        )
+    finally:
+        if environment is not None:
+            await environment.cleanup()
     assert len(lead_requests) == (4 if initial_answer is None or reads_inventory else 3)
     assert len(worker_requests) == 2
     rows = [json.loads(line) for line in (artifacts / "trajectory.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -389,8 +412,22 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
     )
     assert lead_completed < worker_sent
     assert result.output == output
+    snapshots = [app.read_session_snapshot(path) for path in sorted(artifacts.glob("agent_*.json"))]
+    assert len(snapshots) == 2
+    lead = snapshots[0]
+    usage = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert result.tokens == sum(row["usage"]["total_tokens"] for row in usage)
+    assert result.tokens == sum(snapshot["session_state"]["used_tokens"] for snapshot in snapshots)
+    assert capture_failed == (finish_reason == "diff-error")
     if finish_reason == "provider-error":
         assert result.status == "failed" and provider_message in result.reason
+        assert lead["messages"][-2]["content"] == _INTERIM
+        assert lead["messages"][-2]["tool_calls"][0]["id"] == "read-inventory"
+    elif finish_reason == "diff-error":
+        assert result.status == "failed"
+        assert lead["session_state"]["phase"] == "error"
+        cursor = lead["session_state"]["completed_turn_start_message_index"]
+        assert lead["messages"][cursor]["content"] == _UPDATED
     else:
         reason = {"content_filter": _FILTER_REASON, "length": _TRUNCATED_REASON}.get(finish_reason)
         assert (result.status, result.reason) == ("stopped" if reason else "completed", reason)
