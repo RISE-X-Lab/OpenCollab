@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from functools import partial
+from graphlib import CycleError, TopologicalSorter
 from typing import Any
 
 from opencollab.adapters.docker_isolation import DockerIsolationPool
@@ -12,6 +14,15 @@ from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.isolation import isolation_name
 from opencollab.application.ports import EnvironmentPort, WorktreePoolPort
+
+
+@dataclass
+class _EnvironmentOwner:
+    environment: EnvironmentPort
+    pool: WorktreePoolPort
+    references: int = 0
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    sources: dict[int, EnvironmentPort] = field(default_factory=dict)
 
 
 class SessionEnvironmentPool:
@@ -38,8 +49,7 @@ class SessionEnvironmentPool:
         self._options = dict(owned_save_dir=owned_save_dir, enable_adoption=enable_adoption,
                              owned_output_paths=owned_output_paths)
         self._pools: dict[str, WorktreePoolPort] = {}
-        self._owners: dict[int, tuple[EnvironmentPort, WorktreePoolPort, asyncio.Lock, EnvironmentPort]] = {}
-        self._references: dict[int, int] = {}
+        self._owners: dict[int, _EnvironmentOwner] = {}
         self._lifecycle = asyncio.Condition()
         self._release_lock = asyncio.Lock()
         self._inflight = 0
@@ -107,10 +117,13 @@ class SessionEnvironmentPool:
             pool = self._pool(name, base)
             env = await pool.acquire(role, source=base)
             identity = id(env)
-            if env is not base or identity in self._owners:
-                if identity not in self._owners:
-                    self._owners[identity] = (env, pool, asyncio.Lock(), base)
-                self._references[identity] = self._references.get(identity, 0) + 1
+            owner = self._owners.get(identity)
+            if env is not base:
+                if owner is None:
+                    owner = self._owners[identity] = _EnvironmentOwner(env, pool)
+                owner.sources[id(base)] = base
+            if owner is not None:
+                owner.references += 1
             if self._closed:
                 await self.release_env(env)
                 raise RuntimeError("session environment pool closed during acquisition")
@@ -147,18 +160,16 @@ class SessionEnvironmentPool:
         owner = self._owners.get(identity)
         if owner is None:
             return
-        _, pool, lock, _ = owner
-        async with lock:
+        async with owner.lock:
             if self._owners.get(identity) is not owner:
                 return
-            if not all_references and self._references[identity] > 1:
-                self._references[identity] -= 1
+            if not all_references and owner.references > 1:
+                owner.references -= 1
                 return
             # A failed final release stays available for scoped retry.
-            self._references[identity] = 1
-            await pool.release_env(env)
+            owner.references = 1
+            await owner.pool.release_env(env)
             del self._owners[identity]
-            del self._references[identity]
 
     async def release(self) -> None:
         self._closed = True
@@ -173,19 +184,34 @@ class SessionEnvironmentPool:
         async with self._lifecycle:
             while self._inflight:
                 await self._lifecycle.wait()
-        # A failed child can still need its source workspace for a cleanup retry.
+        # A reused environment can depend on a workspace acquired after it.
+        owners = dict(reversed(self._owners.items()))
+        order = TopologicalSorter({identity: () for identity in owners})
+        for identity, owner in owners.items():
+            for source in owner.sources:
+                if source in owners:
+                    order.add(source, identity)
+
         retained_sources: set[int] = set()
         first_failure: Exception | None = None
-        for identity, (env, _pool, _lock, source) in reversed(tuple(self._owners.items())):
-            if identity not in retained_sources:
-                try:
-                    await self._release_env(env, all_references=True)
-                except Exception as exc:
-                    if first_failure is None:
-                        first_failure = exc
-                else:
-                    continue
-            retained_sources.add(id(source))
+        try:
+            order.prepare()
+        except CycleError:
+            first_failure = RuntimeError("session environment cleanup has cyclic source dependencies")
+        while order.is_active():
+            ready = order.get_ready()
+            for identity in ready:
+                owner = owners[identity]
+                if identity not in retained_sources:
+                    try:
+                        await self._release_env(owner.environment, all_references=True)
+                    except Exception as exc:
+                        if first_failure is None:
+                            first_failure = exc
+                    else:
+                        continue
+                retained_sources.update(owner.sources)
+            order.done(*ready)
         if first_failure is not None:
             raise first_failure
         failures = []

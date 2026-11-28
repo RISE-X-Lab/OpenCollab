@@ -233,6 +233,69 @@ async def test_pool_keeps_failed_child_source_and_releases_independent_worktree(
     assert not checkout.exists()
 
 
+@pytest.mark.parametrize("late_source", [False, True])
+@pytest.mark.parametrize("export_fault", [False, True])
+async def test_pool_retains_sources_of_a_reused_environment(tmp_path, late_source, export_fault):
+    _repo(tmp_path, dirty=False)
+    report = tmp_path / "report.txt"
+    release_attempts = 0
+    export_enabled = True
+
+    class ReportPool(WorktreePool):
+        def __init__(self, **options):
+            super().__init__(use_worktrees=True, **options)
+            self.environment = None
+            self.sources = []
+
+        async def acquire(self, role, *, source=None):
+            self.sources.append(source)
+            if self.environment is None:
+                self.environment = await super().acquire(role, source=source)
+            return self.environment
+
+        async def release_env(self, env):
+            nonlocal release_attempts
+            release_attempts += 1
+            if export_enabled:
+                if export_fault and release_attempts == 1:
+                    raise OSError("temporary report destination error")
+                details = [await source.read_file("detail.txt") for source in self.sources]
+                report.write_text(" / ".join(details))
+            await super().release_env(env)
+
+    pool = SessionEnvironmentPool(str(tmp_path), providers={"report": ReportPool})
+    try:
+        first = await pool.acquire("first")
+        if not late_source:
+            second = await pool.acquire("second")
+        view = await pool.acquire("combine-first", source=first, isolation="report")
+        if late_source:
+            second = await pool.acquire("second")
+        again = await pool.acquire("combine-second", source=second, isolation="report")
+        independent = await pool.acquire("independent")
+        assert view is again
+        await first.write_file("detail.txt", "first")
+        await second.write_file("detail.txt", "second")
+        await pool.release_env(again)
+        assert release_attempts == 0
+
+        if export_fault:
+            with pytest.raises(OSError, match="temporary report destination error"):
+                await pool.release()
+            assert not Path(independent.workspace).exists()
+            assert await first.read_file("detail.txt") == "first"
+            assert await second.read_file("detail.txt") == "second"
+            assert Path(view.workspace).is_dir()
+
+        await pool.release()
+        assert report.read_text() == "first / second"
+        assert release_attempts == (2 if export_fault else 1)
+        assert all(not Path(env.workspace).exists() for env in (first, second, view, independent))
+    finally:
+        export_enabled = False
+        await pool.release()
+
+
 @pytest.mark.parametrize("phase", ["session-close", "workspace-release"])
 @pytest.mark.parametrize("mode", ["cleanup-timeout", "caller-cancelled", "workflow-timeout"])
 async def test_workflow_preserves_workspace_until_owned_cleanup_settles(tmp_path, monkeypatch, phase, mode):
