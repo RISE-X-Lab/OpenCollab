@@ -7,6 +7,7 @@ from typing import Any
 
 from opencollab.adapters.docker_isolation import DockerIsolationPool
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.vm_isolation import VMIsolationPool
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.isolation import isolation_name
@@ -147,6 +148,10 @@ class SessionEnvironmentPool:
 
     async def release(self) -> None:
         self._closed = True
+        # A VM capacity wait needs the shutdown signal before we drain acquisitions.
+        for pool in self._pools.values():
+            if isinstance(pool, VMIsolationPool):
+                pool.stop_acquiring()
         await await_owned_operation(self._release(), propagate_cancellation=True)
 
     async def _release(self) -> None:

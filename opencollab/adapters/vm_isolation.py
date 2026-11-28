@@ -275,15 +275,21 @@ class VMIsolationPool:
             await await_owned_operation(self._export(env, owner), propagate_cancellation=True)
             assert owner.pool is not None
             await await_owned_operation(owner.pool.release_env(env), propagate_cancellation=True)
+            if owner is not self._group and not any(
+                value is owner and environment is not env for environment, value in self._leases.items()
+            ):
+                await await_owned_operation(self._cleanup_owner(owner), propagate_cancellation=True)
+                return
             self._leases.pop(env)
             self._exports.pop(env)
             self._exported.discard(env)
-            if owner is not self._group and owner not in self._leases.values():
-                await await_owned_operation(self._cleanup_owner(owner), propagate_cancellation=True)
 
-    async def release(self) -> None:
+    def stop_acquiring(self) -> None:
         self._closed = True
         self._closing.set()
+
+    async def release(self) -> None:
+        self.stop_acquiring()
         await await_owned_operation(self._release_owned(), propagate_cancellation=True)
 
     async def _release_owned(self) -> None:
