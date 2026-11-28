@@ -299,10 +299,69 @@ async def test_team_lead_returns_only_visible_filtered_text(
     assert len(requests) == 2
 
 
+@pytest.mark.parametrize(("visible", "reasoning"), [
+    pytest.param(_VISIBLE, None, id="visible"),
+    pytest.param(None, None, id="empty"),
+    pytest.param(None, _REASONING, id="reasoning"),
+])
+async def test_first_team_turn_provider_failure_keeps_its_visible_output(tmp_path, monkeypatch, visible, reasoning):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    (tmp_path / "inventory.txt").write_text("verified inventory: 42\n", encoding="utf-8")
+    team = tmp_path / "team.yaml"
+    team.write_text(
+        "entry: lead\nroles:\n  lead:\n    prompt: Read the inventory.\n    tools: [file_read]\n",
+        encoding="utf-8",
+    )
+    requests = []
+    provider_message = "The reconciliation service is temporarily unavailable."
+
+    def handler(request):
+        body = json.loads(request.content)
+        messages = body["messages"]
+        requests.append(messages)
+        if len(requests) == 1:
+            reply = {**_inventory_read(), "content": visible}
+            if reasoning:
+                reply["reasoning_content"] = reasoning
+            return _chat_reply(request, body["model"], 1, "tool_calls", reply)
+        assert len(requests) == 2
+        assert any(row["role"] == "tool" and "verified inventory: 42" in row["content"] for row in messages)
+        return http_response(request, 503, json={"error": {
+            "message": provider_message, "type": "server_error", "code": "service_unavailable",
+        }})
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    artifacts = tmp_path / "artifacts"
+    app = OpenCollab(
+        tmp_path, model="fixture-lead", provider="openai", api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://fixture.invalid/v1",
+        config={"llm_max_retries": 0, "wire_protocol": "chat_completions", "llm_stream_chat": False},
+    )
+    result = await app.team(
+        "Report the verified inventory subtotal.", config=team, artifacts=artifacts,
+        use_worktrees=False, trace=False, budget=100_000, timeout=5,
+    )
+
+    assert (result.status, result.output, result.tokens) == ("failed", visible, 4)
+    assert provider_message in result.reason
+    assert len(requests) == 2
+    lead, = artifacts.glob("agent_0_*.json")
+    messages = app.read_session_snapshot(lead)["messages"]
+    assert [row.get("content") for row in messages if row["role"] == "assistant"] == [visible]
+
+
 @pytest.mark.parametrize(("initial_answer", "finish_reason", "message", "output"), [
     pytest.param(_VISIBLE, "stop", {"content": _UPDATED}, _UPDATED, id="completed-followup"),
     pytest.param(_VISIBLE, "diff-error", {"content": _UPDATED}, _UPDATED, id="completed-capture-error"),
-    pytest.param(_VISIBLE, "checkpoint-error", {"content": _UPDATED}, _UPDATED, id="completed-checkpoint-error"),
+    pytest.param(_VISIBLE, "checkpoint-error-stop", {"content": _UPDATED}, _UPDATED, id="completed-checkpoint-error"),
+    pytest.param(_VISIBLE, "checkpoint-error-length", {"content": _PARTIAL}, _PARTIAL, id="truncated-checkpoint-error"),
+    pytest.param(_VISIBLE, "checkpoint-error-content_filter", {"content": _REFUSAL}, _REFUSAL,
+                 id="filtered-checkpoint-error"),
+    pytest.param(_VISIBLE, "checkpoint-error-length", {"content": None, "reasoning_content": _REASONING}, _VISIBLE,
+                 id="reasoning-checkpoint-error"),
+    pytest.param(None, "checkpoint-error-length", {"content": None, "reasoning_content": _REASONING}, None,
+                 id="reasoning-checkpoint-error-without-prior-answer"),
+    pytest.param(None, "checkpoint-error-content_filter", {"content": None}, None, id="empty-checkpoint-error"),
     pytest.param(_VISIBLE, "content_filter", {"content": None}, _VISIBLE, id="empty-filter"),
     pytest.param(_VISIBLE, "content_filter", {"content": _REFUSAL}, _REFUSAL, id="visible-filter"),
     pytest.param(None, "content_filter", {"content": None}, None, id="interim-only"),
@@ -329,7 +388,9 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
         encoding="utf-8",
     )
     notice = "The delivery audit is pending."
-    reads_inventory = finish_reason in {"length", "provider-error"}
+    checkpoint_error = finish_reason.startswith("checkpoint-error-")
+    finish_reason = finish_reason.removeprefix("checkpoint-error-")
+    reads_inventory = finish_reason in {"length", "provider-error"} or checkpoint_error
     provider_message = "Optional reconciliation is temporarily unavailable."
     lead_requests = []
     worker_requests = []
@@ -366,21 +427,18 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
         lead_requests.append(messages)
         if any(notice in row.get("content", "") for row in messages if row["role"] == "user"):
             if reads_inventory:
-                if len(lead_requests) == 3:
-                    return _chat_reply(request, model, 3, "tool_calls", _inventory_read())
-                assert len(lead_requests) == 4
-                assert any(
-                    row["role"] == "tool" and row["tool_call_id"] == "read-inventory"
-                    and "verified inventory: 42" in row["content"]
-                    for row in messages
-                )
+                read = next((row for row in messages if row["role"] == "tool"
+                             and row["tool_call_id"] == "read-inventory"), None)
+                if read is None:
+                    return _chat_reply(request, model, len(lead_requests), "tool_calls", _inventory_read())
+                assert "verified inventory: 42" in read["content"]
             if finish_reason == "provider-error":
                 return http_response(request, 503, json={"error": {
                     "message": provider_message, "type": "server_error", "code": "service_unavailable",
                 }})
             if finish_reason == "diff-error":
                 fail_next_capture = True
-            if finish_reason in {"diff-error", "checkpoint-error"}:
+            if finish_reason == "diff-error":
                 return _chat_reply(request, model, len(lead_requests), "stop", message)
             return _chat_reply(request, model, len(lead_requests), finish_reason, message)
         if len(lead_requests) == 1:
@@ -406,7 +464,10 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
         target = Path(destination)
         if not checkpoint_failed and target.parent == artifacts and target.match("agent_0_*.json"):
             candidate = json.loads(Path(source).read_text(encoding="utf-8"))
-            if candidate["session_state"]["phase"] == "done" and candidate["messages"][-1]["content"] == _UPDATED:
+            terminal_phase = "done" if finish_reason == "stop" else "stopped"
+            if candidate["session_state"]["phase"] == terminal_phase and any(
+                row["role"] == "user" and notice in row["content"] for row in candidate["messages"]
+            ):
                 journal = target.with_name(target.name + ".journal")
                 base = json.loads(target.read_text(encoding="utf-8"))
                 sequence = base["_autosave_sequence"]
@@ -416,12 +477,12 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
                     if record["sequence"] > sequence:
                         sequence = record["sequence"]
                         phase = record["meta"]["session_state"]["phase"]
-                if phase == "done" and sequence < candidate["_autosave_sequence"]:
+                if phase == terminal_phase and sequence < candidate["_autosave_sequence"]:
                     checkpoint_failed = True
                     raise OSError(errno.EIO, "terminal checkpoint rename failed")
         return replace(source, destination, **kwargs)
 
-    if finish_reason == "checkpoint-error":
+    if checkpoint_error:
         monkeypatch.setattr(os, "replace", fail_terminal_checkpoint)
     try:
         result = await app.team(
@@ -431,7 +492,7 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
     finally:
         if environment is not None:
             await environment.cleanup()
-    assert len(lead_requests) == (4 if initial_answer is None or reads_inventory else 3)
+    assert len(lead_requests) == 3 + int(initial_answer is None) + int(reads_inventory)
     assert len(worker_requests) == 2
     rows = [json.loads(line) for line in (artifacts / "trajectory.jsonl").read_text(encoding="utf-8").splitlines()]
     lead_completed = next(
@@ -449,17 +510,20 @@ async def test_team_keeps_completed_lead_answer_after_followup_without_a_visible
     assert result.tokens == sum(row["usage"]["total_tokens"] for row in usage)
     assert result.tokens == sum(snapshot["session_state"]["used_tokens"] for snapshot in snapshots)
     assert capture_failed == (finish_reason == "diff-error")
-    assert checkpoint_failed == (finish_reason == "checkpoint-error")
+    assert checkpoint_failed == checkpoint_error
     if finish_reason == "provider-error":
         assert result.status == "failed" and provider_message in result.reason
         assert lead["messages"][-2]["content"] == _INTERIM
         assert lead["messages"][-2]["tool_calls"][0]["id"] == "read-inventory"
-    elif finish_reason in {"diff-error", "checkpoint-error"}:
+    elif finish_reason == "diff-error" or checkpoint_error:
         assert result.status == "failed"
         assert lead["session_state"]["phase"] == "error"
         cursor = lead["session_state"]["completed_turn_start_message_index"]
-        assert lead["messages"][cursor]["content"] == _UPDATED
-        if finish_reason == "checkpoint-error":
+        if expected_reply := message.get("content"):
+            assert cursor is not None
+            assert [row["content"] for row in lead["messages"][cursor:] if row["role"] == "assistant"
+                    and not row.get("tool_calls")] == [expected_reply]
+        if checkpoint_error:
             assert "terminal checkpoint rename failed" in result.reason
             assert lead["session_state"]["terminal_reason"] == result.reason
     else:

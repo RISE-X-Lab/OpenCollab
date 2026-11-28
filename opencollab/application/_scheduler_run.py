@@ -18,8 +18,8 @@ from opencollab.domain.session import SessionPhase, SessionState
 
 logger = logging.getLogger(__name__)
 
-def _turn_answer(state: SessionState, turn_start: int, *, completed_answer: str = "") -> str:
-    if state.phase is SessionPhase.ERROR and completed_answer:
+def _turn_answer(state: SessionState, turn_start: int, *, completed_answer: str | None = None) -> str:
+    if state.phase is SessionPhase.ERROR and completed_answer is not None:
         return completed_answer
     if state.phase is SessionPhase.STOPPED and (
         state.terminal_reason == _FILTERED_OUTPUT_REASON
@@ -27,8 +27,8 @@ def _turn_answer(state: SessionState, turn_start: int, *, completed_answer: str 
     ):
         reply_start = state.completed_turn_start_message_index
         if reply_start is None:
-            return completed_answer
-        return _last_assistant_answer(state.messages, max(turn_start, reply_start)) or completed_answer
+            return completed_answer or ""
+        return _last_assistant_answer(state.messages, max(turn_start, reply_start)) or completed_answer or ""
     return _last_assistant_answer(state.messages, turn_start)
 
 class SchedulerRunMixin:
@@ -41,9 +41,9 @@ class SchedulerRunMixin:
         return await self.run_turn(0, user_message, cancel_event=cancel_event)
 
     def accepted_public_turn_answer(self, aid: int) -> str | None:
-        answer = self._completed_public_turn_answers.get(aid)
-        if answer is None:
+        if aid not in self._completed_public_turn_answers:
             return None
+        answer = self._completed_public_turn_answers[aid]
         state = self._sessions[aid].state
         if state.submitted_summary:
             return state.submitted_summary
@@ -188,7 +188,7 @@ class SchedulerRunMixin:
         if self._shutting_down:
             self._release_turn_lease(aid)
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
-        self._completed_public_turn_answers[aid] = ""
+        self._completed_public_turn_answers[aid] = None
         self._start_agent_task(aid, session)
 
         cancel_event = self._turn_cancel_events.get(aid)

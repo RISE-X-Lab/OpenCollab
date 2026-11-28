@@ -393,13 +393,15 @@ class LifecycleMixin:
                 finally:
                     self._turn_waiters.discard(parent_aid)
 
-    def _remember_completed_public_turn_answer(self, scb: SessionControlBlock) -> None:
+    def _remember_completed_public_turn_answer(
+        self, scb: SessionControlBlock, *, checkpoint_failed: bool = False,
+    ) -> None:
         if scb.aid not in self._completed_public_turn_answers:
             return
         answer = _last_assistant_answer(
             scb.state.messages, scb.state.completed_turn_start_message_index, include_tool_call_text=False,
         )
-        if answer:
+        if answer or (checkpoint_failed and self._completed_public_turn_answers[scb.aid] is None):
             self._completed_public_turn_answers[scb.aid] = answer
 
     async def _drive_agent(self, aid: int, session: Any, *, resumed: bool = False) -> None:
@@ -478,10 +480,14 @@ class LifecycleMixin:
             else:
                 scb.provider_status_code, scb.provider_error_code = provider_http_failure_metadata(exc)
             terminal_reason = f"{type(exc).__name__}: {exc}"
-            if scb.state.phase is SessionPhase.DONE:
-                # Persistence can fail after the session has accepted the reply.
-                self._remember_completed_public_turn_answer(scb)
-            else:
+            phase = scb.state.phase
+            checkpoint_failed = any(exc is error for error in getattr(session, "persistence_errors", ()))
+            if phase is SessionPhase.DONE or (
+                phase is SessionPhase.STOPPED
+                and scb.state.terminal_reason in {_FILTERED_OUTPUT_REASON, _TRUNCATED_OUTPUT_REASON}
+            ):
+                self._remember_completed_public_turn_answer(scb, checkpoint_failed=checkpoint_failed)
+            if phase is not SessionPhase.DONE and not checkpoint_failed:
                 terminal_reason = scb.state.terminal_reason or terminal_reason
             scb.state.fail(terminal_reason)
             reason = f"Error: {terminal_reason}"
