@@ -59,14 +59,13 @@ async def test_cleanup_cancels_tasks_without_aborting_caller_environment():
     ctx._cleanup_environment = False
     ctx._track_session(Session(environment, cleanup_task))
 
-    quiesced, succeeded, lingering = await workflow_cleanup._quiesce_workflow_context(
+    quiesced, succeeded = await workflow_cleanup._quiesce_workflow_context(
         ctx,
         timeout=0.01,
     )
 
     assert quiesced
     assert succeeded
-    assert not lingering
     assert not environment.revoked
     assert environment.abort_calls == 0
 
@@ -302,7 +301,7 @@ async def test_workflow_cleanup_marks_cancelled_blocking_autosave_nonquiescent()
     try:
         release_first.set()
         assert await asyncio.to_thread(second_started.wait, MUST_SETTLE_SECONDS)
-        quiesced, succeeded, _lingering = await cleanup
+        quiesced, succeeded = await cleanup
         assert quiesced is False
         assert succeeded is False
         assert calls == ["start-1", "end-1", "start-2"]
@@ -341,7 +340,7 @@ async def test_workflow_cleanup_reports_completed_autosave_failure():
     ctx._track_session(SessionWithFailedAutosave())
     await event_bus.emit(SessionRuntimeEvent(type="step_end"))
 
-    quiesced, succeeded, _lingering = await workflow_cleanup._quiesce_workflow_context(
+    quiesced, succeeded = await workflow_cleanup._quiesce_workflow_context(
         ctx,
         timeout=MUST_SETTLE_SECONDS,
     )
@@ -390,7 +389,7 @@ async def test_workflow_cleanup_tracks_abandoned_provider_task_until_exit():
     assert llm.cancel_seen.is_set()
     assert session.pending_cleanup_tasks
 
-    quiesced, succeeded, _lingering = await workflow_cleanup._quiesce_workflow_context(
+    quiesced, succeeded = await workflow_cleanup._quiesce_workflow_context(
         ctx,
         timeout=0.01,
     )
@@ -419,7 +418,7 @@ async def test_run_workflow_reports_technical_cleanup_failure_after_quiescence(
             closed.append(True)
 
     async def failed_abort(ctx, *, timeout):
-        return True, False, ()
+        return True, False
 
     monkeypatch.setattr(workflow_execution, "Tracer", RecordingTracer)
     monkeypatch.setattr(workflow_cleanup, "_quiesce_workflow_context", failed_abort)

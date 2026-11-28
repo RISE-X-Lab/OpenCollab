@@ -39,12 +39,8 @@ from opencollab.bootstrap.agent_runtime import _environment_abort_failure
 from opencollab.bootstrap.environment_profiles import environment_cleanup_timeout
 from opencollab.bootstrap.session_factory import build_session
 
-# The integrity runtime's own bounded cleanup can legitimately span several
-# cleanup_timeout phases (session quiesce runs two passes, each bounded by its
-# persistence and environment-abort sub-phases). Give the owner that full
-# envelope to self-finish before escalating to the injected-environment fallback
-# and force-termination, so a slow-but-legitimate teardown is not force-cancelled
-# into a spurious WorkflowLifecycleError.
+# Allow the owner to finish its bounded quiescence, save, and teardown
+# before falling back to environment abort and forced termination.
 _OWNER_CLEANUP_GRACE_PHASES = 4
 
 class WorkflowDeadlineExceeded(TimeoutError):

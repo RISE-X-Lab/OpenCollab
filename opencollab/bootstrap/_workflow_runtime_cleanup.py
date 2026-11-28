@@ -135,26 +135,21 @@ async def _quiesce_workflow_context(
     ctx: WorkflowContext,
     *,
     timeout: float,
-) -> tuple[bool, bool, tuple[asyncio.Future[Any], ...]]:
+) -> tuple[bool, bool]:
     if await _wait_for_context_cleanup(ctx, timeout=timeout):
-        return True, _session_persistence_succeeded(ctx), ()
+        return True, _session_persistence_succeeded(ctx)
     abort_succeeded = await _abort_session_environments(ctx, timeout=timeout)
     quiesced = await _wait_for_context_cleanup(ctx, timeout=timeout)
-    lingering = tuple(ctx.pending_cleanup_tasks)
-    return (
-        quiesced,
-        abort_succeeded and quiesced and _session_persistence_succeeded(ctx),
-        lingering,
-    )
+    return quiesced, abort_succeeded and quiesced and _session_persistence_succeeded(ctx)
 
 async def _quiesce_and_finalize_workflow_context(
     ctx: WorkflowContext,
     *,
     timeout: float,
 ) -> tuple[bool, bool, tuple[asyncio.Future[Any], ...]]:
-    quiesced, succeeded, lingering = await _quiesce_workflow_context(ctx, timeout=timeout)
+    quiesced, succeeded = await _quiesce_workflow_context(ctx, timeout=timeout)
     if not quiesced:
-        return quiesced, succeeded, lingering
+        return False, False, (_defer_workspace_release(ctx),)
     enqueued = True
     for session in ctx.sessions:
         enqueue = getattr(session, "enqueue_auto_save", None)
@@ -164,12 +159,10 @@ async def _quiesce_and_finalize_workflow_context(
             enqueue()
         except Exception:
             enqueued = False
-    final_quiesced, final_succeeded, final_lingering = await _quiesce_workflow_context(
-        ctx,
-        timeout=timeout,
-    )
-    if not final_quiesced:
-        return False, False, (*lingering, *final_lingering)
+    # Execution has already quiesced. A slow final save can finish without aborting its workspace.
+    if not await _wait_for_context_cleanup(ctx, timeout=timeout):
+        return False, False, (_defer_workspace_release(ctx),)
+    final_succeeded = _session_persistence_succeeded(ctx)
 
     # After the sessions are closed, never before: removing a worktree an agent
     # still holds would take the tree out from under a live tool call.
@@ -180,14 +173,7 @@ async def _quiesce_and_finalize_workflow_context(
         close_owner.add_done_callback(consume_task_result)
         raise
     if close_owner not in done or ctx.pending_cleanup_tasks:
-        async def release_after_close() -> None:
-            await close_owner
-            await ctx.wait_for_pending_cleanup()
-            await ctx.release_isolated_workspaces()
-
-        release_owner = asyncio.create_task(release_after_close())
-        release_owner.add_done_callback(consume_task_result)
-        return False, False, (release_owner,)
+        return False, False, (_defer_workspace_release(ctx, close_owner=close_owner),)
 
     workspaces_released, pending_workspaces = await _release_isolated_workspaces(ctx, timeout=timeout)
     return (
@@ -199,6 +185,22 @@ async def _quiesce_and_finalize_workflow_context(
         and workspaces_released,
         pending_workspaces,
     )
+
+def _defer_workspace_release(
+    ctx: WorkflowContext, *, close_owner: asyncio.Task[bool] | None = None,
+) -> asyncio.Task[None]:
+    async def release_after_close() -> None:
+        if close_owner is None:
+            await ctx.wait_for_pending_cleanup()
+            await close_session_resources(ctx.sessions, timeout=None)
+        else:
+            await close_owner
+        await ctx.wait_for_pending_cleanup()
+        await ctx.release_isolated_workspaces()
+
+    owner = asyncio.create_task(release_after_close())
+    owner.add_done_callback(consume_task_result)
+    return owner
 
 async def _release_isolated_workspaces(
     ctx: WorkflowContext, *, timeout: float,

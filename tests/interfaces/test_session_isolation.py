@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
 
 from opencollab import OpenCollab, RunError
+from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.session_environments import SessionEnvironmentPool
 from opencollab.adapters.worktree_pool import WorktreePool
@@ -299,6 +301,87 @@ async def test_workflow_preserves_workspace_until_owned_cleanup_settles(tmp_path
             if "pool" in observed:
                 await observed["pool"].release()
     assert observed["report"] == ("marker" if phase == "session-close" else "initial")
+
+
+@pytest.mark.parametrize("caller_owns_source", [False, True])
+async def test_workflow_removes_worktree_after_final_save_settles(tmp_path, monkeypatch, caller_owns_source):
+    repository = tmp_path / "source"
+    repository.mkdir()
+    _repo(repository, dirty=False)
+    saving, removed, source_closed = (asyncio.Event() for _ in range(3))
+    finish_save = threading.Event()
+    loop = asyncio.get_running_loop()
+    observed = {}
+
+    class ReportPool(WorktreePool):
+        async def acquire(self, role, *, source=None):
+            workspace = await super().acquire(role, source=source)
+            observed["workspace"] = workspace
+            return workspace
+
+        async def release_env(self, env):
+            await super().release_env(env)
+            removed.set()
+
+    def provider(**options):
+        source = options["base_environment"]
+        cleanup = source.cleanup
+
+        async def close_source():
+            await cleanup()
+            source_closed.set()
+
+        monkeypatch.setattr(source, "cleanup", close_source)
+        pool = ReportPool(use_worktrees=True, **options)
+        observed["pool"] = pool
+        return pool
+
+    async def flow(ctx, _args):
+        answer = await ctx.agent("Write a report.", tools=list(builtin_tools("file_write")))
+        await ctx.wait_for_pending_cleanup()
+        session, = ctx.sessions
+        append = session.store.append_snapshot_delta
+
+        def finish_delayed_save(path, **kwargs):
+            loop.call_soon_threadsafe(saving.set)
+            if not finish_save.wait(10):
+                raise TimeoutError("Test did not release the final save")
+            append(path, **kwargs)
+            observed["saved"] = True
+
+        monkeypatch.setattr(session.store, "append_snapshot_delta", finish_delayed_save)
+        return answer
+
+    source = LocalEnvironment(str(repository)) if caller_owns_source else None
+    client = OpenCollab(repository, environment=source, environment_providers={"report": provider})
+    operation = asyncio.create_task(client.workflow(
+        flow, llm=Writer(), trace=False, isolation="report", cleanup_timeout=.1, artifacts=tmp_path / "artifacts",
+    ))
+    try:
+        await asyncio.wait_for(saving.wait(), 8)
+        done, _ = await asyncio.wait({operation}, timeout=2)
+        assert operation in done
+        with pytest.raises(RunError):
+            await operation
+        checkout = Path(observed["workspace"].workspace)
+        assert (checkout / "marker.txt").read_text() == "marker"
+        assert not removed.is_set() and not source_closed.is_set()
+
+        finish_save.set()
+        await asyncio.wait_for(removed.wait(), 5)
+        assert observed["saved"] and not checkout.exists()
+        if source is None:
+            await asyncio.wait_for(source_closed.wait(), 5)
+        else:
+            assert not source_closed.is_set()
+            assert await source.read_file("seed.txt") == "initial"
+    finally:
+        finish_save.set()
+        await asyncio.gather(operation, return_exceptions=True)
+        if "pool" in observed:
+            await observed["pool"].release()
+        if source is not None:
+            await source.cleanup()
 
 
 @pytest.mark.parametrize("entry_isolation", ["shared", "worktree"])
