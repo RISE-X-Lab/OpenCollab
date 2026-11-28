@@ -396,7 +396,7 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         if path is None or not path.is_file():
             return [f"{task.candidate_file} is missing"]
         with _evaluation_copy(path, program) as evaluation_path:
-            results = await task.evaluate(evaluation_path, [i for i, _ in examples])
+            results = await task.evaluate(evaluation_path, deepcopy([inp for inp, _ in examples]))
             if len(results) != len(examples):
                 raise RuntimeError(
                     f"candidate evaluator returned {len(results)} results for {len(examples)} inputs"
