@@ -55,7 +55,18 @@ async def _run_team_turn(
     if timeout is not None and timeout <= 0:
         raise _TeamDeadlineExceeded
 
-    owner = asyncio.create_task(scheduler.run(prompt))
+    turn_cancellation: asyncio.CancelledError | None = None
+
+    async def run_turn() -> str:
+        nonlocal turn_cancellation
+        try:
+            return await scheduler.run(prompt)
+        except asyncio.CancelledError as exc:
+            # Python 3.10 may reconstruct the exception at the Task boundary.
+            turn_cancellation = exc
+            raise
+
+    owner = asyncio.create_task(run_turn())
     try:
         done, _ = await asyncio.wait({owner}, timeout=timeout)
     except asyncio.CancelledError as cancellation:
@@ -64,6 +75,8 @@ async def _run_team_turn(
         )
         raise
     if done:
+        if turn_cancellation is not None:
+            raise turn_cancellation
         return owner.result()
 
     output = scheduler.accepted_public_turn_answer(0)
