@@ -124,19 +124,31 @@ async def test_workflow_agent_retains_settled_text_when_budget_replay_times_out(
         config={"wire_protocol": "chat_completions", "llm_stream_chat": False,
                 "llm_max_retries": 0, "max_output_tokens": 128},
     )
-    operation = asyncio.create_task(client.workflow(
-        workflow, budget=45_000, concurrency=2, task_concurrency=2, limit_mode="explicit",
-        artifacts=artifacts, trace=True, timeout=12, cleanup_timeout=2,
-    ))
+    cancellations = []
+
+    async def run_workflow():
+        try:
+            return await client.workflow(
+                workflow, budget=45_000, concurrency=2, task_concurrency=2, limit_mode="explicit",
+                artifacts=artifacts, trace=True, timeout=12, cleanup_timeout=2,
+            )
+        except asyncio.CancelledError as exc:
+            # Python 3.10 drops metadata when another task awaits this cancellation.
+            cancellations.append(exc)
+            raise
+
+    operation = asyncio.create_task(run_workflow())
     cancelled = scene in {"initial_cancel", "workflow_cancel"}
     if cancelled:
         try:
             event = initial_started if scene == "initial_cancel" else replay_started
             await asyncio.wait_for(event.wait(), 5)
             operation.cancel("caller cancelled inventory workflow")
-            with pytest.raises(asyncio.CancelledError, match="caller cancelled inventory workflow") as error:
+            with pytest.raises(asyncio.CancelledError):
                 await operation
-            result = error.value.runtime_result
+            error, = cancellations
+            assert error.args == ("caller cancelled inventory workflow",)
+            result = error.runtime_result
             assert result.evidence_complete and not result.environment_cleanup_deferred
         finally:
             if not operation.done():
