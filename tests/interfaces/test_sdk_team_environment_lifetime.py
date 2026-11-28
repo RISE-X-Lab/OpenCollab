@@ -222,3 +222,77 @@ async def test_owned_team_anchor_survives_cleanup_failure_for_retry(
     finally:
         await schedulers[0].cleanup()
     assert _anchors(workspace) == baseline
+
+
+@pytest.mark.parametrize("interruption", ["caller", "timeout"])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_interrupted_team_keeps_its_outcome_when_cleanup_retries(
+    monkeypatch, team_workspace, interruption, cleanup_fails,
+):
+    from opencollab.adapters.env import LocalEnvironment
+
+    workspace, team = team_workspace
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+    cleanup_calls = 0
+    real_cleanup = LocalEnvironment._cleanup_files
+
+    async def respond(_request):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def cleanup(environment):
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        if cleanup_calls == 1 and cleanup_fails:
+            raise OSError("temporary workspace cleanup failure")
+        await real_cleanup(environment)
+
+    install_sdk_transport(monkeypatch, "openai", respond)
+    monkeypatch.setattr(LocalEnvironment, "_cleanup_files", cleanup)
+    app = OpenCollab(
+        workspace, model="offline", provider="openai",
+        api_key="offline-unused",  # pragma: allowlist secret
+        base_url="https://offline.invalid/v1",
+        config={"llm_max_retries": 0, "wire_protocol": "chat_completions", "llm_stream_chat": False},
+    )
+    baseline = _anchors(workspace)
+    running = asyncio.create_task(app.team(
+        "Reply once.", config=team, trace=False, use_worktrees=False,
+        timeout=2 if interruption == "timeout" else None, cleanup_timeout=1,
+    ))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        if interruption == "caller":
+            running.cancel("caller ended team")
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await running
+            cancellation = caught.value
+        else:
+            result = await running
+            assert (result.status, result.reason) == ("stopped", "timeout")
+            assert isinstance(result.error, asyncio.TimeoutError)
+            assert result.metrics["execution_quiesced"] is True
+            cancellation = result.error.__cause__
+            assert isinstance(cancellation, asyncio.CancelledError)
+        # Python 3.10 can wrap the original exception at a cancelled task boundary.
+        exceptions = []
+        while cancellation is not None and cancellation not in exceptions:
+            exceptions.append(cancellation)
+            cancellation = cancellation.__cause__ or cancellation.__context__
+        if interruption == "caller":
+            assert any(error.args == ("caller ended team",) for error in exceptions)
+        assert any(
+            "scheduler cleanup also failed" in note
+            for error in exceptions for note in getattr(error, "__notes__", ())
+        ) is cleanup_fails
+        assert cancelled.is_set()
+        assert cleanup_calls == (2 if cleanup_fails else 1)
+        assert _anchors(workspace) == baseline
+    finally:
+        if not running.done():
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)

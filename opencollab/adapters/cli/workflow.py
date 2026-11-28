@@ -28,7 +28,8 @@ from opencollab.application.async_timeout import run_with_bounded_shutdown
 from opencollab.application.ports import EventPublisherPort
 from opencollab.application.workflow_registry import Registry
 from opencollab.bootstrap.session_factory import WORKFLOW_RUN_PREFIX, make_run_dir
-from opencollab.bootstrap.workflow_runtime import discover_workflows, run_workflow
+from opencollab.bootstrap.workflow_runtime import WorkflowRuntimeResult, discover_workflows, run_workflow
+from opencollab.domain.json_data import loads_finite_json
 
 app = typer.Typer(name="workflow", help="Run deterministic Python workflows.")
 console = Console()
@@ -58,6 +59,15 @@ class _ConsoleEventSink:
         message = getattr(event, "message", str(event))
         marker = "==" if kind == "phase" else "--"
         self._console.print(Text(f"{marker} {message}", style="dim"))
+
+class _WorkflowOutputError(ValueError):
+    runtime_result: WorkflowRuntimeResult
+
+def _format_workflow_output(output: Any) -> str:
+    try:
+        return json.dumps(output, indent=2, default=str, allow_nan=False)
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise _WorkflowOutputError(f"Could not serialize workflow result as JSON. {exc}") from None
 
 @app.command(name="list")
 def list_cmd(
@@ -91,7 +101,7 @@ def run_cmd(
     budget: Optional[int] = typer.Option(
         None,
         "--budget",
-        help="Max token budget (default: max(config budget, 1000000); workflows fan out many sessions)",
+        help="Max token budget. An explicit value overrides unbounded mode. The bounded default is at least 1,000,000.",
     ),
     concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max concurrent agent sessions"),
     task_concurrency: Optional[int] = typer.Option(
@@ -130,7 +140,7 @@ def run_cmd(
         raise typer.Exit(code=1) from None
 
     try:
-        parsed_args = json.loads(args)
+        parsed_args = loads_finite_json(args)
     except json.JSONDecodeError as exc:
         console.print(f"[red]Invalid --args JSON:[/red] {exc}")
         raise typer.Exit(code=1) from None
@@ -166,27 +176,34 @@ def run_cmd(
     save_dir = make_run_dir(workspace, prefix=WORKFLOW_RUN_PREFIX) if save else None
 
     event_sink: EventPublisherPort = _ConsoleEventSink(console)
-    result = run_with_bounded_shutdown(
-        run_workflow(
-            spec,
-            parsed_args,
-            cfg=cfg,
-            workspace=workspace,
-            event_sink=event_sink,
-            budget=budget,
-            max_concurrency=concurrency,
-            task_concurrency=task_concurrency,
-            agent_profile=agent_profile,
-            **({"isolation": isolation} if isolation is not None else {}),
-            **({"cleanup_timeout": cleanup_timeout} if cleanup_timeout is not None else {}),
-            **({"run_id": run_id} if run_id is not None else {}),
-            save_dir=save_dir,
-            trace=trace,
-            return_details=True,
-        ),
-        shutdown_timeout=(cleanup_timeout if cleanup_timeout is not None else
-                          (cfg.get("vm") or {}).get("cleanup_timeout", 2.0)),
-    )
+    output_error = None
+    try:
+        result = run_with_bounded_shutdown(
+            run_workflow(
+                spec,
+                parsed_args,
+                cfg=cfg,
+                workspace=workspace,
+                event_sink=event_sink,
+                budget=budget,
+                limit_mode="explicit" if budget is not None else "environment",
+                max_concurrency=concurrency,
+                task_concurrency=task_concurrency,
+                agent_profile=agent_profile,
+                **({"isolation": isolation} if isolation is not None else {}),
+                **({"cleanup_timeout": cleanup_timeout} if cleanup_timeout is not None else {}),
+                **({"run_id": run_id} if run_id is not None else {}),
+                save_dir=save_dir,
+                trace=trace,
+                return_details=True,
+                format_output=_format_workflow_output,
+            ),
+            shutdown_timeout=(cleanup_timeout if cleanup_timeout is not None else
+                              (cfg.get("vm") or {}).get("cleanup_timeout", 2.0)),
+        )
+    except _WorkflowOutputError as exc:
+        result = exc.runtime_result
+        output_error = exc
     for failure in getattr(result, "agent_failures", ()):
         if (failure["exception_type"], failure["provider_error_type"]) == ("AgentStopped", "content_filter"):
             message = f"-- agent stopped ({failure['label']}): {_FILTERED_OUTPUT_REASON}"
@@ -196,7 +213,12 @@ def run_cmd(
         if trace:
             trace_path = os.path.join(save_dir, "orchestration.jsonl")
             console.print(f"[dim]== orchestration at {trace_path}[/dim]")
-    typer.echo(json.dumps(result.output, indent=2, default=str))
+    if output_error is not None:
+        typer.echo(str(output_error), err=True)
+        for note in getattr(output_error, "__notes__", ()):
+            typer.echo(note, err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(result.output)
     if result.stop_reason is not None:
         raise typer.Exit(code=1)
 

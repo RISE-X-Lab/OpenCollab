@@ -375,7 +375,7 @@ def load_dotenv(path: str | None = None) -> dict[str, str]:
             f"config env file encoding error: expected UTF-8: {env_path} "
             f"(byte {exc.start}: {exc.reason})"
         ) from exc
-    for line in text.splitlines():
+    for line in text.removeprefix("\ufeff").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue

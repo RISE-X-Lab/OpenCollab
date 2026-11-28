@@ -105,4 +105,6 @@ Git 候选从源目录当前受跟踪文件和未被忽略的未跟踪文件开�
 
 结果分别记录 `winner` 与 `adopted`，采用失败时可能回退另一候选。成功采用后 `status` 为 `done`，没有候选被采用时为 `incomplete`，缺少任务时为 `error`。结果同时保留选择理由、证据、采用尝试和 token 消耗。Duo 根据行为证据和默认偏好 B 的规则选择候选，任务正确性由调用方的实际检查及适用时评测器的正式评分确定。
 
+共享预算耗尽而 B 无法启动时，若 A 有可交付改动、清理已完成，且当前测试记录至少有一项通过、没有失败，Duo 可以采用 A。结果会记录 `candidate-b-budget-exhausted`，并将 B 标为跳过。A 的改动或证据未达到这些条件时，工作流返回预算耗尽。
+
 OpenCollab-Eval 负责题面、环境准备、隐藏测试隔离、候选捕获和正式评分，运行方式见[评测快速开始](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start)。

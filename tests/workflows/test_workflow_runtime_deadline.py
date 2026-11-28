@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from opencollab.bootstrap import _workflow_runtime_execution as workflow_execution
 from opencollab.bootstrap import (
     _workflow_runtime_session as workflow_session,
 )
@@ -17,6 +18,28 @@ from tests.support.workflow_runtime_test_support import (
     _FakeSession,
     _InjectedEnvironment,
 )
+
+
+@pytest.mark.parametrize("entry", ["execution", "bootstrap"])
+async def test_completed_runtime_retains_output_after_the_deadline(tmp_path, monkeypatch, entry):
+    output = {"measurement": 42}
+
+    async def measure(_ctx, _args):
+        return output
+
+    async def report_completed_owner(owner, *, timeout):
+        assert timeout == 0
+        await owner
+        return {owner}, set()
+
+    monkeypatch.setattr(workflow_runtime, "_wait_for_owner", report_completed_owner)
+    runner = workflow_execution if entry == "execution" else workflow_runtime
+    details = await runner.run_workflow(
+        measure, {}, cfg=_cfg(), workspace=str(tmp_path),
+        deadline_monotonic=asyncio.get_running_loop().time() - 1, return_details=True,
+    )
+    assert details.output is output
+    assert details.body_returned_before_deadline is False
 
 
 @pytest.mark.asyncio

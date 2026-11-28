@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from opencollab.application.async_timeout import CallerTimeoutError
+from opencollab.application.session_lifecycle import _budget_replay_output_before, _completed_session_output_before
 from opencollab.application.workflow_budget import _positive_budget
 from opencollab.domain.tools import validate_unique_tool_names
 
@@ -114,6 +115,7 @@ class WorkflowAgentRunMixin:
                         lease, cap=budget, over_budget_ok=False, label=label,
                     )
                     budget_token = self._active_budget_lease.set(lease)
+                    deadline = self._timeout_deadline(timeout)
                     try:
                         options: dict[str, Any] = {}
                         if max_steps is not None:
@@ -124,7 +126,14 @@ class WorkflowAgentRunMixin:
                             options["run_control"] = run_control
                         session = await self._build_workflow_session(
                             prompt=prompt, budget=lease.total, tools=tools,
-                            isolation=isolation, label=label, **options,
+                            isolation=isolation, label=label, startup_deadline=deadline, **options,
+                        )
+                    except CallerTimeoutError:
+                        quiet = await self._settle_agent_run(lease, cleanup_timeout)
+                        return WorkflowAgentResult(
+                            None, "stopped", "timeout", 0, 0, None, lease.total, None,
+                            quiet, quiet and not self._agent_run_environment_unsafe
+                            and not bool(getattr(self._factory, "environment_revoked", False)),
                         )
                     except Exception as exc:
                         self._record_agent_failure(label, exc)
@@ -137,7 +146,7 @@ class WorkflowAgentRunMixin:
                     self._track_session(session)
                     try:
                         output = await self._run_session_turn(
-                            session, prompt, deadline=self._timeout_deadline(timeout), label=label,
+                            session, prompt, deadline=deadline, label=label,
                         )
                     except CallerTimeoutError:
                         status, reason = "stopped", "timeout"
@@ -158,6 +167,11 @@ class WorkflowAgentRunMixin:
                         status, reason = "failed", "cleanup incomplete"
                     if getattr(session, "persistence_errors", ()):
                         status, reason = "failed", "session persistence failed"
+                    runner = getattr(session, "runner", None)
+                    if status == "stopped" and reason == "timeout":
+                        output = _completed_session_output_before(session, deadline)
+                        if output is None:
+                            output = _budget_replay_output_before(session, deadline)
                     state = getattr(session, "state", None)
                     phase = getattr(getattr(state, "phase", None), "value", None)
                     terminal_reason = getattr(state, "terminal_reason", None)
@@ -166,7 +180,6 @@ class WorkflowAgentRunMixin:
                         reason = terminal_reason
                     elif status == "completed" and phase not in {None, "done"}:
                         status, reason = "stopped", terminal_reason or f"session phase: {phase}"
-                    runner = getattr(session, "runner", None)
                     return WorkflowAgentResult(
                         output, status, reason, int(getattr(session, "used_tokens", 0)),
                         int(getattr(session, "step_count", 0)),

@@ -38,6 +38,7 @@ from opencollab.application.tool_execution_runtime import (
 from opencollab.application.tool_execution_runtime import (
     ToolRuntime as ToolRuntime,
 )
+from opencollab.domain.json_data import loads_finite_json
 from opencollab.domain.session import SessionState
 from opencollab.domain.tool_facts import ToolFactsCollector
 from opencollab.domain.tools import MAX_CALL_HASH_WINDOW as MAX_CALL_HASH_WINDOW
@@ -717,10 +718,14 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
     def parse_tool_args(self, func: dict) -> dict:
         args_str = func.get("arguments", "")
         if isinstance(args_str, dict):
+            try:
+                json.dumps(args_str, allow_nan=False)
+            except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+                raise json.JSONDecodeError("tool arguments are not JSON-serializable", "", 0) from exc
             return dict(args_str)
         if not isinstance(args_str, str):
             raise ValueError("tool arguments must be a JSON object")
-        args = json.loads(args_str) if args_str else {}
+        args = loads_finite_json(args_str) if args_str else {}
         if not isinstance(args, dict):
             raise ValueError("tool arguments must be a JSON object")
         return args

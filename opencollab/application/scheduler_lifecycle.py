@@ -13,8 +13,13 @@ import re
 import time
 from typing import Any
 
-from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
+from opencollab.application._session_run_shared import (
+    _FILTERED_OUTPUT_REASON,
+    _TRUNCATED_OUTPUT_REASON,
+    _last_assistant_answer,
+)
 from opencollab.application.ports import ProviderTerminalEventError
+from opencollab.application.provider_failure import provider_http_failure_metadata
 from opencollab.application.scheduler_types import LaunchSpec
 from opencollab.domain.identity import role_collision_key, validate_role_identity
 from opencollab.domain.pending import PendingRowError, RowStatus
@@ -388,6 +393,17 @@ class LifecycleMixin:
                 finally:
                     self._turn_waiters.discard(parent_aid)
 
+    def _remember_completed_public_turn_answer(
+        self, scb: SessionControlBlock, *, checkpoint_failed: bool = False,
+    ) -> None:
+        if scb.aid not in self._completed_public_turn_answers:
+            return
+        answer = _last_assistant_answer(
+            scb.state.messages, scb.state.completed_turn_start_message_index, include_tool_call_text=False,
+        )
+        if answer or (checkpoint_failed and self._completed_public_turn_answers[scb.aid] is None):
+            self._completed_public_turn_answers[scb.aid] = answer
+
     async def _drive_agent(self, aid: int, session: Any, *, resumed: bool = False) -> None:
         """Run a session's loop once and finalize.
 
@@ -436,9 +452,8 @@ class LifecycleMixin:
                 self._turn_waiters.discard(aid)
         except asyncio.CancelledError:
             self._release_leases(aid)
-            scb.state.cancel()
             reason = "Error: agent cancelled before completing delegated work"
-            scb.result = reason
+            self._record_agent_cancellation(scb, reason)
             try:
                 await self.emit_scheduler_event(
                     self._events.agent_cancelled(aid, scb.agent.name)
@@ -462,7 +477,18 @@ class LifecycleMixin:
                 status_code = getattr(exc, "status_code", None)
                 if type(status_code) is int:
                     scb.provider_status_code = status_code
-            terminal_reason = scb.state.terminal_reason or f"{type(exc).__name__}: {exc}"
+            else:
+                scb.provider_status_code, scb.provider_error_code = provider_http_failure_metadata(exc)
+            terminal_reason = f"{type(exc).__name__}: {exc}"
+            phase = scb.state.phase
+            checkpoint_failed = any(exc is error for error in getattr(session, "persistence_errors", ()))
+            if phase is SessionPhase.DONE or (
+                phase is SessionPhase.STOPPED
+                and scb.state.terminal_reason in {_FILTERED_OUTPUT_REASON, _TRUNCATED_OUTPUT_REASON}
+            ):
+                self._remember_completed_public_turn_answer(scb, checkpoint_failed=checkpoint_failed)
+            if phase is not SessionPhase.DONE and not checkpoint_failed:
+                terminal_reason = scb.state.terminal_reason or terminal_reason
             scb.state.fail(terminal_reason)
             reason = f"Error: {terminal_reason}"
             result = await self._append_partial_worktree_diff(aid, scb, session, reason)
@@ -502,9 +528,16 @@ class LifecycleMixin:
 
         terminal_failure = self._terminal_failure_result(scb, result)
         if terminal_failure is not None:
+            partial_response = ""
+            if scb.state.terminal_reason == _FILTERED_OUTPUT_REASON:
+                partial_response = result
+            elif scb.state.terminal_reason == _TRUNCATED_OUTPUT_REASON:
+                partial_response = _last_assistant_answer(
+                    scb.state.messages, scb.state.completed_turn_start_message_index,
+                )
             failure_result = terminal_failure
-            if scb.state.terminal_reason == _FILTERED_OUTPUT_REASON and result:
-                failure_result = f"{terminal_failure}\n\n[Partial response]\n{result}"
+            if partial_response:
+                failure_result = f"{terminal_failure}\n\n[Partial response]\n{partial_response}"
             result = await self._append_partial_worktree_diff(aid, scb, session, failure_result)
             scb.result = result
             await self._safe_emit_scheduler_event(
@@ -524,6 +557,7 @@ class LifecycleMixin:
 
         if scb.state.phase is SessionPhase.DONE:
             scb.answer = result
+            self._remember_completed_public_turn_answer(scb)
 
         # A completed coding task still needs its patch evidence. Tracing and
         # event delivery are observational, but a missing diff is a technical
@@ -550,13 +584,6 @@ class LifecycleMixin:
         if self._shutting_down:
             self._finalize_cleanup_failure(aid)
             return
-
-        if scb.answer and aid in self._completed_public_turn_answers:
-            answer = _last_assistant_answer(
-                scb.state.messages, scb.state.completed_turn_start_message_index, include_tool_call_text=False,
-            )
-            if answer:
-                self._completed_public_turn_answers[aid] = answer
 
         # Store the same post-diff artifact that is delivered to the parent so
         # spawn_with_review gives the reviewer the actual implementation diff.
@@ -772,8 +799,7 @@ class LifecycleMixin:
                     status = RowStatus.FAILED
                     fill_error = result
                     if child_scb is not None:
-                        child_scb.state.cancel(result)
-                        child_scb.result = result
+                        self._record_agent_cancellation(child_scb, result, reason=result)
             table.fill(
                 tool_call_id,
                 result=result,
@@ -791,6 +817,14 @@ class LifecycleMixin:
             await self._safe_emit_scheduler_event(
                 self._events.agent_resumed(parent_aid, self._role_of(parent_aid))
             )
+
+    def _record_agent_cancellation(
+        self, scb: SessionControlBlock, result: str, *, reason: str | None = None,
+    ) -> None:
+        if scb.state.phase is SessionPhase.STOPPED and scb.aid in self._cancelled_turn_inbox_holds:
+            return
+        scb.state.cancel(reason)
+        scb.result = result
 
     def _resume_completed_parent_locked(
         self,

@@ -253,6 +253,7 @@ def write_regular_file_atomic(
     mode: int = 0o600,
     context: str = "atomic output",
     create_only: bool = False,
+    on_replace: Callable[[], None] | None = None,
 ) -> None:
     """Write a bounded temporary and publish it with one atomic rename."""
     target = _absolute(path)
@@ -283,6 +284,8 @@ def write_regular_file_atomic(
             os.unlink(temporary)
         else:
             os.replace(temporary, target)
+            if on_replace is not None:
+                on_replace()
         _fsync_directory(target.parent)
     finally:
         if fd >= 0:

@@ -204,6 +204,7 @@ An adapter's `save_state(data)` hook receives independent JSON snapshots for
 storage. Supply a saved snapshot as the JSON `state` input or through
 `WeaveState(saved_snapshot)` with `run_weave`. Reuse the saved `run_id`
 when calling the SDK or pass it as `workflow run weave --run-id RUN_ID` through
-the CLI. Generated groups continue at their checks, checked groups
-retain their generation results, and consumed repair rounds remain counted.
-The saved group fields must agree with the supplied groups.
+the CLI. Generated groups and completed repair sessions continue at
+verification. Checked groups retain their generation results, and started
+repair rounds still count toward the limit. The saved group fields must
+agree with the supplied groups.

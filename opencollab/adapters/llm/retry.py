@@ -15,11 +15,12 @@ from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
 from opencollab.adapters.llm.errors import TransientProviderError, is_context_overflow_error
+from opencollab.application.ports import ProviderTerminalEventError
 
 # HTTP statuses worth retrying: timeouts, conflicts, rate limits, server errors.
-RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504, 529}
+RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504, 522, 529}
 
-# Error-message fragments that signal a transient failure when no status is set.
+# Transient failure descriptions for statusless errors and gateway responses.
 RETRYABLE_MESSAGE_FRAGMENTS = (
     "rate limit",
     "429",
@@ -83,7 +84,7 @@ class RetryTimeBudget:
     """Shared retry-only time allowance for one agent or workflow run."""
 
     total_seconds: float
-    remaining_seconds: float = field(init=False)
+    _balance_seconds: float = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if (
@@ -92,15 +93,30 @@ class RetryTimeBudget:
             or self.total_seconds < 0
         ):
             raise ValueError("retry time budget must be a finite non-negative number")
-        self.remaining_seconds = float(self.total_seconds)
+        self._balance_seconds = float(self.total_seconds)
+
+    @property
+    def remaining_seconds(self) -> float:
+        return max(0.0, self._balance_seconds)
 
     def consume(self, seconds: float) -> bool:
         """Consume retry time atomically between event-loop suspension points."""
         seconds = max(0.0, seconds)
-        if seconds > self.remaining_seconds:
-            self.remaining_seconds = 0.0
+        fits = seconds <= self._balance_seconds
+        # Retain overruns when another caller has reserved a wait it can still cancel.
+        self._balance_seconds -= seconds
+        return fits
+
+    async def _wait_for_retry(self, delay: float) -> bool:
+        if delay > self.remaining_seconds or not self.consume(delay):
             return False
-        self.remaining_seconds -= seconds
+        started = time.monotonic()
+        try:
+            await asyncio.sleep(delay)
+        except BaseException:
+            elapsed = max(0.0, time.monotonic() - started)
+            self._balance_seconds += max(0.0, delay - elapsed)
+            raise
         return True
 
 _P = ParamSpec("_P")
@@ -173,9 +189,10 @@ async def with_retry(
                 MAX_EXPONENTIAL_RETRY_DELAY_SECONDS,
             )
             delay = max(0.0, base + random.uniform(0.0, RETRY_JITTER_MAX_SECONDS))
-            if retry_time_budget is not None and not retry_time_budget.consume(delay):
+            if retry_time_budget is None:
+                await asyncio.sleep(delay)
+            elif not await retry_time_budget._wait_for_retry(delay):
                 raise
-            await asyncio.sleep(delay)
             attempt += 1
 
 def _http_status_of(error: BaseException) -> int | None:
@@ -190,46 +207,37 @@ def _http_status_of(error: BaseException) -> int | None:
     return None
 
 def is_retryable_error(error: Exception) -> bool:
-    """Whether ``error`` looks transient (retryable status code or message)."""
-    if isinstance(error, TransientProviderError):
-        return True
-
     # The session handles context overflow by compacting before retry. Exclude
     # it here even when its message contains a transient-error fragment.
     if is_context_overflow_error(error):
         return False
 
-    status = getattr(error, "status_code", None)
-    if status in RETRYABLE_STATUS_CODES:
-        return True
-
-    response = getattr(error, "response", None)
-    if response is not None:
-        resp_status = getattr(response, "status_code", None)
-        if resp_status in RETRYABLE_STATUS_CODES:
-            return True
-
-    msg = str(error).lower()
-    if any(k in msg for k in RETRYABLE_MESSAGE_FRAGMENTS):
-        return True
-
-    # Follow the exception cause/context chain because SDK wrappers often
-    # preserve the useful transport error only as ``__cause__``.
+    retryable_hint = False
     current: BaseException | None = error
     seen: set[int] = set()
-    gateway_refusal = False
-    has_http_status = False
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        has_http_status = has_http_status or _http_status_of(current) is not None
+        # Status and typed terminal errors take precedence over wrapper text.
+        status = _http_status_of(current)
+        if status is not None:
+            if status in RETRYABLE_STATUS_CODES:
+                return True
+            if status in {520, 521, 524}:
+                message = str(current).lower()
+                return any(fragment in message for fragment in RETRYABLE_MESSAGE_FRAGMENTS)
+            return False
+        if isinstance(current, TransientProviderError):
+            return True
+        if isinstance(current, ProviderTerminalEventError):
+            return False
         class_name = type(current).__name__.lower()
         if class_name in _TRANSIENT_TRANSPORT_CLASS_NAMES:
-            return True
+            retryable_hint = True
         message = str(current).lower()
         if class_name in _STATUSLESS_PROVIDER_ERROR_CLASS_NAMES and any(
             fragment in message for fragment in _TRANSIENT_GATEWAY_MESSAGE_FRAGMENTS
         ):
-            gateway_refusal = True
+            retryable_hint = True
         if any(
             fragment in message
             for fragment in _TRANSIENT_TRANSPORT_MESSAGE_FRAGMENTS
@@ -242,21 +250,31 @@ def is_retryable_error(error: Exception) -> bool:
             "remoteprotocolerror",
             "timeouterror",
         }:
-            return True
+            retryable_hint = True
         current = current.__cause__ or current.__context__
-    # A wrapper or cause carrying a status also excludes the gateway rule.
-    return gateway_refusal and not has_http_status
+    message = str(error).lower()
+    return retryable_hint or any(fragment in message for fragment in RETRYABLE_MESSAGE_FRAGMENTS)
 
 def extract_retry_after_seconds(
     error: Exception,
     *,
     now: datetime | None = None,
 ) -> float | None:
-    """The Retry-After header value from ``error``'s response, if present."""
+    """Read the provider's retry delay in seconds."""
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", None) if response is not None else None
     if not headers:
         return None
+
+    milliseconds = headers.get("Retry-After-Ms") or headers.get("retry-after-ms")
+    if milliseconds is not None:
+        try:
+            seconds = float(milliseconds) / 1000
+        except (TypeError, ValueError, OverflowError):
+            pass
+        else:
+            if math.isfinite(seconds) and seconds >= 0:
+                return min(seconds, MAX_RETRY_AFTER_SECONDS)
 
     value = headers.get("Retry-After") or headers.get("retry-after")
     if value is None:

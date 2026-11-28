@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -17,10 +19,12 @@ from opencollab.application.async_timeout import (
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import LLMPort, TracePort
 from opencollab.application.run_control import RunControl
-from opencollab.application.session_lifecycle import close_session_resources
+from opencollab.application.session_lifecycle import _completed_session_output_before, close_session_resources
 from opencollab.bootstrap.container import build_workspace_safety_policy
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRuntimeLifecycleError(RuntimeError):
@@ -46,40 +50,49 @@ async def _run_session(session: Any, prompt: str) -> str:
     await session.add_user_message(prompt)
     return await session.run_loop()
 
-async def run_environment_hook(environment: Any, name: str, timeout: float) -> bool:
-    """Run one environment hook with bounded cancellation and honest failure."""
+async def _environment_hook_failure(environment: Any, name: str, timeout: float) -> BaseException | None:
     hook = getattr(environment, name, None)
     if not callable(hook):
-        return False
+        return RuntimeError(f"environment has no {name} hook")
     try:
         outcome = hook()
-    except Exception:
-        return False
+    except Exception as exc:
+        return exc
     if not inspect.isawaitable(outcome):
-        return True
+        return None
     owner = asyncio.ensure_future(outcome)
-    done, pending = await asyncio.wait({owner}, timeout=timeout)
+    _done, pending = await asyncio.wait({owner}, timeout=timeout)
     if pending:
         terminal = await force_task_terminal(owner, timeout=timeout)
         if not terminal:
             owner.add_done_callback(consume_task_result)
-        return False
+        return asyncio.TimeoutError(f"environment {name} hook exceeded its cleanup deadline")
     try:
         owner.result()
-    except BaseException:
-        return False
-    return True
+    except BaseException as exc:
+        return exc
+    return None
 
-async def revoke_and_abort_environment(environment: Any, timeout: float) -> bool:
+async def run_environment_hook(environment: Any, name: str, timeout: float) -> bool:
+    return await _environment_hook_failure(environment, name, timeout) is None
+
+async def _environment_abort_failure(environment: Any, timeout: float) -> BaseException | None:
     revoke = getattr(environment, "revoke", None)
-    revoked = True
+    revoke_failure: Exception | None = None
     if callable(revoke):
         try:
             revoke()
-        except Exception:
-            revoked = False
-    aborted = await run_environment_hook(environment, "abort", timeout)
-    return revoked and aborted
+        except Exception as exc:
+            revoke_failure = exc
+    abort_failure = await _environment_hook_failure(environment, "abort", timeout)
+    if revoke_failure is not None and abort_failure is not None:
+        add_exception_note(
+            abort_failure, f"environment revocation also failed: {type(revoke_failure).__name__}: {revoke_failure}",
+        )
+    return abort_failure or revoke_failure
+
+async def revoke_and_abort_environment(environment: Any, timeout: float) -> bool:
+    return await _environment_abort_failure(environment, timeout) is None
 
 async def _wait_session_tasks(session: Any, timeout: float) -> bool:
     pending = {
@@ -115,6 +128,8 @@ async def _finalize_session(
     cleanup_environment: bool,
 ) -> bool:
     quiesced = await _wait_session_tasks(session, timeout)
+    if not quiesced and getattr(session, "_autosave_acquisition", None) is not None:
+        return False
     persistence_ready = False
     try:
         save_owner = session.enqueue_auto_save()
@@ -130,8 +145,10 @@ async def _finalize_session(
     )
     llm_quiesced = await close_session_resources((session,), timeout=timeout)
     if quiesced and persistence_quiesced and cleanup_quiesced and llm_quiesced:
-        runner = getattr(session, "runner", None)
-        if runner is not None:
+        finish = getattr(session, "_finish_run_control", None)
+        if finish is not None:
+            finish()
+        elif (runner := getattr(session, "runner", None)) is not None:
             runner.finish_run_control()
     return (
         quiesced
@@ -217,6 +234,7 @@ async def run_agent(
     finalization_attempts = 0
     max_finalization_attempts = 2
     stop_task: asyncio.Task[tuple[bool, bool, bool]] | None = None
+    deferred_close: asyncio.Task[None] | None = None
 
     def record_finalization_result(task: asyncio.Task[bool]) -> bool:
         nonlocal finalization_task, finalization_succeeded
@@ -260,6 +278,8 @@ async def run_agent(
         return record_finalization_result(task)
 
     async def finalize_with_retry() -> bool:
+        if deferred_close is not None:
+            return False
         if finalization_succeeded:
             return True
         while not finalization_succeeded:
@@ -275,15 +295,34 @@ async def run_agent(
         return False
 
     async def stop_owned() -> tuple[bool, bool, bool]:
-        aborted = True
-        if cleanup_environment:
-            aborted = await revoke_and_abort_environment(
-                environment,
-                cleanup_timeout_seconds,
-            )
+        nonlocal deferred_close
+        abort_failure = (
+            await _environment_abort_failure(environment, cleanup_timeout_seconds)
+            if cleanup_environment else None
+        )
         terminal = await force_task_terminal(owner, timeout=cleanup_timeout_seconds)
+        if not terminal and getattr(session, "_autosave_acquisition", None) is not None:
+            async def finish_stopped_startup() -> None:
+                await asyncio.wait({owner})
+                while tasks := session.pending_cleanup_tasks:
+                    await asyncio.wait(tasks)
+                closed = await close_session_resources((session,), timeout=None)
+                if closed and cleanup_environment:
+                    closed = await run_environment_hook(environment, "cleanup", cleanup_timeout_seconds)
+                if not closed:
+                    logger.warning("Agent cleanup after deferred autosave admission failed")
+
+            owner.add_done_callback(consume_task_result)
+            deferred_close = asyncio.create_task(finish_stopped_startup())
+            deferred_close.add_done_callback(consume_task_result)
         finalized = await finalize_with_retry()
-        return aborted, terminal, finalized
+        if (
+            terminal and finalized and isinstance(abort_failure, OSError)
+            and not isinstance(abort_failure, (TimeoutError, asyncio.TimeoutError))
+        ):
+            # A failed unlink can be repaired by finalization. Confirm abort on the settled owner.
+            abort_failure = await _environment_abort_failure(environment, cleanup_timeout_seconds)
+        return abort_failure is None, terminal, finalized
 
     async def stop_once(*, propagate_cancellation: bool) -> tuple[bool, bool, bool]:
         nonlocal stop_task
@@ -295,6 +334,7 @@ async def run_agent(
         )
 
     try:
+        deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
         done, pending = await asyncio.wait({owner}, timeout=timeout_seconds)
         if pending:
             aborted, terminated, finalized = await stop_once(
@@ -306,7 +346,7 @@ async def run_agent(
                 )
             return _result(
                 session,
-                output=None,
+                output=_completed_session_output_before(session, deadline),
                 outcome="timed_out",
                 error=TimeoutError(f"agent exceeded {timeout_seconds:g} seconds"),
                 cleanup_quiesced=True,

@@ -82,7 +82,7 @@ async def test_accepted_inbox_waits_for_another_agents_budget_owner(
         )
         lead = build_session(
             agent=Agent(name="lead", system_prompt="lead"), llm=client,
-            max_budget_tokens=total, llm_timeout=timeout,
+            max_budget_tokens=total, llm_timeout=1.0,
         )
         scheduler.register_lead(lead)
         if owner_aid:

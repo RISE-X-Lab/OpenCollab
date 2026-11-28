@@ -19,6 +19,7 @@ from opencollab.adapters.llm._responses_output import (
 from opencollab.adapters.llm._responses_output import (
     _semantic_output_item as _semantic_output_item,
 )
+from opencollab.adapters.llm._transport_wait import _TransportInterruption, _wait_for_transport
 from opencollab.adapters.llm.errors import TransientProviderError
 from opencollab.adapters.llm.first_token import NOT_STREAMED, RESPONSES_STREAM, begin_attempt, mark_first_token
 from opencollab.adapters.llm.openai_provider import _FRAMEWORK_CONTROLLED_THINKING_FIELDS, _thinking_request_params
@@ -257,7 +258,7 @@ async def _next_event(iterator: Any, timeout: float | None, *, stage: str) -> An
     try:
         if timeout is None:
             return await iterator.__anext__()
-        return await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
+        return await _wait_for_transport(iterator.__anext__(), timeout)
     except asyncio.TimeoutError as exc:
         detail = "from the provider transport" if timeout is None else f"after {timeout:g}s"
         raise ResponsesStreamInterruptedError(
@@ -294,7 +295,7 @@ def _error_message(error: Any) -> str:
         return str(error.get("message") or error.get("code") or error.get("reason") or "unknown Responses error")
     return str(error or "unknown Responses error")
 
-def _raise_response_error(error: Any) -> None:
+def _raise_response_error(error: Any, *, provider_model: str | None) -> None:
     message = _error_message(error)
     code = error.get("code") if isinstance(error, dict) else None
     param = error.get("param") if isinstance(error, dict) else None
@@ -302,13 +303,21 @@ def _raise_response_error(error: Any) -> None:
         fragment in message.lower() for fragment in _TRANSIENT_RESPONSE_MESSAGES
     ):
         status_code = 429 if code == "rate_limit_exceeded" else 503
-        raise ResponsesTransientEventError(message, code=code, status_code=status_code, param=param)
+        raise ResponsesTransientEventError(
+            message, code=code, status_code=status_code, param=param, provider_model=provider_model,
+        )
     status_code = 400 if code in {"context_length_exceeded", "string_above_max_length"} else None
-    raise ResponsesTerminalEventError(message, code=code, status_code=status_code, param=param)
+    raise ResponsesTerminalEventError(
+        message, code=code, status_code=status_code, param=param, provider_model=provider_model,
+    )
+
+def _reported_response_model(response: Any) -> str | None:
+    model = getattr(response, "model", None)
+    return model if isinstance(model, str) and model else None
 
 def _response_model(response: Any) -> str:
-    actual_model = getattr(response, "model", None)
-    if not isinstance(actual_model, str) or not actual_model:
+    actual_model = _reported_response_model(response)
+    if actual_model is None:
         raise ResponsesProtocolError("terminal Responses object is missing model identity")
     return actual_model
 
@@ -360,7 +369,9 @@ def _validate_terminal_response(
         if reason not in {"max_tokens", "max_output_tokens"}:
             message = f"incomplete Responses object has unsupported reason {reason!r}"
             if reason == "content_filter":
-                raise ResponsesTerminalEventError(message, code=reason)
+                raise ResponsesTerminalEventError(
+                    message, code=reason, provider_model=_reported_response_model(response),
+                )
             raise ResponsesProtocolError(message)
         finish_reason = "max_tokens"
     return _response_model(response), finish_reason
@@ -369,11 +380,15 @@ def _handle_event(event: Any, state: _StreamState, expected_model: str | None = 
     event_type = _event_type(event)
     if event_type in {"error", "response.failed"}:
         state.completed_response = getattr(event, "response", None)
-        _raise_response_error(_event_error_data(event))
+        _raise_response_error(
+            _event_error_data(event), provider_model=_reported_response_model(state.completed_response),
+        )
     if event_type == "response.incomplete":
         response = getattr(event, "response", None)
         if getattr(response, "status", None) != "incomplete":
-            raise ResponsesTerminalEventError(_error_message(_event_error_data(event)))
+            raise ResponsesTerminalEventError(
+                _error_message(_event_error_data(event)), provider_model=_reported_response_model(response),
+            )
         state.completed_response = response
         _validate_terminal_response(response, expected_model)
         return True
@@ -496,7 +511,7 @@ async def _create_and_consume_stream(
         if first_event_timeout is None:
             event_stream = await client.responses.create(**kwargs)
         else:
-            event_stream = await asyncio.wait_for(
+            event_stream = await _wait_for_transport(
                 client.responses.create(**kwargs),
                 timeout=first_event_timeout,
             )
@@ -585,11 +600,15 @@ def _parse_stream(
             _merge_terminal_projection(streamed, terminal)
             for streamed, terminal in zip(state.output_items, final_items, strict=True)
         ]
-    content = "".join(_output_text(item) for item in state.output_items) or None
     reasoning = "\n".join(text for text in (_reasoning_text(item) for item in state.output_items) if text) or None
+    answer_parts: list[str] = []
+    commentary_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     for item in state.output_items:
-        if item.get("type") == "function_call":
+        if item["type"] == "message":
+            parts = commentary_parts if item.get("phase") == "commentary" else answer_parts
+            parts.append(_output_text(item))
+        elif item["type"] == "function_call":
             tool_calls.append(
                 {
                     "id": item["call_id"],
@@ -597,6 +616,7 @@ def _parse_stream(
                     "function": {"name": item.get("name"), "arguments": item["arguments"]},
                 }
             )
+    content = "".join(answer_parts) or None
     if forced_text_tool is not None and tool_calls:
         raise ResponsesProtocolError("JSON Schema tool response unexpectedly contained function calls")
     if forced_text_tool is not None and finish_reason == "stop":
@@ -614,18 +634,21 @@ def _parse_stream(
         except ValueError as exc:
             raise ResponsesProtocolError(str(exc)) from exc
         tool_calls = [tool_call]
-        state.output_items = [item for item in state.output_items if item.get("type") == "reasoning"]
+        state.output_items = [
+            item for item in state.output_items
+            if item["type"] == "reasoning" or (item["type"] == "message" and item.get("phase") == "commentary")
+        ]
         state.output_items.append(synthetic_item)
         content = None
     usage = parse_responses_usage(
         state.completed_response,
         messages,
-        content,
+        "".join(commentary_parts) + (content or ""),
         tool_calls,
         tools,
         reasoning=reasoning,
     )
-    content = rescue_empty_turn(content, tool_calls, reasoning)
+    content, content_from_reasoning = rescue_empty_turn(content, tool_calls, reasoning)
     if not content and not tool_calls and finish_reason != "max_tokens":
         raise ResponsesEmptyOutputError("response.completed contained no message or function call")
     return LLMResponse(
@@ -634,6 +657,7 @@ def _parse_stream(
         usage=usage,
         finish_reason=("tool_calls" if tool_calls and finish_reason == "stop" else finish_reason),
         reasoning=reasoning,
+        content_from_reasoning=content_from_reasoning,
         provider_items=state.output_items,
         provider_model=actual_model,
     )
@@ -648,8 +672,8 @@ def parse_responses_response(
 ) -> LLMResponse:
     """Parse one terminal non-streaming Responses object."""
     if getattr(response, "status", None) == "failed":
-        _response_model(response)
-        _raise_response_error(to_plain_data(getattr(response, "error", None)))
+        provider_model = _response_model(response)
+        _raise_response_error(to_plain_data(getattr(response, "error", None)), provider_model=provider_model)
     _validate_terminal_response(response, expected_model)
     state = _StreamState(completed_response=response)
     output = to_plain_data(getattr(response, "output", None))
@@ -690,6 +714,7 @@ async def complete_responses(
     stream: bool = True,
     before_attempt: Callable[[], int | None] | None = None,
     on_attempt_usage: Callable[[Usage], None] | None = None,
+    on_cancelled: Callable[[asyncio.CancelledError], None] | None = None,
 ) -> LLMResponse:
     """Run one locally replayable Responses request and require typed completion."""
     external_isolation = os.environ.get("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION") == "1"
@@ -715,10 +740,21 @@ async def complete_responses(
     capabilities = model_capabilities(model)
     stream = stream and capabilities.supports_responses_streaming
     failed_usages: list[Usage | None] = []
+    attempt_usage: Usage | None = None
     callback_timeout: asyncio.TimeoutError | None = None
+    round_interruption: _TransportInterruption | None = None
+
+    def interrupt_round(exc: _TransportInterruption) -> None:
+        nonlocal round_interruption
+        round_interruption = exc
+        if on_cancelled is not None and isinstance(exc, asyncio.CancelledError):
+            on_cancelled(exc)
 
     def prepare_attempt() -> None:
-        nonlocal callback_timeout
+        nonlocal attempt_usage, callback_timeout
+        if round_interruption is not None:
+            raise round_interruption
+        attempt_usage = None
         try:
             if before_attempt is not None and (limit := before_attempt()) is not None:
                 kwargs["max_output_tokens"] = limit
@@ -729,13 +765,16 @@ async def complete_responses(
     def report_failure(_exc: BaseException) -> None:
         nonlocal callback_timeout
         try:
-            if failed_usages and (usage := failed_usages[-1]) is not None and on_attempt_usage is not None:
-                on_attempt_usage(usage)
+            if attempt_usage is not None and on_attempt_usage is not None:
+                on_attempt_usage(attempt_usage)
         except asyncio.TimeoutError as exc:
             callback_timeout = exc
             raise
+        if round_interruption is not None:
+            raise round_interruption
 
     async def request_once() -> LLMResponse:
+        nonlocal attempt_usage
         terminal = None
         try:
             if not stream:
@@ -764,8 +803,8 @@ async def complete_responses(
                 converted_tools,
             )
         except BaseException as exc:
-            usage = _reported_responses_usage(terminal) or getattr(exc, "usage", None)
-            failed_usages.append(usage)
+            attempt_usage = _reported_responses_usage(terminal) or getattr(exc, "usage", None)
+            failed_usages.append(attempt_usage)
             raise
 
     if retry_budget is not None:
@@ -774,7 +813,7 @@ async def complete_responses(
             if round_timeout is None:
                 return await request_once()
             try:
-                return await asyncio.wait_for(request_once(), timeout=round_timeout)
+                return await _wait_for_transport(request_once(), round_timeout)
             except asyncio.TimeoutError as exc:
                 raise TransientProviderError(f"Responses request timeout after {round_timeout:g}s") from exc
 
@@ -791,10 +830,9 @@ async def complete_responses(
 
     try:
         try:
-            if round_timeout is None or retry_budget is not None:
-                response = await run()
-            else:
-                response = await asyncio.wait_for(run(), timeout=round_timeout)
+            response = await _wait_for_transport(
+                run(), round_timeout if retry_budget is None else None, on_interrupt=interrupt_round,
+            )
         except asyncio.TimeoutError as exc:
             if exc is callback_timeout or round_timeout is None:
                 raise

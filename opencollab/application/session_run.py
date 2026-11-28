@@ -10,10 +10,14 @@ from typing import Any, Callable
 
 from opencollab.application._session_run_completion import _SessionRunCompletionMixin
 from opencollab.application._session_run_shared import (
+    _BUDGET_EXCEEDED_PREFIX,
     _EMPTY_STOP_NUDGE,
     _EMPTY_STOP_PLACEHOLDER,
     _FILTERED_OUTPUT_REASON,
     _INCOMPLETE_RESPONSE_REASONS,
+    _OUTPUT_LIMIT_REASONS,
+    _REQUEST_BUDGET_REFUSAL_PREFIX,
+    _TRUNCATED_OUTPUT_REASON,
     _WIND_DOWN_NUDGE,
     _WIND_DOWN_RETRY,
     DEFAULT_COMMIT_RESERVE,
@@ -28,6 +32,7 @@ from opencollab.application._session_run_shared import (
     PendingStep,
     _ContextOverflowStop,
     _last_assistant_answer,
+    _RequestBudgetRecovery,
     _submit_tool_choice,
     _TeamBudgetStop,
     _TokenBudgetStop,
@@ -95,6 +100,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         shaper: ShaperPort | None = None,
         team_budget_exhausted: Callable[[], bool] | None = None,
         is_context_overflow: Callable[[Exception], bool] | None = None,
+        is_retryable_provider_error: Callable[[Exception], bool] | None = None,
         per_call_timeout: float | None = None,
         enforcement_strength: str = ENFORCEMENT_OFF,
         commit_reserve: int = DEFAULT_COMMIT_RESERVE,
@@ -121,6 +127,8 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
         self.budget_reservations: list[Callable[[], int]] = []
+        self._request_budget_recovery: _RequestBudgetRecovery | None = None
+        self._budget_replay_partial: tuple[float, str] | None = None
         self._initialize_run_control(run_control, run_id)
         self.max_steps = max_steps
         self.deferrable_tool_names = deferrable_tool_names
@@ -131,6 +139,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         # The adapter classifies provider context overflow without provider imports
         # in this layer. An unwired classifier leaves exceptions on the ERROR path.
         self._is_context_overflow = is_context_overflow or (lambda _exc: False)
+        self._is_retryable_provider_error = is_retryable_provider_error or (lambda _exc: False)
         # Bound each generation because an HTTP timeout may not bound a slow
         # streaming or thinking response within the run's wall-clock budget.
         if per_call_timeout is None:
@@ -161,6 +170,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         # Wind-down runs only when enforcement is enabled.
         self._enforcement_strength = enforcement_strength
         self._commit_reserve = commit_reserve
+        self._preserve_submit_reserve = False
         self._submit_tool_name = submit_tool_name
         # No-progress and low-yield limits share the budget wind-down actuator.
         self._watchdog_k = watchdog_k
@@ -192,7 +202,9 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self.agent.tool_choice = copy.deepcopy(self._initial_agent_tool_choice)
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None
+        self._preserve_submit_reserve = False
         self._required_tool_retried = False
+        self._budget_replay_partial = None
 
     def reset_for_restore(self) -> None:
         """Discard process-local turn state before publishing a snapshot."""
@@ -454,7 +466,9 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             and self.max_budget_tokens is not None
             and effective_reserve > self.max_budget_tokens
         ):
-            raise ValueError("commit_reserve cannot exceed max_budget_tokens")
+            missing = effective_reserve - self.max_budget_tokens
+            if not self._claim_request_budget(missing, missing):
+                raise ValueError("commit_reserve cannot exceed max_budget_tokens")
 
         self._enforcement_strength = enforcement_strength
         if commit_reserve is not None:
@@ -479,8 +493,11 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         is absent, retain the current tools and apply the nudge and turn limit.
         """
         self.state.wind_down_done = True
-        self.state.wind_down_attempts += 1
         self.state.wind_down_token_mark = self.state.used_tokens
+        self._restrict_to_submit_tool()
+        self.state.append_message({"role": "system", "content": _WIND_DOWN_NUDGE})
+
+    def _restrict_to_submit_tool(self) -> None:
         finder = getattr(self.agent, "find_tool", None)
         submit = finder(self._submit_tool_name) if callable(finder) else None
         if submit is not None:
@@ -489,7 +506,6 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             # for the retry turn too; ``_complete`` degrades it once to "auto" on a
             # 400, after which the retry's text instruction is the guarantee.
             self.agent.tool_choice = _submit_tool_choice(self._submit_tool_name)
-        self.state.append_message({"role": "system", "content": _WIND_DOWN_NUDGE})
 
     def _trace_brake_trip(
         self,
@@ -543,7 +559,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         await self.event_publisher.emit(self.event_factory.error(reason))
         self.state.transition_to(SessionPhase.STOPPED, reason=reason)
 
-    async def _apply_enforcement_gate(self) -> bool:
+    async def _apply_enforcement_gate(self, *, step_limit_reached: bool) -> bool:
         """Choose the next phase when an enforcement brake fires.
 
         With enforcement enabled and pending results consumed, budget reserve,
@@ -555,8 +571,10 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             return False
         if self.state.wind_down_done:
             if self.state.wind_down_attempts < 2:
+                self._restrict_to_submit_tool()
+                if self.state.wind_down_attempts:
+                    self.state.append_message({"role": "system", "content": _WIND_DOWN_RETRY})
                 self.state.wind_down_attempts += 1
-                self.state.append_message({"role": "system", "content": _WIND_DOWN_RETRY})
                 self.state.transition_to(SessionPhase.CALLING_LLM)
                 return True
             await self._stop_precheck("wind-down complete: forced commit within reserve")
@@ -577,6 +595,19 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self._decide_run_budget(reason="wind_down")
             budget_spent = (self.max_budget_tokens is not None
                             and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve)
+            if (
+                budget_spent
+                and not step_limit_reached
+                and not self.state.budget_reserve_consumed
+                and self.state.pending_events.is_empty()
+                and self.max_budget_tokens is not None
+            ):
+                missing = self.state.used_tokens + self._commit_reserve + 1 - self.max_budget_tokens
+                if self._claim_request_budget(missing, missing):
+                    self._preserve_submit_reserve = True
+                    return False
+        if self._preserve_submit_reserve and step_limit_reached:
+            budget_spent = True
         brake = budget_spent or watchdog_tripped or low_yield_tripped
         if not brake or not self.state.pending_events.is_empty():
             return False
@@ -586,6 +617,14 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             )
             return True
 
+        await self._begin_wind_down(budget_spent, watchdog_tripped, low_yield_tripped)
+        self.state.transition_to(SessionPhase.CALLING_LLM)
+        return True
+
+    async def _begin_wind_down(
+        self, budget_spent: bool, watchdog_tripped: bool, low_yield_tripped: bool, *,
+        defer_first_attempt: bool = False,
+    ) -> None:
         self._trace_brake_trip(budget_spent, watchdog_tripped, low_yield_tripped)
         if budget_spent:
             self.state.budget_reserve_consumed = True
@@ -600,8 +639,16 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
                 )
             )
         self._enter_wind_down()
-        self.state.transition_to(SessionPhase.CALLING_LLM)
-        return True
+        if not defer_first_attempt:
+            self.state.wind_down_attempts += 1
+
+    def _can_use_preserved_submit_budget(self) -> bool:
+        return (
+            self._preserve_submit_reserve
+            and not self.state.wind_down_done
+            and not self.state.budget_reserve_consumed
+            and self.state.pending_events.is_empty()
+        )
 
     def _ensure_tool_environment_active(self) -> None:
         if getattr(self.tool_execution, "environment_revoked", False):
@@ -638,9 +685,11 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             self.max_budget_tokens is not None
             and self.state.used_tokens >= self.max_budget_tokens
         ):
-            reason = f"budget exceeded: {self.state.used_tokens} tokens used"
-            await self._stop_precheck(reason)
-            return
+            recovery = self._budget_recovery_authority()
+            if self.state.used_tokens > self.max_budget_tokens or recovery is None or recovery.available() <= 0:
+                reason = f"{_BUDGET_EXCEEDED_PREFIX} {self.state.used_tokens} tokens used"
+                await self._stop_precheck(reason)
+                return
 
         # Stop at the aggregate team ceiling even if this session has allowance left,
         # since an overshooting generation can consume the shared pool.
@@ -649,10 +698,11 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self._stop_precheck(reason)
             return
 
-        if await self._apply_enforcement_gate():
+        step_limit_reached = self.max_steps is not None and self.state.step_count >= self.max_steps
+        if await self._apply_enforcement_gate(step_limit_reached=step_limit_reached):
             return
 
-        if self.max_steps is not None and self.state.step_count >= self.max_steps:
+        if step_limit_reached:
             reason = f"step limit reached: {self.state.step_count} steps"
             await self._stop_precheck(reason)
             return
@@ -671,7 +721,14 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
 
         tools = self.build_tool_schemas()
         try:
-            response = await self.call_llm(tools)
+            try:
+                response = await self.call_llm(tools)
+            except _TokenBudgetStop:
+                if not self._can_use_preserved_submit_budget():
+                    raise
+                self._raise_if_run_cancelled()
+                await self._begin_wind_down(budget_spent=True, watchdog_tripped=False, low_yield_tripped=False)
+                response = await self.call_llm(self.build_tool_schemas())
         except _RunCancelled:
             await self._stop_for_run_cancellation()
             return
@@ -689,7 +746,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
                 if exc.minimum_output_tokens > 1 else "leaving no output headroom"
             )
             reason = (
-                "budget exhausted before model call: conservative input reservation "
+                f"{_REQUEST_BUDGET_REFUSAL_PREFIX} conservative input reservation "
                 f"requires {exc.reserved_input_tokens} of {exc.remaining_budget} "
                 f"remaining tokens, {output_shortfall}"
             )
@@ -761,9 +818,9 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             isinstance(response.content, str)
             and bool(response.content.strip())
         )
+        reply_start = len(self.state.messages) - int(has_content)
         if response.finish_reason == "content_filter":
             # Settle the filtered reply before observers can suspend the turn.
-            reply_start = len(self.state.messages) - int(has_content)
             self.state.append_message({
                 "role": "system", "content": "[Output filtered by the provider. Session stopped.]",
             })
@@ -782,7 +839,14 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self.event_publisher.emit(self.event_factory.text_delta(response.content))
 
         if response.finish_reason in _INCOMPLETE_RESPONSE_REASONS:
-            reason = "output truncated: provider reached its generation limit"
+            if response.finish_reason in _OUTPUT_LIMIT_REASONS and self._can_use_preserved_submit_budget():
+                await self._begin_wind_down(
+                    budget_spent=True, watchdog_tripped=False, low_yield_tripped=False,
+                    defer_first_attempt=True,
+                )
+                self.state.transition_to(SessionPhase.AUTOSAVING)
+                return
+            reason = _TRUNCATED_OUTPUT_REASON
             self.state.append_message({
                 "role": "system",
                 "content": "[Output truncated by the provider. Partial response preserved; session stopped.]",
@@ -790,6 +854,10 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self.event_publisher.emit(self.event_factory.error(reason))
             self.clear_pending_step()
             self.state.transition_to(SessionPhase.STOPPED, reason=reason)
+            if has_content and not getattr(response, "content_from_reasoning", False):
+                # Team failure delivery reads this reply while the public turn keeps its answer lookup.
+                self.state.start_active_turn(reply_start)
+                self.state.clear_active_turn(retain_answer=True)
             await self.finish_step(pending.latency)
             return
 

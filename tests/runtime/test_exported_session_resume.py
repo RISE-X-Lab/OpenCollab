@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import errno
 import json
+import threading
+from contextlib import AsyncExitStack
 
 import pytest
 
 from opencollab import OpenCollab
+from opencollab.adapters import storage
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.storage import SessionStore
@@ -15,7 +20,10 @@ from opencollab.application.ports import SnapshotSequenceConflict
 from opencollab.bootstrap import build_session, load_session
 from opencollab.domain import session as session_module
 from opencollab.domain.agent import Agent
+from opencollab.domain.pending import PendingRow, RowKind
+from opencollab.domain.session import SessionPhase
 from opencollab.tools import builtin_tools
+from tests.support.environment_test_support import local_environment_factory as local_environment_factory
 from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
 from tests.support.session_run_test_support import FakeLLM, llm_response, tool_call
 
@@ -34,6 +42,136 @@ async def converse(session, turns):
 def transcript(snapshot):
     return [{key: value for key, value in row.items() if key != "timestamp"}
             for row in snapshot["messages"]]
+
+
+@pytest.mark.parametrize(("borrow_env", "borrow_llm", "close_fails"), [
+    (False, False, False), (False, True, False),
+    (True, False, False), (True, True, False),
+    (False, False, True),
+])
+async def test_failed_load_releases_only_owned_resources(tmp_path, monkeypatch, borrow_env, borrow_llm, close_fails):
+    monkeypatch.chdir(tmp_path)
+    source = str(tmp_path / "export.json")
+    target = str(tmp_path / "autosave.json")
+    store = SessionStore()
+    store.checkpoint_snapshot(source, [{"role": "user", "content": "old request"}], meta={}, sequence=2)
+    store.checkpoint_snapshot(target, [{"role": "user", "content": "new request"}], meta={}, sequence=9)
+    (tmp_path / "sample.txt").write_text("17")
+    env = LocalEnvironment(str(tmp_path)) if borrow_env else None
+    llm = LLMClient(model="offline", provider="openai", api_key=__name__) if borrow_llm else None
+    agent = Agent(name="reader", system_prompt="Read the sample.", model="offline",
+                  provider="openai", api_key=__name__)
+    original_cleanup = LocalEnvironment.cleanup
+    original_close = LLMClient.close
+    cleaned, closed = [], []
+
+    async def cleanup(environment):
+        await original_cleanup(environment)
+        cleaned.append(environment)
+
+    async def close(client):
+        release = store.try_autosave_lock(target)
+        assert release is not None
+        release()
+        await original_close(client)
+        closed.append(client)
+        if close_fails:
+            raise OSError("model close failed")
+
+    monkeypatch.setattr(LocalEnvironment, "cleanup", cleanup)
+    monkeypatch.setattr(LLMClient, "close", close)
+    try:
+        with pytest.raises(SnapshotSequenceConflict, match="refusing stale checkpoint sequence") as caught:
+            load_session(source, agent, env=env, llm=llm, store=store, auto_save_path=target)
+        assert len(cleaned) == int(not borrow_env)
+        assert len(closed) == int(not borrow_llm)
+        assert store.load_snapshot(target, agent.system_prompt)["messages"][-1]["content"] == "new request"
+        if env is not None:
+            assert await env.read_file("sample.txt") == "17"
+        if close_fails:
+            assert any("model close failed" in note for note in caught.value.__notes__)
+    finally:
+        if env is not None:
+            await original_cleanup(env)
+        if llm is not None:
+            await original_close(llm)
+
+
+@pytest.mark.parametrize("entry", ["load_session", "restore"])
+@pytest.mark.parametrize("failure_stage", ["base", "journal"])
+async def test_restore_only_requires_the_new_checkpoint_to_be_durable(
+    tmp_path, local_environment_factory, monkeypatch, entry, failure_stage,
+):
+    exported, target = tmp_path / "backup.json", tmp_path / "target.json"
+    journal = tmp_path / "target.json.journal"
+    agent = Agent(name="reviewer", system_prompt="Remember the requests.")
+    store = SessionStore()
+    options = {"agent": agent, "env": local_environment_factory(str(tmp_path)), "store": store}
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, llm=model(), auto_save_path=str(tmp_path / "source.json"))
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        original.save(str(exported))
+
+        store.checkpoint_snapshot(str(target), [{"role": "user", "content": "Earlier note."}], meta={}, sequence=1)
+        store.append_snapshot_delta(
+            str(target), sequence=2, replace_from=1,
+            messages=[{"role": "assistant", "content": "Earlier answer."}], meta={},
+        )
+        before = target.read_bytes(), journal.read_bytes()
+        continuation = model()
+        existing = None
+        if entry == "restore":
+            existing = build_session(**options, llm=continuation, auto_save_path=str(target))
+            sessions.push_async_callback(existing.aclose)
+            existing.restore(str(target))
+        fault = OSError(errno.EIO, "checkpoint persistence failed")
+        failed = False
+        save_base = storage.SessionStore._atomic_json_write
+        save_bytes = storage.write_regular_bytes_atomic
+
+        def save_snapshot(path, value, **kwargs):
+            if failure_stage == "base" and path == str(target):
+                raise fault
+            return save_base(path, value, **kwargs)
+
+        def reset_journal(path, payload, **kwargs):
+            nonlocal failed
+            if failure_stage == "journal" and path == str(journal) and payload == b"" and not failed:
+                failed = True
+                assert json.loads(target.read_text())["messages"][-1]["content"] == "Completed request 0."
+                raise fault
+            return save_bytes(path, payload, **kwargs)
+
+        monkeypatch.setattr(storage.SessionStore, "_atomic_json_write", staticmethod(save_snapshot))
+        monkeypatch.setattr(storage, "write_regular_bytes_atomic", reset_journal)
+
+        def resume():
+            if existing is not None:
+                existing.restore(str(exported))
+                return existing
+            session = load_session(str(exported), **options, llm=continuation, auto_save_path=str(target))
+            sessions.push_async_callback(session.aclose)
+            return session
+
+        if failure_stage == "base":
+            with pytest.raises(OSError) as caught:
+                resume()
+            assert caught.value is fault
+            assert (target.read_bytes(), journal.read_bytes()) == before
+            if existing is not None:
+                assert existing.messages[-1]["content"] == "Earlier answer."
+            return
+
+        resumed = resume()
+        assert failed and journal.read_bytes() == before[1]
+        assert resumed.messages == original.messages
+        await resumed.add_user_message("Remember the new deadline.")
+        await resumed.run_loop()
+        persisted = store.load_snapshot(str(target), agent.system_prompt)
+        assert transcript(persisted) == resumed.messages
+        assert persisted["session_state"]["used_tokens"] == 14
+
 
 @pytest.mark.parametrize("turns", [1, 4])
 @pytest.mark.parametrize("entry", ["restore", "load_session"])
@@ -84,6 +222,401 @@ async def test_manual_export_resumes_original_autosave_and_continues(
             await restored.aclose()
             await restored.env.cleanup()
 
+async def test_export_preserves_source_cursor_when_overwriting_an_old_autosave(tmp_path):
+    automatic = str(tmp_path / "automatic.json")
+    exported = str(tmp_path / "exported.json")
+    agent = Agent(name="reviewer", system_prompt="Remember each request.")
+    store = SessionStore()
+    older_messages = [{"role": "user", "content": "Earlier unrelated draft."}]
+    store.checkpoint_snapshot(exported, older_messages, meta={}, sequence=1)
+    store.append_snapshot_delta(
+        exported, sequence=2, replace_from=1, messages=[{"role": "assistant", "content": "Draft saved."}],
+        meta={},
+    )
+
+    original = build_session(agent=agent, llm=model(4), auto_save_path=automatic, store=store)
+    try:
+        await converse(original, 4)
+        source = store.load_snapshot(automatic, agent.system_prompt)
+        assert source["_autosave_sequence"] > 3
+        original.save(exported)
+        assert store.load_snapshot(exported, agent.system_prompt) == {
+            **source, "_autosave_export_source_sequence": source["_autosave_sequence"],
+        }
+    finally:
+        await original.aclose()
+        await original.env.cleanup()
+
+    restored = load_session(exported, agent=agent, llm=model(), auto_save_path=automatic, store=store)
+    try:
+        assert restored.messages == transcript(source)
+        await restored.add_user_message("Continue using the remembered requirements.")
+        await restored.run_loop()
+        resumed = store.load_snapshot(automatic, agent.system_prompt)
+        assert resumed["_autosave_sequence"] > source["_autosave_sequence"]
+        assert transcript(resumed) == restored.messages
+        assert restored.persistence_errors == ()
+    finally:
+        await restored.aclose()
+        await restored.env.cleanup()
+
+
+@pytest.mark.parametrize("copy_mode", ["fresh", "reopened", "legacy", "read-answer"])
+@pytest.mark.parametrize("source_advances", [False, True])
+async def test_writable_restore_copy_reexports_the_original_source_order(
+    tmp_path, local_environment_factory, copy_mode, source_advances,
+):
+    original_path, first_export, copy_path, backup_path = (
+        str(tmp_path / f"{name}.json") for name in ("original", "first", "copy", "backup")
+    )
+    agent = Agent(name="reviewer", system_prompt="Remember the requests.")
+    store = SessionStore()
+    options = {"agent": agent, "env": local_environment_factory(str(tmp_path)), "store": store}
+
+    def inspect(path):
+        return store.load_snapshot(path, agent.system_prompt)
+
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        original.save(first_export)
+        source = inspect(first_export)
+
+        copied = load_session(first_export, **options, llm=model(), auto_save_path=copy_path)
+        sessions.push_async_callback(copied.aclose)
+        if copy_mode == "legacy":
+            legacy = inspect(copy_path)
+            del legacy["_autosave_export_source_sequence"]
+            (tmp_path / "copy.json").write_text(json.dumps(legacy), encoding="utf-8")
+            copied = load_session(first_export, **options, llm=model(), auto_save_path=copy_path)
+            sessions.push_async_callback(copied.aclose)
+        elif copy_mode == "reopened":
+            copied = load_session(copy_path, **options, llm=model(), auto_save_path=copy_path)
+            sessions.push_async_callback(copied.aclose)
+        elif copy_mode == "read-answer":
+            assert await copied.run_loop() == "Completed request 0."
+            copied = load_session(copy_path, **options, llm=model(), auto_save_path=copy_path)
+            sessions.push_async_callback(copied.aclose)
+        copied.save(backup_path)
+        assert inspect(backup_path)["_autosave_sequence"] == source["_autosave_sequence"]
+
+        if source_advances:
+            await original.add_user_message("Remember the new requirement.")
+            while original.pending_cleanup_tasks:
+                await asyncio.gather(*original.pending_cleanup_tasks)
+            newer = inspect(original_path)
+            assert newer["_autosave_sequence"] == source["_autosave_sequence"] + 1
+            assert newer["messages"][-1]["content"] == "Remember the new requirement."
+            with pytest.raises(SnapshotSequenceConflict):
+                load_session(backup_path, **options, llm=model(), auto_save_path=original_path)
+            assert inspect(original_path) == newer
+        else:
+            restored = load_session(backup_path, **options, llm=model(), auto_save_path=original_path)
+            sessions.push_async_callback(restored.aclose)
+            assert restored.messages == transcript(source)
+            assert restored.used_tokens == 7
+
+
+@pytest.mark.parametrize("already_queued", [False, True])
+async def test_writable_restore_copy_can_publish_new_work(tmp_path, local_environment_factory, already_queued):
+    original_path, first_export, copy_path, backup_path = (
+        str(tmp_path / f"{name}.json") for name in ("original", "first", "copy", "backup")
+    )
+    agent = Agent(name="reviewer", system_prompt="Remember the requests.")
+    store = SessionStore()
+    options = {"agent": agent, "env": local_environment_factory(str(tmp_path)), "store": store}
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        request = "Remember the new requirement."
+        if already_queued:
+            await original.add_user_message(request)
+        original.save(first_export)
+        while original.pending_cleanup_tasks:
+            await asyncio.gather(*original.pending_cleanup_tasks)
+
+        reply = "New requirement recorded."
+        continuation = FakeLLM([llm_response(content=reply, total_tokens=7, input_tokens=5)])
+        copied = load_session(first_export, **options, llm=continuation, auto_save_path=copy_path)
+        sessions.push_async_callback(copied.aclose)
+        if not already_queued:
+            await copied.add_user_message(request)
+        assert await copied.run_loop() == reply
+        assert len(continuation.calls) == 1
+        copied.save(backup_path)
+
+        readback = model()
+        restored = load_session(backup_path, **options, llm=readback, auto_save_path=original_path)
+        sessions.push_async_callback(restored.aclose)
+        assert restored.messages == copied.messages
+        assert restored.used_tokens == 14
+        assert await restored.run_loop() == reply
+        assert readback.calls == []
+
+@pytest.mark.parametrize(
+    ("exports", "original_turns", "offline_turns"),
+    [(6, 2, 1), (1, 1, 4), (6, 0, 3)],
+)
+async def test_continued_backup_preserves_newer_divergent_autosave(
+    tmp_path, local_environment_factory, exports, original_turns, offline_turns,
+):
+    original_path, backup_path, export_path = (
+        str(tmp_path / name) for name in ("original.json", "backup.json", "continued.json")
+    )
+    agent = Agent(name="reviewer", system_prompt="Remember each requirement.")
+    store = SessionStore()
+    options = {"agent": agent, "store": store, "env": local_environment_factory(str(tmp_path))}
+
+    async def run_turns(session, branch, turns):
+        for index in range(turns):
+            await session.add_user_message(f"{branch} requirement {index}.")
+            await session.run_loop()
+
+    def source_bytes():
+        return [
+            (tmp_path / name).read_bytes() for name in ("original.json", "original.json.journal")
+        ]
+
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, llm=model(1 + original_turns), auto_save_path=original_path)
+        sessions.push_async_callback(original.aclose)
+        await run_turns(original, "Shared", 1)
+        for _ in range(exports):
+            original.save(backup_path)
+        await run_turns(original, "Original", original_turns)
+        await original.aclose()
+        before = source_bytes()
+        state = store.load_snapshot(original_path, agent.system_prompt)
+
+        offline = load_session(backup_path, **options, llm=model(offline_turns), auto_save_path=backup_path)
+        sessions.push_async_callback(offline.aclose)
+        await run_turns(offline, "Offline", offline_turns)
+        await offline.aclose()
+        # Reopening the working copy must retain the originating sequence.
+        reopened = load_session(backup_path, **options, llm=model(), auto_save_path=backup_path)
+        sessions.push_async_callback(reopened.aclose)
+        reopened.save(export_path)
+
+        if original_turns:
+            with pytest.raises(SnapshotSequenceConflict):
+                load_session(export_path, **options, llm=model(), auto_save_path=original_path)
+            assert source_bytes() == before
+            assert store.load_snapshot(original_path, agent.system_prompt) == state
+            return
+
+        restored = load_session(export_path, **options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(restored.aclose)
+        assert source_bytes() != before
+        assert restored.messages == offline.messages
+        assert restored.used_tokens == (1 + offline_turns) * 7
+        requests = [m["content"].splitlines()[0] for m in restored.messages if m["role"] == "user"]
+        assert requests == ["Shared requirement 0."] + [f"Offline requirement {i}." for i in range(offline_turns)]
+        await restored.aclose()
+
+        # The originating cursor stays fixed, so a subsequent restore uses the
+        # earlier transcript to recognize a continuation.
+        await run_turns(reopened, "Follow-up", 1)
+        reopened.save(export_path)
+        later = load_session(export_path, **options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(later.aclose)
+        assert later.messages == reopened.messages
+        assert later.used_tokens == (2 + offline_turns) * 7
+
+@pytest.mark.parametrize("pending", ["inbox", "deferred-user", "settled-child"])
+async def test_continued_backup_preserves_pending_autosave_state(
+    tmp_path, local_environment_factory, pending,
+):
+    source, exported, working, backup = (
+        str(tmp_path / f"{name}.json") for name in ("source", "exported", "working", "backup")
+    )
+    agent = Agent(name="reviewer", system_prompt="Retain each accepted requirement.")
+    store = SessionStore()
+    options = {"agent": agent, "env": local_environment_factory(str(tmp_path)), "store": store}
+    source_paths = (tmp_path / "source.json", tmp_path / "source.json.journal")
+
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, auto_save_path=source, llm=model())
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        if pending != "inbox":
+            original.state.append_message({
+                "role": "assistant", "tool_calls": [tool_call("check", "read_receipt", "{}")],
+            })
+            original.state.set_phase(SessionPhase.AWAITING_EVENTS)
+            original.state.pending_events.add(PendingRow("check", RowKind.CHILD_AGENT, 0, ref=1))
+        original.save(source)
+        original.save(exported)
+        if pending == "inbox":
+            original.state.queue_pending_user_message({
+                "role": "user", "content": "Record the accepted correction.", "message_id": "inbox-correction",
+            })
+        elif pending == "deferred-user":
+            original.state.append_queued_external_user_turn("Record the accepted correction.", defer=True)
+        else:
+            original.state.pending_events.fill("check", result="The signed record confirms the correction.")
+        original.save(source)
+        before = store.load_snapshot(source, agent.system_prompt)
+        source_bytes = [path.read_bytes() for path in source_paths]
+        await original.aclose()
+
+        offline = load_session(exported, **options, auto_save_path=working, llm=model(2))
+        sessions.push_async_callback(offline.aclose)
+        if pending != "inbox":
+            await offline.run_loop()
+        await offline.add_user_message("Review an independent proposal.")
+        await offline.run_loop()
+        offline.save(backup)
+        continued = store.load_snapshot(backup, agent.system_prompt)
+        assert continued["messages"][:len(before["messages"])] == before["messages"]
+        assert len(continued["messages"]) > len(before["messages"])
+        assert continued["session_state"]["step_count"] > before["session_state"]["step_count"]
+        assert continued["session_state"]["used_tokens"] > before["session_state"]["used_tokens"]
+
+        with pytest.raises(SnapshotSequenceConflict):
+            load_session(backup, **options, auto_save_path=source, llm=model())
+        assert [path.read_bytes() for path in source_paths] == source_bytes
+        assert store.load_snapshot(source, agent.system_prompt) == before
+
+
+@pytest.mark.parametrize("change", ["inbox", "stop"])
+async def test_equal_transcript_does_not_replace_newer_runtime_state(
+    tmp_path, local_environment_factory, change,
+):
+    seed, exported, target = (str(tmp_path / f"{name}.json") for name in ("seed", "exported", "target"))
+    agent = Agent(name="reviewer", system_prompt="Retain each accepted requirement.")
+    store = SessionStore()
+    options = {"agent": agent, "env": local_environment_factory(str(tmp_path)), "store": store}
+    target_paths = (tmp_path / "target.json", tmp_path / "target.json.journal")
+
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, auto_save_path=seed, llm=model())
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        original.save(exported)
+        restored = load_session(exported, **options, auto_save_path=target, llm=model())
+        sessions.push_async_callback(restored.aclose)
+        if change == "inbox":
+            restored.state.queue_pending_user_message({
+                "role": "user", "content": "Record the accepted correction.", "message_id": "inbox-correction",
+            })
+        else:
+            restored.state.cancel("interrupted by user")
+        restored.save(target)
+        before = store.load_snapshot(target, agent.system_prompt)
+        exported_state = store.load_snapshot(exported, agent.system_prompt)
+        assert before["messages"] == exported_state["messages"]
+        assert before["_autosave_export_source_sequence"] == exported_state["_autosave_sequence"]
+        target_bytes = [path.read_bytes() for path in target_paths]
+
+        with pytest.raises(SnapshotSequenceConflict):
+            load_session(exported, **options, auto_save_path=target, llm=model())
+        assert [path.read_bytes() for path in target_paths] == target_bytes
+        assert store.load_snapshot(target, agent.system_prompt) == before
+
+
+@pytest.mark.parametrize(
+    "publication", ["before-prepare", "pending", "settled", "failed", "checkpointed", "overlapping"],
+)
+async def test_exported_working_copy_preserves_a_new_queued_turn(
+    tmp_path, local_environment_factory, monkeypatch, publication,
+):
+    source, export, working, backup = (
+        str(tmp_path / f"{name}.json") for name in ("source", "export", "working", "backup")
+    )
+    store = SessionStore()
+    options = {
+        "agent": Agent(name="reviewer", system_prompt="Remember each request."),
+        "env": local_environment_factory(str(tmp_path)),
+        "store": store,
+    }
+
+    async def settle(session):
+        while session.pending_cleanup_tasks:
+            await asyncio.gather(*session.pending_cleanup_tasks)
+
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, llm=model(), auto_save_path=source)
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        original.save(export)
+
+        copy_session = load_session(export, **options, llm=model(), auto_save_path=working)
+        sessions.push_async_callback(copy_session.aclose)
+        previous = OpenCollab.read_session_snapshot(working)
+        next_request = "Remember the new requirement."
+
+        def fail_append(*args, **kwargs):
+            raise OSError(errno.EIO, "queued autosave failed")
+
+        earlier_started, earlier_release = threading.Event(), threading.Event()
+        queued_started, queued_release = threading.Event(), threading.Event()
+        pauses = iter(((earlier_started, earlier_release), (queued_started, queued_release)))
+        append = store.append_snapshot_delta
+
+        def pause_append(path, **kwargs):
+            signals = next(pauses, None)
+            if signals is not None:
+                started, release = signals
+                started.set()
+                assert release.wait(timeout=3)
+            return append(path, **kwargs)
+
+        with monkeypatch.context() as patch:
+            try:
+                if publication == "failed":
+                    patch.setattr(store, "append_snapshot_delta", fail_append)
+                elif publication in {"before-prepare", "overlapping"}:
+                    patch.setattr(store, "append_snapshot_delta", pause_append)
+                    copy_session.enqueue_auto_save()
+                    assert await asyncio.to_thread(earlier_started.wait, 3)
+                await copy_session.add_user_message(next_request)
+                assert copy_session.pending_cleanup_tasks
+                if publication == "settled":
+                    await settle(copy_session)
+                elif publication == "checkpointed":
+                    copy_session.save(working)
+                elif publication == "overlapping":
+                    earlier_release.set()
+                    assert await asyncio.to_thread(queued_started.wait, 3)
+                copy_session.save(backup)
+            finally:
+                earlier_release.set()
+                queued_release.set()
+                await settle(copy_session)
+
+        saved = OpenCollab.read_session_snapshot(backup)
+        automatic = OpenCollab.read_session_snapshot(working)
+        queued = saved["session_state"]["pending_external_user_turn"]
+        assert queued["content"] == next_request
+        if publication == "failed":
+            assert automatic == previous
+            assert str(copy_session.persistence_errors[0]).endswith("queued autosave failed")
+        else:
+            assert automatic["messages"] == saved["messages"]
+            assert automatic["session_state"] == saved["session_state"]
+
+        continuation = FakeLLM([llm_response(content="New requirement recorded.", total_tokens=7, input_tokens=5)])
+        resumed = load_session(backup, **options, llm=continuation, auto_save_path=working)
+        sessions.push_async_callback(resumed.aclose)
+        assert continuation.calls == []
+        assert await resumed.run_loop() == "New requirement recorded."
+        assert await resumed.run_loop() == "New requirement recorded."
+        assert len(continuation.calls) == 1
+        user_requests = [
+            row["content"].splitlines()[0] for row in continuation.calls[0]["messages"] if row["role"] == "user"
+        ]
+        assert user_requests == ["Remember requirement 0.", next_request]
+
+        finished = OpenCollab.read_session_snapshot(working)
+        assert finished["session_state"]["used_tokens"] == 14
+        for outdated in (export, backup):
+            with pytest.raises(SnapshotSequenceConflict, match="refusing stale checkpoint"):
+                load_session(outdated, **options, llm=model(), auto_save_path=working)
+            assert OpenCollab.read_session_snapshot(working) == finished
+
+
 async def test_export_keeps_original_autosave_bytes_unchanged(tmp_path):
     automatic = tmp_path / "automatic.json"
     exported = tmp_path / "exported.json"
@@ -103,6 +636,139 @@ async def test_export_keeps_original_autosave_bytes_unchanged(tmp_path):
     finally:
         await original.aclose()
         await original.env.cleanup()
+
+@pytest.mark.parametrize("copy_mode", ["direct", "read-only", "writable"])
+@pytest.mark.parametrize("source_advances", [False, True])
+async def test_reusing_export_path_does_not_promote_source_history(
+    tmp_path, local_environment_factory, copy_mode, source_advances,
+):
+    source, backup, copy_path = (tmp_path / name for name in ("source.json", "backup.json", "copy.json"))
+    store = SessionStore()
+    store.checkpoint_snapshot(
+        str(backup), [{"role": "user", "content": "Previous task."}], meta={}, sequence=20,
+    )
+    store.append_snapshot_delta(
+        str(backup), sequence=21, replace_from=1,
+        messages=[{"role": "assistant", "content": "Saved the previous task."}], meta={},
+    )
+    agent = Agent(name="reviewer", system_prompt="Remember the original requirements.")
+    options = {"agent": agent, "store": store, "env": local_environment_factory(str(tmp_path))}
+    original = build_session(**options, llm=model(3), auto_save_path=str(source))
+    reader = restored = None
+    try:
+        await converse(original, 1)
+        first = store.load_snapshot(str(source), agent.system_prompt)
+        original.save(str(backup))
+        exported = store.load_snapshot(str(backup), agent.system_prompt)
+        assert exported["_autosave_sequence"] > first["_autosave_sequence"]
+        if copy_mode != "direct":
+            reader = load_session(
+                str(backup), **options, llm=model(),
+                auto_save_path=str(backup) if copy_mode == "writable" else None,
+            )
+            if copy_mode == "writable":
+                reader.save(str(backup))
+                assert store.load_snapshot(str(backup), agent.system_prompt)["_autosave_sequence"] > (
+                    exported["_autosave_sequence"]
+                )
+            reader.save(str(copy_path))
+            backup = copy_path
+        if source_advances:
+            await converse(original, 2)
+            before = store.load_snapshot(str(source), agent.system_prompt)
+            files = [source, source.with_suffix(".json.journal")]
+            original_bytes = [path.read_bytes() for path in files]
+            with pytest.raises(SnapshotSequenceConflict, match="refusing stale checkpoint"):
+                load_session(str(backup), **options, llm=model(), auto_save_path=str(source))
+            assert store.load_snapshot(str(source), agent.system_prompt) == before
+            assert [path.read_bytes() for path in files] == original_bytes
+        else:
+            restored = load_session(str(backup), **options, llm=model(), auto_save_path=str(source))
+            resumed = store.load_snapshot(str(source), agent.system_prompt)
+            assert resumed["_autosave_sequence"] == first["_autosave_sequence"] + 1
+            assert resumed["messages"] == first["messages"]
+            await converse(restored, 1)
+            assert store.load_snapshot(str(source), agent.system_prompt)["session_state"]["used_tokens"] == 14
+    finally:
+        for session in (original, reader, restored):
+            if session is not None:
+                await session.aclose()
+
+
+@pytest.mark.parametrize("target_update", ["unchanged", "checkpoint", "accounting", "concurrent"])
+async def test_reexport_restores_its_immediate_autosave_only_if_equivalent(
+    tmp_path, local_environment_factory, monkeypatch, target_update,
+):
+    original_path, working_path, backup_path = (
+        str(tmp_path / name) for name in ("original.json", "working.json", "backup.json")
+    )
+    agent = Agent(name="reviewer", system_prompt="Remember the current draft.")
+    store = SessionStore()
+    options = {"agent": agent, "store": store, "env": local_environment_factory(str(tmp_path))}
+
+    def inspect(path):
+        return store.load_snapshot(path, agent.system_prompt)
+
+    async with AsyncExitStack() as sessions:
+        for path, message in ((original_path, "Current draft."), (working_path, "Earlier draft.")):
+            session = build_session(**options, llm=model(), auto_save_path=path)
+            sessions.push_async_callback(session.aclose)
+            await session.add_user_message(message)
+            await session.run_loop()
+            await session.aclose()
+        original = inspect(original_path)
+        exporter = load_session(original_path, **options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(exporter.aclose)
+        exporter.save(working_path)
+        working = load_session(working_path, **options, llm=model(), auto_save_path=working_path)
+        sessions.push_async_callback(working.aclose)
+        if target_update in {"checkpoint", "concurrent"}:
+            working.save(working_path)
+        working.save(backup_path)
+
+        if target_update == "accounting":
+            working.used_tokens += 9
+            working.save(working_path)
+        current = inspect(working_path)
+        if target_update == "concurrent":
+            checkpoint = store.checkpoint_snapshot
+            peer = SessionStore()
+            local_sequence = current["_autosave_sequence"]
+
+            def publish_before_retry(path, messages, *, meta, sequence):
+                if sequence == local_sequence:
+                    peer_meta = {**meta, "session_state": {**meta["session_state"], "used_tokens": 31}}
+                    peer.checkpoint_snapshot(path, messages, meta=peer_meta, sequence=local_sequence + 1)
+                return checkpoint(path, messages, meta=meta, sequence=sequence)
+
+            monkeypatch.setattr(store, "checkpoint_snapshot", publish_before_retry)
+
+        continuation = model()
+        if target_update in {"accounting", "concurrent"}:
+            with pytest.raises(SnapshotSequenceConflict):
+                load_session(backup_path, **options, llm=continuation, auto_save_path=working_path)
+            expected = copy.deepcopy(current)
+            if target_update == "concurrent":
+                expected["_autosave_sequence"] += 1
+                expected["session_state"]["used_tokens"] = 31
+            assert inspect(working_path) == expected
+            assert continuation.calls == []
+            return
+
+        restored = load_session(backup_path, **options, llm=continuation, auto_save_path=working_path)
+        sessions.push_async_callback(restored.aclose)
+        assert inspect(working_path) == current
+        assert restored.messages == transcript(original)
+        assert restored.used_tokens == 7
+        restored.save(backup_path)
+        restored_original = load_session(backup_path, **options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(restored_original.aclose)
+        assert inspect(original_path)["_autosave_sequence"] == original["_autosave_sequence"] + 1
+        await restored.add_user_message("Continue the review.")
+        await restored.run_loop()
+        assert continuation.calls[0]["messages"][:len(original["messages"])] == transcript(original)
+        assert inspect(working_path)["session_state"]["used_tokens"] == 14
+
 
 async def test_older_export_still_cannot_replace_a_newer_autosave(tmp_path):
     automatic = tmp_path / "automatic.json"

@@ -1,4 +1,4 @@
-"""Linux process-group exit detection and its conservative proc fallbacks."""
+"""Process-group exit detection and cleanup."""
 
 from __future__ import annotations
 
@@ -222,6 +222,66 @@ def test_non_linux_group_uses_existing_signal_probe(monkeypatch) -> None:
     monkeypatch.setattr(process_module, "_exited_proc_group_members", lambda _group: pytest.fail("unexpected scan"))
 
     assert process_module._group_exists(101) is True
+
+@pytest.mark.parametrize("denied_signal", [signal.SIGTERM, signal.SIGKILL])
+async def test_darwin_cleanup_confirms_disappearance_after_signal_denial(monkeypatch, denied_signal) -> None:
+    calls = []
+    reaped = False
+    denied_probe = False
+
+    def killpg(group_id, sig):
+        nonlocal denied_probe
+        assert group_id == 101
+        if sig:
+            calls.append(sig)
+            if sig == denied_signal:
+                raise PermissionError("Darwin group has no signalable members")
+            return
+        if reaped:
+            if denied_probe:
+                raise ProcessLookupError
+            denied_probe = True
+            raise PermissionError("Darwin group is still exiting")
+
+    async def wait():
+        nonlocal reaped
+        reaped = True
+
+    monkeypatch.setattr(process_module, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(process_module, "os", SimpleNamespace(name="posix", killpg=killpg))
+    process = SimpleNamespace(pid=101, wait=wait)
+
+    assert await process_module.terminate_process(process, term_grace=0, kill_grace=1)
+    assert reaped and denied_probe
+    assert calls == ([signal.SIGTERM, signal.SIGKILL] if denied_signal == signal.SIGKILL else [signal.SIGTERM])
+
+@pytest.mark.parametrize(("platform", "wait_stalls"), [("darwin", False), ("darwin", True), ("linux", False)])
+async def test_cleanup_preserves_signal_permission_error_without_confirmed_exit(monkeypatch, platform, wait_stalls):
+    signals = []
+    waited = False
+    error = PermissionError("permission denied for live group")
+
+    def killpg(group_id, sig):
+        assert group_id == 101
+        if sig:
+            signals.append(sig)
+        raise error
+
+    async def wait():
+        nonlocal waited
+        waited = True
+        if wait_stalls:
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(process_module, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(process_module, "os", SimpleNamespace(name="posix", killpg=killpg))
+    process = SimpleNamespace(pid=101, wait=wait)
+
+    with pytest.raises(PermissionError) as exc:
+        await process_module.terminate_process(process, term_grace=0, kill_grace=0.02)
+    assert exc.value is error
+    assert waited is (platform == "darwin")
+    assert signals == [signal.SIGTERM]
 
 _GROUP_SUPERVISOR = textwrap.dedent("""\
     import ctypes

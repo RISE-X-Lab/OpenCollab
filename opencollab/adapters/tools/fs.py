@@ -144,6 +144,8 @@ class FileReadTool(Tool):
             total_description = "total not scanned"
         else:
             total_description = f"{window.total_lines} lines total"
+        if not numbered:
+            return f"File: {params['path']} ({total_description}, no lines at or after offset {window.start_line})"
         header = (
             f"File: {params['path']} ({total_description}, "
             f"showing {start + 1}-{end})"
@@ -156,9 +158,13 @@ class FileReadTool(Tool):
                 "numbered line requires a larger max_read_chars setting. Use grep "
                 "to locate relevant text."
             )
+            if window.total_lines is not None:
+                has_more = end < window.total_lines
+            elif has_more:
+                return body + f"\n... Continue with offset={end + 1} to read any later lines."
         # Loud footer when lines remain below the shown range — otherwise a
         # default read silently stops at the limit and the tail is lost.
-        if has_more and not single_line_truncated:
+        if has_more:
             if window.total_lines is None:
                 remaining = "more lines below (total not scanned)"
             else:

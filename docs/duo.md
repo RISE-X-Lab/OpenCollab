@@ -255,6 +255,10 @@ caller's runtime configuration.
 Duo's output records `winner` and `adopted` separately, because a failed adoption
 may fall back to the other candidate. `status` is `done` after successful adoption,
 `incomplete` when no candidate is adopted, or `error` when the task is missing.
+When the shared budget prevents B from starting, Duo can adopt A if it has a
+deliverable diff, completed cleanup and a current passing test without a current
+failure. The result records `candidate-b-budget-exhausted` and marks B as skipped.
+Without an eligible A, the workflow returns the budget stop.
 The output also retains selection reasons, candidate evidence, adoption attempts
 and token consumption. Duo addresses candidate selection through behavior evidence
 and the default-B preference. Task correctness is established by the caller's actual

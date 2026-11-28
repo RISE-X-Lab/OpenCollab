@@ -12,6 +12,7 @@ import inspect
 import os
 import re
 import uuid
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ from opencollab.application.event_bus import EventBus
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import (
     AskUserPort,
+    AutosaveOwnershipStorePort,
     EventPublisherPort,
     LLMPort,
     PermissionPort,
@@ -40,11 +42,10 @@ from opencollab.application.ports import (
     SchedulerPort,
     SessionStorePort,
     ShaperPort,
-    SnapshotStorePort,
 )
 from opencollab.application.run_control import RunControl
 from opencollab.application.scheduler import LaunchSpec
-from opencollab.application.session import Session
+from opencollab.application.session import Session, _acquire_autosave_writer, _read_session_snapshot
 from opencollab.bootstrap.agent_profiles import (
     SingleAgentProfile,
     resolve_agent_profile,
@@ -275,29 +276,50 @@ def load_session(
     Omitted ``aid`` and ``run_id`` values come from the snapshot, so records
     written during construction and later turns retain the saved identity.
     """
-    explicit_aid = kwargs.get("aid")
-    if "aid" not in kwargs or "run_id" not in kwargs:
-        kwargs = {**_snapshot_identity(path, agent, kwargs.get("store")), **kwargs}
-    session = build_session(agent=agent, **kwargs)
-    session.restore(path, aid=explicit_aid)
-    return session
-
-def _snapshot_identity(path: str, agent: Agent, store: SessionStorePort | None) -> dict[str, Any]:
-    """The saved identity fields available before constructing the session.
-
-    Anything unreadable is left for ``restore`` to report.
-    """
-    identity: dict[str, Any] = {}
-    resolved = store if store is not None else SessionStore()
-    if not isinstance(resolved, SnapshotStorePort):
-        return identity
+    store = kwargs.get("store")
+    if store is None:
+        store = SessionStore()
+    target = kwargs.get("auto_save_path")
+    session = None
     try:
-        snapshot = resolved.load_snapshot(path, agent.system_prompt)
-        run_id = snapshot.get("run_id")
-        if isinstance(run_id, str) and run_id.strip() and "\x00" not in run_id:
-            identity["run_id"] = run_id
+        with ExitStack() as ownership:
+            if target and isinstance(store, AutosaveOwnershipStorePort):
+                ownership.callback(_acquire_autosave_writer(store, target))
+            snapshot = _read_session_snapshot(store, path, agent.system_prompt)
+            options = {**_snapshot_identity(snapshot), **kwargs, "store": store}
+            session = build_session(agent=agent, **options)
+            session._restore_snapshot(path, snapshot, aid=kwargs.get("aid"))
+            return session
+    except BaseException as error:
+        if session is not None:
+            restore_error = error
+
+            async def rollback() -> None:
+                operations = [("session", session.aclose)]
+                if kwargs.get("env") is None and session.env is not None:
+                    operations.append(("environment", session.env.cleanup))
+                for label, close in operations:
+                    try:
+                        await close()
+                    except BaseException as failure:
+                        add_exception_note(
+                            restore_error, f"restore {label} cleanup also failed: {type(failure).__name__}: {failure}",
+                        )
+
+            try:
+                run_coro_blocking(rollback)
+            except BaseException as failure:
+                add_exception_note(error, f"restore rollback also failed: {type(failure).__name__}: {failure}")
+        raise
+
+def _snapshot_identity(snapshot: dict[str, Any]) -> dict[str, Any]:
+    identity: dict[str, Any] = {}
+    run_id = snapshot.get("run_id")
+    if isinstance(run_id, str) and run_id.strip() and "\x00" not in run_id:
+        identity["run_id"] = run_id
+    try:
         identity["aid"] = int(snapshot["aid"])
-    except Exception:  # noqa: BLE001 - restore raises the real error
+    except (KeyError, TypeError, ValueError, OverflowError):
         pass
     return identity
 

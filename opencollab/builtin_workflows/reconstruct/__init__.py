@@ -14,15 +14,22 @@ See FromIO, arXiv 2605.15334, Section 4.6.
 
 from __future__ import annotations
 
+import errno
 import importlib
 import json
+import os
 import shutil
 import uuid
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
+from glob import escape
 from pathlib import Path
+from tempfile import NamedTemporaryFile, mkdtemp
 from typing import Any, Awaitable, Callable, Sequence
 
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.workflows import workflow
 
 from ._coverage import describe
@@ -122,9 +129,12 @@ class ReconstructionTask:
     ``oracle`` returns the hidden program's output for an input (raise for an
     invalid input). ``evaluate`` runs a candidate file on inputs and returns
     one ``{"ok": True, "output": ...}`` or ``{"ok": False, "error": ...}``
-    per input; it should execute the candidate where the agent's own code
-    runs, never in the harness process. ``tools`` are handed to every coding
-    session. ``random_inputs(k, exclude)`` draws fresh inputs from a source
+    per input. The evaluator receives a temporary copy next to the editable
+    candidate. If the source directory forbids creating files, a temporary
+    directory under the archive also links to the candidate's sibling files and packages.
+    Execute the copy in the agent's environment, never in the harness process.
+    ``tools`` are handed to every coding session.
+    ``random_inputs(k, exclude)`` draws fresh inputs from a source
     independent of the agent (the benchmark's generator); it is required
     when ``random_share`` is positive. ``on_example`` is told about every
     observed example and its source (``agent`` or ``random``). ``kind``,
@@ -219,6 +229,105 @@ def _input_key(value: Any) -> str:
         return repr(value)
 
 
+def _remove_candidate_file(path: Path, kind: str, error: BaseException | None = None) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as cleanup_error:
+        if error is None:
+            raise
+        add_exception_note(error, f"candidate {kind} cleanup failed for {path.name} ({cleanup_error})")
+
+
+def _archive_candidate(program: Path, candidates_dir: Path, iteration: int) -> Path:
+    stem = f"iter_{iteration:03d}"
+    path = candidates_dir / f"{stem}.py"
+    suffix = 2
+    while True:
+        try:
+            destination = path.open("xb")
+        except FileExistsError:
+            path = candidates_dir / f"{stem}_{suffix}.py"
+            suffix += 1
+            continue
+        try:
+            with destination, program.open("rb") as source:
+                shutil.copyfileobj(source, destination)
+            shutil.copymode(program, path)
+        except BaseException as error:
+            _remove_candidate_file(path, "archive", error)
+            raise
+        return path
+
+
+@contextmanager
+def _evaluation_directory(archive: Path, program: Path) -> Iterator[Path]:
+    directory = Path(mkdtemp(dir=archive.parent, prefix="_oc_evaluate_")).absolute()
+    error = None
+    try:
+        try:
+            siblings = list(program.parent.iterdir())
+        except PermissionError:
+            siblings = []
+        for sibling in siblings:
+            if sibling in (program, archive.parent):
+                continue
+            is_directory = sibling.is_dir()
+            if is_directory or sibling.is_file():
+                (directory / sibling.name).symlink_to(
+                    os.path.relpath(sibling, start=directory), target_is_directory=is_directory,
+                )
+        shutil.copy(archive, directory / program.name)
+        directory.chmod((archive.parent.stat().st_mode & 0o777) | 0o700)
+        yield archive.parent / directory.name / program.name
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        try:
+            shutil.rmtree(directory)
+        except OSError as exc:
+            if error is None:
+                raise
+            add_exception_note(error, f"candidate evaluation directory cleanup failed for {directory.name} ({exc})")
+
+
+@contextmanager
+def _evaluation_copy(archive: Path, program: Path) -> Iterator[Path]:
+    try:
+        destination = NamedTemporaryFile(
+            dir=program.parent, prefix="_oc_evaluate_", suffix=program.suffix, delete=False,
+        )
+    except OSError as exc:
+        if program.parent == archive.parent or exc.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
+            raise
+        with _evaluation_directory(archive, program) as path:
+            yield path
+        return
+    path = Path(destination.name)
+    error = None
+    with ExitStack() as cleanup:
+        def remove(temporary: Path, kind: str) -> None:
+            _remove_candidate_file(temporary, kind, error)
+
+        cleanup.callback(remove, path, "evaluation copy")
+        try:
+            with destination, archive.open("rb") as source:
+                shutil.copyfileobj(source, destination)
+            shutil.copymode(archive, path)
+            # A candidate may derive a resource path from its own filename.
+            prefix = f"{program.stem}."
+            for sibling in program.parent.glob(f"{escape(prefix)}*"):
+                if sibling == program or sibling.is_symlink() or not sibling.is_file():
+                    continue
+                alias = path.with_name(f"{path.stem}.{sibling.name.removeprefix(prefix)}")
+                alias.symlink_to(sibling.name)
+                cleanup.callback(remove, alias, "evaluation sidecar")
+            yield program.parent / path.name
+        except BaseException as exc:
+            error = exc
+            raise
+
+
 @workflow(
     name="reconstruct",
     description="Reconstruct a hidden program from input/output observations with batched active exploration",
@@ -296,21 +405,22 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             if task.on_example is not None:
                 task.on_example(inp, out, source)
 
-    async def failures(path: Path) -> list[str]:
-        if not path.is_file():
+    async def failures(path: Path | None) -> list[str]:
+        if path is None or not path.is_file():
             return [f"{task.candidate_file} is missing"]
-        results = await task.evaluate(path, [i for i, _ in examples])
-        if len(results) != len(examples):
-            raise RuntimeError(
-                f"candidate evaluator returned {len(results)} results for {len(examples)} inputs"
-            )
-        out = []
-        for (inp, expected), res in zip(examples, results):
-            if not res.get("ok"):
-                out.append(f"{inp!r}: expected {expected!r}, got {res.get('error')}")
-            elif not task.outputs_match(res.get("output"), jsonable(expected)):
-                out.append(f"{inp!r}: expected {expected!r}, got {res.get('output')!r}")
-        return out
+        with _evaluation_copy(path, program) as evaluation_path:
+            results = await task.evaluate(evaluation_path, deepcopy([inp for inp, _ in examples]))
+            if len(results) != len(examples):
+                raise RuntimeError(
+                    f"candidate evaluator returned {len(results)} results for {len(examples)} inputs"
+                )
+            out = []
+            for (inp, expected), res in zip(examples, results):
+                if not res.get("ok"):
+                    out.append(f"{inp!r}: expected {expected!r}, got {res.get('error')}")
+                elif not task.outputs_match(res.get("output"), jsonable(expected)):
+                    out.append(f"{inp!r}: expected {expected!r}, got {res.get('output')!r}")
+            return out
 
     async def request_examples(n: int, round_no: int) -> bool:
         """Fill a batch of n new inputs: a random share first, the rest proposed by the agent."""
@@ -426,15 +536,19 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         await call_agent(prompt=prompt, label=f"code:{iteration}", tools=list(task.tools))
         if stop_reason:
             break
-        fails = await failures(program)
-        candidate_exists = program.is_file()
-        passed = len(examples) - len(fails) if candidate_exists else 0
+        archive = _archive_candidate(program, candidates_dir, iteration) if program.is_file() else None
+        try:
+            fails = await failures(archive)
+        except BaseException as error:
+            if archive is not None:
+                _remove_candidate_file(archive, "archive", error)
+            raise
+        passed = len(examples) - len(fails) if archive is not None else 0
         score = None
         source = ""
-        if candidate_exists:
-            archived.append(candidates_dir / f"iter_{iteration:03d}.py")
-            shutil.copy(program, archived[-1])
-            source = program.read_text(encoding="utf-8")
+        if archive is not None:
+            archived.append(archive)
+            source = archive.read_text(encoding="utf-8")
             score = round(stage_score(source, passed / len(examples) if examples else 0.0, examples), 4)
         promoted = not fails
         miss = uncovered() if promoted else set()
@@ -490,7 +604,7 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                     stop_reason = stop_reason or "proposer_failed"
                     break
                 next_batch += batch_step
-                new_fails = await failures(program)
+                new_fails = await failures(archive)
                 if new_fails:
                     feedback += "\nYour candidate fails these new examples:\n" + "\n".join(new_fails[:10])
                 continue
@@ -512,7 +626,7 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             stop_reason = stop_reason or "proposer_failed"
             break
         next_batch += batch_step
-        new_fails = await failures(program)
+        new_fails = await failures(archive)
         feedback = (
             "Your current candidate fails these known examples:\n" + "\n".join(new_fails[:10])
             if new_fails

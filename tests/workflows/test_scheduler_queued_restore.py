@@ -5,11 +5,16 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import threading
+from contextlib import AsyncExitStack
 
 import pytest
 
+from opencollab import OpenCollab
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.storage import SessionStore
 from opencollab.application.event_bus import EventBus
+from opencollab.application.ports import SnapshotSequenceConflict
 from opencollab.application.scheduler import Scheduler
 from opencollab.bootstrap import build_session, load_session
 from opencollab.domain.agent import Agent
@@ -115,6 +120,102 @@ async def test_shutdown_queued_turn_restore_claims_it_before_the_next_request(tm
         assert len(restored_provider.calls) == 2
     finally:
         await resumed.cleanup()
+
+
+@pytest.mark.parametrize("publication", ["before", "in-flight", "published"])
+async def test_cancelled_turn_admission_preserves_restored_export_order(tmp_path, monkeypatch, publication):
+    source, exported, working_path, backup, early_backup = (
+        str(tmp_path / f"{name}.json") for name in ("source", "export", "working", "backup", "early")
+    )
+    store = SessionStore()
+    options = {"agent": Agent(name="lead", system_prompt="Keep each accepted request."), "store": store}
+
+    async def settle(session):
+        while session.pending_cleanup_tasks:
+            await asyncio.gather(*session.pending_cleanup_tasks)
+
+    observed = asyncio.Event()
+
+    async def hold_admission(event):
+        if event.type == "user_message_appended":
+            observed.set()
+            await asyncio.Future()
+
+    async with AsyncExitStack() as resources:
+        environment = LocalEnvironment(str(tmp_path))
+        resources.push_async_callback(environment.cleanup)
+        original = build_session(**options, env=environment, llm=_Provider(), auto_save_path=source, aid=0)
+        resources.push_async_callback(original.aclose)
+        await original.add_user_message("Earlier accepted request.")
+        assert await original.run_loop() == "answer-1"
+        original.save(exported)
+
+        provider = _Provider()
+        working = load_session(
+            exported, **options, env=environment, llm=provider, auto_save_path=working_path,
+            event_sink=hold_admission if publication == "before" else None,
+        )
+        resources.push_async_callback(working.aclose)
+        if publication != "before":
+            working.event_bus.subscribe(hold_admission)
+        scheduler = Scheduler(session_factory=object(), worktree_pool=fake_worktree_pool(), event_sink=EventBus())
+        scheduler.register_lead(working)
+        resources.push_async_callback(scheduler.cleanup)
+
+        await original.add_user_message("Newer request on the source.")
+        await settle(original)
+        latest_source = OpenCollab.read_session_snapshot(source)
+
+        started, release = threading.Event(), threading.Event()
+        append = store.append_snapshot_delta
+
+        def hold_first_working_write(path, **kwargs):
+            if path == working_path and not started.is_set():
+                started.set()
+                assert release.wait(3)
+            return append(path, **kwargs)
+
+        if publication == "in-flight":
+            monkeypatch.setattr(store, "append_snapshot_delta", hold_first_working_write)
+
+        async def wait_for_rollback():
+            while working.state.pending_external_user_turn is not None:
+                await asyncio.sleep(0)
+
+        turn = asyncio.create_task(scheduler.run("Cancelled request on the copy."))
+        try:
+            await asyncio.wait_for(observed.wait(), 3)
+            if publication == "in-flight":
+                assert await asyncio.to_thread(started.wait, 3)
+            elif publication == "published":
+                await working.enqueue_auto_save()
+                provisional = OpenCollab.read_session_snapshot(working_path)
+                assert provisional["session_state"]["pending_external_user_turn"]["content"] == (
+                    "Cancelled request on the copy."
+                )
+            turn.cancel()
+            if publication == "in-flight":
+                await asyncio.wait_for(wait_for_rollback(), 3)
+                working.save(early_backup)
+                release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await turn
+        finally:
+            release.set()
+            if not turn.done():
+                turn.cancel()
+            await asyncio.gather(turn, return_exceptions=True)
+
+        await settle(working)
+        assert working.state.pending_external_user_turn is None
+        assert working.messages[-1]["content"] == "answer-1"
+        assert provider.calls == []
+        working.save(backup)
+        copies = (early_backup, backup) if publication == "in-flight" else (backup,)
+        for copy_path in copies:
+            with pytest.raises(SnapshotSequenceConflict):
+                load_session(copy_path, **options, env=environment, llm=_Provider(), auto_save_path=source)
+            assert OpenCollab.read_session_snapshot(source) == latest_source
 
 
 @pytest.mark.parametrize("restore_sender", [False, True])

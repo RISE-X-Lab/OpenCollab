@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import logging
@@ -22,6 +23,7 @@ from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.bootstrap import _workflow_runtime_session as workflow_session
 from opencollab.bootstrap.single2_prompt import SINGLE2_SYSTEM_PROMPT
 from opencollab.bootstrap.workflow_runtime import run_workflow
+from opencollab.builtin_workflows import duo
 from opencollab.builtin_workflows.duo import _dual_coder, _file_selection
 from opencollab.environments import DockerOptions, docker_isolation_provider
 from opencollab.sdk.result import RunError
@@ -513,3 +515,294 @@ async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monk
     assert calls == ["A", "B"]
     assert (repo / filename).read_text() == desired
     assert _git(repo, "diff", "--name-only").strip() == filename
+
+@pytest.mark.parametrize(("submission", "evidence", "budget"), [
+    ("task", "green", 20_000),
+    ("working_tree", "green", 20_000),
+    ("task", "red", 20_000),
+    ("task", "stale", 20_000),
+    ("task", "empty", 20_000),
+    ("task", "green", 20_050),
+    ("working_tree", "green", 20_050),
+    ("task", "red", 20_050),
+    ("task", "stale", 20_050),
+    ("task", "empty", 20_050),
+    ("task", "green", 22_000),
+])
+async def test_duo_delivers_current_verified_a_when_budget_refuses_b(
+    tmp_path, monkeypatch, submission, evidence, budget,
+):
+    simulate_candidate_sandbox(monkeypatch)
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    repo = _repository(tmp_path / "repo", both_pass=False)
+    if evidence == "empty":
+        (repo / "test_public.py").write_text(
+            "from source import value\n\ndef test_public():\n    assert value() == 1\n"
+        )
+        _git(repo, "add", "test_public.py")
+        _git(repo, "commit", "-qm", "Test the baseline")
+    command = f"{shlex.quote(sys.executable)} -m pytest -q -rA -p no:cacheprovider test_public.py"
+    initial_worktrees = _git(repo, "worktree", "list", "--porcelain")
+    preparing, finish_preparation = asyncio.Event(), asyncio.Event()
+    prepare_prompt = "Summarize the release notes."
+    calls = []
+
+    def request(messages):
+        prompt = next(row["content"] for row in messages if row["role"] == "user")
+        if prepare_prompt in prompt:
+            return "prepare", 0
+        role = "A" if "You are candidate A" in prompt else "B"
+        return role, sum(row["role"] == "tool" for row in messages)
+
+    class Model:
+        def estimate_request_tokens(self, messages, tools, **kwargs):
+            role, step = request(messages)
+            if role == "prepare":
+                return 80
+            if role == "B":
+                return 100
+            if step < 2:
+                return 3_800
+            if evidence == "stale" and step == 2:
+                return 500
+            # Account for the preparation and two tool requests, leaving 21 output tokens at 20,000.
+            return 11_639 if evidence == "stale" else 12_199
+
+        async def complete(self, messages, tools=None, *, max_output_tokens, **kwargs):
+            role, step = request(messages)
+            calls.append((role, step))
+            inputs = self.estimate_request_tokens(messages, tools)
+            if role == "prepare":
+                preparing.set()
+                await finish_preparation.wait()
+                return LLMResponse(content="Release notes prepared.", usage=Usage(inputs, 20))
+            if step == 0 or (role == "A" and evidence == "stale" and step == 2):
+                if role == "A" and evidence == "empty":
+                    response = _tool_response("file_read", {"path": "source.py"}, step)
+                else:
+                    value = 3 if role == "A" and step == 0 and evidence != "red" else 2
+                    response = _tool_response("file_write", {
+                        "path": "source.py", "mode": "create", "content": f"def value():\n    return {value}\n",
+                    }, step)
+                response.usage = Usage(inputs, 60 if step == 2 else 40)
+                return response
+            if step == 1:
+                response = _tool_response("bash", {"command": command}, step)
+                response.usage = Usage(inputs, 40)
+                return response
+            outputs = 21 if role == "A" else max_output_tokens
+            return LLMResponse(content="I ran the public test.", usage=Usage(inputs, outputs))
+
+    async def flow(ctx, args):
+        preparation = asyncio.create_task(ctx.agent_run(prepare_prompt, budget=12_000, tools=[]))
+
+        async def run_after_preparation():
+            finish_preparation.set()
+            assert (await preparation).output == "Release notes prepared."
+            return await duo(ctx, args)
+
+        try:
+            await asyncio.wait_for(preparing.wait(), 5)
+            assert ctx.tokens_remaining() == budget - 12_000
+            return (await ctx.parallel([run_after_preparation]))[0]
+        finally:
+            finish_preparation.set()
+            await preparation
+
+    artifacts = tmp_path / "artifacts"
+    result = await OpenCollab(repo, model="scripted-local-model", config={"max_output_tokens": 128}).workflow(
+        flow, {"goal": "Make value() return 3", "submission_mode": submission},
+        llm=Model(), budget=budget, max_steps=5, concurrency=2, timeout=20, trace=True,
+        artifacts=artifacts, limit_mode="explicit",
+    )
+    runs_b = budget >= 22_000
+    output = result.output
+    if evidence == "green":
+        assert result.status == "completed"
+        assert output["status"] == "done" and output["submission_mode"] == submission
+        assert output["adopted"] == output["winner"] == "A"
+        assert output["adoption_attempts"] == ["A"]
+        assert output["judge_used"] is False and output["judge_result"] is None
+        record, = output["candidates"]["A"]["public_test_records"]
+        assert record["verified"] is True and record["applicability"] == "current"
+        b = output["candidates"]["B"]
+        if runs_b:
+            assert output["selection_reason"] == "same-command-public-red"
+            assert "status" not in b
+            assert b["nonempty"] is True
+            assert b["public_test_records"][0]["exit_code"] == 1
+        else:
+            assert output["selection_reason"] == "candidate-b-budget-exhausted"
+            assert (b["status"], b["reason"], b["nonempty"]) == ("skipped", "budget_exceeded", False)
+            assert b["changed_paths"] == b["public_test_records"] == []
+            assert b["diff_bytes"] == 0 and b["public_command"] == ""
+    else:
+        assert (result.status, result.reason, output["status"]) == ("stopped", "budget_exceeded", "budget_exceeded")
+
+    assert any(role == "B" for role, _step in calls) is runs_b
+    assert _git(repo, "worktree", "list", "--porcelain") == initial_worktrees
+    source = (repo / "source.py").read_text()
+    assert source == ("def value():\n    return 3\n" if evidence == "green" else "def value():\n    return 1\n")
+    verified = subprocess.run(shlex.split(command), cwd=repo, capture_output=True, text=True)
+    assert verified.returncode == (0 if evidence in {"green", "empty"} else 1), verified.stdout + verified.stderr
+
+    manifest = json.loads((artifacts / "workflow.json").read_text())
+    assert manifest["evidence_complete"] is True
+    assert manifest["tokens_spent"] == result.tokens
+    if not runs_b:
+        assert result.tokens == 20_000
+    traces = [json.loads(line) for line in (artifacts / "orchestration.jsonl").read_text().splitlines()]
+    refusals = [row["payload"]["label"] for row in traces if row["type"] == "budget_refusal"]
+    assert refusals == (["dual-coder-contract-b"] if budget == 20_000 else [])
+    executed = [row["payload"]["result"] for row in traces if row["type"] == "tool_exec"
+                and row["payload"]["tool"] == "bash"]
+    assert [line.splitlines()[0] for line in executed] == (
+        ["Exit code: 0", "Exit code: 1"] if runs_b else [f"Exit code: {int(evidence == 'red')}"]
+    )
+
+
+async def test_duo_can_start_b_after_a_budget_refusal_and_reservation_release(tmp_path, monkeypatch):
+    simulate_candidate_sandbox(monkeypatch)
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    repo = _repository(tmp_path / "repo", both_pass=False)
+    command = f"{shlex.quote(sys.executable)} -m pytest -q -rA -p no:cacheprovider test_public.py"
+    initial_worktrees = _git(repo, "worktree", "list", "--porcelain")
+    preparing, release = asyncio.Event(), asyncio.Event()
+    prepare_prompt = "Prepare release notes."
+    calls = []
+
+    class Model:
+        def estimate_request_tokens(self, messages, tools, **kwargs):
+            return 100
+
+        async def complete(self, messages, tools=None, **kwargs):
+            prompt = next(row["content"] for row in messages if row["role"] == "user")
+            if prompt == prepare_prompt:
+                calls.append(("prepare", 0))
+                preparing.set()
+                await release.wait()
+                return LLMResponse(content="Notes completed.", usage=Usage(90, 10))
+            assert "You are candidate B" in prompt
+            step = sum(row["role"] == "tool" for row in messages)
+            calls.append(("B", step))
+            if step == 0:
+                response = _tool_response("file_write", {
+                    "path": "source.py", "mode": "create", "content": "def value():\n    return 3\n",
+                }, step)
+            elif step == 1:
+                response = _tool_response("bash", {"command": command}, step)
+            else:
+                response = LLMResponse(content="Verified three.", usage=Usage(90, 10))
+            response.usage = Usage(90, 10)
+            return response
+
+    async def flow(ctx, args):
+        preparation = asyncio.create_task(ctx.agent_run(prepare_prompt, tools=[], budget=19_950))
+        phase = ctx.phase
+
+        async def release_before_b(label):
+            await phase(label)
+            if label == "dual-coder-b":
+                release.set()
+                assert (await preparation).output == "Notes completed."
+                assert ctx.tokens_remaining() == 19_900
+
+        monkeypatch.setattr(ctx, "phase", release_before_b)
+        try:
+            await asyncio.wait_for(preparing.wait(), 5)
+            assert ctx.tokens_remaining() == 50
+            return await duo(ctx, args)
+        finally:
+            release.set()
+            await preparation
+
+    result = await OpenCollab(repo, model="scripted-local-model", config={"max_output_tokens": 128}).workflow(
+        flow, {"goal": "Make value() return 3"},
+        llm=Model(), budget=20_000, concurrency=2, max_steps=5, timeout=20,
+        trace=False, limit_mode="explicit",
+    )
+    assert result.ok and result.output["status"] == "done"
+    assert calls == [("prepare", 0), ("B", 0), ("B", 1), ("B", 2)]
+    assert result.tokens == 400
+    assert result.output["adopted"] == "B" and result.output["selection_reason"] == "only-b-nonempty"
+    assert result.output["candidates"]["B"]["public_test_records"][0]["verified"]
+    assert (repo / "source.py").read_text() == "def value():\n    return 3\n"
+    assert _git(repo, "worktree", "list", "--porcelain") == initial_worktrees
+
+
+async def test_duo_stops_when_verified_budget_fallback_cannot_be_adopted(tmp_path, monkeypatch):
+    simulate_candidate_sandbox(monkeypatch)
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    repo = _repository(tmp_path / "repo", both_pass=False)
+    package = repo / "catalog"
+    package.mkdir()
+    (package / "__init__.py").touch()
+    (repo / "test_public.py").write_text(
+        "def test_catalog_entry():\n"
+        "    from catalog.labels import entry\n"
+        "    assert entry() == 'ready'\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "Set up catalog")
+    worktrees_before = _git(repo, "worktree", "list", "--porcelain")
+    command = [sys.executable, "-B", "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider", "test_public.py"]
+    calls = []
+
+    class Model:
+        def estimate_request_tokens(self, messages, tools, **kwargs):
+            # The final reply uses the rest of the 20,000-token budget.
+            return (3_800, 3_800, 12_299)[sum(row["role"] == "tool" for row in messages)]
+
+        async def complete(self, messages, tools=None, **kwargs):
+            prompt = next(row["content"] for row in messages if row["role"] == "user")
+            assert "You are candidate A" in prompt
+            step = sum(row["role"] == "tool" for row in messages)
+            calls.append(step)
+            inputs = self.estimate_request_tokens(messages, tools)
+            if step == 0:
+                response = _tool_response("file_write", {
+                    "path": "catalog/labels.py", "mode": "create",
+                    "content": "def entry():\n    return 'ready'\n",
+                }, step)
+            elif step == 1:
+                response = _tool_response("bash", {"command": shlex.join(command)}, step)
+            else:
+                return LLMResponse(content="Catalog test passed.", usage=Usage(inputs, 21))
+            response.usage = Usage(inputs, 40)
+            return response
+
+    artifacts = tmp_path / "artifacts"
+    package.chmod(0o555)
+    try:
+        if os.access(package, os.W_OK):
+            pytest.skip("source directory remains writable with read-only permissions")
+        result = await OpenCollab(repo, model="scripted-local-model", config={"max_output_tokens": 128}).workflow(
+            "duo", {"goal": "Add the catalog entry 'ready'."},
+            llm=Model(), budget=20_000, max_steps=5, timeout=20, trace=True,
+            artifacts=artifacts, limit_mode="explicit",
+        )
+    finally:
+        package.chmod(0o755)
+
+    assert calls == [0, 1, 2]
+    traces = [json.loads(line) for line in (artifacts / "orchestration.jsonl").read_text().splitlines()]
+    test_results = [row["payload"]["result"] for row in traces if row["type"] == "tool_exec"
+                    and row["payload"]["tool"] == "bash"]
+    assert [line.splitlines()[0] for line in test_results] == ["Exit code: 0"]
+    assert any(row["type"] == "workflow_log" and "Duo adoption failed (A)" in row["payload"]["message"]
+               for row in traces)
+    assert not (package / "labels.py").exists()
+    failed_check = subprocess.run(command, cwd=repo, capture_output=True, text=True)
+    assert failed_check.returncode == 1 and "No module named 'catalog.labels'" in failed_check.stdout
+    assert _git(repo, "status", "--short") == ""
+    assert _git(repo, "worktree", "list", "--porcelain") == worktrees_before
+    assert (result.status, result.reason, result.tokens) == ("stopped", "budget_exceeded", 20_000)
+    assert result.output["status"] == "budget_exceeded"
+    manifest = json.loads((artifacts / "workflow.json").read_text())
+    assert (manifest["status"], manifest["reason"], manifest["tokens_spent"]) == (
+        "stopped", "budget_exceeded", 20_000,
+    )

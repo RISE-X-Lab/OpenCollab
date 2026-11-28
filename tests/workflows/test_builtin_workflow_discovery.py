@@ -78,7 +78,7 @@ def test_cli_runs_installed_workflow_and_forwards_agent_profile(tmp_path, monkey
 
     async def run(spec, args, **kwargs):
         captured.update(spec=spec, args=args, **kwargs)
-        return SimpleNamespace(output={"status": "done"}, stop_reason=None)
+        return SimpleNamespace(output=kwargs["format_output"]({"status": "done"}), stop_reason=None)
 
     monkeypatch.setattr(workflow_cli, "run_workflow", run)
     result = CliRunner().invoke(

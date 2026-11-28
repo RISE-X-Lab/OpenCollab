@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
+import os
 import threading
 import time
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from opencollab.adapters import safe_files
 from opencollab.adapters.storage import SessionStore
-from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber
+from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber, _run_save
 from opencollab.application.event_bus import EventBus
+from opencollab.application.ports import SnapshotCapacityError, SnapshotSequenceConflict
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import load_session
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
@@ -338,7 +344,19 @@ def test_event_bus_external_cancellation_still_propagates():
 
     assert seen == []
 
-def test_session_with_auto_save_path_writes_on_user_message(local_environment_factory, tmp_path):
+@pytest.mark.parametrize("delay_save_task", [False, True])
+def test_session_with_auto_save_path_writes_on_user_message(
+    local_environment_factory, tmp_path, monkeypatch, delay_save_task,
+):
+    if delay_save_task:
+        original = asyncio.to_thread
+
+        async def delayed_submission(function, *args, **kwargs):
+            if function is _run_save:
+                await asyncio.sleep(.05)
+            return await original(function, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", delayed_submission)
     path = tmp_path / "auto.jsonl"
     session = Session(
         env=local_environment_factory(),
@@ -425,6 +443,40 @@ def test_autosave_retries_journal_record_after_fsync_error(local_environment_fac
     assert restored._auto_save_sequence == before_restore["_autosave_sequence"]
     assert session.persistence_errors == (injected_error,)
     assert journal_path.read_bytes() == b""
+
+@pytest.mark.parametrize("error_type", [OSError, SnapshotCapacityError, SnapshotSequenceConflict])
+async def test_scheduled_checkpoint_failure_after_durable_append(
+    local_environment_factory, tmp_path, caplog, error_type,
+):
+    path = tmp_path / "scheduled.json"
+    error = error_type("scheduled checkpoint failed")
+    store = _SwitchableCheckpointStore(error)
+    store.fail_checkpoint = True
+    session = Session(
+        env=local_environment_factory(),
+        agent=FakeAgent(),
+        llm=_CompletingLLM(),
+        auto_save_path=str(path),
+        store=store,
+    )
+
+    await session.add_user_message("go")
+    await asyncio.gather(*session.pending_cleanup_tasks)
+
+    assert not path.exists()
+    saved = store.load_snapshot(str(path), session.agent.system_prompt)
+    assert saved["messages"][-1]["content"] == "go"
+    if error_type is SnapshotSequenceConflict:
+        assert session.persistence_errors == (error,)
+    else:
+        assert session.persistence_errors == ()
+        assert "session checkpoint deferred after durable autosave: scheduled checkpoint failed" in caplog.text
+
+    store.fail_checkpoint = False
+    await session.enqueue_auto_save()
+    assert json.loads(path.read_bytes())["_autosave_sequence"] == saved["_autosave_sequence"] + 1
+    assert path.with_suffix(".json.journal").read_bytes() == b""
+    assert await session.run_loop() == "done"
 
 @pytest.mark.parametrize(
     ("mode", "expected_phase"),
@@ -559,6 +611,70 @@ def test_terminal_checkpoint_failure_surfaces_without_primary_error(local_enviro
         assert session.persistence_errors == (checkpoint_error,)
 
     asyncio.run(scenario())
+
+@pytest.mark.parametrize("failure_stage", ["base_rename", "directory_sync", "journal_reset", "append_then_reset"])
+async def test_terminal_result_requires_a_durable_base_but_can_leave_covered_journal(
+    local_environment_factory, tmp_path, monkeypatch, caplog, failure_stage,
+):
+    path = tmp_path / "completed.json"
+    journal = path.with_suffix(".json.journal")
+    session = Session(
+        env=local_environment_factory(), agent=FakeAgent(), llm=_CompletingLLM(),
+        auto_save_path=str(path),
+    )
+    error = OSError(errno.EIO, f"checkpoint {failure_stage}")
+    append_error = OSError(errno.EIO, "terminal append")
+    append = session.store.append_snapshot_delta
+    save = session.save
+    replace_file = os.replace
+
+    def fail_rename(source, destination):
+        failing_path = path if failure_stage == "base_rename" else journal
+        if Path(destination) == failing_path:
+            raise error
+        return replace_file(source, destination)
+
+    def save_with_failure(target):
+        if failure_stage == "directory_sync":
+            with patch.object(safe_files, "_fsync_directory", side_effect=error):
+                save(target)
+        else:
+            with patch.object(os, "replace", fail_rename):
+                save(target)
+
+    def fail_terminal_append(*args, **kwargs):
+        if kwargs["meta"]["session_state"]["phase"] == "done":
+            raise append_error
+        return append(*args, **kwargs)
+
+    try:
+        await session.add_user_message("initial turn")
+        assert await session.run_loop() == "done"
+        if failure_stage == "append_then_reset":
+            monkeypatch.setattr(session.store, "append_snapshot_delta", fail_terminal_append)
+        monkeypatch.setattr(session, "save", save_with_failure)
+        await session.add_user_message("go")
+        if failure_stage == "journal_reset":
+            assert await session.run_loop() == "done"
+            base = json.loads(path.read_bytes())
+            assert base["session_state"]["phase"] == "done"
+            assert base["messages"][-1]["content"] == "done"
+            assert journal.stat().st_size > 0
+            assert session.persistence_errors == ()
+            assert "could not compact covered session journal" in caplog.text
+
+            with pytest.raises(OSError) as manual:
+                session.save(str(path))
+            assert manual.value is error
+        else:
+            with pytest.raises(OSError) as terminal:
+                await session.run_loop()
+            assert terminal.value is error
+            expected = (append_error, error) if failure_stage == "append_then_reset" else (error,)
+            assert session.persistence_errors == expected
+    finally:
+        await session.aclose()
+        await session.env.cleanup()
 
 def test_cancelling_terminal_checkpoint_waits_for_owned_write(local_environment_factory, tmp_path):
     class BlockingCheckpointStore(SessionStore):

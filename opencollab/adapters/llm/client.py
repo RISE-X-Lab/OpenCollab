@@ -358,11 +358,16 @@ class LLMClient:
 
         start = time.monotonic()
         response = None
+        caller_cancellation: asyncio.CancelledError | None = None
         provider_error: BaseException | None = None
         settlement_error: BaseException | None = None
         settled_usage = None
         first_attempt = True
         initial_limit: int | None = None
+
+        def retain_cancellation(cancellation: asyncio.CancelledError) -> None:
+            nonlocal caller_cancellation
+            caller_cancellation = cancellation
 
         def request_limit() -> int | None:
             limit = max_output_tokens
@@ -436,6 +441,8 @@ class LLMClient:
                             provider_error_time_budget=retry_budget,
                             before_attempt=prepare_attempt,
                             on_attempt_usage=on_attempt_usage,
+                            # Session owners capture late replies even after their caller stops.
+                            on_cancelled=retain_cancellation if usage_origin is None else None,
                         )
                     else:
                         response = await complete_openai(
@@ -460,7 +467,8 @@ class LLMClient:
                         )
                 except BaseException as exc:
                     provider_error = exc
-                    raise
+                    if caller_cancellation is None or not isinstance(exc, Exception):
+                        raise
                 finally:
                     outcome = response if response is not None else provider_error
                     settled_usage = getattr(outcome, "usage", None)
@@ -509,4 +517,7 @@ class LLMClient:
             finally:
                 if settlement_error is not None:
                     raise settlement_error
+        if caller_cancellation is not None:
+            caller_cancellation.usage = settled_usage
+            raise caller_cancellation from provider_error
         return response

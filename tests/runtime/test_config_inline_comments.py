@@ -10,7 +10,8 @@ from opencollab.bootstrap.config import load_dotenv
 
 @pytest.mark.parametrize("quote", ["", '"', "'"])
 @pytest.mark.parametrize("comment", ["", " # run setting", "\t# run setting"])
-def test_public_sdk_reads_commented_settings(tmp_path, monkeypatch, quote, comment):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_public_sdk_reads_commented_settings(tmp_path, monkeypatch, quote, comment, encoding):
     for name in tuple(os.environ):
         if name.startswith("OPENCOLLAB_") or name in {
             "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY",
@@ -23,7 +24,7 @@ def test_public_sdk_reads_commented_settings(tmp_path, monkeypatch, quote, comme
         f"OPENCOLLAB_TEMPERATURE={quote}0.7{quote}{comment}\n"
         f"OPENCOLLAB_THINKING={quote}true{quote}{comment}\n"
         f"OPENCOLLAB_MODEL={quote}gpt-4o{quote}{comment}\n",
-        encoding="utf-8",
+        encoding=encoding,
     )
 
     config = OpenCollab(tmp_path).configuration

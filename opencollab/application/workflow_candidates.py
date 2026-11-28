@@ -10,9 +10,12 @@ from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from typing import Any
 
+from opencollab.application._session_run_shared import _BUDGET_EXCEEDED_PREFIX, _REQUEST_BUDGET_REFUSAL_PREFIX
 from opencollab.application.async_timeout import CallerTimeoutError, await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
+from opencollab.application.session_lifecycle import _budget_replay_output_before
 from opencollab.application.workflow_budget import _BudgetLease
+from opencollab.domain.session import SessionPhase
 
 
 def _candidate_budget_total(budget: int | None, limit_mode: str = "environment") -> int | None:
@@ -62,12 +65,26 @@ class CandidateRun:
     delivery_diff: str | None = None
     delivery_paths: tuple[str, ...] = ()
     delivery_source_diff: str | None = None
+    initial_budget_refusal: str | None = None
 
     @property
     def effective_diff(self) -> str:
         if self.delivery_diff is None or self.delivery_source_diff != self.diff:
             return self.diff
         return self.delivery_diff
+
+def _initial_budget_refusal(session: Any) -> str | None:
+    state = getattr(session, "state", None)
+    reason = getattr(state, "terminal_reason", None)
+    if (
+        getattr(state, "phase", None) is SessionPhase.STOPPED
+        and getattr(state, "step_count", None) == 0
+        and getattr(state, "used_tokens", None) == 0
+        and isinstance(reason, str)
+        and reason.startswith((_BUDGET_EXCEEDED_PREFIX, _REQUEST_BUDGET_REFUSAL_PREFIX))
+    ):
+        return reason
+    return None
 
 class CandidateCaptureError(RuntimeError):
     """A candidate worktree survived but its diff could not be captured."""
@@ -140,6 +157,9 @@ class _CandidateWorkflowSessionFactory:
     @property
     def default_isolation(self):
         return getattr(self._factory, "default_isolation", "shared")
+
+    def resolve_tool_preset(self, name: str) -> Sequence[Any]:
+        return self._factory.resolve_tool_preset(name)
 
     async def acquire_environment(self, *, isolation, label=None, environment=None):
         owner = self._environment if environment is None else environment
@@ -258,20 +278,6 @@ def _candidate_verification_tools(tools: Sequence[Any]) -> list[Any]:
 class WorkflowCandidatesMixin:
     """Runs agent sessions in candidate leases and adopts a selected diff."""
 
-    async def _run_owned_candidate_call(
-        self, operation: Callable[[], Awaitable[CandidateRun]],
-    ) -> CandidateRun:
-        """Own acquisition, execution, capture, and cleanup as one call."""
-        current = asyncio.current_task()
-        already_owned = current in self._active_call_tasks
-        if current is not None:
-            self._active_call_tasks.add(current)
-        try:
-            return await operation()
-        finally:
-            if current is not None and not already_owned:
-                self._active_call_tasks.discard(current)
-
     async def _candidate_source_state(self) -> tuple[str | None, str, str | None]:
         read_revision = getattr(self._candidate_workspace, "source_revision", None)
         revision = await read_revision() if callable(read_revision) else None
@@ -379,15 +385,16 @@ class WorkflowCandidatesMixin:
                     env=lease.environment,
                 )
                 self._track_session(session)
+                deadline = self._timeout_deadline(timeout)
                 try:
                     output = await self._run_session_turn(
                         session,
                         prompt,
-                        deadline=self._timeout_deadline(timeout),
+                        deadline=deadline,
                         label=label,
                     )
                 except CallerTimeoutError:
-                    output = None
+                    output = _budget_replay_output_before(session, deadline)
                     await self.log(
                         f"candidate agent timed out ({label}) after {timeout}s"
                     )
@@ -440,6 +447,7 @@ class WorkflowCandidatesMixin:
                     delivery_diff=getattr(lease, "delivery_diff", None),
                     delivery_paths=getattr(lease, "delivery_paths", ()),
                     delivery_source_diff=diff if getattr(lease, "delivery_diff", None) is not None else None,
+                    initial_budget_refusal=_initial_budget_refusal(session),
                 )
             except BaseException as exc:
                 failure = exc
@@ -479,7 +487,8 @@ class WorkflowCandidatesMixin:
             finally:
                 self.budget.release(budget_lease)
 
-        return await self._run_owned_candidate_call(run)
+        with self._own_workflow_call():
+            return await run()
 
     async def candidate_workflow(
         self,
@@ -600,6 +609,10 @@ class WorkflowCandidatesMixin:
                 cleanup_quiesced = child is None
                 try:
                     if child is not None:
+                        async def finish_child() -> None:
+                            await child.wait_for_pending_cleanup()
+                            await child.release_isolated_workspaces()
+
                         try:
                             if isinstance(failure, asyncio.CancelledError):
                                 child._agent_run_environment_unsafe = True
@@ -607,8 +620,16 @@ class WorkflowCandidatesMixin:
                                 for active in tuple(child._active_call_tasks):
                                     if active is not current:
                                         active.cancel()
-                            await child.wait_for_pending_cleanup()
-                            await child.release_isolated_workspaces()
+                            cleanup = asyncio.create_task(finish_child())
+                            try:
+                                await await_owned_operation(cleanup, propagate_cancellation=True)
+                            except asyncio.CancelledError as exc:
+                                if failure is None:
+                                    failure = exc
+                                if cleanup.cancelled():
+                                    raise RuntimeError("candidate workflow cleanup was cancelled") from exc
+                                # Report cleanup failures through the normal retention path.
+                                cleanup.result()
                             cleanup_quiesced = True
                         except Exception as exc:
                             detail = f"{type(exc).__name__}: {exc}"
@@ -649,7 +670,8 @@ class WorkflowCandidatesMixin:
                 cleanup_quiesced=cleanup_quiesced,
             )
 
-        return await self._run_owned_candidate_call(run)
+        with self._own_workflow_call():
+            return await run()
 
     async def adopt_candidate(
         self,
@@ -662,24 +684,24 @@ class WorkflowCandidatesMixin:
             raise RuntimeError("candidate workspaces are not available")
         if not isinstance(candidate, CandidateRun):
             raise TypeError("candidate must be a CandidateRun")
-        read_revision = getattr(self._candidate_workspace, "source_revision", None)
-        if (
-            candidate.source_revision is not None
-            and callable(read_revision)
-            and await read_revision() != candidate.source_revision
-        ):
-            raise CandidateWorkspaceTrackingError(
-                f"source worktree changed before candidate adoption {candidate.label}"
-            )
-        self._raise_if_environment_revoked()
-        adopt_run = getattr(self._candidate_workspace, "adopt_run", None)
-        if callable(adopt_run):
-            # Full-environment backends must retain the chosen candidate's
-            # identity even when two candidates have identical file diffs.
-            operation = adopt_run(candidate, preserve_paths)
-        else:
-            operation = self._candidate_workspace.adopt(candidate.diff, preserve_paths)
-        await await_owned_operation(operation, propagate_cancellation=True)
+        with self._own_workflow_call():
+            read_revision = getattr(self._candidate_workspace, "source_revision", None)
+            if (
+                candidate.source_revision is not None
+                and callable(read_revision)
+                and await read_revision() != candidate.source_revision
+            ):
+                raise CandidateWorkspaceTrackingError(
+                    f"source worktree changed before candidate adoption {candidate.label}"
+                )
+            self._raise_if_environment_revoked()
+            adopt_run = getattr(self._candidate_workspace, "adopt_run", None)
+            if callable(adopt_run):
+                # Full-environment backends need the chosen identity even for identical diffs.
+                operation = adopt_run(candidate, preserve_paths)
+            else:
+                operation = self._candidate_workspace.adopt(candidate.diff, preserve_paths)
+            await await_owned_operation(operation, propagate_cancellation=True)
 
 __all__ = [
     "CandidateCaptureError",

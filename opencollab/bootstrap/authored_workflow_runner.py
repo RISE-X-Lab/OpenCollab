@@ -92,6 +92,7 @@ async def _run(request: dict[str, Any]) -> dict[str, Any]:
             raise TypeError("workflow entry must be callable")
         environment = LocalEnvironment(str(workspace))
         environment.process_isolated = request["process_isolated"]
+        environment_deferred = False
         try:
             return await run_workflow(
                 flow, request["args"], cfg=request["config"], workspace=str(workspace),
@@ -105,8 +106,13 @@ async def _run(request: dict[str, Any]) -> dict[str, Any]:
                                               for name in request["bridge"]["strategies"]}}
                    if bridge is not None else {}),
             )
+        except BaseException as failure:
+            result = getattr(failure, "runtime_result", None)
+            environment_deferred = getattr(result, "environment_cleanup_deferred", False)
+            raise
         finally:
-            await environment.cleanup()
+            if not environment_deferred:
+                await environment.cleanup()
 
     owner = asyncio.create_task(execute())
     loop = asyncio.get_running_loop()

@@ -35,7 +35,7 @@ from contextlib import ExitStack
 from copy import deepcopy
 from typing import Any
 
-from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _RequestBudgetRecovery
 from opencollab.application.async_timeout import (
     CallerTimeoutError,
 )
@@ -51,6 +51,8 @@ from opencollab.application.ports import (
     WorkflowSessionFactoryPort,
     WorkingTreeProbe,
 )
+from opencollab.application.provider_failure import provider_http_failure_metadata
+from opencollab.application.session_lifecycle import _budget_replay_output_before
 from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE as DEFAULT_COMMIT_RESERVE
 from opencollab.application.session_run import ENFORCEMENT_OFF
 from opencollab.application.structured_output import TOOL_NAME as STRUCTURED_OUTPUT_TOOL_NAME
@@ -74,6 +76,7 @@ from opencollab.application.workflow_collections import (
 )
 from opencollab.application.workflow_collections import (
     WorkflowCollectionsMixin,
+    _CollectionBudget,
     _TaskConcurrencyPermit,
 )
 from opencollab.application.workflow_collections import (
@@ -204,7 +207,7 @@ class WorkflowContext(
         self._active_budget_lease: contextvars.ContextVar[_BudgetLease | None] = (
             contextvars.ContextVar("workflow_budget_lease", default=None)
         )
-        self._active_collection_budget: contextvars.ContextVar[int | None] = (
+        self._active_collection_budget: contextvars.ContextVar[_CollectionBudget | None] = (
             contextvars.ContextVar("workflow_collection_budget", default=None)
         )
         self._active_concurrency_permit: contextvars.ContextVar[
@@ -214,9 +217,11 @@ class WorkflowContext(
             _TaskConcurrencyPermit | None
         ] = contextvars.ContextVar("workflow_task_concurrency_permit", default=None)
         self._pending_cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self._workspace_release_lock = asyncio.Lock()
         self._workflow_imports: ExitStack | None = None
         self._active_call_tasks: set[asyncio.Task[Any]] = set()
         self._active_session_tasks: set[asyncio.Task[Any]] = set()
+        self._environment_acquisitions: set[asyncio.Future[Any]] = set()
         self._agent_failures: list[dict[str, Any]] = []
         self._trace_failures: list[dict[str, str]] = []
         self._tree_probe = tree_probe
@@ -239,7 +244,8 @@ class WorkflowContext(
             raise TypeError("tool must satisfy the verification tool contract")
         if not isinstance(params, Mapping):
             raise TypeError("verification params must be a mapping")
-        return await self._factory.execute_verification(tool, dict(params))
+        with self._own_workflow_call():
+            return await self._factory.execute_verification(tool, dict(params))
 
     async def tree_changed(self) -> bool | None:
         """Whether the working tree has uncommitted changes.
@@ -340,8 +346,9 @@ class WorkflowContext(
         *,
         label: str | None,
         budget: int | None,
-        tools: Sequence[Any] | None = None,
+        tools: str | Sequence[Any] | None = None,
         isolation: bool | str | None = None,
+        startup_deadline: float | None = None,
         **kwargs: Any,
     ) -> Any:
         """Build one one-shot session and record that this agent existed.
@@ -365,12 +372,20 @@ class WorkflowContext(
         explicit_strategy = isinstance(isolation, str) or default_isolation != "shared"
         strategy = isolation_name(isolation, default=default_isolation)
         acquire = getattr(self._factory, "acquire_environment", None)
-        if callable(acquire):
-            env = await acquire(isolation=strategy, label=label)
-        elif strategy in {"shared", "worktree"}:
-            env = await self._factory.acquire_isolated_env(label=label) if strategy == "worktree" else None
+        if strategy == "shared":
+            env = await acquire(isolation=strategy, label=label) if callable(acquire) else None
         else:
-            raise ValueError(f"session factory does not support isolation strategy {strategy!r}")
+            remaining = self._remaining_timeout(startup_deadline)
+            if callable(acquire):
+                acquisition = acquire(isolation=strategy, label=label)
+            elif strategy == "worktree":
+                acquisition = self._factory.acquire_isolated_env(label=label)
+            else:
+                raise ValueError(f"session factory does not support isolation strategy {strategy!r}")
+            owner = asyncio.ensure_future(acquisition)
+            self._environment_acquisitions.add(owner)
+            owner.add_done_callback(self._environment_acquisitions.discard)
+            env = await self._run_with_timeout(owner, remaining)
         isolation = strategy != "shared"
         session = self._factory.build_workflow_session(
             label=label,
@@ -381,6 +396,8 @@ class WorkflowContext(
             **kwargs,
         )
         state = getattr(session, "state", None)
+        if isinstance(tools, str):
+            tools = getattr(getattr(session, "agent", None), "tools", ())
         self._trace_step(
             "workflow_agent_started",
             {
@@ -401,6 +418,11 @@ class WorkflowContext(
         )
         return session
 
+    def _tools_for_capture(self, tools: str | Sequence[Any] | None) -> Sequence[Any]:
+        if isinstance(tools, str):
+            return self._factory.resolve_tool_preset(tools)
+        return tools or ()
+
     async def release_isolated_workspaces(self) -> None:
         """Give back every workspace the factory lent to an isolated agent.
 
@@ -411,24 +433,13 @@ class WorkflowContext(
         """
         release = getattr(self._factory, "release_isolated_envs", None)
         if callable(release):
-            await release()
+            async with self._workspace_release_lock:
+                await release()
 
     def _record_agent_failure(self, label: str | None, exc: Exception) -> None:
-        status_code = getattr(exc, "status_code", None)
-        if isinstance(status_code, bool) or not isinstance(status_code, int):
-            response = getattr(exc, "response", None)
-            status_code = getattr(response, "status_code", None)
-        if isinstance(status_code, bool) or not isinstance(status_code, int):
-            status_code = None
-        body = getattr(exc, "body", None)
-        error = body.get("error") if isinstance(body, dict) else None
-        if not isinstance(error, dict):
-            error = body if isinstance(body, dict) else {}
-        error_type = "content_filter" if self._agent_failure_filtered(exc) else error.get("type")
-        if not isinstance(error_type, str) or not error_type or len(error_type) > 128:
-            error_type = None
-        elif any(not (char.isalnum() or char in "._-") for char in error_type):
-            error_type = None
+        status_code, error_type = provider_http_failure_metadata(exc)
+        if self._agent_failure_filtered(exc):
+            error_type = "content_filter"
         record = {
             "label": str(label or "agent")[:240],
             "exception_type": type(exc).__name__[:128],
@@ -523,7 +534,7 @@ class WorkflowContext(
         *,
         schema: dict[str, Any] | None = None,
         label: str | None = None,
-        tools: Sequence[Any] | None = None,
+        tools: str | Sequence[Any] | None = None,
         isolation: bool | str | None = None,
         tool_choice: Any = None,
         thinking: bool | None = None,
@@ -540,6 +551,8 @@ class WorkflowContext(
         None shares the available pool. An exhausted pool raises WorkflowBudgetExceeded
         before session creation unless ``over_budget_ok`` permits the call.
 
+        ``tools`` accepts a preset name or a sequence of tools. Structured output
+        and enforcement add their capture tool to that selection.
         ``schema`` requires structured_output and returns its validated dictionary.
         An unsatisfied capture gets one corrective retry carrying gathered history.
         ``tool_choice`` applies to free-text sessions. Schema sessions instead explore
@@ -655,7 +668,7 @@ class WorkflowContext(
         prompt: str,
         *,
         label: str | None,
-        tools: Sequence[Any] | None,
+        tools: str | Sequence[Any] | None,
         isolation: bool | str | None,
         tool_choice: Any = None,
         thinking: bool | None = None,
@@ -673,7 +686,11 @@ class WorkflowContext(
                 label=label,
                 tool_choice=tool_choice,
                 thinking=thinking,
+                startup_deadline=deadline,
             )
+        except CallerTimeoutError:
+            await self.log(f"agent timed out during workspace setup ({label or 'agent'})")
+            return None
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"agent build failed ({label or 'agent'}): {exc}")
@@ -691,7 +708,7 @@ class WorkflowContext(
             return await self._run_session_turn(session, prompt, deadline=deadline, label=label)
         except CallerTimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
-            return None
+            return _budget_replay_output_before(session, deadline)
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"agent failed ({label or 'agent'}): {exc}")
@@ -735,15 +752,30 @@ class WorkflowContext(
             timeout = min(timeout, remaining)
         return time.monotonic() + timeout
 
-    def _track_session(self, session: Any) -> None:
+    def _track_session(self, session: Any, *, continue_budget: bool = False) -> None:
         self.budget._track_session(session)
         lease = self._active_budget_lease.get()
         if lease is not None:
+            previous_spend = lease.spent()
             lease.sessions.append(session)
             runner = getattr(session, "runner", None)
             if lease.reserved and runner is not None:
                 # Other leases keep their allocation when a sibling overspends.
                 runner.budget_reservations.append(lambda: max(0, -int(self.budget.remaining())))
+                if (
+                    (lease.recovery_limit is not None or self.budget._parent_allocation is not None)
+                    and (len(lease.sessions) == 1 or continue_budget)
+                    and lease.total is not None
+                    and previous_spend <= lease.total
+                    and getattr(runner, "hard_budget_tokens", None) == lease.total - previous_spend
+                    and hasattr(runner, "_request_budget_recovery")
+                ):
+                    runner._request_budget_recovery = _RequestBudgetRecovery(
+                        available=lambda: self.budget._recovery_room(lease),
+                        claim=lambda minimum, preferred: self.budget._claim_recovered_budget(
+                            lease, minimum, preferred, previous_spend=previous_spend,
+                        ),
+                    )
 
     def _active_call_has_pending_cleanup(self) -> bool:
         lease = self._active_budget_lease.get()

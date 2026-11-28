@@ -11,6 +11,7 @@ import re
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from opencollab.adapters.cli import workflow as workflow_cli
@@ -52,7 +53,7 @@ def test_workflow_run_prints_result_as_json(tmp_path, monkeypatch):
         captured["spec_or_fn"] = spec_or_fn
         captured["args"] = args
         captured["kwargs"] = kwargs
-        return SimpleNamespace(output=await spec_or_fn.fn(object(), args), stop_reason=None)
+        return SimpleNamespace(output=kwargs["format_output"](await spec_or_fn.fn(object(), args)), stop_reason=None)
 
     monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
 
@@ -128,7 +129,9 @@ def test_workflow_run_prints_event_and_result_markup_literally(monkeypatch):
         await kwargs["event_sink"].emit(
             SimpleNamespace(kind="log", message="[x] [link=unterminated")
         )
-        return SimpleNamespace(output={"values": ["[bold]literal[/bold]", "[x]"]}, stop_reason=None)
+        return SimpleNamespace(
+            output=kwargs["format_output"]({"values": ["[bold]literal[/bold]", "[x]"]}), stop_reason=None,
+        )
 
     monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
 
@@ -189,7 +192,7 @@ def test_workflow_run_default_budget_raised_to_1m(monkeypatch):
     async def fake_run_workflow(spec_or_fn, args, *, cfg, budget=None, **kwargs):
         captured["cfg_budget"] = cfg["budget"]
         captured["budget_arg"] = budget
-        return SimpleNamespace(output=await spec_or_fn.fn(object(), args), stop_reason=None)
+        return SimpleNamespace(output=kwargs["format_output"](await spec_or_fn.fn(object(), args)), stop_reason=None)
 
     monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
 
@@ -217,7 +220,7 @@ def test_workflow_run_explicit_budget_not_raised(monkeypatch):
     async def fake_run_workflow(spec_or_fn, args, *, cfg, budget=None, **kwargs):
         captured["cfg_budget"] = cfg["budget"]
         captured["budget_arg"] = budget
-        return SimpleNamespace(output=await spec_or_fn.fn(object(), args), stop_reason=None)
+        return SimpleNamespace(output=kwargs["format_output"](await spec_or_fn.fn(object(), args)), stop_reason=None)
 
     monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
 
@@ -235,12 +238,44 @@ def test_workflow_run_unknown_name_exits_nonzero(monkeypatch):
 
     assert result.exit_code != 0
 
-def test_workflow_run_invalid_json_args_exits_nonzero(monkeypatch):
+@pytest.mark.parametrize("args", ["{not-json", '{"samples":[NaN]}', '{"samples":[1e309]}'])
+def test_workflow_run_invalid_json_args_exits_nonzero(monkeypatch, args):
     monkeypatch.setattr(workflow_cli, "load_registry", lambda _workspace=".": _stub_registry())
 
-    result = runner.invoke(workflow_cli.app, ["run", "alpha", "--args", "{not-json"])
+    result = runner.invoke(workflow_cli.app, ["run", "alpha", "--args", args])
 
-    assert result.exit_code != 0
+    assert result.exit_code == 1
+    assert "Invalid --args JSON" in result.output
+
+@pytest.mark.parametrize("save", [False, True], ids=["no-save", "save"])
+def test_workflow_run_reports_nonfinite_output(tmp_path, monkeypatch, save):
+    completed = tmp_path / "completed.txt"
+
+    @workflow(name="report", description="returns a measurement")
+    async def report(_ctx, _args):
+        completed.write_text("finished")
+        return {"samples": [float("nan")]}
+
+    registry = Registry()
+    registry.register(report.__workflow_spec__)
+    monkeypatch.setattr(workflow_cli, "load_registry", lambda _workspace=".": registry)
+    monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *a, **k: False)
+
+    result = runner.invoke(workflow_cli.app, [
+        "run", "report", "--workspace", str(tmp_path), "--save" if save else "--no-save", "--no-trace",
+    ])
+
+    assert completed.read_text() == "finished"
+    assert result.exit_code == 1
+    assert "Could not serialize workflow result as JSON" in result.stderr
+    assert '"samples"' not in result.stdout
+    manifests = list((tmp_path / ".opencollab/sessions").glob("*/workflow.json"))
+    assert len(manifests) == int(save)
+    if save:
+        manifest = json.loads(manifests[0].read_text())
+        assert manifest["status"] == "failed"
+        assert manifest["reason"] == "output_format_failed"
+        assert manifest["evidence_complete"] is True
 
 def _last_json_block(text: str) -> str:
     """Extract the trailing JSON object/array printed by the run command.

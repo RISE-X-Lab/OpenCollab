@@ -179,7 +179,8 @@ class Scheduler(
         # cancelling a child turn must never terminalize the Lead by default.
         self._active_run_tasks: dict[asyncio.Task[Any], int] = {}
         # An inbox follow-up can replace the addressed session's terminal state.
-        self._completed_public_turn_answers: dict[int, str] = {}
+        # None leaves transcript lookup available. An empty string records an answerless checkpoint failure.
+        self._completed_public_turn_answers: dict[int, str | None] = {}
         self._lead_session: Any | None = None
         # child aid -> (parent aid, tool_call_id) for deferred spawns: lets a
         # child's completion fill the exact pending row that suspended its
@@ -238,6 +239,11 @@ class Scheduler(
         self._manifest_subscriber: AutoSaveSubscriber | None = None
         self._shutting_down = False
         self._cleanup_task: asyncio.Task[None] | None = None
+        self._pending_shutdown_tasks: set[asyncio.Future[object]] = set()
+        self._deferred_turn_cleanup: asyncio.Task[None] | None = None
+        self._session_close_task: asyncio.Task[bool] | None = None
+        self._worktree_release_task: asyncio.Task[None] | None = None
+        self._deferred_worktree_release: asyncio.Task[None] | None = None
         self._fallback_autosavers: dict[int, AutoSaveSubscriber] = {}
         self._scheduler_persistence_errors: list[Exception] = []
         # Bootstrap-owned resources whose process/persistence state must be

@@ -9,7 +9,7 @@ import pytest
 
 from opencollab import OpenCollab, RunControl, RunError
 from opencollab.adapters.storage import SessionStore
-from opencollab.bootstrap import agent_runtime, build_session, container
+from opencollab.bootstrap import agent_runtime, build_session, container, load_session
 from opencollab.domain.agent import Agent
 from tests.support.environment_test_support import local_environment_factory as local_environment_factory
 from tests.support.session_characterization_test_support import (
@@ -126,6 +126,7 @@ async def test_late_provider_usage_keeps_receiver_through_new_subscriber_work(
     started, release = asyncio.Event(), asyncio.Event()
     save_started, save_release = threading.Event(), threading.Event()
     events = []
+    resumed = []
     path = tmp_path / "session.json"
 
     class LateModel(Model):
@@ -138,9 +139,17 @@ async def test_late_provider_usage_keeps_receiver_through_new_subscriber_work(
                     continue
             return llm_response(content="late answer", input_tokens=13, output_tokens=24)
 
+    def observe(event):
+        events.append(event)
+        if event.type == "cleanup_completed":
+            resumed.append(load_session(
+                str(path), agent=session.agent, env=session.env, llm=Model(),
+                auto_save_path=str(path),
+            ))
+
     session = build_session(
         env=local_environment_factory(), agent=Agent(name="late-provider", system_prompt="sys"), llm=LateModel(),
-        auto_save_path=str(path), run_control=RunControl(on_event=events.append),
+        auto_save_path=str(path), run_control=RunControl(on_event=observe),
     )
     await session.add_user_message("finish")
     owner = asyncio.create_task(session.run_loop())
@@ -188,4 +197,7 @@ async def test_late_provider_usage_keeps_receiver_through_new_subscriber_work(
     snapshot = SessionStore().load_snapshot(str(path), session.agent.system_prompt)
     assert snapshot["session_state"]["used_tokens"] == 37
     assert events[-1].type == "cleanup_completed"
+    recovered, = resumed
+    assert recovered.used_tokens == 37
+    await recovered.aclose()
     assert len([event for event in events if event.type == "cleanup_completed"]) == 1

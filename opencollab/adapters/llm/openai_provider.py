@@ -17,6 +17,7 @@ from opencollab.adapters.llm._chat_stream import (
     _create_and_consume_chat_stream,
     _stream_state_to_response,
 )
+from opencollab.adapters.llm.errors import StreamedUsageUnavailableError, TransientProviderError
 from opencollab.adapters.llm.first_token import (
     NOT_STREAMED,
     begin_attempt,
@@ -276,9 +277,12 @@ async def complete_openai(
             state = await _create_and_consume_chat_stream(
                 client, kwargs, first_event_timeout, stream_idle_timeout
             )
-            return _stream_state_to_response(
-                state, kwargs["messages"], kwargs.get("tools")
-            )
+            try:
+                return _stream_state_to_response(state, kwargs["messages"], kwargs.get("tools"))
+            except (StreamedUsageUnavailableError, TransientProviderError) as exc:
+                if state.close_error is not None:
+                    raise state.close_error from exc
+                raise
         except BaseException as exc:
             usage = (
                 _reported_chat_usage(state.usage_object) if state is not None

@@ -3,9 +3,10 @@ from __future__ import annotations
 import errno
 import fcntl
 import json
+import logging
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO
@@ -20,7 +21,12 @@ from opencollab.adapters.safe_files import (
     write_regular_bytes_atomic,
     write_regular_file_atomic,
 )
-from opencollab.application.ports import SnapshotCapacityError, SnapshotSequenceConflict
+from opencollab.application.ports import (
+    _AUTOSAVE_EXPORT_SOURCE_SEQUENCE,
+    SnapshotCapacityError,
+    SnapshotSequenceConflict,
+    _checkpoint_publication,
+)
 from opencollab.application.session_snapshot import decode_anthropic_history
 from opencollab.domain.session import same_snapshot_value
 
@@ -30,7 +36,35 @@ _AUTOSAVE_SEQUENCE_KEY = "_autosave_sequence"
 _AUTOSAVE_JOURNAL_VERSION = 1
 _AUTOSAVE_JOURNAL_SUFFIX = ".journal"
 _AUTOSAVE_JOURNAL_LOCK_SUFFIX = ".lock"
+_AUTOSAVE_OWNERSHIP_LOCK_SUFFIX = ".autosave.lock"
 _JOURNAL_LOCK_TIMEOUT_SECONDS = 10.0
+logger = logging.getLogger(__name__)
+
+_FileRevision = tuple[int, int, int, int, int]
+_AutosaveFileRevisions = tuple[_FileRevision | None, _FileRevision | None]
+
+
+@dataclass(frozen=True)
+class _AutosaveCursor:
+    path: str
+    revisions: _AutosaveFileRevisions
+    sequence: int
+
+
+def _file_revision(info: os.stat_result) -> _FileRevision:
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _regular_file_revision(path: str) -> _FileRevision | None:
+    try:
+        fd = _open_regular_read(path)
+    except FileNotFoundError:
+        return None
+    try:
+        return _file_revision(os.fstat(fd))
+    finally:
+        os.close(fd)
+
 
 @dataclass
 class _JournalLockEntry:
@@ -145,6 +179,58 @@ class _BoundedUTF8Writer:
 
 class SessionStore:
     allowed_roles = {"system", "developer", "user", "assistant", "tool"}
+    _autosave_cursor: _AutosaveCursor | None = None
+
+    def try_autosave_lock(
+        self, path: str, *, expected_sequence: int | None = None,
+    ) -> Callable[[], None] | None:
+        # Keep the sidecar inode stable while snapshots and journals are replaced.
+        lock_path = f"{path}{_AUTOSAVE_OWNERSHIP_LOCK_SUFFIX}"
+        handle = open_regular_text_append(lock_path)
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BaseException as exc:
+            handle.close()
+            if isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                return None
+            raise
+        try:
+            if expected_sequence is not None:
+                with _journal_operation_lock(path):
+                    sequence = self._autosave_sequence_for_ownership(path)
+                    if sequence > expected_sequence:
+                        raise SnapshotSequenceConflict(
+                            f"refusing stale autosave sequence {expected_sequence}; "
+                            f"persisted sequence {sequence} is newer"
+                        )
+        except BaseException:
+            handle.close()
+            raise
+        return handle.close
+
+    def _autosave_file_revisions(self, path: str) -> _AutosaveFileRevisions:
+        return _regular_file_revision(path), _regular_file_revision(self._journal_path(path))
+
+    def _autosave_sequence_for_ownership(self, path: str) -> int:
+        cursor = self._autosave_cursor
+        if cursor is not None and cursor.path == os.path.abspath(path):
+            try:
+                if cursor.revisions == self._autosave_file_revisions(path):
+                    return cursor.sequence
+            except OSError:
+                pass
+        sequence = self._newest_persisted_sequence(path)
+        self._remember_autosave_cursor(path, sequence)
+        return sequence
+
+    def _remember_autosave_cursor(self, path: str, sequence: int) -> None:
+        # The caller holds the journal lock across the read or publication.
+        try:
+            key = os.path.abspath(path)
+            revisions = self._autosave_file_revisions(path)
+        except OSError:
+            return
+        self._autosave_cursor = _AutosaveCursor(key, revisions, sequence)
 
     def has_snapshot(self, path: str) -> bool:
         """Return whether a base or recoverable journal sidecar is present."""
@@ -161,11 +247,21 @@ class SessionStore:
         obj = {**(meta or {}), "messages": messages}
         with _journal_operation_lock(path):
             records = self._read_journal_records(path)
+            destination_sequence = None
             if records:
-                # A full replacement supersedes every durable delta. Publish
-                # its cursor with the base before clearing the sidecar, so a
-                # crash between these writes cannot replay an older state.
-                obj[_AUTOSAVE_SEQUENCE_KEY] = self._newest_persisted_sequence(path) + 1
+                destination_sequence = self._newest_persisted_sequence(path)
+            elif _AUTOSAVE_SEQUENCE_KEY in obj:
+                try:
+                    destination_sequence = self._persisted_base_sequence(path)
+                except ValueError:
+                    # An explicit export may replace a non-snapshot file.
+                    destination_sequence = None
+            if destination_sequence is not None:
+                # An export supersedes the destination even after journal compaction.
+                source_sequence = self._snapshot_sequence(obj)
+                if destination_sequence >= source_sequence and _AUTOSAVE_SEQUENCE_KEY in obj:
+                    obj.setdefault(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE, source_sequence)
+                obj[_AUTOSAVE_SEQUENCE_KEY] = max(source_sequence, destination_sequence + 1)
             self._atomic_json_write(path, obj)
             if records:
                 write_regular_bytes_atomic(self._journal_path(path), b"", max_bytes=0)
@@ -181,12 +277,17 @@ class SessionStore:
         # observe the old base together with the already-compacted journal (or
         # vice versa).
         with _journal_operation_lock(path, reading=True) as journal_locked:
-            return self._load_snapshot_unlocked(
+            snapshot = self._load_snapshot_unlocked(
                 path, system_prompt, read_journal=journal_locked,
             )
+            if journal_locked:
+                self._remember_autosave_cursor(path, self._snapshot_sequence(snapshot))
+            return snapshot
 
     def _load_snapshot_unlocked(
-        self, path: str, fallback_system_prompt: str | None, *, read_journal: bool = True,
+        self, path: str, fallback_system_prompt: str | None, *,
+        read_journal: bool = True,
+        pending_record: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Load a locked snapshot or a standalone read-only export."""
         try:
@@ -194,6 +295,8 @@ class SessionStore:
         except FileNotFoundError:
             text = None
         records = self._read_journal_records(path) if read_journal else []
+        if pending_record is not None:
+            records.append(pending_record)
         if text is None and not records:
             raise FileNotFoundError(path)
 
@@ -221,11 +324,23 @@ class SessionStore:
         sequence = self._snapshot_sequence(snapshot)
         for record in records:
             record_sequence = self._record_integer(record, "sequence", minimum=1)
+            retry_snapshot = None
             if record_sequence <= sequence:
-                continue
+                if record is not pending_record:
+                    continue
+                if record_sequence < sequence:
+                    raise SnapshotSequenceConflict(
+                        f"refusing stale autosave sequence {record_sequence}; "
+                        f"persisted sequence is {sequence}"
+                    )
+                retry_snapshot = {**snapshot, "messages": messages}
             replace_from = self._record_integer(record, "replace_from", minimum=0)
             message_count = self._record_integer(record, "message_count", minimum=0)
             if replace_from > len(messages):
+                if retry_snapshot is not None:
+                    raise SnapshotSequenceConflict(
+                        f"refusing conflicting autosave sequence {record_sequence}"
+                    )
                 raise ValueError(
                     "Invalid autosave journal: replace_from exceeds restored messages"
                 )
@@ -277,6 +392,12 @@ class SessionStore:
                 **restored_meta,
                 _AUTOSAVE_SEQUENCE_KEY: record_sequence,
             }
+            if retry_snapshot is not None and not self._checkpoint_states_equal(
+                retry_snapshot, {**snapshot, "messages": messages},
+            ):
+                raise SnapshotSequenceConflict(
+                    f"refusing conflicting autosave sequence {record_sequence}"
+                )
             sequence = record_sequence
 
         self._validate_messages(messages)
@@ -426,13 +547,27 @@ class SessionStore:
                 )
 
     def _parse_document(self, text: str) -> dict[str, Any] | list[dict[str, Any]]:
-        if not text.strip():
+        document = text.strip()
+        if not document:
             return []
         try:
             obj = json.loads(text)
         except json.JSONDecodeError:
             return self._parse_jsonl(text)
         if isinstance(obj, dict):
+            # A single JSONL message also parses as one JSON object.
+            snapshot_fields = {
+                "messages", "snapshot_version", "session_state", "pending_messages",
+                "aid", "run_id", "model", _AUTOSAVE_SEQUENCE_KEY, _AUTOSAVE_EXPORT_SOURCE_SEQUENCE,
+            }
+            role = obj.get("role")
+            if (
+                "\n" not in document
+                and isinstance(role, str) and role in self.allowed_roles
+                and ("content" in obj or (role == "assistant" and "tool_calls" in obj))
+                and obj.keys().isdisjoint(snapshot_fields)
+            ):
+                return [obj]
             return obj
         if isinstance(obj, list):
             return obj
@@ -601,21 +736,43 @@ class SessionStore:
             if persisted_sequence == sequence > 0:
                 # A peer can own this sequence in either the base or the journal.
                 persisted = self._load_snapshot_unlocked(path, "")
+                source_sequence = obj.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE)
+                if (
+                    _AUTOSAVE_EXPORT_SOURCE_SEQUENCE not in persisted
+                    and type(source_sequence) is int
+                    and source_sequence == sequence - 1
+                ):
+                    # Older restores left this provenance implicit in their local cursor.
+                    persisted[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = source_sequence
                 if not self._checkpoint_states_equal(persisted, obj):
                     source = "journal" if same_sequence_records else "snapshot"
                     raise SnapshotSequenceConflict(
                         "refusing checkpoint sequence "
                         f"{sequence}; it conflicts with persisted {source} state"
                     )
-            try:
-                self._atomic_json_write(path, obj)
-            except SnapshotCapacityError:
-                self._atomic_json_write(path, obj, indent=None)
-            write_regular_bytes_atomic(
-                self._journal_path(path),
-                b"",
-                max_bytes=0,
-            )
+            self._publish_checkpoint_unlocked(path, obj)
+
+    def _publish_checkpoint_unlocked(
+        self, path: str, snapshot: dict[str, Any], *, defer_journal_reset: bool = False,
+    ) -> None:
+        publication = _checkpoint_publication.get()
+        if publication is not None and (publication.path != path or defer_journal_reset):
+            publication = None
+        try:
+            self._atomic_json_write(path, snapshot)
+        except SnapshotCapacityError:
+            self._atomic_json_write(path, snapshot, indent=None)
+        if publication is not None:
+            publication.synced = True
+        journal_path = self._journal_path(path)
+        try:
+            write_regular_bytes_atomic(journal_path, b"", max_bytes=0)
+        except OSError as exc:
+            if not (defer_journal_reset or publication is not None and publication.defer_journal_reset):
+                raise
+            # The synced snapshot already supersedes every journal record.
+            logger.warning("could not compact covered session journal %s: %s", journal_path, exc)
+        self._remember_autosave_cursor(path, snapshot[_AUTOSAVE_SEQUENCE_KEY])
 
     @staticmethod
     def _journal_path(path: str) -> str:
@@ -634,14 +791,18 @@ class SessionStore:
 
     def _append_journal_record(self, path: str, record: dict[str, Any]) -> None:
         with _journal_operation_lock(path):
-            self._append_journal_record_unlocked(path, record)
+            try:
+                self._append_journal_record_unlocked(path, record)
+            except SnapshotCapacityError:
+                snapshot = self._load_snapshot_unlocked(path, None, pending_record=record)
+                self._publish_checkpoint_unlocked(path, snapshot, defer_journal_reset=True)
 
     def _append_journal_record_unlocked(self, path: str, record: dict[str, Any]) -> None:
         journal_path = self._journal_path(path)
         payload = self._encode_journal_record(record)
         payload_size = len(payload.encode("utf-8"))
         if payload_size > MAX_SESSION_SNAPSHOT_BYTES:
-            raise ValueError(
+            raise SnapshotCapacityError(
                 "autosave journal record exceeds "
                 f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
                 f"{journal_path}"
@@ -649,7 +810,8 @@ class SessionStore:
         append_start: int | None = None
         try:
             with open_regular_text_append(journal_path, readable=True) as handle:
-                current_size = os.fstat(handle.fileno()).st_size
+                before_append = os.fstat(handle.fileno())
+                current_size = before_append.st_size
                 complete_size = self._complete_journal_size(
                     handle.fileno(),
                     current_size,
@@ -658,7 +820,7 @@ class SessionStore:
                     os.ftruncate(handle.fileno(), complete_size)
                     current_size = complete_size
                 if current_size + payload_size > MAX_SESSION_SNAPSHOT_BYTES:
-                    raise ValueError(
+                    raise SnapshotCapacityError(
                         "autosave journal exceeds "
                         f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
                         f"{journal_path}"
@@ -667,6 +829,7 @@ class SessionStore:
                 write_locked_text(handle, payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+                self._advance_autosave_cursor(path, handle.fileno(), before_append, record["sequence"])
         except BaseException as append_error:
             if append_start is not None:
                 try:
@@ -678,6 +841,26 @@ class SessionStore:
                 except BaseException as rollback_error:
                     raise append_error from rollback_error
             raise
+
+    def _advance_autosave_cursor(
+        self, path: str, fd: int, before_append: os.stat_result, sequence: int,
+    ) -> None:
+        cursor = self._autosave_cursor
+        if cursor is None or cursor.path != os.path.abspath(path):
+            return
+        snapshot_revision, journal_revision = cursor.revisions
+        if journal_revision != _file_revision(before_append) and not (
+            journal_revision is None and before_append.st_size == 0
+        ):
+            return
+        try:
+            journal_revision = _file_revision(os.fstat(fd))
+        except OSError:
+            return
+        # A late append can leave an older record after the current cursor.
+        self._autosave_cursor = _AutosaveCursor(
+            cursor.path, (snapshot_revision, journal_revision), max(cursor.sequence, sequence),
+        )
 
     @staticmethod
     def _complete_journal_size(fd: int, size: int) -> int:
@@ -731,16 +914,18 @@ class SessionStore:
             records.append(record)
         return records
 
-    def _newest_persisted_sequence(self, path: str) -> int:
-        newest = 0
+    def _persisted_base_sequence(self, path: str) -> int | None:
         try:
             text = self._read_snapshot_text(path)
         except FileNotFoundError:
-            pass
-        else:
-            parsed = self._parse_document(text)
-            if isinstance(parsed, dict):
-                newest = self._snapshot_sequence(parsed)
+            return None
+        parsed = self._parse_document(text)
+        if isinstance(parsed, dict) and _AUTOSAVE_SEQUENCE_KEY in parsed:
+            return self._snapshot_sequence(parsed)
+        return None
+
+    def _newest_persisted_sequence(self, path: str) -> int:
+        newest = self._persisted_base_sequence(path) or 0
         for record in self._read_journal_records(path):
             newest = max(
                 newest,
@@ -824,6 +1009,12 @@ class SessionStore:
     @staticmethod
     def _atomic_json_write(path: str, value: Any, *, indent: int | None = 2) -> None:
         """Durably replace one JSON file without exposing a partial snapshot."""
+        publication = _checkpoint_publication.get()
+
+        def mark_replaced() -> None:
+            if publication is not None and publication.path == path:
+                publication.visible = True
+
         def serialize(handle: BinaryIO) -> None:
             writer = _BoundedUTF8Writer(handle, path=path)
             if indent is None:
@@ -836,4 +1027,5 @@ class SessionStore:
             serialize,
             max_bytes=MAX_SESSION_SNAPSHOT_BYTES,
             context="session snapshot",
+            on_replace=mark_replaced if publication is not None else None,
         )

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import errno
+import importlib
 import json
+import stat
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -61,7 +65,7 @@ class _Generator:
 
 
 async def _evaluate(program: Path, inputs: list[Any]) -> list[dict[str, Any]]:
-    namespace: dict[str, Any] = {}
+    namespace: dict[str, Any] = {"__file__": str(program)}
     exec(program.read_text(encoding="utf-8"), namespace)  # noqa: S102 - test-authored candidates only
     results = []
     for inp in inputs:
@@ -86,6 +90,7 @@ def test_candidate_evaluator_must_cover_every_observed_input(
         _run(task, ctx, max_iterations=1, early_stop=1)
 
     assert (tmp_path / task.candidate_file).is_file()
+    assert not list((tmp_path / ".oc_candidates").iterdir())
 
 
 def test_missing_candidate_reports_no_examples_passed(tmp_path: Path) -> None:
@@ -221,8 +226,16 @@ def make_task(workspace: Path, **overrides: Any) -> ReconstructionTask:
 class ScriptedContext:
     """Plays the agent: writes the scripted candidate, proposes fresh inputs, spends no tokens."""
 
-    def __init__(self, workspace: Path, programs: list[str] | None = None, repeat_first_proposal: bool = False):
+    def __init__(
+        self,
+        workspace: Path,
+        programs: list[str] | None = None,
+        repeat_first_proposal: bool = False,
+        *,
+        candidate_file: str = "candidate.py",
+    ):
         self.workspace = workspace
+        self.candidate_file = candidate_file
         self.programs = list(programs or [CORRECT])
         self.repeat_first_proposal = repeat_first_proposal
         self.labels: list[str] = []
@@ -254,7 +267,7 @@ class ScriptedContext:
                 batch.append([self._next, -3])
             return {"inputs": batch}
         program = self.programs.pop(0) if len(self.programs) > 1 else self.programs[0]
-        (self.workspace / "candidate.py").write_text(program, encoding="utf-8")
+        (self.workspace / self.candidate_file).write_text(program, encoding="utf-8")
         return "done"
 
 
@@ -503,6 +516,318 @@ def test_selection_ignores_candidates_left_by_an_earlier_run(tmp_path: Path) -> 
     assert out["final_program"] == "iter_001.py"
     assert (tmp_path / "candidate.py").read_text(encoding="utf-8") == CORRECT
     assert (stale_dir / "iter_050.py").read_text(encoding="utf-8") == stale  # left untouched
+
+
+async def test_evaluated_candidate_survives_edit_to_live_program(tmp_path: Path) -> None:
+    candidate_file = "src/candidate.py"
+    program = tmp_path / candidate_file
+    program.parent.mkdir()
+    (program.parent / "offset.txt").write_text("5\n", encoding="utf-8")
+    source = (
+        "from pathlib import Path\n"
+        "def solve(xs):\n"
+        "    offset = int(Path(__file__).with_name('offset.txt').read_text())\n"
+        "    return sum(abs(x) for x in xs) + offset\n"
+    )
+    evaluated, edited = asyncio.Event(), asyncio.Event()
+    evaluated_paths = []
+
+    class ExecutableCandidate(ScriptedContext):
+        async def agent(self, *args, **kwargs):
+            value = await super().agent(*args, **kwargs)
+            if program.is_file():
+                program.chmod(0o750)
+            return value
+
+    async def evaluate(path: Path, inputs: list[Any]) -> list[dict[str, Any]]:
+        assert path != program
+        assert path.parent == program.parent and path.suffix == program.suffix
+        assert stat.S_IMODE(path.stat().st_mode) == 0o750
+        assert path.read_text(encoding="utf-8") == source
+        results = await _evaluate(path, inputs)
+        evaluated_paths.append(path)
+        if len(evaluated_paths) == 1:
+            evaluated.set()
+            await edited.wait()
+        return results
+
+    async def edit_program() -> None:
+        await evaluated.wait()
+        program.write_text("def solve(xs):\n    return 0\n", encoding="utf-8")
+        edited.set()
+
+    task = make_task(
+        tmp_path, candidate_file=candidate_file, evaluate=evaluate, oracle=lambda value: _oracle(value) + 5,
+    )
+    context = ExecutableCandidate(tmp_path, programs=[source], candidate_file=candidate_file)
+    result, _ = await asyncio.wait_for(asyncio.gather(
+        reconstruct(context, {"task": register_task(task), "early_stop": 1}),
+        edit_program(),
+    ), timeout=5)
+    archived = tmp_path / ".oc_candidates" / result["final_program"]
+    assert result["promotions"] == 1
+    assert result["stop_reason"] == "early_stop"
+    assert result["final_score"] == 1.0
+    assert len(set(evaluated_paths)) == 2
+    assert all(not path.exists() for path in evaluated_paths)
+    assert set(program.parent.iterdir()) == {program, program.parent / "offset.txt"}
+    assert archived.read_text(encoding="utf-8") == program.read_text(encoding="utf-8") == source
+    assert stat.S_IMODE(archived.stat().st_mode) == stat.S_IMODE(program.stat().st_mode) == 0o750
+
+
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute-workspace", "relative-workspace"])
+@pytest.mark.parametrize("sidecar", [False, True], ids=["plain-module", "same-stem-resource"])
+async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path, monkeypatch, relative, sidecar):
+    monkeypatch.chdir(tmp_path.parent)
+    workspace = Path(tmp_path.name) if relative else tmp_path
+    candidate_file = "src/candidate.py"
+    package = workspace / "src"
+    package.mkdir()
+    (package / "__init__.py").touch()
+    (package / "helper.py").write_text("def measure(xs):\n    return sum(abs(x) for x in xs)\n")
+    if sidecar:
+        (package / "candidate.json").write_text('{"offset": 5}', encoding="utf-8")
+    source = "from .helper import measure\n"
+    if sidecar:
+        source += (
+            "from pathlib import Path\n"
+            "import json\n"
+            "def solve(value):\n"
+            "    offset = json.loads(Path(__file__).with_suffix('.json').read_text())['offset']\n"
+            "    return measure(value) + offset\n"
+        )
+    else:
+        source += "solve = measure\n"
+    source += (
+        "if __name__ == '__main__':\n"
+        "    import json, sys\n"
+        "    print(json.dumps([solve(value) for value in json.loads(sys.argv[1])]))\n"
+    )
+    evaluated = []
+
+    async def evaluate(path, inputs):
+        evaluated.append(path)
+        module = ".".join(path.relative_to(workspace).with_suffix("").parts)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-B", "-m", module, json.dumps(inputs),
+            cwd=workspace, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        assert process.returncode == 0, stderr.decode()
+        return [{"ok": True, "output": value} for value in json.loads(stdout)]
+
+    task = make_task(
+        workspace, candidate_file=candidate_file, evaluate=evaluate,
+        oracle=lambda value: _oracle(value) + (5 if sidecar else 0),
+    )
+    result = await reconstruct(
+        ScriptedContext(workspace, programs=[source], candidate_file=candidate_file),
+        {"task": register_task(task), "early_stop": 1},
+    )
+    assert result["promotions"] == 1 and result["stop_reason"] == "early_stop"
+    assert len(evaluated) == 2
+    assert all(not path.exists() for path in evaluated)
+    assert all(not path.with_suffix(".json").is_symlink() for path in evaluated)
+    assert (workspace / candidate_file).read_text(encoding="utf-8") == source
+    assert (workspace / ".oc_candidates" / result["final_program"]).read_text(encoding="utf-8") == source
+
+
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute-workspace", "relative-workspace"])
+@pytest.mark.parametrize(
+    ("neighbor", "evaluation_fails"),
+    [("import", False), ("package", False), ("resource", False), ("resource", True)],
+    ids=["sibling-import", "sibling-package", "sibling-resource", "evaluator-error"],
+)
+async def test_reconstruct_evaluates_a_writable_file_in_a_read_only_directory(
+    tmp_path, monkeypatch, relative, neighbor, evaluation_fails,
+):
+    monkeypatch.chdir(tmp_path.parent)
+    workspace = Path(tmp_path.name) if relative else tmp_path
+    candidate_file = "src/solver/candidate.py"
+    program = workspace / candidate_file
+    program.parent.mkdir(parents=True)
+    program.write_text("# Existing editable candidate.\n", encoding="utf-8")
+    helper = program.with_name("sibling.py")
+    helper.write_text("MULTIPLIER = 3\n", encoding="utf-8")
+    package = program.with_name("sibling_package")
+    package.mkdir()
+    (package / "__init__.py").write_text("from .arithmetic import MULTIPLIER\n", encoding="utf-8")
+    arithmetic = package / "arithmetic.py"
+    arithmetic.write_text("MULTIPLIER = 3\n", encoding="utf-8")
+    resource = program.with_name("multiplier.txt")
+    resource.write_text("3", encoding="utf-8")
+    dependency = {
+        "import": "from sibling import MULTIPLIER\n",
+        "package": "from sibling_package import MULTIPLIER\n",
+        "resource": "from pathlib import Path\n"
+        "MULTIPLIER = int(Path(__file__).with_name('multiplier.txt').read_text())\n",
+    }[neighbor]
+    source = dependency + (
+        "import json, sys\n"
+        "def solve(xs):\n    return MULTIPLIER * sum(abs(x) for x in xs)\n"
+        "print(json.dumps([solve(value) for value in json.loads(sys.argv[1])]))\n"
+    )
+    module = importlib.import_module("opencollab.builtin_workflows.reconstruct")
+    open_temporary = module.NamedTemporaryFile
+    evaluated = []
+
+    def deny_sibling_creation(*, dir, **kwargs):
+        if dir == program.parent:
+            raise PermissionError(errno.EACCES, "directory forbids new files")
+        return open_temporary(dir=dir, **kwargs)
+
+    async def evaluate(path, inputs):
+        assert path.parent.parent == workspace / ".oc_candidates"
+        assert path.name == program.name and not path.is_symlink()
+        assert path.read_text(encoding="utf-8") == source
+        for sibling in (helper, resource):
+            link = path.with_name(sibling.name)
+            assert not link.readlink().is_absolute()
+            assert link.read_bytes() == sibling.read_bytes()
+        package_link = path.with_name(package.name)
+        assert not package_link.readlink().is_absolute()
+        assert (package_link / arithmetic.name).read_bytes() == arithmetic.read_bytes()
+        evaluated.append(path)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-B", str(path.relative_to(workspace)), json.dumps(inputs),
+            cwd=workspace, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        assert process.returncode == 0, stderr.decode()
+        path.write_text("# Evaluator changes its own copy.\n", encoding="utf-8")
+        if evaluation_fails:
+            raise ValueError("evaluator returned invalid measurements")
+        return [{"ok": True, "output": value} for value in json.loads(stdout)]
+
+    monkeypatch.setattr(module, "NamedTemporaryFile", deny_sibling_creation)
+    task = make_task(workspace, candidate_file=candidate_file, evaluate=evaluate, oracle=lambda xs: 3 * _oracle(xs))
+    run = reconstruct(
+        ScriptedContext(workspace, programs=[source], candidate_file=candidate_file),
+        {"task": register_task(task), "early_stop": 1},
+    )
+    archives = workspace / ".oc_candidates"
+    if evaluation_fails:
+        with pytest.raises(ValueError, match="invalid measurements"):
+            await run
+        assert len(evaluated) == 1 and not list(archives.iterdir())
+    else:
+        result = await run
+        archive = archives / result["final_program"]
+        assert result["stop_reason"] == "early_stop"
+        assert result["promotions"] == 1 and result["final_score"] > 0.95
+        assert len(set(evaluated)) == 2
+        assert set(archives.iterdir()) == {archive}
+        assert archive.read_text(encoding="utf-8") == source
+    assert all(not path.parent.exists() for path in evaluated)
+    assert set(program.parent.iterdir()) == {program, resource, helper, package}
+    assert set(package.iterdir()) == {package / "__init__.py", arithmetic}
+    assert program.read_text(encoding="utf-8") == source
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["failure", "cancel"])
+@pytest.mark.parametrize("kind", ["archive", "evaluation copy"])
+async def test_failed_archive_cleanup_preserves_evaluator_exit(tmp_path, monkeypatch, cancel, kind):
+    archive = tmp_path / ".oc_candidates" / "iter_001.py"
+    started = asyncio.Event()
+    evaluator_failure = RuntimeError("candidate evaluator lost its output stream")
+    unlink = Path.unlink
+    evaluated_paths = []
+    sidecar = tmp_path / "candidate.json"
+    sidecar.write_text('{"offset": 0}', encoding="utf-8")
+
+    def fail_cleanup(path, *args, **kwargs):
+        blocked = path == archive if kind == "archive" else path in evaluated_paths
+        if blocked:
+            raise OSError(errno.EIO, "candidate unlink failed")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_cleanup)
+
+    async def evaluate(path, inputs):
+        assert path.parent == tmp_path
+        assert path.read_text(encoding="utf-8") == archive.read_text(encoding="utf-8")
+        assert path.with_suffix(".json").read_bytes() == sidecar.read_bytes()
+        evaluated_paths.append(path)
+        assert all(row["ok"] for row in await _evaluate(path, inputs))
+        started.set()
+        if cancel:
+            await asyncio.Event().wait()
+        raise evaluator_failure
+
+    task = make_task(tmp_path, evaluate=evaluate)
+
+    async def run():
+        try:
+            await reconstruct(ScriptedContext(tmp_path), {"task": register_task(task)})
+        except (RuntimeError, asyncio.CancelledError) as error:
+            return error
+
+    job = asyncio.create_task(run())
+    try:
+        if cancel:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            job.cancel("cancel candidate evaluation")
+        error = await job
+        if cancel:
+            assert isinstance(error, asyncio.CancelledError)
+            assert str(error) == "cancel candidate evaluation"
+        else:
+            assert error is evaluator_failure
+    finally:
+        if not job.done():
+            job.cancel()
+        await asyncio.gather(job, return_exceptions=True)
+
+    note, = error.__notes__
+    evaluation_path, = evaluated_paths
+    assert not evaluation_path.with_suffix(".json").is_symlink()
+    assert sidecar.read_text(encoding="utf-8") == '{"offset": 0}'
+    blocked = archive if kind == "archive" else evaluation_path
+    assert f"candidate {kind} cleanup failed for {blocked.name}" in note
+    assert "candidate unlink failed" in note
+    assert blocked.read_text(encoding="utf-8") == CORRECT
+    assert (evaluation_path if kind == "archive" else archive).exists() is False
+    assert (tmp_path / "candidate.py").read_text(encoding="utf-8") == CORRECT
+
+
+@pytest.mark.parametrize("overlap", [False, True], ids=["sequential", "parallel"])
+async def test_shared_workspace_runs_keep_their_archived_candidates(tmp_path: Path, overlap: bool) -> None:
+    first_selecting = asyncio.Event()
+    second_finished = asyncio.Event()
+    doubled = "def solve(xs):\n    return 2 * sum(abs(x) for x in xs)\n"
+
+    class FirstContext(ScriptedContext):
+        async def phase(self, name: str) -> None:
+            await super().phase(name)
+            if overlap and name == "select":
+                first_selecting.set()
+                await asyncio.wait_for(second_finished.wait(), timeout=5)
+
+    async def run(ctx: ScriptedContext, oracle: Callable[[list[int]], int]) -> dict[str, Any]:
+        task = make_task(tmp_path, candidate_file=ctx.candidate_file, oracle=oracle)
+        return await reconstruct(ctx, {"task": register_task(task), "max_iterations": 1, "early_stop": 1})
+
+    async def run_second() -> dict[str, Any]:
+        if overlap:
+            await asyncio.wait_for(first_selecting.wait(), timeout=5)
+        ctx = ScriptedContext(tmp_path, [doubled], candidate_file="doubled.py")
+        second = await run(ctx, lambda xs: 2 * _oracle(xs))
+        second_finished.set()
+        return second
+
+    first_run = run(FirstContext(tmp_path, candidate_file="absolute.py"), _oracle)
+    if overlap:
+        first, second = await asyncio.gather(first_run, run_second())
+    else:
+        first, second = await first_run, await run_second()
+
+    for outcome, filename, source in [(first, "absolute.py", CORRECT), (second, "doubled.py", doubled)]:
+        assert outcome["promotions"] == 1
+        assert outcome["final_score"] == 1.0
+        assert (tmp_path / filename).read_text(encoding="utf-8") == source
+        assert (tmp_path / ".oc_candidates" / outcome["final_program"]).read_text(encoding="utf-8") == source
+    assert first["final_program"] == "iter_001.py"
+    assert second["final_program"] != first["final_program"]
 
 
 def test_task_resolution_from_import_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

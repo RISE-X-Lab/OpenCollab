@@ -13,10 +13,26 @@ from opencollab.application.async_timeout import (
 )
 
 
+def _completed_session_output_before(session: Any, deadline: float | None) -> str | None:
+    completed = getattr(session, "_completed_turn_output", None)
+    if deadline is None or completed is None:
+        return None
+    finished_at, output = completed
+    return output if finished_at < deadline else None
+
+
+def _budget_replay_output_before(session: Any, deadline: float | None) -> str | None:
+    partial = getattr(getattr(session, "runner", None), "_budget_replay_partial", None)
+    if deadline is None or partial is None:
+        return None
+    finished_at, output = partial
+    return output if finished_at < deadline else None
+
+
 async def close_session_resources(
     sessions: Iterable[Any],
     *,
-    timeout: float,
+    timeout: float | None,
 ) -> bool:
     """Close each unique session and report whether every close succeeded."""
     close_tasks: set[asyncio.Task[Any]] = set()
@@ -40,7 +56,7 @@ async def close_session_resources(
     if not close_tasks:
         return succeeded
     _done, pending = await asyncio.wait(close_tasks, timeout=timeout)
-    if pending:
+    if pending and timeout is not None:
         pending = await cancel_tasks_and_wait(pending, timeout=timeout)
     for task in close_tasks - pending:
         try:

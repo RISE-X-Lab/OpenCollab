@@ -28,3 +28,6 @@ class WorkflowRuntimeResult:
     agent_failures: tuple[dict[str, Any], ...]
     stop_reason: Literal["budget_exceeded"] | None = None
     evidence_complete: bool = True
+    body_returned_before_deadline: bool = False
+    environment_cleanup_deferred: bool = False
+    startup_cleanup_deferred: bool = False

@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from opencollab.application.ports import CompletionResponse
 
 DEFAULT_DEFERRABLE_TOOLS = frozenset({"spawn_agent"})
+
+def _recorded_tool_call(call: dict[str, Any]) -> dict[str, Any]:
+    function = call.get("function", {})
+    arguments = function.get("arguments")
+    if not isinstance(arguments, dict):
+        return call
+    # Argument text is recorded even when execution rejects its contents.
+    try:
+        text = json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        text = repr(arguments)
+    return {**call, "function": {**function, "arguments": text}}
 
 class GenerationTimeoutError(asyncio.TimeoutError):
     """A single provider generation exceeded its per-call ceiling."""
@@ -23,6 +37,12 @@ class _ContextOverflowStop(Exception):
 
 class _TeamBudgetStop(Exception):
     """Internal signal that shared team allowance ran out before a request."""
+
+@dataclass(slots=True)
+class _RequestBudgetRecovery:
+    available: Callable[[], int]
+    claim: Callable[[int, int], int | None]
+    observed: bool = False
 
 class _TokenBudgetStop(Exception):
     """Internal signal that a request has insufficient legal output headroom."""
@@ -57,10 +77,13 @@ _EMPTY_STOP_NUDGE = (
 # Separate consecutive user messages for Anthropic.
 _EMPTY_STOP_PLACEHOLDER = "[no output produced this turn]"
 
-_INCOMPLETE_RESPONSE_REASONS = frozenset({
-    "length", "max_tokens", "model_context_window_exceeded", "content_filter",
-})
+_OUTPUT_LIMIT_REASONS = frozenset({"length", "max_tokens"})
+_CONTEXT_WINDOW_LIMIT_REASON = "model_context_window_exceeded"
+_INCOMPLETE_RESPONSE_REASONS = _OUTPUT_LIMIT_REASONS | {_CONTEXT_WINDOW_LIMIT_REASON, "content_filter"}
 _FILTERED_OUTPUT_REASON = "provider filtered the output"
+_TRUNCATED_OUTPUT_REASON = "output truncated: provider reached its generation limit"
+_BUDGET_EXCEEDED_PREFIX = "budget exceeded:"
+_REQUEST_BUDGET_REFUSAL_PREFIX = "budget exhausted before model call:"
 
 def _last_assistant_answer(
     messages: list[dict[str, Any]], turn_start: int | None, *, include_tool_call_text: bool = True,

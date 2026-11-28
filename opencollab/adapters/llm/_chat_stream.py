@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from functools import partial
+from typing import Any, TypeVar
+
+from openai import AsyncStream
 
 from opencollab.adapters.llm._chat_response import (
     _build_chat_response,
@@ -13,9 +18,11 @@ from opencollab.adapters.llm._chat_response import (
     _normalize_tool_arguments,
     _reported_chat_usage,
 )
+from opencollab.adapters.llm._transport_wait import _TransportInterruption, _wait_for_transport
 from opencollab.adapters.llm.errors import StreamedUsageUnavailableError, TransientProviderError
 from opencollab.adapters.llm.first_token import CHAT_STREAM, begin_attempt, mark_first_token
 from opencollab.adapters.llm.types import LLMResponse
+from opencollab.application.async_timeout import await_owned_operation
 
 # Streaming request fields stay framework-controlled so ``extra_body``
 # cannot enable streaming. Omit both fields for non-streamed requests.
@@ -49,6 +56,7 @@ class _ChatStreamState:
     usage_object: Any = None
     provider_model: str | None = None
     chunk_count: int = 0
+    close_error: Exception | None = None
 
 @dataclass
 class _UsageCarrier:
@@ -249,28 +257,101 @@ def _stream_state_to_response(
         )
     return response
 
-async def _next_chunk(iterator: Any, budget: float | None, *, stage: str) -> Any:
+_T = TypeVar("_T")
+
+async def _wait_for_chat_transport(
+    operation: Awaitable[_T],
+    timeout: float | None,
+    settle_cancelled: Callable[[_T], Awaitable[object]] | None = None,
+    *,
+    repeat_cancellation: bool = True,
+) -> _T:
+    cancellation: asyncio.CancelledError | None = None
+
+    def observe(interruption: _TransportInterruption) -> None:
+        nonlocal cancellation
+        if isinstance(interruption, asyncio.CancelledError):
+            cancellation = interruption
+
+    try:
+        result = await _wait_for_transport(
+            operation, timeout, on_interrupt=observe, repeat_cancellation=repeat_cancellation,
+        )
+    except (Exception, asyncio.CancelledError) as exc:
+        if cancellation is not None and exc is not cancellation:
+            raise cancellation from exc
+        raise
+    if cancellation is not None:
+        if settle_cancelled is not None:
+            await settle_cancelled(result)
+        raise cancellation
+    return result
+
+async def _next_chunk(
+    iterator: Any, budget: float | None, *, stage: str, state: _ChatStreamState,
+) -> Any:
+    async def settle_usage(chunk: Any) -> None:
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            state.usage_object = usage
+
     try:
         if budget is None:
             return await iterator.__anext__()
-        return await asyncio.wait_for(iterator.__anext__(), timeout=budget)
+        return await _wait_for_chat_transport(iterator.__anext__(), budget, settle_usage)
     except asyncio.TimeoutError as exc:
         detail = "from the provider transport" if budget is None else f"after {budget:g}s"
         raise TransientProviderError(
             f"chat completion {stage} timeout {detail}"
         ) from exc
 
-async def _close_stream(stream: Any) -> None:
-    """Release the socket without replacing a finished read or its original error."""
+async def _close_stream(
+    stream: Any, *, timeout: float | None, preserve_cancellation: bool = False,
+) -> Exception | None:
     close = getattr(stream, "close", None)
     if close is None:
-        return
+        return None
+    native = isinstance(stream, AsyncStream)
     try:
         result = close()
         if asyncio.iscoroutine(result):
-            await result
-    except Exception:
+            if native:
+                result = _wait_for_chat_transport(result, timeout, repeat_cancellation=False)
+            if native and not preserve_cancellation:
+                await result
+            else:
+                await await_owned_operation(result, propagate_cancellation=not preserve_cancellation)
+    except asyncio.CancelledError:
+        if not preserve_cancellation:
+            raise
+    except Exception as exc:
         logging.getLogger(__name__).debug("chat stream close failed", exc_info=True)
+        if native:
+            return exc
+    return None
+
+@contextmanager
+def _defer_native_close(stream: Any) -> Iterator[None]:
+    if not isinstance(stream, AsyncStream):
+        yield
+        return
+
+    # Keep SDK-owned HTTP close out of the timed chunk iterator.
+    response = stream.response
+    close = response.aclose
+    has_override = "aclose" in vars(response)
+
+    async def defer_close() -> None:
+        return None
+
+    response.aclose = defer_close
+    try:
+        yield
+    finally:
+        if has_override:
+            response.aclose = close
+        else:
+            del response.aclose
 
 async def _consume_chat_stream(
     stream: Any, first_chunk_timeout: float | None, idle_timeout: float | None
@@ -297,24 +378,30 @@ async def _drain_chat_stream(
 ) -> None:
     iterator = stream.__aiter__()
     first = True
+    cancelled = False
     try:
-        while True:
-            try:
-                chunk = await _next_chunk(
-                    iterator,
-                    first_chunk_timeout if first else idle_timeout,
-                    stage="first-chunk" if first else "stream-idle",
-                )
-            except StopAsyncIteration:
-                break
-            if first:
-                # Before ``_absorb_chunk``: the measurement is when the bytes
-                # landed, not when parsing them finished.
-                mark_first_token(CHAT_STREAM)
-            first = False
-            _absorb_chunk(chunk, state)
+        with _defer_native_close(stream):
+            while True:
+                try:
+                    chunk = await _next_chunk(
+                        iterator,
+                        first_chunk_timeout if first else idle_timeout,
+                        stage="first-chunk" if first else "stream-idle",
+                        state=state,
+                    )
+                except StopAsyncIteration:
+                    break
+                if first:
+                    # Before ``_absorb_chunk``: the measurement is when the bytes
+                    # landed, not when parsing them finished.
+                    mark_first_token(CHAT_STREAM)
+                first = False
+                _absorb_chunk(chunk, state)
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     finally:
-        await _close_stream(stream)
+        state.close_error = await _close_stream(stream, timeout=idle_timeout, preserve_cancellation=cancelled)
 
 async def _create_and_consume_chat_stream(
     client: Any,
@@ -329,9 +416,10 @@ async def _create_and_consume_chat_stream(
         if first_chunk_timeout is None:
             event_stream = await client.chat.completions.create(**kwargs)
         else:
-            event_stream = await asyncio.wait_for(
+            event_stream = await _wait_for_chat_transport(
                 client.chat.completions.create(**kwargs),
-                timeout=first_chunk_timeout,
+                first_chunk_timeout,
+                partial(_close_stream, timeout=idle_timeout, preserve_cancellation=True),
             )
     except asyncio.TimeoutError as exc:
         detail = "from the provider transport" if first_chunk_timeout is None else f"after {first_chunk_timeout:g}s"
@@ -340,7 +428,7 @@ async def _create_and_consume_chat_stream(
     # Opening the stream spends part of the first-chunk allowance; charge it.
     remaining = None if deadline is None else deadline - loop.time()
     if remaining is not None and remaining <= 0:
-        await _close_stream(event_stream)
+        await _close_stream(event_stream, timeout=idle_timeout)
         raise TransientProviderError(
             f"chat completion first-chunk timeout after {first_chunk_timeout:g}s"
         )

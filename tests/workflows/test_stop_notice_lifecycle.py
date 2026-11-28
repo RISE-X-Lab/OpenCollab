@@ -19,6 +19,45 @@ def _seat(scheduler, session, aid):
     )
     scheduler._sessions[aid] = session
 
+
+@pytest.mark.parametrize("driver_delivers", [False, True])
+async def test_fallback_notice_waits_for_terminal_driver(driver_delivers):
+    lead = ScriptedSession("lead", [])
+    stopped = ScriptedSession("coder", [])
+    scheduler, _ = build_scheduler(lead, [])
+    _seat(scheduler, stopped, 1)
+    stopped.state.cancel("output limit")
+    scheduler._unanswered[1] = {0: "request"}
+    release_driver = asyncio.Event()
+    partial = "[Partial response]\nVerified subtotal is 42."
+
+    async def finish():
+        await release_driver.wait()
+        if driver_delivers:
+            await scheduler.notify_unanswered_senders(1, "output limit", partial_result=partial)
+
+    driver = asyncio.create_task(finish())
+    delivery_blocker = asyncio.create_task(asyncio.Event().wait())
+    scheduler._tasks.update({0: delivery_blocker, 1: driver})
+    try:
+        await scheduler._drain_ready_message_inboxes()
+        assert scheduler._unanswered[1] == {0: "request"}
+        assert not lead.state.pending_user_messages
+
+        release_driver.set()
+        await driver
+        await scheduler._drain_ready_message_inboxes()
+
+        notice, = lead.state.pending_user_messages
+        assert "output limit" in notice["content"]
+        assert (partial in notice["content"]) is driver_delivers
+        assert not scheduler._unanswered.get(1)
+    finally:
+        release_driver.set()
+        delivery_blocker.cancel()
+        await asyncio.gather(driver, delivery_blocker, return_exceptions=True)
+
+
 @pytest.mark.parametrize("locked_aid", [0, 2])
 async def test_cancelling_notice_lock_wait_retains_each_uncommitted_sender(locked_aid):
     lead = ScriptedSession("lead", [])

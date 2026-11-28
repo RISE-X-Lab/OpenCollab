@@ -265,6 +265,25 @@ async def test_docker_partial_later_line_is_read_again_before_character_truncati
     assert "offset=3" not in second
     assert "�" not in first + second
 
+async def test_docker_character_cut_links_to_rows_beyond_the_captured_prefix(tmp_path, docker_runtime):
+    runtime, calls = docker_runtime
+    target = tmp_path / "long-page.txt"
+    content = ("😀" * 500 + "\r\n\u6458\u8981\r\n\u7ed3\u8bba").encode("utf-8")
+    target.write_bytes(content)
+    tool = FileReadTool(max_read_chars=100)
+
+    first = await tool.execute_with_runtime({"path": str(target), "limit": 1}, runtime)
+    continuation = re.search(r"Continue with offset=(\d+)", first)
+    assert "line 1 was character-truncated" in first
+    assert continuation is not None
+    second = await tool.execute_with_runtime(
+        {"path": str(target), "offset": int(continuation.group(1)), "limit": 2}, runtime,
+    )
+
+    assert second.split("\n")[1:] == ["2\t\u6458\u8981", "3\t\u7ed3\u8bba"]
+    assert sum("head -c" in call["command"] for call in calls) == 2
+    assert target.read_bytes() == content
+
 async def test_docker_file_read_rejects_incomplete_utf8_at_file_end(
     tmp_path, docker_runtime,
 ):

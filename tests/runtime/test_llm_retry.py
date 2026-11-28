@@ -10,6 +10,7 @@ from anthropic import AnthropicError
 from openai import APIError, OpenAIError
 
 from opencollab.adapters.llm import retry
+from opencollab.adapters.llm.responses_errors import ResponsesTerminalEventError
 from opencollab.adapters.llm.retry import is_retryable_error, with_retry
 
 
@@ -67,8 +68,9 @@ def test_statusless_provider_base_error_is_retryable(error_class):
 
 @pytest.mark.parametrize("status", [400, 401, 404])
 @pytest.mark.parametrize("status_location", ["direct", "response", "wrapper", "cause"])
-def test_gateway_wording_keeps_explicit_client_errors_non_retryable(status, status_location):
-    error = _sdk_error("Concurrency limit exceeded for user, please retry later")
+@pytest.mark.parametrize("message", ["Concurrency limit exceeded", "Session expired after idle timeout"])
+def test_gateway_wording_keeps_explicit_client_errors_non_retryable(status, status_location, message):
+    error = _sdk_error(message)
     if status_location == "direct":
         error.status_code = status
     elif status_location == "response":
@@ -82,6 +84,11 @@ def test_gateway_wording_keeps_explicit_client_errors_non_retryable(status, stat
         cause = RuntimeError("provider rejected request")
         cause.status_code = status
         error.__cause__ = cause
+
+    assert is_retryable_error(error) is False
+
+def test_responses_terminal_error_keeps_explicit_failure():
+    error = ResponsesTerminalEventError("Authentication timed out", code="invalid_api_key")
 
     assert is_retryable_error(error) is False
 

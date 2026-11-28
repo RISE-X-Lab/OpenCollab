@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from opencollab.application.async_timeout import CallerTimeoutError
+from opencollab.application.session_lifecycle import _budget_replay_output_before
 from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE
 from opencollab.application.submit_findings import (
     SUBMIT_TOOL_NAME,
@@ -38,7 +39,7 @@ class WorkflowAgentsMixin:
         prompt: str,
         *,
         label: str | None,
-        tools: Sequence[Any] | None,
+        tools: str | Sequence[Any] | None,
         isolation: bool | str | None,
         tool_choice: Any,
         thinking: bool | None,
@@ -61,17 +62,20 @@ class WorkflowAgentsMixin:
                 commit_reserve = max(1, session_budget // 4)
         capture_done = asyncio.Event()
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
-        combined_tools = [*(tools or []), submit_tool]
         try:
             session = await self._build_workflow_session(
                 prompt=prompt,
                 budget=session_budget,
-                tools=combined_tools,
+                tools=[*self._tools_for_capture(tools), submit_tool],
                 isolation=isolation,
                 label=label,
                 tool_choice=tool_choice,
                 thinking=thinking,
+                startup_deadline=deadline,
             )
+        except CallerTimeoutError:
+            await self.log(f"agent timed out during workspace setup ({label or 'agent'})")
+            return harvest_fallback or None
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"agent build failed ({label or 'agent'}): {exc}")
@@ -92,6 +96,7 @@ class WorkflowAgentsMixin:
                 cancel_event=capture_done,
             )
         except CallerTimeoutError:
+            text = _budget_replay_output_before(session, deadline)
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             filtered_failure = self._agent_failure_filtered(exc)

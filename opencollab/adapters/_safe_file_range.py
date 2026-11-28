@@ -59,7 +59,7 @@ def _read_text_range(
             return TextFileRange(
                 selected,
                 offset,
-                None,
+                line_number if at_eof else None,
                 True,
                 chars_truncated=True,
             )

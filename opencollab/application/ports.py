@@ -302,12 +302,15 @@ class WorkflowSessionFactoryPort(Protocol):
     ``state.messages`` — no inheritance contract beyond those names.
     """
 
+    def resolve_tool_preset(self, name: str) -> Sequence[ToolPort]:
+        ...
+
     def build_workflow_session(
         self,
         *,
         prompt: str,
         budget: int | None,
-        tools: Sequence[Any] | None = None,
+        tools: str | Sequence[Any] | None = None,
         isolation: bool = False,
         label: str | None = None,
         tool_choice: Any = None,
@@ -604,6 +607,21 @@ class RequestOutputRequirementPort(Protocol):
         """
         ...
 
+@dataclass
+class _CheckpointPublication:
+    path: str
+    defer_journal_reset: bool = False
+    visible: bool = False
+    synced: bool = False
+
+
+_checkpoint_publication: ContextVar[_CheckpointPublication | None] = ContextVar(
+    "checkpoint_publication", default=None,
+)
+
+_AUTOSAVE_EXPORT_SOURCE_SEQUENCE = "_autosave_export_source_sequence"
+
+
 class SessionStorePort(Protocol):
     """Message persistence surface (structured JSON per agent)."""
 
@@ -635,6 +653,17 @@ class SnapshotStorePort(Protocol):
         path: str,
         system_prompt: str,
     ) -> dict[str, Any]:
+        ...
+
+@runtime_checkable
+class AutosaveOwnershipStorePort(Protocol):
+    def try_autosave_lock(
+        self, path: str, *, expected_sequence: int | None = None,
+    ) -> Callable[[], None] | None:
+        """Return a release callback, or None if busy.
+
+        Raise SnapshotSequenceConflict if durable state exceeds expected_sequence.
+        """
         ...
 
 @runtime_checkable

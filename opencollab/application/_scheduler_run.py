@@ -5,19 +5,30 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _last_assistant_answer
+from opencollab.application._session_run_shared import (
+    _FILTERED_OUTPUT_REASON,
+    _TRUNCATED_OUTPUT_REASON,
+    _last_assistant_answer,
+)
+from opencollab.application.async_timeout import consume_task_result
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.scheduler_types import SchedulerStalledError, SchedulerTurnError
 from opencollab.domain.pending import RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
 
 logger = logging.getLogger(__name__)
 
-def _turn_answer(state: SessionState, turn_start: int, *, completed_answer: str = "") -> str:
-    if state.phase is SessionPhase.STOPPED and state.terminal_reason == _FILTERED_OUTPUT_REASON:
+def _turn_answer(state: SessionState, turn_start: int, *, completed_answer: str | None = None) -> str:
+    if state.phase is SessionPhase.ERROR and completed_answer is not None:
+        return completed_answer
+    if state.phase is SessionPhase.STOPPED and (
+        state.terminal_reason == _FILTERED_OUTPUT_REASON
+        or (completed_answer and state.terminal_reason == _TRUNCATED_OUTPUT_REASON)
+    ):
         reply_start = state.completed_turn_start_message_index
         if reply_start is None:
-            return completed_answer
-        return _last_assistant_answer(state.messages, max(turn_start, reply_start)) or completed_answer
+            return completed_answer or ""
+        return _last_assistant_answer(state.messages, max(turn_start, reply_start)) or completed_answer or ""
     return _last_assistant_answer(state.messages, turn_start)
 
 class SchedulerRunMixin:
@@ -28,6 +39,24 @@ class SchedulerRunMixin:
     ) -> str:
         """Compatibility entry point for an external turn addressed to Lead."""
         return await self.run_turn(0, user_message, cancel_event=cancel_event)
+
+    def accepted_public_turn_answer(self, aid: int) -> str | None:
+        if aid not in self._completed_public_turn_answers:
+            return None
+        answer = self._completed_public_turn_answers[aid]
+        state = self._sessions[aid].state
+        if state.submitted_summary:
+            return state.submitted_summary
+        if state.phase is SessionPhase.DONE or (
+            state.phase is SessionPhase.STOPPED
+            and state.terminal_reason in {_FILTERED_OUTPUT_REASON, _TRUNCATED_OUTPUT_REASON}
+        ):
+            finished = _last_assistant_answer(
+                state.messages, state.completed_turn_start_message_index, include_tool_call_text=False,
+            )
+            if finished:
+                return finished
+        return answer or None
 
     async def run_turn(
         self,
@@ -64,14 +93,17 @@ class SchedulerRunMixin:
                     self._completed_public_turn_answers.pop(aid, None)
                     if self._turn_cancel_events.get(aid) is cancel_event:
                         self._turn_cancel_events.pop(aid, None)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancellation:
             # Acquiring the run lock gives this caller ownership of the team
             # turn. A cancelled waiter only withdraws its queued request.
             if owns_turn and not self._shutting_down:
                 if current_task is not None:
                     if self._active_run_tasks.get(current_task) == aid:
                         self._active_run_tasks.pop(current_task, None)
-                await self.cleanup()
+                try:
+                    await self.cleanup()
+                except Exception as exc:
+                    add_exception_note(cancellation, f"scheduler cleanup also failed: {type(exc).__name__}: {exc}")
             raise
         finally:
             if current_task is not None:
@@ -159,7 +191,7 @@ class SchedulerRunMixin:
         if self._shutting_down:
             self._release_turn_lease(aid)
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
-        self._completed_public_turn_answers[aid] = ""
+        self._completed_public_turn_answers[aid] = None
         self._start_agent_task(aid, session)
 
         cancel_event = self._turn_cancel_events.get(aid)
@@ -197,6 +229,9 @@ class SchedulerRunMixin:
                     await self._settle_cancelled_suspended_turn(aid)
                 pending = self._active_scheduler_tasks()
                 if not pending:
+                    # A terminal driver can exit before delivering its notice.
+                    if any(self._unanswered.values()) and self._quiescent():
+                        await self._drain_ready_message_inboxes()
                     if self._quiescent():
                         break
                     await self._wait_for_scheduler_progress(aid)
@@ -340,8 +375,30 @@ class SchedulerRunMixin:
         for task in owned_tasks:
             task.cancel()
         if owned_tasks:
-            await asyncio.gather(*owned_tasks, return_exceptions=True)
+            try:
+                done, _ = await asyncio.wait(owned_tasks)
+            except asyncio.CancelledError as cancellation:
+                # The CLI can exit while children are still unwinding. Record
+                # the stopped turn before bounded scheduler cleanup takes over.
+                try:
+                    self._record_cancelled_turn_subtree(aid, descendants, reason)
+                except Exception as exc:
+                    add_exception_note(
+                        cancellation, f"interrupted turn settlement also failed: {type(exc).__name__}: {exc}",
+                    )
+                raise
+            for task in done:
+                consume_task_result(task)
+        self._record_cancelled_turn_subtree(aid, descendants, reason)
 
+        await self.notify_unanswered_senders(aid, reason)
+        await self._safe_emit_scheduler_event(
+            self._events.agent_cancelled(aid, target.agent.name)
+        )
+        self._write_manifest()
+
+    def _record_cancelled_turn_subtree(self, aid: int, descendants: set[int], reason: str) -> None:
+        failure = f"Error: {reason}"
         for child_aid in (*descendants, aid):
             scb = self.table.get(child_aid)
             if scb is None:
@@ -357,6 +414,8 @@ class SchedulerRunMixin:
                     )
             for message in table.ordered_results():
                 scb.state.append_message(message)
+            if not table.is_empty() and scb.state.submitted_summary is not None:
+                scb.state.append_message({"role": "assistant", "content": scb.state.submitted_summary})
             table.clear()
             scb.state.consume_queued_external_user_turn()
             scb.state.clear_active_turn()
@@ -377,12 +436,6 @@ class SchedulerRunMixin:
             self._release_leases(child_aid)
             self._turn_started_at.pop(child_aid, None)
             self._autosave_session(child_aid)
-
-        await self.notify_unanswered_senders(aid, reason)
-        await self._safe_emit_scheduler_event(
-            self._events.agent_cancelled(aid, target.agent.name)
-        )
-        self._write_manifest()
 
     def _message_budget_cleanup_tasks(self) -> set[asyncio.Task]:
         if not any(

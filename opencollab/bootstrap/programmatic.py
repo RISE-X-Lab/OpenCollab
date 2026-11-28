@@ -43,7 +43,7 @@ from opencollab.bootstrap.agent_profiles import SingleAgentProfile, resolve_agen
 from opencollab.bootstrap.agent_runtime import (
     AgentRuntimeLifecycleError,
     AgentRuntimeResult,
-    run_environment_hook,
+    _environment_hook_failure,
 )
 from opencollab.bootstrap.agent_runtime import (
     run_agent as _run_agent,
@@ -221,7 +221,7 @@ def _verify_artifact_claim(path: Path | None) -> None:
 def _require_json_workflow_inputs(inputs: Mapping[str, Any]) -> None:
     """Reject inputs that the workflow artifact manifest could not persist."""
     try:
-        json.dumps(inputs)
+        json.dumps(inputs, allow_nan=False)
     except (TypeError, ValueError, OverflowError, RecursionError) as exc:
         raise ValueError(
             "workflow inputs must be JSON-serializable when artifacts are enabled"
@@ -247,13 +247,11 @@ def _settle_programmatic_workflow_manifest(
     path = artifacts / "workflow.json"
     try:
         manifest = _require_json_object(path, "workflow manifest")
-        if cleanup_succeeded:
-            manifest["evidence_complete"] = True
-        else:
+        if not cleanup_succeeded and manifest.get("status") not in {"failed", "stopped"}:
             manifest["status"] = "failed"
             manifest["reason"] = "environment_cleanup_failed"
             manifest["failure_type"] = "ProgrammaticLifecycleError"
-            manifest["evidence_complete"] = False
+        manifest["evidence_complete"] = cleanup_succeeded
         SessionStore().save_manifest(path, manifest)
     except BaseException as exc:
         return exc
@@ -485,7 +483,7 @@ def _workflow_metrics(
     }
     metrics.update(
         _quiescence_metrics(
-            session_quiesced=details is not None,
+            session_quiesced=details is not None and not details.startup_cleanup_deferred,
             environment_owned=environment_owned,
             environment_cleanup_quiesced=environment_cleanup_quiesced,
             environment_quiesced=environment_quiesced,
@@ -537,27 +535,33 @@ async def run_workflow(
         else asyncio.get_running_loop().time() + timeout
     )
     details: WorkflowRuntimeResult | None = None
-    stopped_error: BaseException | None = None
+    stopped_error: WorkflowDeadlineExceeded | None = None
     failed_error: BaseException | None = None
     bootstrap_stopped_environment = False
     environment_cleanup_quiesced: bool | None = None
     environment_quiesced: bool | None = None
 
     async def cleanup_owned_environment() -> None:
-        cleaned = await run_environment_hook(resolved_environment, "cleanup", timeout=cleanup_timeout)
-        if cleaned:
+        cleanup_failure = await _environment_hook_failure(resolved_environment, "cleanup", timeout=cleanup_timeout)
+        if cleanup_failure is None:
             if details is not None and details.evidence_complete:
                 _finalize_programmatic_workflow_manifest(artifacts)
             return
         manifest_failure = _settle_programmatic_workflow_manifest(artifacts, cleanup_succeeded=False)
         failure = ProgrammaticLifecycleError("workflow-owned environment cleanup failed")
+        if failed_error is not None:
+            failure.__context__ = failed_error
+            add_exception_note(
+                failure,
+                f"workflow execution also failed: {type(failed_error).__name__}: {failed_error}",
+            )
         if manifest_failure is not None:
             add_exception_note(
                 failure,
                 "workflow manifest downgrade also failed: "
                 f"{type(manifest_failure).__name__}: {manifest_failure}",
             )
-        raise failure from manifest_failure
+        raise failure from cleanup_failure
 
     try:
         try:
@@ -593,6 +597,8 @@ async def run_workflow(
             bootstrap_stopped_environment = True
             stopped_error = exc
         except WorkflowLifecycleError as exc:
+            failed_error = exc
+            details = exc.runtime_result
             raise ProgrammaticLifecycleError(str(exc)) from exc
         except asyncio.CancelledError as cancellation:
             bootstrap_stopped_environment = True
@@ -607,38 +613,44 @@ async def run_workflow(
                     )
             raise
         except Exception as exc:
+            failed_error = exc
             details = getattr(exc, "runtime_result", None)
             if details is None or not details.evidence_complete:
                 raise ProgrammaticLifecycleError(
                     "workflow runtime failed without finalized execution evidence"
                 ) from exc
-            failed_error = exc
     finally:
-        if owned_environment and not bootstrap_stopped_environment:
+        environment_deferred = details is not None and details.environment_cleanup_deferred
+        if owned_environment and not bootstrap_stopped_environment and not environment_deferred:
             await await_owned_operation(cleanup_owned_environment(), propagate_cancellation=True)
             environment_cleanup_quiesced = True
             environment_quiesced = True
 
-    if not owned_environment:
-        _verify_artifact_claim(artifacts)
     if stopped_error is not None:
-        if owned_environment:
-            _finalize_programmatic_workflow_manifest(artifacts)
         details = stopped_error.result
+        environment_deferred = details is not None and details.environment_cleanup_deferred
+        if owned_environment and not environment_deferred:
+            _finalize_programmatic_workflow_manifest(artifacts)
+        else:
+            _verify_artifact_claim(artifacts)
         metrics = _workflow_metrics(
             details,
             agent_profile=agent_profile,
             run_id=run_id,
             environment_owned=owned_environment,
             environment_cleanup_quiesced=(
-                True if owned_environment else environment_cleanup_quiesced
+                not environment_deferred if owned_environment else environment_cleanup_quiesced
             ),
             environment_quiesced=(
-                True if owned_environment else environment_quiesced
+                not environment_deferred if owned_environment else environment_quiesced
             ),
         )
         return ProgrammaticResult(
-            output=None,
+            output=(
+                details.output
+                if details is not None and details.evidence_complete and details.body_returned_before_deadline
+                else None
+            ),
             status="stopped",
             reason="timeout",
             tokens=0 if details is None else details.tokens,
@@ -647,6 +659,8 @@ async def run_workflow(
             metrics=metrics,
             agent_failures=() if details is None else details.agent_failures,
         )
+    if not owned_environment:
+        _verify_artifact_claim(artifacts)
     if failed_error is not None:
         return ProgrammaticResult(
             output=None,

@@ -40,6 +40,7 @@ def test_returned_summary_usage_survives_cancellation_during_owned_client_close(
     session = build_session(agent=Agent(name="close-window", system_prompt="system"),
                             llm_timeout=deadline, tracer=tracer)
     session.messages = history()
+    session.state.set_context_tokens(23)
 
     async def scenario():
         owner = asyncio.create_task(session.run_loop())
@@ -67,6 +68,7 @@ def test_returned_summary_usage_survives_cancellation_during_owned_client_close(
 
     asyncio.run(scenario())
     assert session.used_tokens == 7_600
+    assert session.state.context_tokens == 23
     assert session.runner.late_provider_usage == ()
     assert session.pending_cleanup_tasks == ()
     assert clients[1].close_exited is True
@@ -75,6 +77,7 @@ def test_returned_summary_usage_survives_cancellation_during_owned_client_close(
     assert len(calls) == 1
     assert calls[0]["tokens"] == 7_600
     assert calls[0]["payload"]["purpose"] == "summary"
+    assert not calls[0]["payload"].get("late")
 
 def test_returned_summary_usage_survives_owned_client_close_failure(monkeypatch):
     clients = []

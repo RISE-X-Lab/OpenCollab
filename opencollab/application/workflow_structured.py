@@ -73,7 +73,7 @@ class WorkflowStructuredMixin:
         *,
         schema: dict[str, Any],
         label: str | None,
-        tools: Sequence[Any] | None,
+        tools: str | Sequence[Any] | None,
         isolation: bool | str | None,
         timeout: float | None = None,
         budget: int | None = None,
@@ -90,15 +90,15 @@ class WorkflowStructuredMixin:
         capture_done = asyncio.Event()
         capture_tool = StructuredOutputTool(schema, on_capture=capture_done.set)
         seeded_prompt = prompt + _STRUCTURED_INSTRUCTION
-        combined_tools = [capture_tool, *(tools or [])]
         session_budget = self._capped_session_budget(budget)
         try:
             session = await self._build_workflow_session(
                 prompt=seeded_prompt,
                 budget=session_budget,
-                tools=combined_tools,
+                tools=[capture_tool, *self._tools_for_capture(tools)],
                 isolation=isolation,
                 label=label,
+                startup_deadline=deadline,
                 # Inherit the run-wide reasoning setting rather than forcing it
                 # off. Hard-coding it off here exempted every schema-bound agent
                 # from a setting the run had declared, which reads back from the
@@ -107,6 +107,9 @@ class WorkflowStructuredMixin:
                 # on is trying to hold equal.
                 thinking=None,
             )
+        except CallerTimeoutError:
+            await self.log(f"structured agent timed out during workspace setup ({label or 'agent'})")
+            return None
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"structured agent build failed ({label or 'agent'}): {exc}")
@@ -131,8 +134,10 @@ class WorkflowStructuredMixin:
                 await self.log(f"structured agent input exceeded provider limits ({label or 'agent'})")
                 return None
         except CallerTimeoutError:
+            # The deadline can expire during persistence after the tool captured a result.
+            captured = None if self._agent_output_filtered(session) else capture_tool.captured
             await self.log(f"structured agent timed out ({label or 'agent'}) after {timeout}s")
-            return None
+            return captured if _schema_satisfied(captured, schema) else None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"structured agent failed ({label or 'agent'}): {exc}")
@@ -202,6 +207,7 @@ class WorkflowStructuredMixin:
                 isolation=isolation,
                 label=label,
                 tool_choice=_named_tool_choice(capture_tool.name),
+                startup_deadline=deadline,
                 # Inherit here too, for the same reason as the first pass. The
                 # original rationale for forcing it off -- that reasoning makes
                 # the model answer in free text instead of calling the capture
@@ -211,12 +217,16 @@ class WorkflowStructuredMixin:
                 # the caller's own timeout already bounds.
                 thinking=None,
             )
+        except CallerTimeoutError:
+            await self.log(f"structured retry timed out during workspace setup ({label or 'agent'})")
+            captured = capture_tool.captured
+            return captured if _schema_satisfied(captured, schema) else None
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"structured retry build failed ({label or 'agent'}): {exc}")
             return None
 
-        self._track_session(session)
+        self._track_session(session, continue_budget=True)
         try:
             if not self._carry_exploration(prior_session, session):
                 await self.log(
@@ -231,8 +241,9 @@ class WorkflowStructuredMixin:
                 cancel_event=capture_done,
             )
         except CallerTimeoutError:
+            captured = None if self._agent_output_filtered(session) else capture_tool.captured
             await self.log(f"structured retry timed out ({label or 'agent'}) after {timeout}s")
-            return None
+            return captured if _schema_satisfied(captured, schema) else None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"structured retry failed ({label or 'agent'}): {exc}")

@@ -19,12 +19,16 @@ from opencollab.application._anthropic_history import (
     _strip_anthropic_thinking,
 )
 from opencollab.application._session_run_shared import (
+    _CONTEXT_WINDOW_LIMIT_REASON,
     _INCOMPLETE_RESPONSE_REASONS,
+    _OUTPUT_LIMIT_REASONS,
     _STRUCTURED_OUTPUT_TOOL,
     _WRITE_TOOLS,
     GenerationTimeoutError,
     _ContextOverflowStop,
+    _recorded_tool_call,
     _request_tool_names,
+    _RequestBudgetRecovery,
     _submit_tool_choice,
     _TeamBudgetStop,
     _TokenBudgetStop,
@@ -37,6 +41,7 @@ from opencollab.application._session_run_usage import (
 )
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import (
     _NATIVE_COMPLETION_CAPABILITY,
     _NATIVE_REQUEST_ADMISSION,
@@ -48,6 +53,7 @@ from opencollab.application.ports import (
     _native_completion_controls,
     _NativeCompletionControls,
 )
+from opencollab.application.provider_failure import provider_rejected_output_limit
 from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.shaping.pipeline import context_token_estimator
 from opencollab.application.steering import (
@@ -693,7 +699,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if getattr(self.llm, "supports_response_session_identity", False):
             extra["response_session_id"] = self._response_session_id
         try:
-            return await self._invoke_llm(
+            return await self._invoke_with_budget_recovery(
                 messages=messages,
                 tools=tools,
                 temperature=self.agent.temperature,
@@ -728,7 +734,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 step_type="thinking_prefix_recovery",
                 payload={"aid": self.state.aid, "session_step": self.state.step_count, **payload},
             )
-        return await self._invoke_llm(
+        return await self._invoke_with_budget_recovery(
             messages=messages,
             tools=tools,
             temperature=self.agent.temperature,
@@ -791,6 +797,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     def _request_output_limit(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool,
         thinking_params: dict[str, Any] | None = None,
+        required_output_tokens: int = 0,
     ) -> int:
         if self._team_budget_exhausted is not None and self._team_budget_exhausted():
             raise _TeamBudgetStop
@@ -800,9 +807,16 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._run_control is not None and self.hard_budget_tokens is not None
             ),
         )
-        remaining_budget = self.remaining_budget_tokens
+        minimum_output_tokens = max(minimum_output_tokens, required_output_tokens)
+        remaining_budget = self._remaining_request_budget()
         if remaining_budget is not None:
             output_budget = remaining_budget - reserved_input_tokens
+            if self._request_budget_recovery is not None and self._reclaim_output_budget(
+                output_budget, minimum_output_tokens, max_output_tokens,
+            ):
+                remaining_budget = self._remaining_request_budget()
+                assert remaining_budget is not None
+                output_budget = remaining_budget - reserved_input_tokens
             if output_budget < minimum_output_tokens:
                 raise _TokenBudgetStop(
                     reserved_input_tokens=reserved_input_tokens, remaining_budget=remaining_budget,
@@ -810,6 +824,128 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 )
             max_output_tokens = min(max_output_tokens, output_budget)
         return max_output_tokens
+
+    def _remaining_request_budget(self) -> int | None:
+        remaining = self.remaining_budget_tokens
+        if remaining is not None and self._preserve_submit_reserve and not self.state.wind_down_done:
+            return remaining - self._commit_reserve
+        return remaining
+
+    def _budget_recovery_authority(self) -> _RequestBudgetRecovery | None:
+        control = self._run_control
+        if self.max_budget_tokens != self.hard_budget_tokens:
+            return None
+        if control is not None and (
+            control.initial_soft_budget_tokens is not None or control.decide_budget is not None
+        ):
+            return None
+        return self._request_budget_recovery
+
+    def _reclaim_output_budget(self, output: int, minimum_output: int, configured_output: int) -> bool:
+        recovery = self._budget_recovery_authority()
+        if recovery is None:
+            return False
+        if not recovery.observed:
+            recovery.available()
+            recovery.observed = True
+        if output >= minimum_output:
+            return False
+        return self._claim_request_budget(
+            minimum_output - output, max(configured_output, minimum_output) - output,
+        )
+
+    def _claim_request_budget(self, minimum: int, preferred: int) -> bool:
+        recovery = self._budget_recovery_authority()
+        if recovery is None:
+            return False
+        self._raise_if_run_cancelled()
+        grant = recovery.claim(minimum, preferred)
+        if grant is None:
+            return False
+        self.max_budget_tokens = grant
+        self.hard_budget_tokens = grant
+        return True
+
+    async def _invoke_with_budget_recovery(
+        self, *, messages: list[dict], tools: list[dict] | None, max_output_tokens: int, **kwargs: Any,
+    ) -> CompletionResponse:
+        start = time.monotonic()
+        response = await self._invoke_llm(
+            messages=messages, tools=tools, max_output_tokens=max_output_tokens, **kwargs,
+        )
+        first_reply_at = time.monotonic()
+        recovery = self._budget_recovery_authority()
+        if response.finish_reason not in _OUTPUT_LIMIT_REASONS or recovery is None:
+            return response
+        configured, minimum, reserved = self._request_budget_requirements(
+            messages, tools, thinking=kwargs.get("thinking", False), thinking_params=kwargs.get("thinking_params"),
+        )
+        remaining = self._remaining_request_budget()
+        if remaining is None or max_output_tokens >= configured:
+            return response
+        # The clipped response has been billed. The next request must fit the
+        # prompt again and leave more output headroom than the first attempt.
+        retry_limit = min(configured, remaining + recovery.available() - reserved)
+        if retry_limit <= max_output_tokens or retry_limit < minimum:
+            return response
+        missing = reserved + retry_limit - remaining
+        if missing > 0 and not self._claim_request_budget(missing, missing):
+            return response
+        retry_started = time.monotonic()
+        if (
+            isinstance(response.content, str) and response.content.strip()
+            and not getattr(response, "content_from_reasoning", False)
+        ):
+            self._budget_replay_partial = (first_reply_at, response.content)
+        try:
+            self._raise_if_run_cancelled()
+            replacement = await self._invoke_llm(
+                messages=messages, tools=tools, max_output_tokens=retry_limit,
+                required_output_tokens=retry_limit, **kwargs,
+            )
+        except BaseException as exc:
+            if not isinstance(exc, asyncio.CancelledError):
+                self._budget_replay_partial = None
+            if isinstance(exc, (_TokenBudgetStop, _TeamBudgetStop)):
+                return response
+            recoverable = isinstance(exc, Exception) and (
+                isinstance(exc, GenerationTimeoutError)
+                or self._is_context_overflow(exc)
+                or self._is_retryable_provider_error(exc)
+                or provider_rejected_output_limit(exc, retry_limit=retry_limit)
+            )
+            if recoverable and not self._run_cancellation_requested():
+                logger.warning("completion budget retry failed on aid=%s (%s)", self.state.aid, type(exc).__name__)
+                return response
+            try:
+                self.record_llm_trace(response, retry_started - start, purpose="budget_recovery")
+            except Exception as trace_error:
+                add_exception_note(exc, f"completion trace failed: {type(trace_error).__name__}")
+            if recoverable:
+                self._raise_if_run_cancelled()
+            raise
+        self._budget_replay_partial = None
+        original_text = response.content.strip() if isinstance(response.content, str) else ""
+        replacement_text = replacement.content.strip() if isinstance(replacement.content, str) else ""
+        replacement_has_text = bool(replacement_text)
+        if original_text and not getattr(response, "content_from_reasoning", False):
+            replacement_has_text = replacement_has_text and not getattr(replacement, "content_from_reasoning", False)
+            if replacement.finish_reason == _CONTEXT_WINDOW_LIMIT_REASON:
+                replacement_has_text = replacement_has_text and (
+                    len(replacement_text) > len(original_text) and replacement_text.startswith(original_text)
+                )
+            elif replacement.finish_reason in _OUTPUT_LIMIT_REASONS:
+                replacement_has_text = replacement_has_text and not (
+                    len(replacement_text) < len(original_text) and original_text.startswith(replacement_text)
+                )
+        replacement_has_action = (
+            replacement.tool_calls and replacement.finish_reason not in _INCOMPLETE_RESPONSE_REASONS
+        )
+        if replacement.finish_reason != "content_filter" and not (replacement_has_text or replacement_has_action):
+            self.record_llm_trace(replacement, time.monotonic() - retry_started, purpose="budget_recovery")
+            return response
+        self.record_llm_trace(response, retry_started - start, purpose="budget_recovery")
+        return replacement
 
     @property
     def remaining_budget_tokens(self) -> int | None:
@@ -896,10 +1032,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     def _revalidate_request(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool = False,
         thinking_params: dict[str, Any] | None = None,
+        required_output_tokens: int = 0,
     ) -> int:
         self._raise_if_run_cancelled()
         return self._request_output_limit(
             messages, tools, thinking=thinking, thinking_params=thinking_params,
+            required_output_tokens=required_output_tokens,
         )
 
     async def _invoke_summary(
@@ -942,14 +1080,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             })
 
         def account_response(response: CompletionResponse) -> None:
-            input_tokens, _total_tokens = _normalize_completion_usage(response.usage)
             usage_accounting.finish(
                 response.usage, purpose="summary", late=abandoned,
                 response=response,
             )
             self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
-            self.state.set_context_tokens(input_tokens)
-            self.record_llm_trace(response, time.monotonic() - start, purpose="summary", thinking=thinking)
+            self.record_llm_trace(
+                response, time.monotonic() - start, purpose="summary", thinking=thinking, late=abandoned,
+            )
 
         async def complete_owned() -> CompletionResponse:
             try:
@@ -971,13 +1109,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         try:
             if self._per_call_timeout is None:
                 await asyncio.wait({owner})
-                return owner.result()
-            return await abandon_on_timeout(
-                owner, self._per_call_timeout,
-                late_task_tracker=self._mark_provider_task_draining,
-                late_result_handler=self._provider_task_done,
-                start_event=admitted,
-            )
+                response = owner.result()
+            else:
+                response = await abandon_on_timeout(
+                    owner, self._per_call_timeout,
+                    late_task_tracker=self._mark_provider_task_draining,
+                    late_result_handler=self._provider_task_done,
+                    start_event=admitted,
+                )
         except CallerTimeoutError as exc:
             abandoned = True
             raise GenerationTimeoutError(
@@ -990,8 +1129,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                     owner.cancel()
                 self._mark_provider_task_draining(owner)
             raise
+        input_tokens, _total_tokens = _normalize_completion_usage(response.usage)
+        self.state.set_context_tokens(input_tokens)
+        return response
 
-    async def _invoke_llm(self, *, max_output_tokens: int, **kwargs: Any) -> CompletionResponse:
+    async def _invoke_llm(
+        self, *, max_output_tokens: int, required_output_tokens: int = 0, **kwargs: Any,
+    ) -> CompletionResponse:
         """Bound one provider generation by ``_per_call_timeout``.
 
         ``None`` disables the ceiling. Expiry raises ``GenerationTimeoutError``
@@ -1003,21 +1147,28 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         protected_call = self.state.wind_down_done
         usage_accounting = _CompletionUsageAccounting(self, protected_call=protected_call)
         complete = self.llm.complete
+
+        def revalidate() -> int:
+            return self._revalidate_request(
+                kwargs["messages"], kwargs.get("tools"), thinking=kwargs.get("thinking", False),
+                thinking_params=kwargs.get("thinking_params"), required_output_tokens=required_output_tokens,
+            )
+
         admitted, scope = self._add_completion_controls(
             complete, kwargs, max_output_tokens=max_output_tokens,
-            usage_accounting=usage_accounting,
-            revalidate=lambda: self._revalidate_request(
-                kwargs["messages"], kwargs.get("tools"), thinking=kwargs.get("thinking", False),
-                thinking_params=kwargs.get("thinking_params"),
-            ),
+            usage_accounting=usage_accounting, revalidate=revalidate,
         )
         if scope is not None:
             kwargs["messages"] = scope.prepare_messages(kwargs["messages"])
         late_accounted = False
+        started = time.monotonic()
+        request_fields = self._llm_trace_request_fields() if self.tracer else None
 
         async def complete_owned() -> CompletionResponse:
             nonlocal late_accounted
             try:
+                if required_output_tokens:
+                    revalidate()
                 response = await _complete_with_error_usage(
                     self, complete, usage_accounting=usage_accounting, **kwargs,
                 )
@@ -1036,12 +1187,21 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._provider_task_done(task)
             else:
                 self._record_late_provider_result(task, accounting=usage_accounting)
+            if self.tracer and not task.cancelled() and task.exception() is None:
+                try:
+                    self.record_llm_trace(
+                        task.result(), time.monotonic() - started,
+                        purpose="completion", thinking=kwargs.get("thinking"),
+                        late=True, request_fields=request_fields,
+                    )
+                except Exception:
+                    logger.exception("late completion trace failed for aid=%s", self.state.aid)
 
         operation = complete_owned()
         if scope is not None or _native_completion_controls.get() is not None:
             operation = _with_native_completion_controls(operation, scope)
         try:
-            response = await operation if self._per_call_timeout is None else await abandon_on_timeout(
+            response = await abandon_on_timeout(
                 operation,
                 self._per_call_timeout,
                 task_tracker=self._track_provider_task,
@@ -1122,7 +1282,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if has_content:
             assistant_msg["content"] = response.content
         if response.tool_calls:
-            assistant_msg["tool_calls"] = response.tool_calls
+            assistant_msg["tool_calls"] = [_recorded_tool_call(call) for call in response.tool_calls]
         provider_items = getattr(response, "provider_items", None)
         if provider_items:
             assistant_msg["response_items"] = provider_items

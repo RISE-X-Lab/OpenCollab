@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.tools.spawn import SpawnAgentTool
+from opencollab.adapters.trace import Tracer
 from opencollab.application.event_bus import EventBus
+from opencollab.application.run_control import RunControl, RunEvent
 from opencollab.application.scheduler import Scheduler, SchedulerTurnError
 from opencollab.application.session import SessionBusyError
 from opencollab.application.session_run import GenerationTimeoutError
@@ -217,12 +220,14 @@ async def test_late_usage_autosave_failure_remains_visible(local_environment_fac
 async def test_late_summary_usage_is_automatically_saved(local_environment_factory, trigger, tmp_path):
     provider = _DelayedProvider()
     path = tmp_path / "summary.json"
+    tracer = Tracer(run_id="late-summary", output_dir=str(tmp_path))
     session = build_session(
         env=local_environment_factory(),
         agent=FakeAgent(), llm=provider, llm_timeout=0.01 if trigger == "timeout" else None,
-        auto_save_path=str(path),
+        auto_save_path=str(path), tracer=tracer,
     )
     session.messages = history()
+    session.state.set_context_tokens(23)
     try:
         await _abandon_call(session, provider, trigger)
         assert session.used_tokens == 0
@@ -231,19 +236,57 @@ async def test_late_summary_usage_is_automatically_saved(local_environment_facto
         await asyncio.wait_for(_drain(session), 1)
         assert session.used_tokens == 37
         assert session.runner.late_provider_usage == (37,)
+        assert session.state.context_tokens == 23
         assert session.step_count == 0
         assert session.messages == original_messages
         snapshot = SessionStore().load_snapshot(str(path), session.agent.system_prompt)
         assert snapshot["session_state"]["used_tokens"] == 37
+        assert snapshot["session_state"]["context_tokens"] == 23
         assert _message_payloads(snapshot["messages"]) == original_messages
         restored = load_session(str(path), env=local_environment_factory(), agent=FakeAgent(), llm=provider)
         assert restored.used_tokens == 37
+        assert restored.state.context_tokens == 23
         assert restored.messages == original_messages
         assert restored.step_count == 0
         assert session.persistence_errors == ()
+        tracer.flush()
+        with open(tracer.path, encoding="utf-8") as handle:
+            calls = [row for line in handle if (row := json.loads(line))["type"] == "llm_call"]
+        call, = calls
+        assert call["metrics"]["tokens"] == 37
+        assert call["payload"]["purpose"] == "summary"
+        assert call["payload"]["late"] is True
     finally:
         provider.release.set()
         await _drain(session)
+        tracer.close()
+
+async def test_summary_usage_cancellation_keeps_session_reusable(local_environment_factory):
+    provider = _DelayedProvider()
+    provider.release.set()
+    summary_usage = []
+
+    def cancel_on_first_summary(event: RunEvent) -> None:
+        if event.type == "usage" and event.data.get("purpose") == "summary":
+            summary_usage.append(event.used_tokens)
+            if len(summary_usage) == 1:
+                turn.cancel()
+
+    session = build_session(
+        env=local_environment_factory(), agent=FakeAgent(), llm=provider, llm_timeout=600,
+        run_control=RunControl(history_trigger_tokens=512, on_event=cancel_on_first_summary),
+    )
+    session.messages = history()
+    turn = asyncio.create_task(session.run_loop())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(turn, 5)
+
+    assert summary_usage == [37]
+    assert session.used_tokens == 37
+    assert session.phase is SessionPhase.STOPPED
+    assert session.runner.pending_cleanup_tasks == ()
+    await session.add_user_message("next turn")
+    assert await asyncio.wait_for(session.run_loop(), 5) == "provider response"
 
 async def test_session_accounts_provider_success_when_cancellation_races_with_completion(local_environment_factory):
     class Provider:

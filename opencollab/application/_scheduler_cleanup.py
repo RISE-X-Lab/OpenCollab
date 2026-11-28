@@ -16,8 +16,10 @@ from opencollab.application.async_timeout import (
 )
 from opencollab.application.session_lifecycle import close_session_resources
 from opencollab.domain.pending import PendingRowError, RowStatus
+from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
+_CLEANUP_CANCELLED_WORK = "Error: scheduler cleanup cancelled delegated work"
 
 
 class _CleanupTimeout(Enum):
@@ -34,6 +36,9 @@ def _unique_task_owners(*groups: Any) -> list[tuple[int, asyncio.Task[Any]]]:
     return owners
 
 class SchedulerCleanupMixin:
+    def request_shutdown(self) -> None:
+        self._shutting_down = True
+
     async def cleanup(
         self,
         *,
@@ -71,11 +76,21 @@ class SchedulerCleanupMixin:
         return timeout
 
     async def _cleanup_impl(self, *, timeout: float) -> None:
-        self._shutting_down = True
+        self.request_shutdown()
         failures: list[str] = []
         persistence_sessions = tuple(self._sessions.values())
         startup_aids = set(self._startup_tasks)
         origins = {**self._startup_origin, **self._spawn_origin}
+        # A cancelled recovery waiter can mark its suspended turn stopped before teardown.
+        suspended_aids = {
+            aid for aid, scb in self.table.entries.items()
+            if scb.state.phase is SessionPhase.AWAITING_EVENTS
+            or (
+                scb.state.phase is SessionPhase.STOPPED
+                and scb.state.terminal_reason == _CLEANUP_CANCELLED_WORK
+                and not scb.state.pending_events.is_empty()
+            )
+        }
         interrupted_deliveries = set(self._message_delivery_tasks)
         public_run_tasks = _unique_task_owners(
             ((aid, task) for task, aid in self._active_run_tasks.items()),
@@ -95,7 +110,8 @@ class SchedulerCleanupMixin:
         running_public_turns = {
             (aid, task) for aid, task in public_run_tasks if not task.done()
         }
-        all_tasks = {task for _aid, task in tracked_tasks}
+        # Cleanup retries still own tasks that outlived the previous cancellation wait.
+        all_tasks = {task for _aid, task in tracked_tasks} | self._pending_shutdown_tasks
         pending = await cancel_tasks_and_wait(all_tasks, timeout=timeout)
         for task in all_tasks - pending:
             consume_task_result(task)
@@ -108,6 +124,7 @@ class SchedulerCleanupMixin:
             timeout=timeout,
         )
         pending = {task for task in pending if not task.done()}
+        self._pending_shutdown_tasks = pending
         if pending:
             failures.append("execution tasks did not quiesce")
         if interrupted_deliveries:
@@ -127,6 +144,31 @@ class SchedulerCleanupMixin:
             self._locks.pop(aid, None)
             self._run_locks.pop(aid, None)
             self._message_inbox.pop(aid, None)
+
+        # Suspended turns have no running driver for cleanup to cancel.
+        # Settle them before saving so restore cannot resume a stopped turn.
+        suspended = [
+            (aid, scb) for aid, scb in self.table.entries.items()
+            if scb.state.phase is SessionPhase.AWAITING_EVENTS
+            or (aid in suspended_aids and not scb.state.pending_events.is_empty())
+        ]
+        for aid, _scb in suspended:
+            self._finalize_cleanup_failure(aid, origin_override=origins.get(aid))
+        for _aid, scb in suspended:
+            state = scb.state
+            pending_events = state.pending_events
+            for tool_call_id, row in tuple(pending_events.rows.items()):
+                if row.status is RowStatus.PENDING:
+                    pending_events.fill(
+                        tool_call_id, result=_CLEANUP_CANCELLED_WORK,
+                        status=RowStatus.FAILED, error=_CLEANUP_CANCELLED_WORK,
+                    )
+            if state.submitted_summary is not None:
+                for message in pending_events.ordered_results():
+                    state.append_message(message)
+                pending_events.clear()
+                state.append_message({"role": "assistant", "content": state.submitted_summary})
+            state.clear_active_turn()
 
         self._startup_tasks.clear()
         self._startup_envs.clear()
@@ -159,10 +201,18 @@ class SchedulerCleanupMixin:
         if persistence_errors:
             failures.append("session persistence failed")
 
-        session_resources_closed = await close_session_resources(
-            self._persistence_sessions(persistence_sessions),
-            timeout=timeout,
-        )
+        close_task = self._session_close_task
+        if close_task is None or (
+            close_task.done()
+            and (close_task.cancelled() or close_task.exception() is not None or not close_task.result())
+        ):
+            close_task = asyncio.create_task(close_session_resources(
+                self._persistence_sessions(persistence_sessions), timeout=None,
+            ))
+            self._session_close_task = close_task
+            close_task.add_done_callback(consume_task_result)
+        closed, _ = await asyncio.wait({close_task}, timeout=timeout)
+        session_resources_closed = bool(closed) and close_task.result()
         if not session_resources_closed:
             failures.append("session resource close failed or timed out")
 
@@ -177,13 +227,10 @@ class SchedulerCleanupMixin:
             if isinstance(error, BaseException):
                 lifecycle_errors.append(error)
 
-        release_safe = (
-            not pending
-            and environments_aborted
-            and persistence_quiesced
-            and session_resources_closed
-            and lifecycle_quiesced
-        )
+        execution_settled = not pending and environments_aborted and persistence_quiesced
+        if execution_settled and not closed:
+            self._continue_worktree_release(close_task, persistence_sessions, timeout=timeout)
+        release_safe = execution_settled and session_resources_closed and lifecycle_quiesced
         worktrees_released = release_safe and await self._release_worktree_pool_bounded(timeout=timeout)
         if not worktrees_released:
             failures.append(
@@ -192,12 +239,35 @@ class SchedulerCleanupMixin:
                 else "worktree pool release skipped because owned work did not quiesce"
             )
         if failures:
+            if environments_aborted and any(task in pending for _aid, task in running_public_turns):
+                self._continue_cleanup_after_turns(pending, timeout=timeout)
             failure = RuntimeError("technical scheduler cleanup failed: " + "; ".join(failures))
             if persistence_errors:
                 raise failure from persistence_errors[0]
             if lifecycle_errors:
                 raise failure from lifecycle_errors[0]
             raise failure
+
+    def _continue_cleanup_after_turns(self, pending: set[asyncio.Future[object]], *, timeout: float) -> None:
+        owner = self._deferred_turn_cleanup
+        if owner is not None and not owner.done():
+            return
+        first_attempt = self._cleanup_task
+
+        async def finish_cleanup() -> None:
+            await asyncio.wait(pending)
+            if first_attempt is not None:
+                await asyncio.wait({first_attempt})
+                if self._cleanup_task is first_attempt:
+                    self._cleanup_task = None
+            try:
+                await self.cleanup(cleanup_timeout=timeout)
+            except Exception:
+                logger.exception("deferred scheduler cleanup failed")
+
+        owner = asyncio.create_task(finish_cleanup())
+        self._deferred_turn_cleanup = owner
+        owner.add_done_callback(consume_task_result)
 
     def _persistence_sessions(self, initial: tuple[Any, ...]) -> tuple[Any, ...]:
         sessions: list[Any] = []
@@ -207,6 +277,25 @@ class SchedulerCleanupMixin:
                 seen.add(id(session))
                 sessions.append(session)
         return tuple(sessions)
+
+    def _continue_worktree_release(
+        self, close_task: asyncio.Task[bool], sessions: tuple[Any, ...], *, timeout: float,
+    ) -> None:
+        owner = self._deferred_worktree_release
+        if owner is not None and not owner.done():
+            return
+
+        async def release_after_close() -> None:
+            if not await asyncio.shield(close_task):
+                return
+            while tasks := self._pending_session_persistence_tasks(sessions):
+                await asyncio.wait(tasks)
+            if all(getattr(resource, "cleanup_quiesced", False) is True for _, resource in self._lifecycle_resources):
+                await self._release_worktree_pool_bounded(timeout=timeout)
+
+        owner = asyncio.create_task(release_after_close())
+        self._deferred_worktree_release = owner
+        owner.add_done_callback(consume_task_result)
 
     def _pending_session_persistence_tasks(
         self,
@@ -270,7 +359,7 @@ class SchedulerCleanupMixin:
         *,
         origin_override: tuple[int, str] | None = None,
     ) -> None:
-        reason = "Error: scheduler cleanup cancelled delegated work"
+        reason = _CLEANUP_CANCELLED_WORK
         self._release_leases(aid)
         if aid in self._delivery_committed:
             return
@@ -290,8 +379,7 @@ class SchedulerCleanupMixin:
                     logger.debug("cleanup could not fail pending row %s on aid %s", tool_call_id, parent_aid)
         scb = self.table.get(aid)
         if scb is not None:
-            scb.state.cancel(reason)
-            scb.result = reason
+            self._record_agent_cancellation(scb, reason, reason=reason)
 
     async def _abort_session_environments(self, aids: set[int], *, timeout: float) -> bool:
         environments: list[tuple[int, Any]] = []
@@ -348,11 +436,16 @@ class SchedulerCleanupMixin:
         return succeeded
 
     async def _release_worktree_pool_bounded(self, *, timeout: float) -> bool:
-        try:
+        async def release_pool() -> None:
             result = self._worktree_pool.release()
-            if not inspect.isawaitable(result):
-                return True
-            task = asyncio.ensure_future(result)
+            if inspect.isawaitable(result):
+                await result
+
+        task = self._worktree_release_task
+        if task is None or (task.done() and (task.cancelled() or task.exception() is not None)):
+            task = asyncio.create_task(release_pool())
+            self._worktree_release_task = task
+        try:
             done, pending = await asyncio.wait({task}, timeout=timeout)
             if pending:
                 task.cancel()

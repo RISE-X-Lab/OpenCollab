@@ -791,7 +791,10 @@ async def test_cancelled_generated_group_resumes_at_executed_check(tmp_path):
     assert settled.is_set()
     assert (tmp_path / "result.txt").read_text() == "correct\n"
     assert len(model.calls) == 2
-    state = WeaveState(interrupted.saved[-1])
+    cancelled_checkpoint = interrupted.saved[-1]
+    assert cancelled_checkpoint["status"] == "cancelled"
+    assert cancelled_checkpoint["error_type"] == "CancelledError"
+    state = WeaveState(cancelled_checkpoint)
     original_tokens = state.tokens
     resumed = FileChecks(tmp_path)
 
@@ -807,6 +810,161 @@ async def test_cancelled_generated_group_resumes_at_executed_check(tmp_path):
     assert result.tokens == 0
     assert state.tokens == original_tokens == 12
     assert resumed.checks and all(check.executed and check.ok for check in resumed.checks)
+    assert result.output["state"]["status"] == resumed.saved[-1]["status"] == "completed"
+    assert "error_type" not in result.output["state"]
+    assert "error_type" not in resumed.saved[-1]
+    assert cancelled_checkpoint["error_type"] == "CancelledError"
+
+@pytest.mark.parametrize("repair_passes", [True, False])
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_cancelled_repair_resumes_at_verification(tmp_path, repair_passes, legacy):
+    entering_check = asyncio.Event()
+    previous_checks = 2 if repair_passes else 3
+
+    class Interrupted(FileChecks):
+        async def verify(self, ctx, targets, seconds):
+            if len(self.checks) == previous_checks:
+                entering_check.set()
+                await asyncio.Event().wait()
+            return await super().verify(ctx, targets, seconds)
+
+    model = FileModel(repaired="correct\n" if repair_passes else "wrong\n")
+    config = _config(max_repair_rounds=5, stagnant_round_limit=2)
+    adapter = Interrupted(tmp_path)
+    state = None
+
+    async def flow(ctx, _args):
+        return await run_weave(ctx, [WeaveGroup("result", "write-stage")],
+                               config=config, adapter=adapter, state=state)
+
+    options = dict(llm=model, budget=20_000, limit_mode="explicit", trace=False,
+                   run_id="resume-repair", agent_profile="single2")
+    running = asyncio.create_task(_client(tmp_path).workflow(flow, **options))
+    try:
+        await asyncio.wait_for(entering_check.wait(), 5)
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+    saved = json.loads(json.dumps(adapter.saved[-1]))
+    pending = saved["repair_rounds"][-1]
+    assert pending["status"] == "running"
+    original_result = pending["result"]
+    if legacy:
+        pending.pop("result")
+    state = WeaveState(saved)
+    tokens_before = state.tokens
+    calls_before = len(model.calls)
+    adapter = FileChecks(tmp_path)
+    result = await _client(tmp_path).workflow(flow, **options)
+
+    extra_calls = 2 if legacy and not repair_passes else 0
+    assert result.ok and result.output["delivery_ok"] is repair_passes
+    assert len(model.calls) == calls_before + extra_calls
+    assert result.output["total_tokens"] == tokens_before + 6 * extra_calls
+    assert result.tokens == 6 * extra_calls
+    assert len(adapter.checks) == 1 + extra_calls // 2
+    assert all(check.executed for check in adapter.checks)
+    rounds = result.output["repair_rounds"]
+    assert len(rounds) == len(saved["repair_rounds"]) + extra_calls // 2
+    restored = rounds[pending["round"] - 1]
+    assert restored["status"] == ("interrupted" if legacy else "completed")
+    if not legacy:
+        assert restored["session_id"] == original_result["session_id"]
+        assert restored["tokens"] == 12 and restored["steps"] == 2
+    assert result.output["repair_stop_reason"] == (
+        "passed" if repair_passes else "rounds_without_observable_progress"
+    )
+    if not repair_passes:
+        assert rounds[-1]["stagnant_rounds"] == 2
+
+async def test_error_checkpoint_preserves_the_verifier_error(tmp_path):
+    class Failing(FileChecks):
+        async def verify(self, ctx, targets, seconds):
+            await super().verify(ctx, targets, seconds)
+            raise ValueError("cannot read the verifier report")
+
+        def save_state(self, data):
+            if data["status"] == "failed":
+                raise OSError("cannot write the stopped snapshot")
+            super().save_state(data)
+
+    adapter = Failing(tmp_path)
+
+    async def flow(ctx, _args):
+        return await run_weave(ctx, [WeaveGroup("result", "write-stage")],
+                               config=_config(), adapter=adapter)
+
+    result = await _client(tmp_path).workflow(
+        flow, llm=FileModel(initial="correct\n"), budget=20_000, trace=False,
+    )
+    assert adapter.checks[0].executed
+    assert result.status == "failed" and isinstance(result.error, ValueError)
+    assert str(result.error) == "cannot read the verifier report"
+    assert any("cannot write the stopped snapshot" in note for note in result.error.__notes__)
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_failed_repair_heartbeat_preserves_the_solver_exit(tmp_path, cancelled):
+    heartbeat_failed, awaiting_cancel = asyncio.Event(), asyncio.Event()
+    errors = []
+
+    class BrokenHeartbeat(FileChecks):
+        fail_snapshot = False
+
+        def on_update(self, kind, state, data):
+            if kind == "heartbeat" and data["phase"] == "repair-1":
+                self.fail_snapshot = True
+            super().on_update(kind, state, data)
+
+        def save_state(self, data):
+            if self.fail_snapshot:
+                self.fail_snapshot = False
+                heartbeat_failed.set()
+                raise OSError("heartbeat checkpoint unavailable")
+            super().save_state(data)
+
+    class WaitingSolver(FileModel):
+        async def complete(self, messages, tools=None, **kwargs):
+            response = await super().complete(messages, tools, **kwargs)
+            prompt = next(message["content"] for message in messages if message["role"] == "user")
+            if response.finish_reason == "stop" and prompt.startswith("repair-stage"):
+                await asyncio.wait_for(heartbeat_failed.wait(), 5)
+                if cancelled:
+                    awaiting_cancel.set()
+                    await asyncio.Event().wait()
+            return response
+
+    adapter, model = BrokenHeartbeat(tmp_path), WaitingSolver()
+
+    async def flow(ctx, _args):
+        try:
+            return await run_weave(ctx, [WeaveGroup("result", "write-stage")],
+                                   config=_config(), adapter=adapter)
+        except BaseException as error:
+            errors.append(error)
+            raise
+
+    running = asyncio.create_task(_client(tmp_path).workflow(
+        flow, llm=model, budget=20_000, trace=False,
+    ))
+    if cancelled:
+        try:
+            await asyncio.wait_for(awaiting_cancel.wait(), 5)
+        finally:
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+        error, = errors
+        assert isinstance(error, asyncio.CancelledError)
+        assert any("heartbeat checkpoint unavailable" in note for note in error.__notes__)
+        assert adapter.saved[-1]["status"] == "cancelled"
+    else:
+        result = await running
+        assert result.status == "failed" and isinstance(result.error, OSError)
+        assert str(result.error) == "heartbeat checkpoint unavailable"
+        assert adapter.saved[-1]["status"] == "failed"
+    assert (tmp_path / "result.txt").read_text() == "correct\n"
 
 async def test_cancelled_writer_settles_before_return_without_later_group_or_check(tmp_path):
     writing, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()

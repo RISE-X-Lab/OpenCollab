@@ -110,7 +110,7 @@ class TeamWorkflowTool(Tool):
             spec, params["args"], cfg=config,
             workspace=runtime.environment.workspace if runtime.environment is not None else None,
             env=runtime.environment, cleanup_environment=False,
-            budget=budget, limit_mode="explicit",
+            budget=budget, allow_budget_escape=False, limit_mode="explicit",
             max_concurrency=params.get("concurrency", 4),
             max_steps=parent.max_steps,
             llm=parent._llm, session_builder=build_child,

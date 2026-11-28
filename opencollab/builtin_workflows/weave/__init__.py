@@ -9,10 +9,10 @@ import math
 import time
 import uuid
 from collections.abc import Mapping, Sequence
-from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.sdk import BudgetDecision, BudgetSnapshot, RunControl, RunEvent
 from opencollab.tools import Tool
 from opencollab.workflows import WorkflowContext, workflow
@@ -454,6 +454,7 @@ class _WeaveRun:
             return BudgetDecision(cap, final_prompt=prompt)
 
         heartbeat = asyncio.create_task(self.heartbeat(label))
+        primary_error: BaseException | None = None
         try:
             result = await self.ctx.agent_run(
                 prompt, tools=adapter.tools(label), budget=hard, timeout=seconds, max_steps=steps,
@@ -462,10 +463,16 @@ class _WeaveRun:
                                        history_trigger_tokens=config.history_trigger_tokens,
                                        tool_cancellation_cleanup_timeout=config.tool_cleanup_seconds),
             )
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
             heartbeat.cancel()
-            with suppress(asyncio.CancelledError):
-                await heartbeat
+            heartbeat_result, = await asyncio.gather(heartbeat, return_exceptions=True)
+            if isinstance(heartbeat_result, Exception):
+                if primary_error is None:
+                    raise heartbeat_result
+                add_exception_note(primary_error, f"Weave heartbeat failed: {heartbeat_result}")
         if result.session_id:
             state.observe(label, result.session_id, result.tokens, result.steps)
         if not result.cleanup_complete or not result.workspace_ready:
@@ -486,16 +493,36 @@ class _WeaveRun:
     async def full_check(self) -> WeaveCheck:
         seconds = max(0, min(self.seconds_left() - self.config.final_check_time_reserve,
                              _minimum(self.config.final_check_timeout)))
-        check = await self.check(None, _optional(seconds))
+        return await self.check(None, _optional(seconds))
+
+    def record_full_check(self, check: WeaveCheck) -> None:
         self.state.data["verification"] = asdict(check)
         self.persist("check_finished", number=len(self.state.data["repair_rounds"]), check=check)
-        return check
+
+    async def finish_repair(
+        self, row: dict[str, Any], before: WeaveCheck, stagnant: int,
+    ) -> tuple[WeaveCheck, int]:
+        report = await self.full_check()
+        advanced = self.adapter.improved(before, report)
+        stagnant = 0 if advanced else stagnant + 1
+        row.update(row.pop("result"), observable_progress=advanced, stagnant_rounds=stagnant)
+        self.record_full_check(report)
+        self.persist("repair_finished", number=row["round"], result=row, check=report)
+        return report, stagnant
 
     async def repair(self) -> tuple[WeaveCheck, str]:
         await self.ctx.phase("Full delivery verification")
-        report = await self.full_check()
         rounds, config = self.state.data["repair_rounds"], self.config
-        stagnant = int(rounds[-1].get("stagnant_rounds", 0)) if rounds else 0
+        for row in rounds:
+            if row.get("status") == "running" and "result" not in row:
+                row["status"] = "interrupted"
+        stagnant = next((int(row["stagnant_rounds"]) for row in reversed(rounds) if "stagnant_rounds" in row), 0)
+        if rounds and rounds[-1].get("status") == "running":
+            before = WeaveCheck(**self.state.data["verification"])
+            report, stagnant = await self.finish_repair(rounds[-1], before, stagnant)
+        else:
+            report = await self.full_check()
+            self.record_full_check(report)
         stop = "passed" if report.passed else "round_limit"
         if not report.passed and stagnant >= config.stagnant_round_limit:
             return report, "rounds_without_observable_progress"
@@ -520,13 +547,12 @@ class _WeaveRun:
             await self.ctx.phase(f"Repair round {number}")
             timeout = min(_minimum(config.repair_timeout), max(config.minimum_session_seconds,
                                                                seconds - config.repair_agent_time_reserve))
-            info = await self.solve(self.adapter.repair_prompt(report, self.state), soft=budget, hard=budget,
-                                    steps=config.repair_steps, seconds=_optional(timeout), label=f"repair-{number}")
-            before, report = report, await self.full_check()
-            advanced = self.adapter.improved(before, report)
-            stagnant = 0 if advanced else stagnant + 1
-            row.update(info, observable_progress=advanced, stagnant_rounds=stagnant)
-            self.persist("repair_finished", number=number, result=row, check=report)
+            row["result"] = await self.solve(
+                self.adapter.repair_prompt(report, self.state), soft=budget, hard=budget,
+                steps=config.repair_steps, seconds=_optional(timeout), label=f"repair-{number}",
+            )
+            self.persist()
+            report, stagnant = await self.finish_repair(row, report, stagnant)
             if report.passed:
                 stop = "passed"
             elif stagnant >= config.stagnant_round_limit:
@@ -607,6 +633,7 @@ class _WeaveRun:
             completed.append((group, saved["changed_files"]))
         report, repair_stop = await self.repair()
         status = "completed" if report.passed else "failed" if report.executed else "unverified"
+        state.data.pop("error_type", None)
         state.data.update(status=status, delivery_ok=report.passed)
         result = {"run_id": state.data["run_id"], "status": status, "delivery_ok": report.passed,
                   "total_tokens": state.tokens, "elapsed_seconds": state.elapsed,
@@ -633,7 +660,10 @@ async def run_weave(ctx: WorkflowContext, groups: Sequence[WeaveGroup], *,
     except BaseException as error:
         state.data.update(status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
                           delivery_ok=False, error_type=type(error).__name__)
-        runner.persist("finished", error_type=type(error).__name__, status=state.data["status"])
+        try:
+            runner.persist("finished", error_type=type(error).__name__, status=state.data["status"])
+        except Exception as persistence_error:
+            add_exception_note(error, f"could not persist Weave failure: {persistence_error}")
         raise
 
 @workflow(

@@ -81,7 +81,7 @@ def test_duo_task_forwards_goal_and_explicit_shell_choice(tmp_path, monkeypatch)
 
     async def run(spec, args, **kwargs):
         captured.update(name=spec.name, args=args)
-        return SimpleNamespace(output=args, stop_reason=None)
+        return SimpleNamespace(output=kwargs["format_output"](args), stop_reason=None)
 
     monkeypatch.delenv("OPENCOLLAB_WORKFLOWS_DIR", raising=False)
     monkeypatch.setattr(workflow_cli, "run_workflow", run)

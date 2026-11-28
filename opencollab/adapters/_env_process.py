@@ -208,14 +208,26 @@ async def terminate_process(
         except ProcessLookupError:
             pass
 
-    send(signal.SIGTERM)
-    if not await _wait_for_group_exit(group_id, term_grace):
-        send(signal.SIGKILL)
+    signal_denied = None
+    try:
+        send(signal.SIGTERM)
+        if not await _wait_for_group_exit(group_id, term_grace):
+            send(signal.SIGKILL)
+    except PermissionError as exc:
+        if sys.platform != "darwin":
+            raise
+        # Darwin can deny a signal while the group's last members are exiting.
+        signal_denied = exc
     try:
         await asyncio.wait_for(process.wait(), timeout=kill_grace)
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as exc:
+        if signal_denied is not None:
+            raise signal_denied from exc
         return False
-    return await _wait_for_group_exit(group_id, kill_grace)
+    quiesced = await _wait_for_group_exit(group_id, kill_grace)
+    if not quiesced and signal_denied is not None:
+        raise signal_denied
+    return quiesced
 
 async def _require_process_exit(
     process: asyncio.subprocess.Process,

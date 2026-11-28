@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextvars import copy_context
 from typing import Callable
 
 from opencollab.application.ports import EventPublisherPort
@@ -33,7 +34,7 @@ class AutoSaveSubscriber(EventPublisherPort):
     """Persist consistent snapshots through one owned background worker.
 
     ``prepare_fn`` freezes mutable state on the event loop, then the worker
-    runs file I/O via ``asyncio.to_thread``. Production saves append journal
+    runs file I/O in the default executor. Production saves append journal
     records and periodically compact them into an atomic base snapshot.
     Pending generations coalesce to the latest state while a write is active.
 
@@ -115,7 +116,9 @@ class AutoSaveSubscriber(EventPublisherPort):
             self._pending = False
             operation = self._prepare_operation()
             if operation is not None:
-                write = asyncio.create_task(asyncio.to_thread(_run_save, operation))
+                # Submit before a short-lived loop can cancel its remaining tasks.
+                loop = asyncio.get_running_loop()
+                write = loop.run_in_executor(None, copy_context().run, _run_save, operation)
                 cancelled = await self._wait_owned(write) or cancelled
                 error = write.result()
                 if error is not None:
@@ -124,7 +127,7 @@ class AutoSaveSubscriber(EventPublisherPort):
             raise asyncio.CancelledError
 
     @staticmethod
-    async def _wait_owned(owner: asyncio.Task[object]) -> bool:
+    async def _wait_owned(owner: asyncio.Future[object]) -> bool:
         """Finish one submitted save while preserving caller cancellation."""
         cancelled = False
         while not owner.done():

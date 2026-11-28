@@ -3,18 +3,24 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import logging
 import os
 import threading
+import time
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON
+from opencollab.application._session_run_shared import _FILTERED_OUTPUT_REASON, _TRUNCATED_OUTPUT_REASON
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import (
+    _AUTOSAVE_EXPORT_SOURCE_SEQUENCE,
+    AutosaveOwnershipStorePort,
     EnvironmentPort,
     JournalSnapshotStorePort,
     LLMPort,
@@ -26,6 +32,8 @@ from opencollab.application.ports import (
     SnapshotSequenceConflict,
     SnapshotStorePort,
     TracePort,
+    _checkpoint_publication,
+    _CheckpointPublication,
 )
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.session_snapshot import (
@@ -49,6 +57,8 @@ from opencollab.domain.tool_loops import LoopState
 
 if TYPE_CHECKING:
     from opencollab.application.scheduler import LaunchSpec
+
+logger = logging.getLogger(__name__)
 
 class SessionBusyError(RuntimeError):
     """Raised when a public operation would interleave an active session turn."""
@@ -150,14 +160,21 @@ class Session:
         self._llm_closed = False
         self._llm_close_error: BaseException | None = None
         self._terminal_checkpoint_error: Exception | None = None
+        self._completed_turn_output: tuple[float, str] | None = None
         self._auto_save_sequence = 0
         self._auto_save_reserved_sequence = 0
+        self._auto_save_visible_sequence = 0
+        self._auto_save_export_source_sequence: int | None = None
         self._auto_save_conflict: str | None = None
         self._auto_save_message_count = 0
         self._auto_save_messages: list[dict] | None = None
         self._auto_save_rewrite_from: int | None = 0
         self._auto_save_rewrite_revision = 0
         self._auto_save_lock = threading.Lock()
+        self._autosave_writer: Callable[[], None] | None = None
+        self._autosave_writer_references = 0
+        self._autosave_acquisition: asyncio.Task[None] | None = None
+        self._run_cleanup_loop: asyncio.AbstractEventLoop | None = None
         self._auto_save_checkpoint_lock = threading.RLock()
         self._auto_save_pending_checkpoints: set[int] = set()
         self._auto_save_seen_result_hashes: set[str] = set()
@@ -251,6 +268,8 @@ class Session:
     def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
         """Execution and subscriber work that must finish before teardown."""
         owned = {*self.pending_execution_tasks, *self.event_bus.pending_tasks}
+        if self._autosave_acquisition is not None:
+            owned.add(self._autosave_acquisition)
         return tuple(task for task in owned if not task.done())
 
     @property
@@ -274,13 +293,13 @@ class Session:
         if self._llm_close_error is not None:
             raise self._llm_close_error
         if not self._owns_llm or self._llm_closed:
-            self.runner.finish_run_control(lambda: self.pending_cleanup_tasks)
+            self._finish_run_control()
             return
         self._llm_closed = True
         if self._shared_llm_ownership is not None:
             self._shared_llm_ownership.owners -= 1
             if self._shared_llm_ownership.owners:
-                self.runner.finish_run_control(lambda: self.pending_cleanup_tasks)
+                self._finish_run_control()
                 return
         close = getattr(self._llm, "close", None)
         if not callable(close):
@@ -294,6 +313,14 @@ class Session:
                 self._llm_close_error = exc
                 self.runner._emit_run_event("error", error_type=type(exc).__name__, message=str(exc))
                 raise
+        self._finish_run_control()
+
+    def _finish_run_control(self) -> None:
+        with self._auto_save_lock:
+            if self._autosave_writer is not None:
+                # Cleanup observers can reopen the autosave as soon as they are notified.
+                self._run_cleanup_loop = asyncio.get_running_loop()
+                return
         self.runner.finish_run_control(lambda: self.pending_cleanup_tasks)
 
     def _share_llm_ownership(self, snapshot: Session) -> None:
@@ -373,65 +400,154 @@ class Session:
     def phase(self, value: SessionPhase) -> None:
         self.state.set_phase(value)
 
+    @contextmanager
+    def _autosave_access(
+        self, path: str | None, *, settle: bool = False, require_current: bool = False,
+    ) -> Iterator[None]:
+        store = self.store
+        if not path or not isinstance(store, AutosaveOwnershipStorePort):
+            yield
+            return
+
+        if _same_snapshot_path(path, self._auto_save_path):
+            with self._auto_save_lock:
+                if self._autosave_writer is None:
+                    expected = (
+                        max(self._auto_save_sequence, self._auto_save_visible_sequence)
+                        if require_current else None
+                    )
+                    self._autosave_writer = _acquire_autosave_writer(store, path, expected)
+                self._autosave_writer_references += 1
+            release = self._release_autosave_writer
+        else:
+            release = _acquire_autosave_writer(store, path)
+
+        try:
+            yield
+        finally:
+            if settle:
+                self._release_after_autosave_settles(release)
+            else:
+                release()
+
+    def _release_autosave_writer(self) -> None:
+        with self._auto_save_lock:
+            self._autosave_writer_references -= 1
+            if self._autosave_writer_references:
+                return
+            assert self._autosave_writer is not None
+            self._autosave_writer()
+            self._autosave_writer = None
+            cleanup_loop = self._run_cleanup_loop
+            self._run_cleanup_loop = None
+        if cleanup_loop is not None and not cleanup_loop.is_closed():
+            cleanup_loop.call_soon_threadsafe(self._finish_run_control)
+
+    def _release_after_autosave_settles(self, release: Callable[[], None]) -> None:
+        pending = self.pending_cleanup_tasks
+        if pending:
+            # Recheck after existing completion callbacks can queue the late usage write.
+            pending[0].add_done_callback(lambda _: self._release_after_autosave_settles(release))
+        else:
+            release()
+
+    @asynccontextmanager
+    async def _turn_autosave_access(self) -> AsyncIterator[None]:
+        path = self._auto_save_path
+        if not path or not isinstance(self.store, AutosaveOwnershipStorePort):
+            yield
+            return
+
+        access = self._autosave_access(path, settle=True, require_current=True)
+
+        async def acquire() -> None:
+            # The journal lock can be held by another reader or writer.
+            await await_owned_operation(asyncio.to_thread(access.__enter__))
+
+        owner = asyncio.create_task(acquire())
+        self._autosave_acquisition = owner
+        try:
+            await await_owned_operation(owner, propagate_cancellation=True)
+            yield
+        finally:
+            self._autosave_acquisition = None
+            if not owner.cancelled() and owner.exception() is None:
+                access.__exit__(None, None, None)
+
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         if self._turn_lock.locked() or self.runner.pending_cleanup_tasks:
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            primary_error: BaseException | None = None
+            async with self._turn_autosave_access():
+                return await self._run_turn(cancel_event)
+
+    async def _run_turn(self, cancel_event: asyncio.Event | None) -> str:
+        primary_error: BaseException | None = None
+        self._completed_turn_output = None
+        try:
+            output = await self.runner.run_loop(cancel_event)
+            truncated_answer = (
+                self.state.phase is SessionPhase.STOPPED
+                and self.state.terminal_reason == _TRUNCATED_OUTPUT_REASON
+                and self.state.completed_turn_start_message_index is not None
+            )
+            if output and (self.state.phase is SessionPhase.DONE or truncated_answer):
+                self._completed_turn_output = (time.monotonic(), output)
+            return output
+        except asyncio.CancelledError as exc:
+            # Direct task cancellation must terminalize the FSM before propagating,
+            # otherwise the facade rejects the next user turn as permanently busy.
+            primary_error = exc
+            if not self.state.phase.is_terminal():
+                self.state.cancel()
+            self._append_restore_results_for_open_tool_calls(
+                content=(
+                    "Tool execution interrupted by session cancellation. "
+                    "The execution outcome is unknown."
+                ),
+                exclude_ids=set(self.state.pending_events.rows),
+                completed_results=self._completed_tool_results(),
+            )
+            raise
+        except BaseException as exc:
+            primary_error = exc
+            # Cancellation closes this exchange itself. Any other failure leaves
+            # the assistant tool call in history, so the next request is invalid
+            # unless those ids are answered before the exception propagates.
             try:
-                return await self.runner.run_loop(cancel_event)
-            except asyncio.CancelledError as exc:
-                # Direct task cancellation must terminalize the FSM before propagating,
-                # otherwise the facade rejects the next user turn as permanently busy.
-                primary_error = exc
-                if not self.state.phase.is_terminal():
-                    self.state.cancel()
-                self._append_restore_results_for_open_tool_calls(
-                    content=(
-                        "Tool execution interrupted by session cancellation. "
-                        "The execution outcome is unknown."
-                    ),
-                    exclude_ids=set(self.state.pending_events.rows),
-                    completed_results=self._completed_tool_results(),
+                self._close_failed_tool_exchange()
+            except Exception as close_error:
+                add_exception_note(
+                    exc,
+                    "open tool calls could not be closed: "
+                    f"{type(close_error).__name__}: {close_error}",
                 )
-                raise
-            except BaseException as exc:
-                primary_error = exc
-                # Cancellation closes this exchange itself. Any other failure leaves
-                # the assistant tool call in history, so the next request is invalid
-                # unless those ids are answered before the exception propagates.
+            raise
+        finally:
+            if self.state.phase.is_terminal() or primary_error is not None:
                 try:
-                    self._close_failed_tool_exchange()
-                except Exception as close_error:
-                    add_exception_note(
-                        exc,
-                        "open tool calls could not be closed: "
-                        f"{type(close_error).__name__}: {close_error}",
-                    )
-                raise
-            finally:
-                if self.state.phase.is_terminal() or primary_error is not None:
-                    try:
-                        await self._close_owned_runtimes()
-                    except BaseException as cleanup_error:
-                        if primary_error is None:
-                            raise
-                        add_exception_note(primary_error, f"owned runtime cleanup also failed: {cleanup_error}")
-                self.runner._record_run_terminal()
-                try:
-                    await self._checkpoint_terminal_snapshot()
-                except Exception as checkpoint_error:
+                    await self._close_owned_runtimes()
+                except BaseException as cleanup_error:
                     if primary_error is None:
                         raise
-                    add_exception_note(
-                        primary_error,
-                        "terminal checkpoint also failed: "
-                        f"{type(checkpoint_error).__name__}: {checkpoint_error}",
-                    )
+                    add_exception_note(primary_error, f"owned runtime cleanup also failed: {cleanup_error}")
+            self.runner._record_run_terminal()
+            try:
+                await self._checkpoint_terminal_snapshot(defer_journal_reset=primary_error is None)
+            except Exception as checkpoint_error:
+                if primary_error is None:
+                    raise
+                add_exception_note(
+                    primary_error,
+                    "terminal checkpoint also failed: "
+                    f"{type(checkpoint_error).__name__}: {checkpoint_error}",
+                )
 
-    async def _checkpoint_terminal_snapshot(self) -> None:
+    async def _checkpoint_terminal_snapshot(self, *, defer_journal_reset: bool = False) -> None:
         if not self.state.phase.is_terminal() and self.state.phase is not SessionPhase.AWAITING_EVENTS:
             return
+        subscriber = self._auto_save_subscriber
+        failures = subscriber.failure_count if subscriber is not None else 0
         owner = self.enqueue_auto_save()
         if owner is not None:
             await await_owned_operation(
@@ -450,18 +566,22 @@ class Session:
         # must also publish a self-contained base snapshot: callers and crash
         # recovery may read the base file directly, without replaying its
         # sidecar journal.
-        if (
-            not self._auto_save_path
-            or not isinstance(self.store, JournalSnapshotStorePort)
-        ):
+        path = self._auto_save_path
+        if not path or not isinstance(self.store, JournalSnapshotStorePort):
             return
 
+        if subscriber is not None and subscriber.failure_count != failures:
+            defer_journal_reset = False
+
         async def checkpoint() -> None:
+            token = _checkpoint_publication.set(_CheckpointPublication(path, defer_journal_reset))
             try:
-                await asyncio.to_thread(self.save, self._auto_save_path)
+                await asyncio.to_thread(self.save, path)
             except Exception as exc:
                 self._terminal_checkpoint_error = exc
                 raise
+            finally:
+                _checkpoint_publication.reset(token)
 
         await await_owned_operation(
             checkpoint(),
@@ -477,12 +597,14 @@ class Session:
         ):
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            self.state.append_queued_external_user_turn(
-                content, defer=not self.state.pending_events.is_empty()
-            )
-            self.state.reset_for_user_turn()
-            self.runner.reset_runtime_for_user_turn()
-            await self.event_bus.emit(SessionEvent(type="user_message_appended"))
+            async with self._turn_autosave_access():
+                self.state.append_queued_external_user_turn(
+                    content, defer=not self.state.pending_events.is_empty()
+                )
+                self.state.reset_for_user_turn()
+                self.runner.reset_runtime_for_user_turn()
+                self._completed_turn_output = None
+                await self.event_bus.emit(SessionEvent(type="user_message_appended"))
 
     def apply_launch(self, launch: "LaunchSpec") -> None:
         """Apply launch-time persistence as a one-shot lifecycle step.
@@ -529,13 +651,11 @@ class Session:
         """Restore a snapshot or legacy transcript, with an optional agent ID override."""
         if self._turn_lock.locked() or self.pending_cleanup_tasks:
             raise SessionBusyError("session cannot be restored while runtime work is active")
-        if isinstance(self.store, SnapshotStorePort):
-            snapshot = self.store.load_snapshot(path, self.agent.system_prompt)
-        else:
-            snapshot = {
-                "messages": self.store.load_messages(path, self.agent.system_prompt)
-            }
+        with self._autosave_access(self._auto_save_path):
+            snapshot = _read_session_snapshot(self.store, path, self.agent.system_prompt)
+            self._restore_snapshot(path, snapshot, aid=aid)
 
+    def _restore_snapshot(self, path: str, snapshot: dict[str, Any], *, aid: int | None) -> None:
         messages = list(snapshot.get("messages", []))
         raw_state = snapshot.get("session_state")
         restored = SessionState(
@@ -722,6 +842,13 @@ class Session:
             restored.completed_turn_start_message_index = (
                 completed_turn_start if completed_turn_start is not None else restored_turn_start
             )
+        elif (
+            (restored.phase is SessionPhase.STOPPED and restored.terminal_reason == _TRUNCATED_OUTPUT_REASON)
+            or (restored.phase is SessionPhase.IDLE and restored.pending_external_user_turn is not None)
+        ):
+            restored.completed_turn_start_message_index = _restore_active_turn_start(
+                raw_state.get("completed_turn_start_message_index"), restored.messages,
+            )
 
     def _normalize_forked_state(self, state: SessionState, raw_state: dict[str, Any]) -> None:
         state.pending_events.clear()
@@ -760,6 +887,11 @@ class Session:
         sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
         self._auto_save_sequence = sequence
         self._auto_save_reserved_sequence = sequence
+        self._auto_save_visible_sequence = 0
+        export_source = snapshot.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE)
+        self._auto_save_export_source_sequence = (
+            None if export_source is None else _snapshot_nonnegative_int(export_source)
+        )
         self._auto_save_conflict = None
         stored_messages = snapshot.get("messages")
         self._auto_save_message_count = min(
@@ -788,32 +920,67 @@ class Session:
             return snapshot
         with self._auto_save_lock:
             messages, meta = self._snapshot_for_save(state=restored)
-        sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
+        source_sequence = _snapshot_nonnegative_int(
+            snapshot.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE, snapshot.get("_autosave_sequence")),
+        )
+        sequence = source_sequence
         if isinstance(self.store, JournalSnapshotStorePort):
+            # Opening a writable copy advances its local cursor without advancing its source.
+            meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = source_sequence
             sequence += 1
+
+            def checkpoint() -> None:
+                token = _checkpoint_publication.set(_CheckpointPublication(target_path, defer_journal_reset=True))
+                try:
+                    self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+                finally:
+                    _checkpoint_publication.reset(token)
+
             try:
-                self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+                checkpoint()
             except SnapshotSequenceConflict:
-                saved_message_count = len(snapshot.get("messages", ()))
-                if saved_message_count >= len(messages) or not isinstance(self.store, SnapshotStorePort):
+                if not isinstance(self.store, SnapshotStorePort):
                     raise
                 previous = self.store.load_snapshot(target_path, self.agent.system_prompt)
+                previous_sequence = _snapshot_nonnegative_int(previous.get("_autosave_sequence"))
+                previous_source_sequence = previous.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE)
+                saved_message_count = len(snapshot.get("messages", ()))
+                recovered_rows = saved_message_count < len(messages)
+                extends_transcript = _snapshot_extends_completed_transcript(previous, messages, meta)
+                if extends_transcript:
+                    sequence = previous_sequence + 1
+                elif (
+                    type(previous_source_sequence) is int
+                    and previous_source_sequence == source_sequence
+                    and previous_sequence >= sequence
+                ):
+                    # Publication at the same sequence requires an equivalent snapshot.
+                    sequence = previous_sequence
+                elif not recovered_rows or previous_sequence != sequence:
+                    raise
                 previous_messages = previous["messages"]
-                if previous.get("_autosave_sequence") != sequence or len(previous_messages) != len(messages):
+                if not extends_transcript and len(previous_messages) != len(messages):
                     raise
-                # A retry regenerates recovery rows with a new wall-clock time.
-                # The checkpoint still compares their content and every source row.
-                timestamps = [message.get("timestamp") for message in previous_messages[saved_message_count:]]
-                if not all(isinstance(timestamp, str) for timestamp in timestamps):
-                    raise
-                for message, timestamp in zip(messages[saved_message_count:], timestamps):
-                    message["timestamp"] = timestamp
-                self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
-                restored.message_timestamps[saved_message_count:] = timestamps
+                timestamps = []
+                if recovered_rows and not extends_transcript:
+                    # A retry regenerates recovery rows with a new wall-clock time.
+                    # The checkpoint still compares their content and every source row.
+                    timestamps = [message.get("timestamp") for message in previous_messages[saved_message_count:]]
+                    if not all(isinstance(timestamp, str) for timestamp in timestamps):
+                        raise
+                    for message, timestamp in zip(messages[saved_message_count:], timestamps):
+                        message["timestamp"] = timestamp
+                checkpoint()
+                if timestamps:
+                    restored.message_timestamps[saved_message_count:] = timestamps
         else:
             meta["_autosave_sequence"] = sequence
             self.store.save(target_path, messages, meta=meta)
-        return {**snapshot, "_autosave_sequence": sequence, "messages": messages}
+        recovered = {**snapshot, "_autosave_sequence": sequence, "messages": messages}
+        recovered.pop(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE, None)
+        if _AUTOSAVE_EXPORT_SOURCE_SEQUENCE in meta:
+            recovered[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE]
+        return recovered
 
     def _publish_restored_state(
         self, restored: SessionState, snapshot: dict[str, Any], source_path: str,
@@ -823,6 +990,7 @@ class Session:
             snapshot = self._checkpoint_restored_auto_save_target(source_path, restored, snapshot)
             with self._auto_save_lock:
                 self.runner.reset_for_restore()
+                self._completed_turn_output = None
                 self.state.__dict__.clear()
                 self.state.__dict__.update(restored.__dict__)
                 self._loop_checkpoint_results = []
@@ -963,15 +1131,21 @@ class Session:
             )
 
     def save(self, path: str) -> None:
-        if (
-            _same_snapshot_path(path, self._auto_save_path)
-            and isinstance(self.store, JournalSnapshotStorePort)
-        ):
+        saving_autosave = _same_snapshot_path(path, self._auto_save_path)
+        if not saving_autosave and self.state.phase.is_terminal() and self.runner.pending_cleanup_tasks:
+            raise SessionBusyError("cannot export a terminal session while provider requests are still draining")
+        with self._autosave_access(path, require_current=saving_autosave):
+            self._save_snapshot(path, saving_autosave=saving_autosave)
+
+    def _save_snapshot(self, path: str, *, saving_autosave: bool) -> None:
+        if saving_autosave and isinstance(self.store, JournalSnapshotStorePort):
             # Freeze and publish after every operation already submitted by
             # this session. An older append may finish later, but replay will
             # skip its sequence and its completion cannot rewind our cursor.
             with self._auto_save_lock:
                 messages, meta = self._snapshot_for_save()
+                if self._auto_save_export_source_sequence is not None:
+                    meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = self._auto_save_export_source_sequence
                 track_messages = self._auto_save_messages is not None or self.state.anthropic_history is not None
                 tracked_messages = messages if track_messages else None
                 sequence = self._reserve_auto_save_sequence()
@@ -982,25 +1156,43 @@ class Session:
                     with self._auto_save_lock:
                         if sequence < self._auto_save_sequence:
                             return
-                    self.store.checkpoint_snapshot(path, messages, meta=meta, sequence=sequence)
-                    with self._auto_save_lock:
-                        self._auto_save_sequence = sequence
-                        self._auto_save_message_count = len(messages)
-                        self._auto_save_messages = tracked_messages
-                        self._auto_save_conflict = None
-                        if self._auto_save_rewrite_revision == rewrite_revision:
-                            self._auto_save_rewrite_from = None
-                        self._auto_save_seen_result_hashes = set(meta["session_state"]["seen_result_hashes"])
-                        self._next_auto_save_checkpoint = 1 << sequence.bit_length()
+                    active = _checkpoint_publication.get()
+                    publication = _CheckpointPublication(
+                        path, active is not None and active.path == path and active.defer_journal_reset,
+                    )
+                    token = _checkpoint_publication.set(publication)
+                    try:
+                        self.store.checkpoint_snapshot(path, messages, meta=meta, sequence=sequence)
+                        publication.synced = True
+                    finally:
+                        _checkpoint_publication.reset(token)
+                        with self._auto_save_lock:
+                            if publication.synced:
+                                self._auto_save_sequence = sequence
+                                self._auto_save_visible_sequence = 0
+                                self._auto_save_message_count = len(messages)
+                                self._auto_save_messages = tracked_messages
+                                self._auto_save_conflict = None
+                                if self._auto_save_rewrite_revision == rewrite_revision:
+                                    self._auto_save_rewrite_from = None
+                                self._auto_save_seen_result_hashes = set(meta["session_state"]["seen_result_hashes"])
+                                self._next_auto_save_checkpoint = 1 << sequence.bit_length()
+                            elif publication.visible:
+                                # The rename is ours. A later delta must still cover the unsynced base.
+                                self._auto_save_visible_sequence = sequence
             finally:
                 with self._auto_save_lock:
                     self._auto_save_pending_checkpoints.discard(sequence)
             return
         with self._auto_save_lock:
             messages, meta = self._snapshot_for_save()
-            # An exported snapshot may resume this session's autosave target.
-            # Keep its ordering cursor when saving to another filename.
-            meta["_autosave_sequence"] = self._auto_save_reserved_sequence
+            # Keep the source's fork point across writes to the local working copy.
+            export_source = self._auto_save_export_source_sequence
+            if export_source is None:
+                export_source = self._auto_save_reserved_sequence
+            meta["_autosave_sequence"] = export_source
+            if self._auto_save_path is not None or self._auto_save_export_source_sequence is not None:
+                meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = export_source
         self.store.save(path, messages, meta=meta)
 
     def _snapshot_for_save(
@@ -1127,6 +1319,8 @@ class Session:
         ):
             replacement_store = self.store
         messages, meta = self._snapshot_for_save(replace_from)
+        if self._auto_save_export_source_sequence is not None:
+            meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = self._auto_save_export_source_sequence
         tracked_messages = [*stored_messages[:replace_from], *messages] if track_messages else None
         current_seen_hashes = set(self.state.turn.seen_result_hashes)
         seen_hashes_reset = preceding_write_pending or not self._auto_save_seen_result_hashes.issubset(
@@ -1156,7 +1350,8 @@ class Session:
                 self.store.checkpoint_snapshot(path, full_messages, meta=meta, sequence=sequence)
             except (OSError, SnapshotCapacityError) as checkpoint_error:
                 if replacement_store is None:
-                    raise
+                    logger.warning("session checkpoint deferred after durable autosave: %s", checkpoint_error)
+                    return False
                 try:
                     saved = replacement_store.append_snapshot_replacement(
                         path,
@@ -1228,7 +1423,8 @@ class Session:
     def enqueue_auto_save(self) -> asyncio.Task[None] | None:
         if self._auto_save_subscriber is None:
             return None
-        return self._auto_save_subscriber.enqueue()
+        with self._autosave_access(self._auto_save_path, settle=True, require_current=True):
+            return self._auto_save_subscriber.enqueue()
 
     def _track_tool_results(self, completed_results: list[dict]) -> None:
         pending = [
@@ -1260,6 +1456,47 @@ class Session:
     def _auto_save(self) -> None:
         if self._auto_save_path:
             self.save(self._auto_save_path)
+
+def _acquire_autosave_writer(
+    store: AutosaveOwnershipStorePort, path: str, expected_sequence: int | None = None,
+) -> Callable[[], None]:
+    release = store.try_autosave_lock(path, expected_sequence=expected_sequence)
+    if release is None:
+        raise SessionBusyError(f"autosave has an active writer: {path}")
+    return release
+
+def _read_session_snapshot(
+    store: SessionStorePort, path: str, system_prompt: str,
+) -> dict[str, Any]:
+    if isinstance(store, SnapshotStorePort):
+        return store.load_snapshot(path, system_prompt)
+    return {"messages": store.load_messages(path, system_prompt)}
+
+def _snapshot_extends_completed_transcript(
+    previous: dict[str, Any], messages: list[dict[str, Any]], meta: dict[str, Any],
+) -> bool:
+    previous_messages = previous["messages"]
+    previous_state = previous.get("session_state")
+    if not isinstance(previous_state, dict) or previous_state.get("phase") != SessionPhase.DONE.value:
+        return False
+    # Accepted work may only exist in persisted runtime state until delivery.
+    if (
+        previous.get("pending_messages")
+        or previous_state.get("pending_external_user_turn")
+        or previous_state.get("pending_events")
+        or previous_state.get("loop_checkpoint_results")
+        or previous_state.get("submitted_summary") is not None
+    ):
+        return False
+    state = meta["session_state"]
+    return (
+        len(previous_messages) < len(messages)
+        and same_snapshot_value(previous_messages, messages[:len(previous_messages)])
+        and all(
+            _snapshot_nonnegative_int(previous_state.get(key)) <= state[key]
+            for key in ("step_count", "used_tokens")
+        )
+    )
 
 def _same_snapshot_path(left: str | None, right: str | None) -> bool:
     if left is None or right is None:
