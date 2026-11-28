@@ -16,7 +16,7 @@ import pytest
 
 from opencollab.adapters import safe_files
 from opencollab.adapters.storage import SessionStore
-from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber
+from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber, _run_save
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import SnapshotCapacityError, SnapshotSequenceConflict
 from opencollab.bootstrap import build_session as Session
@@ -344,7 +344,19 @@ def test_event_bus_external_cancellation_still_propagates():
 
     assert seen == []
 
-def test_session_with_auto_save_path_writes_on_user_message(local_environment_factory, tmp_path):
+@pytest.mark.parametrize("delay_save_task", [False, True])
+def test_session_with_auto_save_path_writes_on_user_message(
+    local_environment_factory, tmp_path, monkeypatch, delay_save_task,
+):
+    if delay_save_task:
+        original = asyncio.to_thread
+
+        async def delayed_submission(function, *args, **kwargs):
+            if function is _run_save:
+                await asyncio.sleep(.05)
+            return await original(function, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", delayed_submission)
     path = tmp_path / "auto.jsonl"
     session = Session(
         env=local_environment_factory(),
