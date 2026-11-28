@@ -17,6 +17,7 @@ from __future__ import annotations
 import errno
 import importlib
 import json
+import os
 import shutil
 import uuid
 from collections.abc import Iterator
@@ -24,7 +25,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, mkdtemp
 from typing import Any, Awaitable, Callable, Sequence
 
 from opencollab.application.exception_notes import add_exception_note
@@ -128,9 +129,10 @@ class ReconstructionTask:
     invalid input). ``evaluate`` runs a candidate file on inputs and returns
     one ``{"ok": True, "output": ...}`` or ``{"ok": False, "error": ...}``
     per input. The evaluator receives a temporary copy next to the editable
-    candidate or in the archive directory if the source directory forbids
-    creating files. Execute it where the agent's own code runs, never in the
-    harness process. ``tools`` are handed to every coding session.
+    candidate. If the source directory forbids creating files, a temporary
+    directory under the archive also links to the candidate's sibling files.
+    Execute the copy in the agent's environment, never in the harness process.
+    ``tools`` are handed to every coding session.
     ``random_inputs(k, exclude)`` draws fresh inputs from a source
     independent of the agent (the benchmark's generator); it is required
     when ``random_share`` is positive. ``on_example`` is told about every
@@ -257,25 +259,50 @@ def _archive_candidate(program: Path, candidates_dir: Path, iteration: int) -> P
 
 
 @contextmanager
+def _evaluation_directory(archive: Path, program: Path) -> Iterator[Path]:
+    directory = Path(mkdtemp(dir=archive.parent, prefix="_oc_evaluate_")).absolute()
+    error = None
+    try:
+        try:
+            siblings = list(program.parent.iterdir())
+        except PermissionError:
+            siblings = []
+        for sibling in siblings:
+            if sibling != program and sibling.is_file():
+                (directory / sibling.name).symlink_to(os.path.relpath(sibling, start=directory))
+        shutil.copy(archive, directory / program.name)
+        directory.chmod((archive.parent.stat().st_mode & 0o777) | 0o700)
+        yield archive.parent / directory.name / program.name
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        try:
+            shutil.rmtree(directory)
+        except OSError as exc:
+            if error is None:
+                raise
+            add_exception_note(error, f"candidate evaluation directory cleanup failed for {directory.name} ({exc})")
+
+
+@contextmanager
 def _evaluation_copy(archive: Path, program: Path) -> Iterator[Path]:
-    directory = program.parent
     try:
         destination = NamedTemporaryFile(
-            dir=directory, prefix="_oc_evaluate_", suffix=program.suffix, delete=False,
+            dir=program.parent, prefix="_oc_evaluate_", suffix=program.suffix, delete=False,
         )
     except OSError as exc:
-        if directory == archive.parent or exc.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
+        if program.parent == archive.parent or exc.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
             raise
-        directory = archive.parent
-        destination = NamedTemporaryFile(
-            dir=directory, prefix="_oc_evaluate_", suffix=program.suffix, delete=False,
-        )
+        with _evaluation_directory(archive, program) as path:
+            yield path
+        return
     path = Path(destination.name)
     try:
         with destination, archive.open("rb") as source:
             shutil.copyfileobj(source, destination)
         shutil.copymode(archive, path)
-        yield directory / path.name
+        yield program.parent / path.name
     except BaseException as error:
         _remove_candidate_file(path, "evaluation copy", error)
         raise

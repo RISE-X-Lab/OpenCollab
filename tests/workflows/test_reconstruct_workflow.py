@@ -616,13 +616,34 @@ async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path,
 
 
 @pytest.mark.parametrize("relative", [False, True], ids=["absolute-workspace", "relative-workspace"])
-async def test_reconstruct_evaluates_a_writable_file_in_a_read_only_directory(tmp_path, monkeypatch, relative):
+@pytest.mark.parametrize(
+    ("neighbor", "evaluation_fails"),
+    [("import", False), ("resource", False), ("resource", True)],
+    ids=["sibling-import", "sibling-resource", "evaluator-error"],
+)
+async def test_reconstruct_evaluates_a_writable_file_in_a_read_only_directory(
+    tmp_path, monkeypatch, relative, neighbor, evaluation_fails,
+):
     monkeypatch.chdir(tmp_path.parent)
     workspace = Path(tmp_path.name) if relative else tmp_path
-    candidate_file = "src/candidate.py"
+    candidate_file = "src/solver/candidate.py"
     program = workspace / candidate_file
-    program.parent.mkdir()
+    program.parent.mkdir(parents=True)
     program.write_text("# Existing editable candidate.\n", encoding="utf-8")
+    helper = program.with_name("sibling.py")
+    helper.write_text("MULTIPLIER = 3\n", encoding="utf-8")
+    resource = program.with_name("multiplier.txt")
+    resource.write_text("3", encoding="utf-8")
+    dependency = (
+        "from sibling import MULTIPLIER\n" if neighbor == "import"
+        else "from pathlib import Path\n"
+        "MULTIPLIER = int(Path(__file__).with_name('multiplier.txt').read_text())\n"
+    )
+    source = dependency + (
+        "import json, sys\n"
+        "def solve(xs):\n    return MULTIPLIER * sum(abs(x) for x in xs)\n"
+        "print(json.dumps([solve(value) for value in json.loads(sys.argv[1])]))\n"
+    )
     module = importlib.import_module("opencollab.builtin_workflows.reconstruct")
     open_temporary = module.NamedTemporaryFile
     evaluated = []
@@ -633,36 +654,47 @@ async def test_reconstruct_evaluates_a_writable_file_in_a_read_only_directory(tm
         return open_temporary(dir=dir, **kwargs)
 
     async def evaluate(path, inputs):
-        assert path.parent == workspace / ".oc_candidates"
-        assert path.suffix == program.suffix
-        assert path.read_bytes() == CORRECT.encode()
+        assert path.parent.parent == workspace / ".oc_candidates"
+        assert path.name == program.name and not path.is_symlink()
+        assert path.read_text(encoding="utf-8") == source
+        for sibling in (helper, resource):
+            link = path.with_name(sibling.name)
+            assert not link.readlink().is_absolute()
+            assert link.read_bytes() == sibling.read_bytes()
         evaluated.append(path)
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-B", "-c",
-            "import json, runpy, sys\n"
-            "solve = runpy.run_path(sys.argv[1])['solve']\n"
-            "print(json.dumps([solve(value) for value in json.loads(sys.argv[2])]))\n",
-            str(path.relative_to(workspace)), json.dumps(inputs),
+            sys.executable, "-B", str(path.relative_to(workspace)), json.dumps(inputs),
             cwd=workspace, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
         assert process.returncode == 0, stderr.decode()
         path.write_text("# Evaluator changes its own copy.\n", encoding="utf-8")
+        if evaluation_fails:
+            raise ValueError("evaluator returned invalid measurements")
         return [{"ok": True, "output": value} for value in json.loads(stdout)]
 
     monkeypatch.setattr(module, "NamedTemporaryFile", deny_sibling_creation)
-    task = make_task(workspace, candidate_file=candidate_file, evaluate=evaluate)
-    result = await reconstruct(
-        ScriptedContext(workspace, candidate_file=candidate_file),
+    task = make_task(workspace, candidate_file=candidate_file, evaluate=evaluate, oracle=lambda xs: 3 * _oracle(xs))
+    run = reconstruct(
+        ScriptedContext(workspace, programs=[source], candidate_file=candidate_file),
         {"task": register_task(task), "early_stop": 1},
     )
-    archive = workspace / ".oc_candidates" / result["final_program"]
-    assert result["stop_reason"] == "early_stop"
-    assert result["promotions"] == 1 and result["final_score"] == 1.0
-    assert len(set(evaluated)) == 2 and all(not path.exists() for path in evaluated)
-    assert set(archive.parent.iterdir()) == {archive}
-    assert set(program.parent.iterdir()) == {program}
-    assert archive.read_bytes() == program.read_bytes() == CORRECT.encode()
+    archives = workspace / ".oc_candidates"
+    if evaluation_fails:
+        with pytest.raises(ValueError, match="invalid measurements"):
+            await run
+        assert len(evaluated) == 1 and not list(archives.iterdir())
+    else:
+        result = await run
+        archive = archives / result["final_program"]
+        assert result["stop_reason"] == "early_stop"
+        assert result["promotions"] == 1 and result["final_score"] > 0.95
+        assert len(set(evaluated)) == 2
+        assert set(archives.iterdir()) == {archive}
+        assert archive.read_text(encoding="utf-8") == source
+    assert all(not path.parent.exists() for path in evaluated)
+    assert set(program.parent.iterdir()) == {program, resource, helper}
+    assert program.read_text(encoding="utf-8") == source
 
 
 @pytest.mark.parametrize("cancel", [False, True], ids=["failure", "cancel"])
