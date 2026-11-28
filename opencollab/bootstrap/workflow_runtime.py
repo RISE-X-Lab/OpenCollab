@@ -62,6 +62,10 @@ class WorkflowDeadlineExceeded(TimeoutError):
 class WorkflowLifecycleError(RuntimeError):
     """Workflow-owned work failed to reach a terminal state."""
 
+    def __init__(self, message: str, *, runtime_result: WorkflowRuntimeResult | None = None) -> None:
+        super().__init__(message)
+        self.runtime_result = runtime_result
+
 async def _wait_for_owner(
     owner: asyncio.Task[Any],
     *,
@@ -113,11 +117,11 @@ async def run_workflow(
         cleanup_environment = env is None
     manifest_args = deepcopy(args) if save_dir is not None else None
     token = _WORKFLOW_ENV_OVERRIDE.set(env)
-    cancelled_result: WorkflowRuntimeResult | None = None
+    terminal_result: WorkflowRuntimeResult | None = None
     cancelled_notes: tuple[str, ...] = ()
 
     async def run_owner() -> Any:
-        nonlocal cancelled_result, cancelled_notes
+        nonlocal terminal_result, cancelled_notes
         tools_token = _PROFILE_TOOL_LIMITS.set(
             None if agent_profile is None else agent_profile.tool_limits
         )
@@ -154,11 +158,12 @@ async def run_workflow(
                 cleanup_environment=cleanup_environment,
                 defer_manifest_completion=defer_manifest_completion,
             )
-        except asyncio.CancelledError as cancellation:
-            attached = getattr(cancellation, "runtime_result", None)
+        except BaseException as failure:
+            attached = getattr(failure, "runtime_result", None)
             if isinstance(attached, WorkflowRuntimeResult):
-                cancelled_result = attached
-            cancelled_notes = tuple(getattr(cancellation, "__notes__", ()))
+                terminal_result = attached
+            if isinstance(failure, asyncio.CancelledError):
+                cancelled_notes = tuple(getattr(failure, "__notes__", ()))
             raise
         finally:
             _PROFILE_TOOL_LIMITS.reset(tools_token)
@@ -178,7 +183,8 @@ async def run_workflow(
             {owner}, timeout=cleanup_timeout * _OWNER_CLEANUP_GRACE_PHASES
         )
         abort_failure = None
-        if cleanup_environment and env is not None and not getattr(env, "revoked", False):
+        environment_deferred = terminal_result is not None and terminal_result.environment_cleanup_deferred
+        if cleanup_environment and env is not None and not environment_deferred and not getattr(env, "revoked", False):
             abort_failure = await _environment_abort_failure(env, cleanup_timeout)
         terminal = bool(done) or await force_task_terminal(owner, timeout=cleanup_timeout)
         return abort_failure, terminal
@@ -211,11 +217,13 @@ async def run_workflow(
             propagate_cancellation=True,
         )
         if abort_failure is not None or not terminated:
-            failure = WorkflowLifecycleError("timed-out workflow did not reach a quiescent terminal state")
-            deadline_error = WorkflowDeadlineExceeded(str(deadline_cancellation), result=cancelled_result)
+            failure = WorkflowLifecycleError(
+                "timed-out workflow did not reach a quiescent terminal state", runtime_result=terminal_result,
+            )
+            deadline_error = WorkflowDeadlineExceeded(str(deadline_cancellation), result=terminal_result)
             failure.__context__ = deadline_error
             raise failure from (abort_failure if abort_failure is not None else deadline_error)
-        deadline_result = cancelled_result
+        deadline_result = terminal_result
         try:
             late_result = owner.result()
             if isinstance(late_result, WorkflowRuntimeResult):
@@ -227,14 +235,15 @@ async def run_workflow(
             notes = cancelled_notes or tuple(getattr(inner, "__notes__", ()))
             if notes:
                 failure = WorkflowLifecycleError(
-                    "timed-out workflow reported a cleanup or persistence failure"
+                    "timed-out workflow reported a cleanup or persistence failure",
+                    runtime_result=deadline_result,
                 )
                 for note in notes:
                     add_exception_note(failure, note)
                 raise failure from inner
         except BaseException as inner:
             raise WorkflowLifecycleError(
-                "timed-out workflow failed while reaching its terminal state"
+                "timed-out workflow failed while reaching its terminal state", runtime_result=terminal_result,
             ) from inner
         raise WorkflowDeadlineExceeded(
             "workflow wall-clock deadline expired",
@@ -245,7 +254,9 @@ async def run_workflow(
             cancellation, propagate_cancellation=False
         )
         if abort_failure is not None or not terminated:
-            failure = WorkflowLifecycleError("cancelled workflow did not reach a quiescent terminal state")
+            failure = WorkflowLifecycleError(
+                "cancelled workflow did not reach a quiescent terminal state", runtime_result=terminal_result,
+            )
             if abort_failure is not None:
                 add_exception_note(
                     failure, f"environment abort also failed: {type(abort_failure).__name__}: {abort_failure}",
@@ -255,21 +266,21 @@ async def run_workflow(
             try:
                 late_result = owner.result()
                 if isinstance(late_result, WorkflowRuntimeResult):
-                    cancelled_result = late_result
+                    terminal_result = late_result
             except asyncio.CancelledError as inner:
                 for note in cancelled_notes or getattr(inner, "__notes__", ()):
                     add_exception_note(cancellation, note)
             except BaseException as inner:
                 attached = getattr(inner, "runtime_result", None)
                 if isinstance(attached, WorkflowRuntimeResult):
-                    cancelled_result = attached
+                    terminal_result = attached
                 add_exception_note(
                     cancellation,
                     "workflow owner also failed during cancellation: "
                     f"{type(inner).__name__}: {inner}"
                 )
-        if cancelled_result is not None:
-            cancellation.runtime_result = cancelled_result  # type: ignore[attr-defined]
+        if terminal_result is not None:
+            cancellation.runtime_result = terminal_result  # type: ignore[attr-defined]
         raise cancellation
     finally:
         _WORKFLOW_ENV_OVERRIDE.reset(token)

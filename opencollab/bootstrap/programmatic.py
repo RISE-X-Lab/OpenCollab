@@ -598,6 +598,7 @@ async def run_workflow(
             stopped_error = exc
         except WorkflowLifecycleError as exc:
             failed_error = exc
+            details = exc.runtime_result
             raise ProgrammaticLifecycleError(str(exc)) from exc
         except asyncio.CancelledError as cancellation:
             bootstrap_stopped_environment = True
@@ -619,7 +620,8 @@ async def run_workflow(
                     "workflow runtime failed without finalized execution evidence"
                 ) from exc
     finally:
-        if owned_environment and not bootstrap_stopped_environment:
+        environment_deferred = details is not None and details.environment_cleanup_deferred
+        if owned_environment and not bootstrap_stopped_environment and not environment_deferred:
             await await_owned_operation(cleanup_owned_environment(), propagate_cancellation=True)
             environment_cleanup_quiesced = True
             environment_quiesced = True

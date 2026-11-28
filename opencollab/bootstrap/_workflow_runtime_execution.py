@@ -17,6 +17,7 @@ from opencollab.bootstrap._workflow_runtime_cleanup import (
     _add_failure_note,
     _await_owned_with_cancellation,
     _close_tracer_capture,
+    _defer_owned_environment_cleanup,
     _inspect_tracer,
     _merge_failure,
     _persist_workflow_manifest,
@@ -45,6 +46,7 @@ def _runtime_result(
     stop_reason: Literal["budget_exceeded"] | None,
     evidence_complete: bool,
     body_returned_before_deadline: bool,
+    environment_cleanup_deferred: bool,
 ) -> WorkflowRuntimeResult:
     sessions = tuple(ctx.sessions)
     tokens = ctx.budget.spent()
@@ -64,6 +66,7 @@ def _runtime_result(
         stop_reason=stop_reason,
         evidence_complete=evidence_complete,
         body_returned_before_deadline=body_returned_before_deadline,
+        environment_cleanup_deferred=environment_cleanup_deferred,
     )
 
 def _attach_runtime_result(
@@ -189,12 +192,13 @@ async def run_workflow(
 
     cleanup_failure: BaseException | None = None
     cleanup_succeeded = False
+    lingering: tuple[asyncio.Future[Any], ...] = ()
     cleanup_task = asyncio.create_task(
         _quiesce_and_finalize_workflow_context(ctx, timeout=cleanup_timeout)
     )
     try:
         cleanup_result, cleanup_cancellation = await _await_owned_with_cancellation(cleanup_task)
-        _cleanup_quiesced, cleanup_succeeded, _lingering = cleanup_result
+        _cleanup_quiesced, cleanup_succeeded, lingering = cleanup_result
         cancellation = cancellation or cleanup_cancellation
     except BaseException as exc:
         cleanup_failure = exc
@@ -202,6 +206,9 @@ async def run_workflow(
         ctx._workflow_imports = None
         imports.close()
 
+    environment_cleanup_deferred = cleanup_environment and _defer_owned_environment_cleanup(
+        env, lingering, timeout=cleanup_timeout,
+    )
     tracer_failure = _close_tracer_capture(tracer) if owns_tracer else None
     tracer_write_error, tracer_dropped_steps, inspection_failure = _inspect_tracer(tracer)
     tracer_failure = _merge_failure(
@@ -270,28 +277,35 @@ async def run_workflow(
         stop_reason=stop_reason,
         evidence_complete=evidence_complete,
         body_returned_before_deadline=body_returned_before_deadline,
+        environment_cleanup_deferred=environment_cleanup_deferred,
     )
     _attach_runtime_result(cancellation, runtime_result)
     _attach_runtime_result(workflow_failure, runtime_result)
 
+    cleanup_detail = (
+        "session or workspace teardown exceeded its cleanup deadline"
+        if lingering else "final snapshot or environment abort failed"
+    )
     if cancellation is not None:
         _note_failure(cancellation, "workflow cleanup also failed", cleanup_failure)
         if cleanup_failure is None and not cleanup_succeeded:
             _add_failure_note(
                 cancellation,
-                "workflow cleanup also failed: final snapshot or environment abort failed",
+                f"workflow cleanup also failed: {cleanup_detail}",
             )
         _note_failure(cancellation, "workflow manifest persistence also failed", manifest_error)
         _note_failure(cancellation, "workflow trace also failed", tracer_failure)
         raise cancellation
     if cleanup_failure is not None:
         failure = RuntimeError("technical workflow cleanup failed")
+        _attach_runtime_result(failure, runtime_result)
         _note_failure(failure, "workflow execution also failed", workflow_failure)
         _note_failure(failure, "workflow manifest persistence also failed", manifest_error)
         _note_failure(failure, "workflow trace also failed", tracer_failure)
         raise failure from cleanup_failure
     if not cleanup_succeeded:
-        failure = RuntimeError("technical workflow cleanup failed: final snapshot or environment abort failed")
+        failure = RuntimeError(f"technical workflow cleanup failed: {cleanup_detail}")
+        _attach_runtime_result(failure, runtime_result)
         _note_failure(failure, "workflow manifest persistence also failed", manifest_error)
         _note_failure(failure, "workflow trace also failed", tracer_failure)
         raise failure from workflow_failure

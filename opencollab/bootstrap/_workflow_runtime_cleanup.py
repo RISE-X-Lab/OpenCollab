@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from typing import Any, Literal, TypeVar
 
+from opencollab.application.async_timeout import consume_task_result
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import TracePort
 from opencollab.application.session_lifecycle import close_session_resources
@@ -14,9 +16,10 @@ from opencollab.bootstrap._workflow_runtime_manifest import (
     _workflow_manifest_payload,
     _write_workflow_manifest,
 )
-from opencollab.bootstrap.agent_runtime import revoke_and_abort_environment
+from opencollab.bootstrap.agent_runtime import revoke_and_abort_environment, run_environment_hook
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 def _add_failure_note(error: BaseException, note: str) -> None:
     add_exception_note(error, note)
@@ -165,32 +168,69 @@ async def _quiesce_and_finalize_workflow_context(
         ctx,
         timeout=timeout,
     )
-    resources_closed = await close_session_resources(ctx.sessions, timeout=timeout)
+    if not final_quiesced:
+        return False, False, (*lingering, *final_lingering)
+
     # After the sessions are closed, never before: removing a worktree an agent
     # still holds would take the tree out from under a live tool call.
-    workspaces_released = await _release_isolated_workspaces(ctx, timeout=timeout)
+    close_owner = asyncio.create_task(close_session_resources(ctx.sessions, timeout=None))
+    try:
+        done, _ = await asyncio.wait({close_owner}, timeout=timeout)
+    except BaseException:
+        close_owner.add_done_callback(consume_task_result)
+        raise
+    if close_owner not in done or ctx.pending_cleanup_tasks:
+        async def release_after_close() -> None:
+            await close_owner
+            await ctx.wait_for_pending_cleanup()
+            await ctx.release_isolated_workspaces()
+
+        release_owner = asyncio.create_task(release_after_close())
+        release_owner.add_done_callback(consume_task_result)
+        return False, False, (release_owner,)
+
+    workspaces_released, pending_workspaces = await _release_isolated_workspaces(ctx, timeout=timeout)
     return (
-        final_quiesced,
+        not pending_workspaces,
         succeeded
         and enqueued
         and final_succeeded
-        and resources_closed
+        and close_owner.result()
         and workspaces_released,
-        (*lingering, *final_lingering),
+        pending_workspaces,
     )
 
-async def _release_isolated_workspaces(ctx: WorkflowContext, *, timeout: float) -> bool:
-    """Remove the worktrees lent to isolated agents; report whether it worked.
-
-    A failure here leaves directories behind but must not fail the run: the work
-    the agents produced is already committed or already read back out. Bounded
-    by the same cleanup timeout as the rest, so a wedged git call cannot hang
-    the run's exit.
-    """
+async def _release_isolated_workspaces(
+    ctx: WorkflowContext, *, timeout: float,
+) -> tuple[bool, tuple[asyncio.Future[Any], ...]]:
+    owner = asyncio.create_task(ctx.release_isolated_workspaces())
     try:
-        await asyncio.wait_for(ctx.release_isolated_workspaces(), timeout)
-    except (Exception, asyncio.TimeoutError):
+        done, _ = await asyncio.wait({owner}, timeout=timeout)
+    except BaseException:
+        owner.add_done_callback(consume_task_result)
+        raise
+    if owner not in done:
+        owner.add_done_callback(consume_task_result)
+        return False, (owner,)
+    try:
+        owner.result()
+    except Exception:
+        return False, ()
+    return True, ()
+
+def _defer_owned_environment_cleanup(
+    env: Any, pending: tuple[asyncio.Future[Any], ...], *, timeout: float,
+) -> bool:
+    if env is None or not pending:
         return False
+
+    async def close_after_pending() -> None:
+        await asyncio.wait(pending)
+        if not await run_environment_hook(env, "cleanup", timeout):
+            logger.warning("Deferred workflow environment cleanup failed")
+
+    owner = asyncio.create_task(close_after_pending())
+    owner.add_done_callback(consume_task_result)
     return True
 
 async def _await_owned_with_cancellation(

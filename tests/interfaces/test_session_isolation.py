@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from opencollab import OpenCollab
+from opencollab import OpenCollab, RunError
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.session_environments import SessionEnvironmentPool
 from opencollab.adapters.worktree_pool import WorktreePool
@@ -197,6 +197,108 @@ async def test_concurrent_release_waits_for_the_same_workspace_owner(tmp_path, s
     await asyncio.gather(first, second)
     await pool.release()
     assert calls == [workspace] and not Path(workspace.workspace).exists()
+
+
+@pytest.mark.parametrize("phase", ["session-close", "workspace-release"])
+@pytest.mark.parametrize("mode", ["cleanup-timeout", "caller-cancelled", "workflow-timeout"])
+async def test_workflow_preserves_workspace_until_owned_cleanup_settles(tmp_path, monkeypatch, phase, mode):
+    workspace = tmp_path / "source"
+    workspace.mkdir()
+    _repo(workspace, dirty=False)
+    entered, finish, flushed, source_closed = (asyncio.Event() for _ in range(4))
+    observed = {}
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    workflow_timeout = 4 if mode == "workflow-timeout" else None
+
+    class ReportPool(WorktreePool):
+        async def acquire(self, role, *, source=None):
+            environment = await super().acquire(role, source=source)
+            observed["environment"] = environment
+            if phase == "workspace-release":
+                cleanup = environment.cleanup
+
+                async def release_report():
+                    entered.set()
+                    await finish.wait()
+                    observed["report"] = await observed["source"].read_file("seed.txt")
+                    await cleanup()
+                    flushed.set()
+
+                monkeypatch.setattr(environment, "cleanup", release_report)
+            return environment
+
+    def provider(**options):
+        source = options["base_environment"]
+        observed["source"] = source
+        cleanup = source.cleanup
+
+        async def close_source():
+            await cleanup()
+            source_closed.set()
+
+        monkeypatch.setattr(source, "cleanup", close_source)
+        pool = ReportPool(use_worktrees=True, **options)
+        observed["pool"] = pool
+        return pool
+
+    async def flow(ctx, _args):
+        output = await ctx.agent("Write one report.", tools=list(builtin_tools("file_write")))
+        if phase == "session-close":
+            session, = ctx.sessions
+
+            async def copy_report():
+                entered.set()
+                await finish.wait()
+                try:
+                    observed["report"] = await observed["environment"].read_file("marker.txt")
+                finally:
+                    flushed.set()
+
+            session.own_runtime(copy_report)
+        if workflow_timeout is not None:
+            await asyncio.sleep(max(0, started + workflow_timeout - .25 - loop.time()))
+        return output
+
+    client = OpenCollab(workspace, environment_providers={"report": provider})
+
+    async def run():
+        try:
+            return await client.workflow(
+                flow, llm=Writer(), trace=False, isolation="report", timeout=workflow_timeout,
+                cleanup_timeout=.6 if workflow_timeout is not None else .1,
+            )
+        except asyncio.CancelledError as exc:
+            observed["cancellation"] = exc.args
+            raise
+
+    operation = asyncio.create_task(run())
+    try:
+        await asyncio.wait_for(entered.wait(), 8)
+        if mode == "caller-cancelled":
+            operation.cancel("caller stopped")
+        done, _ = await asyncio.wait({operation}, timeout=2)
+        assert operation in done
+        expected_error = asyncio.CancelledError if mode == "caller-cancelled" else RunError
+        with pytest.raises(expected_error):
+            await operation
+        assert Path(observed["environment"].workspace).is_dir()
+        assert not source_closed.is_set()
+        assert await observed["source"].read_file("seed.txt") == "initial"
+        if mode == "caller-cancelled":
+            assert observed["cancellation"] == ("caller stopped",)
+    finally:
+        finish.set()
+        await asyncio.gather(operation, return_exceptions=True)
+        try:
+            if entered.is_set():
+                await asyncio.wait_for(flushed.wait(), 5)
+                await asyncio.wait_for(source_closed.wait(), 5)
+                assert not Path(observed["environment"].workspace).exists()
+        finally:
+            if "pool" in observed:
+                await observed["pool"].release()
+    assert observed["report"] == ("marker" if phase == "session-close" else "initial")
 
 
 @pytest.mark.parametrize("entry_isolation", ["shared", "worktree"])

@@ -24,7 +24,7 @@ def _completed_session_output_before(session: Any, deadline: float | None) -> st
 async def close_session_resources(
     sessions: Iterable[Any],
     *,
-    timeout: float,
+    timeout: float | None,
 ) -> bool:
     """Close each unique session and report whether every close succeeded."""
     close_tasks: set[asyncio.Task[Any]] = set()
@@ -48,7 +48,7 @@ async def close_session_resources(
     if not close_tasks:
         return succeeded
     _done, pending = await asyncio.wait(close_tasks, timeout=timeout)
-    if pending:
+    if pending and timeout is not None:
         pending = await cancel_tasks_and_wait(pending, timeout=timeout)
     for task in close_tasks - pending:
         try:
