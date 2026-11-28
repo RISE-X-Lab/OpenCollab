@@ -39,7 +39,7 @@ class WorkflowAgentsMixin:
         prompt: str,
         *,
         label: str | None,
-        tools: Sequence[Any] | None,
+        tools: str | Sequence[Any] | None,
         isolation: bool | str | None,
         tool_choice: Any,
         thinking: bool | None,
@@ -62,12 +62,11 @@ class WorkflowAgentsMixin:
                 commit_reserve = max(1, session_budget // 4)
         capture_done = asyncio.Event()
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
-        combined_tools = [*(tools or []), submit_tool]
         try:
             session = await self._build_workflow_session(
                 prompt=prompt,
                 budget=session_budget,
-                tools=combined_tools,
+                tools=[*self._tools_for_capture(tools), submit_tool],
                 isolation=isolation,
                 label=label,
                 tool_choice=tool_choice,

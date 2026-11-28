@@ -302,12 +302,15 @@ class WorkflowSessionFactoryPort(Protocol):
     ``state.messages`` — no inheritance contract beyond those names.
     """
 
+    def resolve_tool_preset(self, name: str) -> Sequence[ToolPort]:
+        ...
+
     def build_workflow_session(
         self,
         *,
         prompt: str,
         budget: int | None,
-        tools: Sequence[Any] | None = None,
+        tools: str | Sequence[Any] | None = None,
         isolation: bool = False,
         label: str | None = None,
         tool_choice: Any = None,

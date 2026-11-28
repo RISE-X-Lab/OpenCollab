@@ -346,7 +346,7 @@ class WorkflowContext(
         *,
         label: str | None,
         budget: int | None,
-        tools: Sequence[Any] | None = None,
+        tools: str | Sequence[Any] | None = None,
         isolation: bool | str | None = None,
         startup_deadline: float | None = None,
         **kwargs: Any,
@@ -396,6 +396,8 @@ class WorkflowContext(
             **kwargs,
         )
         state = getattr(session, "state", None)
+        if isinstance(tools, str):
+            tools = getattr(getattr(session, "agent", None), "tools", ())
         self._trace_step(
             "workflow_agent_started",
             {
@@ -415,6 +417,11 @@ class WorkflowContext(
             },
         )
         return session
+
+    def _tools_for_capture(self, tools: str | Sequence[Any] | None) -> Sequence[Any]:
+        if isinstance(tools, str):
+            return self._factory.resolve_tool_preset(tools)
+        return tools or ()
 
     async def release_isolated_workspaces(self) -> None:
         """Give back every workspace the factory lent to an isolated agent.
@@ -527,7 +534,7 @@ class WorkflowContext(
         *,
         schema: dict[str, Any] | None = None,
         label: str | None = None,
-        tools: Sequence[Any] | None = None,
+        tools: str | Sequence[Any] | None = None,
         isolation: bool | str | None = None,
         tool_choice: Any = None,
         thinking: bool | None = None,
@@ -544,6 +551,8 @@ class WorkflowContext(
         None shares the available pool. An exhausted pool raises WorkflowBudgetExceeded
         before session creation unless ``over_budget_ok`` permits the call.
 
+        ``tools`` accepts a preset name or a sequence of tools. Structured output
+        and enforcement add their capture tool to that selection.
         ``schema`` requires structured_output and returns its validated dictionary.
         An unsatisfied capture gets one corrective retry carrying gathered history.
         ``tool_choice`` applies to free-text sessions. Schema sessions instead explore
@@ -659,7 +668,7 @@ class WorkflowContext(
         prompt: str,
         *,
         label: str | None,
-        tools: Sequence[Any] | None,
+        tools: str | Sequence[Any] | None,
         isolation: bool | str | None,
         tool_choice: Any = None,
         thinking: bool | None = None,

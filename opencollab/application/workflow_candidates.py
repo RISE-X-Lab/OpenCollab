@@ -158,6 +158,9 @@ class _CandidateWorkflowSessionFactory:
     def default_isolation(self):
         return getattr(self._factory, "default_isolation", "shared")
 
+    def resolve_tool_preset(self, name: str) -> Sequence[Any]:
+        return self._factory.resolve_tool_preset(name)
+
     async def acquire_environment(self, *, isolation, label=None, environment=None):
         owner = self._environment if environment is None else environment
         if isolation == "shared":

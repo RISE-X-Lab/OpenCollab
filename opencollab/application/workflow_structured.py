@@ -73,7 +73,7 @@ class WorkflowStructuredMixin:
         *,
         schema: dict[str, Any],
         label: str | None,
-        tools: Sequence[Any] | None,
+        tools: str | Sequence[Any] | None,
         isolation: bool | str | None,
         timeout: float | None = None,
         budget: int | None = None,
@@ -90,13 +90,12 @@ class WorkflowStructuredMixin:
         capture_done = asyncio.Event()
         capture_tool = StructuredOutputTool(schema, on_capture=capture_done.set)
         seeded_prompt = prompt + _STRUCTURED_INSTRUCTION
-        combined_tools = [capture_tool, *(tools or [])]
         session_budget = self._capped_session_budget(budget)
         try:
             session = await self._build_workflow_session(
                 prompt=seeded_prompt,
                 budget=session_budget,
-                tools=combined_tools,
+                tools=[capture_tool, *self._tools_for_capture(tools)],
                 isolation=isolation,
                 label=label,
                 startup_deadline=deadline,

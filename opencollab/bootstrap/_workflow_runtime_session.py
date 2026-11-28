@@ -324,12 +324,19 @@ class WorkflowSessionFactory:
             detail = "; ".join(f"{type(error).__name__}: {error}" for error in errors)
             raise OSError(f"isolated environment cleanup failed: {detail}") from errors[0]
 
+    def resolve_tool_preset(self, name: str) -> Sequence[Any]:
+        if self._agent_profile is not None:
+            return self._agent_profile.resolve_tools(name)
+        from opencollab.bootstrap.programmatic import resolve_tools
+
+        return resolve_tools(name)
+
     def build_workflow_session(
         self,
         *,
         prompt: str,
         budget: int | None,
-        tools: Sequence[Any] | None = None,
+        tools: str | Sequence[Any] | None = None,
         isolation: bool = False,
         label: str | None = None,
         tool_choice: Any = None,
@@ -366,10 +373,8 @@ class WorkflowSessionFactory:
             system_prompt = system_prompt.replace(self._workspace, environment_workspace)
         # The workflow owns role permissions and verification-tool instances.
         # Profile resolution keeps explicit tools, including evidence wrappers.
-        if self._agent_profile is None and isinstance(tools, str):
-            from opencollab.bootstrap.programmatic import resolve_tools
-
-            resolved_tools = list(resolve_tools(tools))
+        if isinstance(tools, str):
+            resolved_tools = list(self.resolve_tool_preset(tools))
         else:
             resolved_tools = list(
                 (tools or []) if self._agent_profile is None else self._agent_profile.resolve_tools(tools)
