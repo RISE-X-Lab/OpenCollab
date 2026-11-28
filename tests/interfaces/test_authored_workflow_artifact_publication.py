@@ -18,7 +18,10 @@ def call(name, arguments):
             "function": {"name": name, "arguments": json.dumps(arguments)}}
 
 
-@pytest.mark.parametrize("scene", ["settled", "wait", "result-budget", "parent-cancel", "export-fails"])
+@pytest.mark.parametrize("scene", [
+    "settled", "wait", "result-budget", "parent-cancel", "export-fails", "manifest-missing",
+    "failed-workflow-manifest-missing",
+])
 async def test_authored_terminal_acknowledgement_references_persistent_artifacts(tmp_path, monkeypatch, scene):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -27,12 +30,18 @@ async def test_authored_terminal_acknowledgement_references_persistent_artifacts
         "entry: writer\nroles:\n  writer:\n    prompt: Writer\n"
         "    tools: [file_write, bash, manage_workflow]\n"
     )
+    workflow_fails = scene == "failed-workflow-manifest-missing"
+    missing_manifest = scene == "manifest-missing" or workflow_fails
+    terminal = (
+        "raise ValueError('Invalid authored report row')" if workflow_fails
+        else "return {'status': 'ready', 'bytes': len(text)}"
+    )
     source = (
         "from pathlib import Path\n\n"
         "async def main(ctx, args):\n"
         "    text = 'ready for review\\n'\n"
         "    Path('report.txt').write_text(text)\n"
-        "    return {'status': 'ready', 'bytes': len(text)}\n"
+        f"    {terminal}\n"
     )
     copying, release, cancelled, parent_admitted = [asyncio.Event() for _ in range(4)]
     seen = {}
@@ -44,6 +53,8 @@ async def test_authored_terminal_acknowledgement_references_persistent_artifacts
             await release.wait()
             if scene == "export-fails":
                 raise OSError(errno.EIO, "child manifest transfer failed")
+            if missing_manifest:
+                Path(source).unlink()
         await copy_artifact(environment, source, target)
 
     monkeypatch.setattr(authored_workflow, "_copy_artifact_to_host", copy)
@@ -143,10 +154,13 @@ async def test_authored_terminal_acknowledgement_references_persistent_artifacts
 
     first, settled = seen["first"], seen["settled"]
     assert first["id"] == settled["id"]
-    if scene == "export-fails":
+    if scene == "export-fails" or missing_manifest:
         assert first["status"] == "running" and first["result"] is None
         assert settled["status"] == "failed" and settled["result"]["output"] is None
-        assert "child manifest transfer failed" in settled["result"]["reason"]
+        problem = "child manifest transfer failed" if scene == "export-fails" else "workflow.json"
+        assert problem in settled["result"]["reason"]
+        if workflow_fails:
+            assert "ValueError: Invalid authored report row" in settled["result"]["reason"]
         assert result.status == "failed" and result.tokens == 25
         assert transient.exists()
         return

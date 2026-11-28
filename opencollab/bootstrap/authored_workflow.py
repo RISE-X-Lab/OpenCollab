@@ -415,6 +415,7 @@ class AuthoredWorkflowTool(Tool):
                 try:
                     directory = Path(tempfile.mkdtemp(prefix=f"{child.id}-", dir=self._save_dir))
                     native_files = (result or {}).get("artifact_files")
+                    final_inventory = native_files is not None
                     if native_files is None:
                         try:
                             native_files = json.loads(await child.environment.read_file(
@@ -432,7 +433,9 @@ class AuthoredWorkflowTool(Tool):
                                 child.environment, posixpath.join(child.artifacts, name), directory / name,
                             )
                         except FileNotFoundError:
-                            continue
+                            # The provisional list can name files the child never created.
+                            if final_inventory:
+                                raise
                     saved_artifacts = str(directory)
                     terminal = replace(child, status=status, result=result, saved_artifacts=saved_artifacts)
                     (directory / "process.json").write_text(json.dumps(logs), encoding="utf-8")
@@ -441,8 +444,11 @@ class AuthoredWorkflowTool(Tool):
                 except Exception as exc:
                     status = "failed"
                     child.cleanup_error = exc
+                    reason = f"child result persistence failed: {exc}"
+                    if result and result.get("reason"):
+                        reason = f"{result['reason']}. {reason}"
                     result = {"status": "failed", "output": None,
-                              "reason": f"child result persistence failed: {exc}", "tokens": child.tokens}
+                              "reason": reason, "tokens": child.tokens}
             child.saved_artifacts = saved_artifacts
             child.result = result
             child.status = status
