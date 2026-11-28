@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import importlib
 import json
 import stat
 import sys
@@ -578,7 +579,13 @@ async def test_evaluated_candidate_survives_edit_to_live_program(tmp_path: Path)
 async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path, monkeypatch, relative):
     monkeypatch.chdir(tmp_path.parent)
     workspace = Path(tmp_path.name) if relative else tmp_path
-    source = CORRECT + (
+    candidate_file = "src/candidate.py"
+    package = workspace / "src"
+    package.mkdir()
+    (package / "__init__.py").touch()
+    (package / "helper.py").write_text("def measure(xs):\n    return sum(abs(x) for x in xs)\n")
+    source = (
+        "from .helper import measure as solve\n"
         "if __name__ == '__main__':\n"
         "    import json, sys\n"
         "    print(json.dumps([solve(value) for value in json.loads(sys.argv[1])]))\n"
@@ -587,7 +594,7 @@ async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path,
 
     async def evaluate(path, inputs):
         evaluated.append(path)
-        module = path.relative_to(workspace).stem
+        module = ".".join(path.relative_to(workspace).with_suffix("").parts)
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-B", "-m", module, json.dumps(inputs),
             cwd=workspace, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -596,15 +603,66 @@ async def test_reconstruct_evaluator_can_run_the_candidate_as_a_module(tmp_path,
         assert process.returncode == 0, stderr.decode()
         return [{"ok": True, "output": value} for value in json.loads(stdout)]
 
-    task = make_task(workspace, evaluate=evaluate)
+    task = make_task(workspace, candidate_file=candidate_file, evaluate=evaluate)
     result = await reconstruct(
-        ScriptedContext(workspace, programs=[source]), {"task": register_task(task), "early_stop": 1},
+        ScriptedContext(workspace, programs=[source], candidate_file=candidate_file),
+        {"task": register_task(task), "early_stop": 1},
     )
     assert result["promotions"] == 1 and result["stop_reason"] == "early_stop"
     assert len(evaluated) == 2
     assert all(not path.exists() for path in evaluated)
-    assert (workspace / "candidate.py").read_text(encoding="utf-8") == source
+    assert (workspace / candidate_file).read_text(encoding="utf-8") == source
     assert (workspace / ".oc_candidates" / result["final_program"]).read_text(encoding="utf-8") == source
+
+
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute-workspace", "relative-workspace"])
+async def test_reconstruct_evaluates_a_writable_file_in_a_read_only_directory(tmp_path, monkeypatch, relative):
+    monkeypatch.chdir(tmp_path.parent)
+    workspace = Path(tmp_path.name) if relative else tmp_path
+    candidate_file = "src/candidate.py"
+    program = workspace / candidate_file
+    program.parent.mkdir()
+    program.write_text("# Existing editable candidate.\n", encoding="utf-8")
+    module = importlib.import_module("opencollab.builtin_workflows.reconstruct")
+    open_temporary = module.NamedTemporaryFile
+    evaluated = []
+
+    def deny_sibling_creation(*, dir, **kwargs):
+        if dir == program.parent:
+            raise PermissionError(errno.EACCES, "directory forbids new files")
+        return open_temporary(dir=dir, **kwargs)
+
+    async def evaluate(path, inputs):
+        assert path.parent == workspace / ".oc_candidates"
+        assert path.suffix == program.suffix
+        assert path.read_bytes() == CORRECT.encode()
+        evaluated.append(path)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-B", "-c",
+            "import json, runpy, sys\n"
+            "solve = runpy.run_path(sys.argv[1])['solve']\n"
+            "print(json.dumps([solve(value) for value in json.loads(sys.argv[2])]))\n",
+            str(path.relative_to(workspace)), json.dumps(inputs),
+            cwd=workspace, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        assert process.returncode == 0, stderr.decode()
+        path.write_text("# Evaluator changes its own copy.\n", encoding="utf-8")
+        return [{"ok": True, "output": value} for value in json.loads(stdout)]
+
+    monkeypatch.setattr(module, "NamedTemporaryFile", deny_sibling_creation)
+    task = make_task(workspace, candidate_file=candidate_file, evaluate=evaluate)
+    result = await reconstruct(
+        ScriptedContext(workspace, candidate_file=candidate_file),
+        {"task": register_task(task), "early_stop": 1},
+    )
+    archive = workspace / ".oc_candidates" / result["final_program"]
+    assert result["stop_reason"] == "early_stop"
+    assert result["promotions"] == 1 and result["final_score"] == 1.0
+    assert len(set(evaluated)) == 2 and all(not path.exists() for path in evaluated)
+    assert set(archive.parent.iterdir()) == {archive}
+    assert set(program.parent.iterdir()) == {program}
+    assert archive.read_bytes() == program.read_bytes() == CORRECT.encode()
 
 
 @pytest.mark.parametrize("cancel", [False, True], ids=["failure", "cancel"])

@@ -68,10 +68,11 @@ task = ReconstructionTask(
 )
 ```
 
-`evaluate` receives a temporary copy of the archived candidate in the editable
-candidate's directory, with the same suffix and permissions. Run that copy in
-the agent's execution environment, never in the harness process. The copy is
-removed when the evaluation ends.
+`evaluate` receives a temporary copy of the archived candidate, with the same
+suffix and permissions. The copy lives next to the editable candidate. If that
+directory forbids creating files, the copy lives in the archive directory.
+Run the copy in the agent's execution environment, never in the harness process.
+The copy is removed when the evaluation ends.
 `kind` is one of `list`, `two_lists`, `int`, `pair`, `string`, `points` or
 `other`; `other` disables the coverage gate and the domain check.
 

@@ -14,6 +14,7 @@ See FromIO, arXiv 2605.15334, Section 4.6.
 
 from __future__ import annotations
 
+import errno
 import importlib
 import json
 import shutil
@@ -127,9 +128,10 @@ class ReconstructionTask:
     invalid input). ``evaluate`` runs a candidate file on inputs and returns
     one ``{"ok": True, "output": ...}`` or ``{"ok": False, "error": ...}``
     per input. The evaluator receives a temporary copy next to the editable
-    candidate for the duration of the call. Execute it where the agent's own
-    code runs, never in the harness process. ``tools`` are handed to every coding
-    session. ``random_inputs(k, exclude)`` draws fresh inputs from a source
+    candidate or in the archive directory if the source directory forbids
+    creating files. Execute it where the agent's own code runs, never in the
+    harness process. ``tools`` are handed to every coding session.
+    ``random_inputs(k, exclude)`` draws fresh inputs from a source
     independent of the agent (the benchmark's generator); it is required
     when ``random_share`` is positive. ``on_example`` is told about every
     observed example and its source (``agent`` or ``random``). ``kind``,
@@ -256,15 +258,24 @@ def _archive_candidate(program: Path, candidates_dir: Path, iteration: int) -> P
 
 @contextmanager
 def _evaluation_copy(archive: Path, program: Path) -> Iterator[Path]:
-    destination = NamedTemporaryFile(
-        dir=program.parent, prefix="_oc_evaluate_", suffix=program.suffix, delete=False,
-    )
+    directory = program.parent
+    try:
+        destination = NamedTemporaryFile(
+            dir=directory, prefix="_oc_evaluate_", suffix=program.suffix, delete=False,
+        )
+    except OSError as exc:
+        if directory == archive.parent or exc.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
+            raise
+        directory = archive.parent
+        destination = NamedTemporaryFile(
+            dir=directory, prefix="_oc_evaluate_", suffix=program.suffix, delete=False,
+        )
     path = Path(destination.name)
     try:
         with destination, archive.open("rb") as source:
             shutil.copyfileobj(source, destination)
         shutil.copymode(archive, path)
-        yield program.parent / path.name
+        yield directory / path.name
     except BaseException as error:
         _remove_candidate_file(path, "evaluation copy", error)
         raise
