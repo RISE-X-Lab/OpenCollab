@@ -47,7 +47,10 @@ class SchedulerRunMixin:
         state = self._sessions[aid].state
         if state.submitted_summary:
             return state.submitted_summary
-        if state.phase is SessionPhase.DONE:
+        if state.phase is SessionPhase.DONE or (
+            state.phase is SessionPhase.STOPPED
+            and state.terminal_reason in {_FILTERED_OUTPUT_REASON, _TRUNCATED_OUTPUT_REASON}
+        ):
             finished = _last_assistant_answer(
                 state.messages, state.completed_turn_start_message_index, include_tool_call_text=False,
             )
