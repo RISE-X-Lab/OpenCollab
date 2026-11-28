@@ -123,6 +123,10 @@ async def _abort_session_environments(ctx: WorkflowContext, *, timeout: float) -
     if not getattr(ctx, "_cleanup_environment", True):
         return True
     environments = _session_environments(ctx)
+    if ctx._environment_acquisitions:
+        # A checkout can still need to read from its shared source.
+        source = getattr(ctx._factory, "_env", None)
+        environments = tuple(environment for environment in environments if environment is not source)
     if not environments:
         return True
     results = await asyncio.gather(

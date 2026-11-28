@@ -47,6 +47,7 @@ def _runtime_result(
     evidence_complete: bool,
     body_returned_before_deadline: bool,
     environment_cleanup_deferred: bool,
+    startup_cleanup_deferred: bool,
 ) -> WorkflowRuntimeResult:
     sessions = tuple(ctx.sessions)
     tokens = ctx.budget.spent()
@@ -65,6 +66,7 @@ def _runtime_result(
         evidence_complete=evidence_complete,
         body_returned_before_deadline=body_returned_before_deadline,
         environment_cleanup_deferred=environment_cleanup_deferred,
+        startup_cleanup_deferred=startup_cleanup_deferred,
     )
 
 def _attach_runtime_result(
@@ -191,6 +193,7 @@ async def run_workflow(
 
     cleanup_failure: BaseException | None = None
     cleanup_succeeded = False
+    startup_pending = not ctx.sessions and bool(ctx._environment_acquisitions)
     lingering: tuple[asyncio.Future[Any], ...] = ()
     cleanup_task = asyncio.create_task(
         _quiesce_and_finalize_workflow_context(ctx, timeout=cleanup_timeout)
@@ -208,6 +211,7 @@ async def run_workflow(
     environment_cleanup_deferred = cleanup_environment and _defer_owned_environment_cleanup(
         env, lingering, timeout=cleanup_timeout,
     )
+    startup_cleanup_deferred = startup_pending and bool(lingering)
     tracer_failure = _close_tracer_capture(tracer) if owns_tracer else None
     tracer_write_error, tracer_dropped_steps, inspection_failure = _inspect_tracer(tracer)
     tracer_failure = _merge_failure(
@@ -243,6 +247,10 @@ async def run_workflow(
         terminal_status = "stopped"
         terminal_reason = stop_reason
         failure_type = None
+    elif startup_cleanup_deferred:
+        terminal_status = "failed"
+        terminal_reason = "environment_setup_incomplete"
+        failure_type = None
     else:
         terminal_status = "completed"
         terminal_reason = None
@@ -257,7 +265,7 @@ async def run_workflow(
     if (
         requested_manifest
         and cleanup_failure is None
-        and cleanup_succeeded
+        and (cleanup_succeeded or startup_cleanup_deferred)
     ):
         manifest_error = _persist_workflow_manifest(
             save_dir,
@@ -290,6 +298,7 @@ async def run_workflow(
         evidence_complete=evidence_complete,
         body_returned_before_deadline=body_returned_before_deadline,
         environment_cleanup_deferred=environment_cleanup_deferred,
+        startup_cleanup_deferred=startup_cleanup_deferred,
     )
     _attach_runtime_result(cancellation, runtime_result)
     _attach_runtime_result(workflow_failure, runtime_result)
@@ -300,7 +309,7 @@ async def run_workflow(
     )
     if cancellation is not None:
         _note_failure(cancellation, "workflow cleanup also failed", cleanup_failure)
-        if cleanup_failure is None and not cleanup_succeeded:
+        if cleanup_failure is None and not cleanup_succeeded and not startup_cleanup_deferred:
             _add_failure_note(
                 cancellation,
                 f"workflow cleanup also failed: {cleanup_detail}",

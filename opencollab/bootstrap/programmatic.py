@@ -483,7 +483,7 @@ def _workflow_metrics(
     }
     metrics.update(
         _quiescence_metrics(
-            session_quiesced=details is not None,
+            session_quiesced=details is not None and not details.startup_cleanup_deferred,
             environment_owned=environment_owned,
             environment_cleanup_quiesced=environment_cleanup_quiesced,
             environment_quiesced=environment_quiesced,
@@ -535,7 +535,7 @@ async def run_workflow(
         else asyncio.get_running_loop().time() + timeout
     )
     details: WorkflowRuntimeResult | None = None
-    stopped_error: BaseException | None = None
+    stopped_error: WorkflowDeadlineExceeded | None = None
     failed_error: BaseException | None = None
     bootstrap_stopped_environment = False
     environment_cleanup_quiesced: bool | None = None
@@ -626,22 +626,23 @@ async def run_workflow(
             environment_cleanup_quiesced = True
             environment_quiesced = True
 
-    if not owned_environment:
-        _verify_artifact_claim(artifacts)
     if stopped_error is not None:
-        if owned_environment:
-            _finalize_programmatic_workflow_manifest(artifacts)
         details = stopped_error.result
+        environment_deferred = details is not None and details.environment_cleanup_deferred
+        if owned_environment and not environment_deferred:
+            _finalize_programmatic_workflow_manifest(artifacts)
+        else:
+            _verify_artifact_claim(artifacts)
         metrics = _workflow_metrics(
             details,
             agent_profile=agent_profile,
             run_id=run_id,
             environment_owned=owned_environment,
             environment_cleanup_quiesced=(
-                True if owned_environment else environment_cleanup_quiesced
+                not environment_deferred if owned_environment else environment_cleanup_quiesced
             ),
             environment_quiesced=(
-                True if owned_environment else environment_quiesced
+                not environment_deferred if owned_environment else environment_quiesced
             ),
         )
         return ProgrammaticResult(
@@ -658,6 +659,8 @@ async def run_workflow(
             metrics=metrics,
             agent_failures=() if details is None else details.agent_failures,
         )
+    if not owned_environment:
+        _verify_artifact_claim(artifacts)
     if failed_error is not None:
         return ProgrammaticResult(
             output=None,

@@ -30,3 +30,4 @@ class WorkflowRuntimeResult:
     evidence_complete: bool = True
     body_returned_before_deadline: bool = False
     environment_cleanup_deferred: bool = False
+    startup_cleanup_deferred: bool = False

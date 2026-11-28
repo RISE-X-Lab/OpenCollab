@@ -115,6 +115,7 @@ class WorkflowAgentRunMixin:
                         lease, cap=budget, over_budget_ok=False, label=label,
                     )
                     budget_token = self._active_budget_lease.set(lease)
+                    deadline = self._timeout_deadline(timeout)
                     try:
                         options: dict[str, Any] = {}
                         if max_steps is not None:
@@ -125,7 +126,14 @@ class WorkflowAgentRunMixin:
                             options["run_control"] = run_control
                         session = await self._build_workflow_session(
                             prompt=prompt, budget=lease.total, tools=tools,
-                            isolation=isolation, label=label, **options,
+                            isolation=isolation, label=label, startup_deadline=deadline, **options,
+                        )
+                    except CallerTimeoutError:
+                        quiet = await self._settle_agent_run(lease, cleanup_timeout)
+                        return WorkflowAgentResult(
+                            None, "stopped", "timeout", 0, 0, None, lease.total, None,
+                            quiet, quiet and not self._agent_run_environment_unsafe
+                            and not bool(getattr(self._factory, "environment_revoked", False)),
                         )
                     except Exception as exc:
                         self._record_agent_failure(label, exc)
@@ -136,7 +144,6 @@ class WorkflowAgentRunMixin:
                             and not bool(getattr(self._factory, "environment_revoked", False)),
                         )
                     self._track_session(session)
-                    deadline = self._timeout_deadline(timeout)
                     try:
                         output = await self._run_session_turn(
                             session, prompt, deadline=deadline, label=label,

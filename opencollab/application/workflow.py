@@ -221,6 +221,7 @@ class WorkflowContext(
         self._workflow_imports: ExitStack | None = None
         self._active_call_tasks: set[asyncio.Task[Any]] = set()
         self._active_session_tasks: set[asyncio.Task[Any]] = set()
+        self._environment_acquisitions: set[asyncio.Future[Any]] = set()
         self._agent_failures: list[dict[str, Any]] = []
         self._trace_failures: list[dict[str, str]] = []
         self._tree_probe = tree_probe
@@ -347,6 +348,7 @@ class WorkflowContext(
         budget: int | None,
         tools: Sequence[Any] | None = None,
         isolation: bool | str | None = None,
+        startup_deadline: float | None = None,
         **kwargs: Any,
     ) -> Any:
         """Build one one-shot session and record that this agent existed.
@@ -370,12 +372,20 @@ class WorkflowContext(
         explicit_strategy = isinstance(isolation, str) or default_isolation != "shared"
         strategy = isolation_name(isolation, default=default_isolation)
         acquire = getattr(self._factory, "acquire_environment", None)
-        if callable(acquire):
-            env = await acquire(isolation=strategy, label=label)
-        elif strategy in {"shared", "worktree"}:
-            env = await self._factory.acquire_isolated_env(label=label) if strategy == "worktree" else None
+        if strategy == "shared":
+            env = await acquire(isolation=strategy, label=label) if callable(acquire) else None
         else:
-            raise ValueError(f"session factory does not support isolation strategy {strategy!r}")
+            remaining = self._remaining_timeout(startup_deadline)
+            if callable(acquire):
+                acquisition = acquire(isolation=strategy, label=label)
+            elif strategy == "worktree":
+                acquisition = self._factory.acquire_isolated_env(label=label)
+            else:
+                raise ValueError(f"session factory does not support isolation strategy {strategy!r}")
+            owner = asyncio.ensure_future(acquisition)
+            self._environment_acquisitions.add(owner)
+            owner.add_done_callback(self._environment_acquisitions.discard)
+            env = await self._run_with_timeout(owner, remaining)
         isolation = strategy != "shared"
         session = self._factory.build_workflow_session(
             label=label,
