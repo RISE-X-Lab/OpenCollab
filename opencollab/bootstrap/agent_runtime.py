@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -22,6 +23,8 @@ from opencollab.application.session_lifecycle import _completed_session_output_b
 from opencollab.bootstrap.container import build_workspace_safety_policy
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRuntimeLifecycleError(RuntimeError):
@@ -231,6 +234,7 @@ async def run_agent(
     finalization_attempts = 0
     max_finalization_attempts = 2
     stop_task: asyncio.Task[tuple[bool, bool, bool]] | None = None
+    deferred_close: asyncio.Task[None] | None = None
 
     def record_finalization_result(task: asyncio.Task[bool]) -> bool:
         nonlocal finalization_task, finalization_succeeded
@@ -274,6 +278,8 @@ async def run_agent(
         return record_finalization_result(task)
 
     async def finalize_with_retry() -> bool:
+        if deferred_close is not None:
+            return False
         if finalization_succeeded:
             return True
         while not finalization_succeeded:
@@ -289,11 +295,26 @@ async def run_agent(
         return False
 
     async def stop_owned() -> tuple[bool, bool, bool]:
+        nonlocal deferred_close
         abort_failure = (
             await _environment_abort_failure(environment, cleanup_timeout_seconds)
             if cleanup_environment else None
         )
         terminal = await force_task_terminal(owner, timeout=cleanup_timeout_seconds)
+        if not terminal and getattr(session, "_autosave_acquisition", None) is not None:
+            async def finish_stopped_startup() -> None:
+                await asyncio.wait({owner})
+                while tasks := session.pending_cleanup_tasks:
+                    await asyncio.wait(tasks)
+                closed = await close_session_resources((session,), timeout=None)
+                if closed and cleanup_environment:
+                    closed = await run_environment_hook(environment, "cleanup", cleanup_timeout_seconds)
+                if not closed:
+                    logger.warning("Agent cleanup after deferred autosave admission failed")
+
+            owner.add_done_callback(consume_task_result)
+            deferred_close = asyncio.create_task(finish_stopped_startup())
+            deferred_close.add_done_callback(consume_task_result)
         finalized = await finalize_with_retry()
         if (
             terminal and finalized and isinstance(abort_failure, OSError)

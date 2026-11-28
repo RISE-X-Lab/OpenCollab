@@ -10,7 +10,7 @@ from opencollab import OpenCollab, RunError
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.storage import SessionStore
-from opencollab.bootstrap import programmatic
+from opencollab.bootstrap import container, programmatic
 
 
 @pytest.mark.parametrize("stop", ["none", "deadline", "caller", "late"])
@@ -21,6 +21,8 @@ async def test_agent_startup_waits_for_the_autosave_journal_off_the_event_loop(t
     release_requested, released = threading.Event(), threading.Event()
     lock_threads = []
     requests = []
+    model_closed = asyncio.Event()
+    cancellations = []
 
     class ContendedLocalEnvironment(LocalEnvironment):
         def __init__(self, workspace):
@@ -39,6 +41,12 @@ async def test_agent_startup_waits_for_the_autosave_journal_off_the_event_loop(t
             locked.set()
 
     class InventoryModel:
+        def __init__(self, **kwargs):
+            pass
+
+        async def close(self):
+            model_closed.set()
+
         def context_window(self):
             return 100_000
 
@@ -47,13 +55,21 @@ async def test_agent_startup_waits_for_the_autosave_journal_off_the_event_loop(t
             return LLMResponse(content="Inventory verified.", usage=Usage(3, 2), finish_reason="stop")
 
     monkeypatch.setattr(programmatic, "LocalEnvironment", ContendedLocalEnvironment)
+    monkeypatch.setattr(container, "LLMClient", InventoryModel)
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     app = OpenCollab(tmp_path, model="gpt-4o")
-    operation = asyncio.create_task(app.agent(
-        "Check the inventory.", llm=InventoryModel(), tools=[], artifacts=artifacts, trace=False,
-        timeout=.15 if stop in {"deadline", "late"} else 5,
-        cleanup_timeout=.05 if stop == "late" else 1,
-    ))
+    async def run():
+        try:
+            return await app.agent(
+                "Check the inventory.", llm=None if stop == "late" else InventoryModel(), tools=[],
+                artifacts=artifacts, trace=False, timeout=.15 if stop in {"deadline", "late"} else 5,
+                cleanup_timeout=.05 if stop == "late" else 1,
+            )
+        except asyncio.CancelledError as exc:
+            cancellations.append(exc.args)
+            raise
+
+    operation = asyncio.create_task(run())
     try:
         await asyncio.wait_for(locked.wait(), 2)
         await asyncio.sleep(.03)
@@ -78,13 +94,15 @@ async def test_agent_startup_waits_for_the_autosave_journal_off_the_event_loop(t
                     await asyncio.sleep(.01)
 
             await asyncio.wait_for(reacquire(), 1)
+            await asyncio.wait_for(model_closed.wait(), 1)
             return
         if stop == "deadline":
             await asyncio.sleep(.20)
         release_requested.set()
         if stop == "caller":
-            with pytest.raises(asyncio.CancelledError, match="stop before the first request"):
+            with pytest.raises(asyncio.CancelledError):
                 await operation
+            assert cancellations == [("stop before the first request",)]
         else:
             result = await operation
             if stop == "none":
