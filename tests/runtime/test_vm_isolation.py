@@ -333,6 +333,43 @@ async def test_scoped_session_release_retries_failed_reset_and_returns_capacity(
         await pool.release()
 
 
+async def test_failed_vm_reset_still_returns_an_independent_guest(tmp_path, local_vm):
+    source = tmp_path / "source"
+    _repository(source)
+    ready = tmp_path / "reset-ready"
+    resources = [
+        _resource(tmp_path / "healthy", "healthy"),
+        _resource(tmp_path / "recovering", "recovering", reset_command=f"test -f '{ready}'"),
+    ]
+    database = str(tmp_path / "leases.sqlite")
+    provider = vm_isolation_provider(resources, lease_database=database, scope="session")
+    pool = SessionEnvironmentPool(
+        str(source), isolation="vm-session", providers={"vm-session": provider},
+        owned_save_dir=str(tmp_path / "results"),
+    )
+    registry = _VMLeases(database, resources, 0)
+    try:
+        first = await pool.acquire("report-first")
+        second = await pool.acquire("report-second")
+        assert (await first.exec_cmd("printf first > answer.txt")).returncode == 0
+        assert (await second.exec_cmd("printf second > answer.txt")).returncode == 0
+
+        with pytest.raises(RuntimeError, match="VM guest reset"):
+            await pool.release()
+        with sqlite3.connect(database) as connection:
+            assert connection.execute("SELECT resource_id FROM vm_leases").fetchall() == [("recovering",)]
+        for environment, text in ((first, "first"), (second, "second")):
+            assert (Path(environment.export_directory) / "answer.txt").read_text() == text
+        replacement = await registry.acquire("new-run")
+        assert replacement == resources[0]
+        registry.release(replacement, "new-run")
+    finally:
+        ready.touch()
+        await pool.release()
+    with sqlite3.connect(database) as connection:
+        assert not connection.execute("SELECT 1 FROM vm_leases").fetchall()
+
+
 async def test_release_interrupts_configured_capacity_wait(tmp_path, local_vm):
     resource = _resource(tmp_path / "guest")
     database = str(tmp_path / "leases.sqlite")

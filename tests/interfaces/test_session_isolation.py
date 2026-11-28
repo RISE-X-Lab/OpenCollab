@@ -201,6 +201,38 @@ async def test_concurrent_release_waits_for_the_same_workspace_owner(tmp_path, s
     assert calls == [workspace] and not Path(workspace.workspace).exists()
 
 
+async def test_pool_keeps_failed_child_source_and_releases_independent_worktree(tmp_path, monkeypatch):
+    _repo(tmp_path, dirty=False)
+
+    def provider(**options):
+        return WorktreePool(use_worktrees=True, **options)
+
+    pool = SessionEnvironmentPool(str(tmp_path), providers={"report": provider})
+    ready = False
+    try:
+        parent = await pool.acquire("parent")
+        independent = await pool.acquire("independent")
+        child = await pool.acquire("child", isolation="report", source=parent)
+        cleanup = child.cleanup
+
+        async def delayed_cleanup():
+            if not ready:
+                raise OSError("report not copied")
+            await cleanup()
+
+        monkeypatch.setattr(child, "cleanup", delayed_cleanup)
+        checkout = Path(parent.workspace)
+        with pytest.raises(OSError, match="report not copied"):
+            await pool.release()
+        assert await parent.read_file("seed.txt") == "initial"
+        assert checkout.is_dir() and Path(child.workspace).is_dir()
+        assert not Path(independent.workspace).exists()
+    finally:
+        ready = True
+        await pool.release()
+    assert not checkout.exists()
+
+
 @pytest.mark.parametrize("phase", ["session-close", "workspace-release"])
 @pytest.mark.parametrize("mode", ["cleanup-timeout", "caller-cancelled", "workflow-timeout"])
 async def test_workflow_preserves_workspace_until_owned_cleanup_settles(tmp_path, monkeypatch, phase, mode):

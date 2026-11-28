@@ -38,7 +38,7 @@ class SessionEnvironmentPool:
         self._options = dict(owned_save_dir=owned_save_dir, enable_adoption=enable_adoption,
                              owned_output_paths=owned_output_paths)
         self._pools: dict[str, WorktreePoolPort] = {}
-        self._owners: dict[int, tuple[EnvironmentPort, WorktreePoolPort, asyncio.Lock]] = {}
+        self._owners: dict[int, tuple[EnvironmentPort, WorktreePoolPort, asyncio.Lock, EnvironmentPort]] = {}
         self._references: dict[int, int] = {}
         self._lifecycle = asyncio.Condition()
         self._release_lock = asyncio.Lock()
@@ -109,7 +109,7 @@ class SessionEnvironmentPool:
             identity = id(env)
             if env is not base or identity in self._owners:
                 if identity not in self._owners:
-                    self._owners[identity] = (env, pool, asyncio.Lock())
+                    self._owners[identity] = (env, pool, asyncio.Lock(), base)
                 self._references[identity] = self._references.get(identity, 0) + 1
             if self._closed:
                 await self.release_env(env)
@@ -147,7 +147,7 @@ class SessionEnvironmentPool:
         owner = self._owners.get(identity)
         if owner is None:
             return
-        _, pool, lock = owner
+        _, pool, lock, _ = owner
         async with lock:
             if self._owners.get(identity) is not owner:
                 return
@@ -173,9 +173,21 @@ class SessionEnvironmentPool:
         async with self._lifecycle:
             while self._inflight:
                 await self._lifecycle.wait()
-        # A later environment may use an earlier strategy's workspace as its source.
-        for env, _pool, _lock in reversed(tuple(self._owners.values())):
-            await self._release_env(env, all_references=True)
+        # A failed child can still need its source workspace for a cleanup retry.
+        retained_sources: set[int] = set()
+        first_failure: Exception | None = None
+        for identity, (env, _pool, _lock, source) in reversed(tuple(self._owners.items())):
+            if identity not in retained_sources:
+                try:
+                    await self._release_env(env, all_references=True)
+                except Exception as exc:
+                    if first_failure is None:
+                        first_failure = exc
+                else:
+                    continue
+            retained_sources.add(id(source))
+        if first_failure is not None:
+            raise first_failure
         failures = []
         for key, pool in reversed(tuple(self._pools.items())):
             try:
