@@ -36,6 +36,9 @@ def _unique_task_owners(*groups: Any) -> list[tuple[int, asyncio.Task[Any]]]:
     return owners
 
 class SchedulerCleanupMixin:
+    def request_shutdown(self) -> None:
+        self._shutting_down = True
+
     async def cleanup(
         self,
         *,
@@ -73,7 +76,7 @@ class SchedulerCleanupMixin:
         return timeout
 
     async def _cleanup_impl(self, *, timeout: float) -> None:
-        self._shutting_down = True
+        self.request_shutdown()
         failures: list[str] = []
         persistence_sessions = tuple(self._sessions.values())
         startup_aids = set(self._startup_tasks)
@@ -107,7 +110,8 @@ class SchedulerCleanupMixin:
         running_public_turns = {
             (aid, task) for aid, task in public_run_tasks if not task.done()
         }
-        all_tasks = {task for _aid, task in tracked_tasks}
+        # Cleanup retries still own tasks that outlived the previous cancellation wait.
+        all_tasks = {task for _aid, task in tracked_tasks} | self._pending_shutdown_tasks
         pending = await cancel_tasks_and_wait(all_tasks, timeout=timeout)
         for task in all_tasks - pending:
             consume_task_result(task)
@@ -120,6 +124,7 @@ class SchedulerCleanupMixin:
             timeout=timeout,
         )
         pending = {task for task in pending if not task.done()}
+        self._pending_shutdown_tasks = pending
         if pending:
             failures.append("execution tasks did not quiesce")
         if interrupted_deliveries:
@@ -234,12 +239,35 @@ class SchedulerCleanupMixin:
                 else "worktree pool release skipped because owned work did not quiesce"
             )
         if failures:
+            if environments_aborted and any(task in pending for _aid, task in running_public_turns):
+                self._continue_cleanup_after_turns(pending, timeout=timeout)
             failure = RuntimeError("technical scheduler cleanup failed: " + "; ".join(failures))
             if persistence_errors:
                 raise failure from persistence_errors[0]
             if lifecycle_errors:
                 raise failure from lifecycle_errors[0]
             raise failure
+
+    def _continue_cleanup_after_turns(self, pending: set[asyncio.Future[object]], *, timeout: float) -> None:
+        owner = self._deferred_turn_cleanup
+        if owner is not None and not owner.done():
+            return
+        first_attempt = self._cleanup_task
+
+        async def finish_cleanup() -> None:
+            await asyncio.wait(pending)
+            if first_attempt is not None:
+                await asyncio.wait({first_attempt})
+                if self._cleanup_task is first_attempt:
+                    self._cleanup_task = None
+            try:
+                await self.cleanup(cleanup_timeout=timeout)
+            except Exception:
+                logger.exception("deferred scheduler cleanup failed")
+
+        owner = asyncio.create_task(finish_cleanup())
+        self._deferred_turn_cleanup = owner
+        owner.add_done_callback(consume_task_result)
 
     def _persistence_sessions(self, initial: tuple[Any, ...]) -> tuple[Any, ...]:
         sessions: list[Any] = []

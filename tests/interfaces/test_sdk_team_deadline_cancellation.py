@@ -40,12 +40,7 @@ async def test_team_propagates_cancellation_after_scheduler_completion(tmp_path,
     async def cancel_after_completion(self, prompt):
         output = await original_run(self, prompt)
         owner = asyncio.current_task()
-        if timeout is None:
-            assert owner is caller
-        if owner is caller:
-            asyncio.get_running_loop().call_soon(cancel_caller)
-        else:
-            owner.add_done_callback(cancel_caller)
+        owner.add_done_callback(cancel_caller)
         return output
 
     monkeypatch.setattr(Scheduler, "run", cancel_after_completion)

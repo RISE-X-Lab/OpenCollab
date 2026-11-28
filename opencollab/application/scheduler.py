@@ -238,6 +238,8 @@ class Scheduler(
         self._manifest_subscriber: AutoSaveSubscriber | None = None
         self._shutting_down = False
         self._cleanup_task: asyncio.Task[None] | None = None
+        self._pending_shutdown_tasks: set[asyncio.Future[object]] = set()
+        self._deferred_turn_cleanup: asyncio.Task[None] | None = None
         self._session_close_task: asyncio.Task[bool] | None = None
         self._worktree_release_task: asyncio.Task[None] | None = None
         self._deferred_worktree_release: asyncio.Task[None] | None = None
