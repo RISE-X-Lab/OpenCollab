@@ -13,6 +13,7 @@ from typing import Any
 from opencollab.application._session_run_shared import _BUDGET_EXCEEDED_PREFIX, _REQUEST_BUDGET_REFUSAL_PREFIX
 from opencollab.application.async_timeout import CallerTimeoutError, await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
+from opencollab.application.session_lifecycle import _budget_replay_output_before
 from opencollab.application.workflow_budget import _BudgetLease
 from opencollab.domain.session import SessionPhase
 
@@ -381,15 +382,16 @@ class WorkflowCandidatesMixin:
                     env=lease.environment,
                 )
                 self._track_session(session)
+                deadline = self._timeout_deadline(timeout)
                 try:
                     output = await self._run_session_turn(
                         session,
                         prompt,
-                        deadline=self._timeout_deadline(timeout),
+                        deadline=deadline,
                         label=label,
                     )
                 except CallerTimeoutError:
-                    output = None
+                    output = _budget_replay_output_before(session, deadline)
                     await self.log(
                         f"candidate agent timed out ({label}) after {timeout}s"
                     )

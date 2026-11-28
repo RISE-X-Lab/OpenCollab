@@ -52,6 +52,7 @@ from opencollab.application.ports import (
     WorkingTreeProbe,
 )
 from opencollab.application.provider_failure import provider_http_failure_metadata
+from opencollab.application.session_lifecycle import _budget_replay_output_before
 from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE as DEFAULT_COMMIT_RESERVE
 from opencollab.application.session_run import ENFORCEMENT_OFF
 from opencollab.application.structured_output import TOOL_NAME as STRUCTURED_OUTPUT_TOOL_NAME
@@ -684,7 +685,7 @@ class WorkflowContext(
             return await self._run_session_turn(session, prompt, deadline=deadline, label=label)
         except CallerTimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
-            return None
+            return _budget_replay_output_before(session, deadline)
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"agent failed ({label or 'agent'}): {exc}")

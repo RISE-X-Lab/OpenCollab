@@ -892,21 +892,22 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         if missing > 0 and not self._claim_request_budget(missing, missing):
             return response
         retry_started = time.monotonic()
+        if (
+            isinstance(response.content, str) and response.content.strip()
+            and not getattr(response, "content_from_reasoning", False)
+        ):
+            self._budget_replay_partial = (first_reply_at, response.content)
         try:
             self._raise_if_run_cancelled()
             replacement = await self._invoke_llm(
                 messages=messages, tools=tools, max_output_tokens=retry_limit,
                 required_output_tokens=retry_limit, **kwargs,
             )
-        except (_TokenBudgetStop, _TeamBudgetStop):
-            return response
         except BaseException as exc:
-            if (
-                isinstance(exc, asyncio.CancelledError)
-                and isinstance(response.content, str) and response.content.strip()
-                and not getattr(response, "content_from_reasoning", False)
-            ):
-                self._interrupted_budget_replay_output = (first_reply_at, response.content)
+            if not isinstance(exc, asyncio.CancelledError):
+                self._budget_replay_partial = None
+            if isinstance(exc, (_TokenBudgetStop, _TeamBudgetStop)):
+                return response
             recoverable = isinstance(exc, Exception) and (
                 isinstance(exc, GenerationTimeoutError)
                 or self._is_context_overflow(exc)
@@ -923,6 +924,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             if recoverable:
                 self._raise_if_run_cancelled()
             raise
+        self._budget_replay_partial = None
         original_text = response.content.strip() if isinstance(response.content, str) else ""
         replacement_text = replacement.content.strip() if isinstance(replacement.content, str) else ""
         replacement_has_text = bool(replacement_text)

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from opencollab.application.async_timeout import CallerTimeoutError
-from opencollab.application.session_lifecycle import _completed_session_output_before
+from opencollab.application.session_lifecycle import _budget_replay_output_before, _completed_session_output_before
 from opencollab.application.workflow_budget import _positive_budget
 from opencollab.domain.tools import validate_unique_tool_names
 
@@ -163,12 +163,8 @@ class WorkflowAgentRunMixin:
                     runner = getattr(session, "runner", None)
                     if status == "stopped" and reason == "timeout":
                         output = _completed_session_output_before(session, deadline)
-                        partial = getattr(runner, "_interrupted_budget_replay_output", None)
-                        if (
-                            output is None and partial is not None
-                            and deadline is not None and partial[0] < deadline
-                        ):
-                            output = partial[1]
+                        if output is None:
+                            output = _budget_replay_output_before(session, deadline)
                     state = getattr(session, "state", None)
                     phase = getattr(getattr(state, "phase", None), "value", None)
                     terminal_reason = getattr(state, "terminal_reason", None)

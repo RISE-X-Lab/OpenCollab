@@ -21,6 +21,14 @@ def _completed_session_output_before(session: Any, deadline: float | None) -> st
     return output if finished_at < deadline else None
 
 
+def _budget_replay_output_before(session: Any, deadline: float | None) -> str | None:
+    partial = getattr(getattr(session, "runner", None), "_budget_replay_partial", None)
+    if deadline is None or partial is None:
+        return None
+    finished_at, output = partial
+    return output if finished_at < deadline else None
+
+
 async def close_session_resources(
     sessions: Iterable[Any],
     *,

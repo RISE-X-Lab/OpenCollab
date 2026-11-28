@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from opencollab.application.async_timeout import CallerTimeoutError
+from opencollab.application.session_lifecycle import _budget_replay_output_before
 from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE
 from opencollab.application.submit_findings import (
     SUBMIT_TOOL_NAME,
@@ -92,6 +93,7 @@ class WorkflowAgentsMixin:
                 cancel_event=capture_done,
             )
         except CallerTimeoutError:
+            text = _budget_replay_output_before(session, deadline)
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             filtered_failure = self._agent_failure_filtered(exc)
