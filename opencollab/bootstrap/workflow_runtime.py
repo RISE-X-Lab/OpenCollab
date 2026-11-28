@@ -93,6 +93,7 @@ async def run_workflow(
     deadline_monotonic: float | None = None,
     deadline_margin_seconds: float = 120.0,
     return_details: bool = False,
+    format_output: Callable[[Any], str] | None = None,
     cleanup_environment: bool | None = None,
     defer_manifest_completion: bool = False,
     candidate_workspace: Any | None = None,
@@ -151,6 +152,7 @@ async def run_workflow(
                 deadline_monotonic=deadline_monotonic,
                 deadline_margin_seconds=deadline_margin_seconds,
                 return_details=return_details,
+                format_output=format_output,
                 cleanup_environment=cleanup_environment,
                 defer_manifest_completion=defer_manifest_completion,
             )

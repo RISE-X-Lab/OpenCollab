@@ -50,8 +50,6 @@ def _runtime_result(
 ) -> WorkflowRuntimeResult:
     sessions = tuple(ctx.sessions)
     tokens = ctx.budget.spent()
-    if stop_reason == "budget_exceeded":
-        output["tokens_spent"] = tokens
     return WorkflowRuntimeResult(
         output=output,
         name=name,
@@ -100,6 +98,7 @@ async def run_workflow(
     deadline_monotonic: float | None = None,
     deadline_margin_seconds: float = 120.0,
     return_details: bool = False,
+    format_output: Callable[[Any], str] | None = None,
     cleanup_environment: bool = True,
     defer_manifest_completion: bool = False,
     candidate_workspace: Any | None = None,
@@ -219,13 +218,26 @@ async def run_workflow(
         note_prefix="workflow trace also failed",
     )
 
+    if stop_reason == "budget_exceeded":
+        result["tokens_spent"] = ctx.budget.spent()
+    output_format_failed = False
+    if (
+        format_output is not None and workflow_failure is None and cancellation is None
+        and cleanup_failure is None and cleanup_succeeded and tracer_failure is None
+    ):
+        try:
+            result = format_output(result)
+        except Exception as exc:
+            workflow_failure = exc
+            output_format_failed = True
+
     if cancellation is not None:
         terminal_status: Literal["completed", "stopped", "failed"] = "stopped"
         terminal_reason = "cancelled"
         failure_type = type(cancellation).__name__
     elif workflow_failure is not None:
         terminal_status = "failed"
-        terminal_reason = "workflow_exception"
+        terminal_reason = "output_format_failed" if output_format_failed else "workflow_exception"
         failure_type = type(workflow_failure).__name__
     elif stop_reason is not None:
         terminal_status = "stopped"
