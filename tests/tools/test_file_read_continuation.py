@@ -98,6 +98,22 @@ async def test_truncated_line_still_links_to_later_rows(tmp_path, backend):
     finally:
         await _cleanup(runtime)
 
+@pytest.mark.parametrize("ending", ["", "\n"])
+async def test_conditional_offset_at_eof_reports_no_rows(tmp_path, ending):
+    runtime = _runtime(tmp_path, "x" * 150_000 + ending, "local")
+    tool = FileReadTool(max_read_chars=80)
+    try:
+        first = await tool.execute_with_runtime({"path": "source.txt", "limit": 1}, runtime)
+        assert "character-truncated" in first
+        continuation = re.search(r"Continue with offset=(\d+)", first)
+        assert continuation is not None
+        follow = await tool.execute_with_runtime(
+            {"path": "source.txt", "offset": int(continuation.group(1)), "limit": 1}, runtime,
+        )
+        assert follow == "File: source.txt (1 lines total, no lines at or after offset 2)"
+    finally:
+        await _cleanup(runtime)
+
 def test_complete_line_window_keeps_working_line_pagination(tmp_path):
     (tmp_path / "lines.txt").write_text("first\nsecond\nthird\n", encoding="utf-8")
     runtime = ToolRuntime(environment=LocalEnvironment(str(tmp_path)), safety_policy=None, permission_policy=None)

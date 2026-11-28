@@ -144,6 +144,8 @@ class FileReadTool(Tool):
             total_description = "total not scanned"
         else:
             total_description = f"{window.total_lines} lines total"
+        if not numbered:
+            return f"File: {params['path']} ({total_description}, no lines at or after offset {window.start_line})"
         header = (
             f"File: {params['path']} ({total_description}, "
             f"showing {start + 1}-{end})"
