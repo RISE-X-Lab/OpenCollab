@@ -791,7 +791,10 @@ async def test_cancelled_generated_group_resumes_at_executed_check(tmp_path):
     assert settled.is_set()
     assert (tmp_path / "result.txt").read_text() == "correct\n"
     assert len(model.calls) == 2
-    state = WeaveState(interrupted.saved[-1])
+    cancelled_checkpoint = interrupted.saved[-1]
+    assert cancelled_checkpoint["status"] == "cancelled"
+    assert cancelled_checkpoint["error_type"] == "CancelledError"
+    state = WeaveState(cancelled_checkpoint)
     original_tokens = state.tokens
     resumed = FileChecks(tmp_path)
 
@@ -807,6 +810,10 @@ async def test_cancelled_generated_group_resumes_at_executed_check(tmp_path):
     assert result.tokens == 0
     assert state.tokens == original_tokens == 12
     assert resumed.checks and all(check.executed and check.ok for check in resumed.checks)
+    assert result.output["state"]["status"] == resumed.saved[-1]["status"] == "completed"
+    assert "error_type" not in result.output["state"]
+    assert "error_type" not in resumed.saved[-1]
+    assert cancelled_checkpoint["error_type"] == "CancelledError"
 
 @pytest.mark.parametrize("repair_passes", [True, False])
 @pytest.mark.parametrize("legacy", [False, True])

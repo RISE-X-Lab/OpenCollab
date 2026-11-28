@@ -633,6 +633,7 @@ class _WeaveRun:
             completed.append((group, saved["changed_files"]))
         report, repair_stop = await self.repair()
         status = "completed" if report.passed else "failed" if report.executed else "unverified"
+        state.data.pop("error_type", None)
         state.data.update(status=status, delivery_ok=report.passed)
         result = {"run_id": state.data["run_id"], "status": status, "delivery_ok": report.passed,
                   "total_tokens": state.tokens, "elapsed_seconds": state.elapsed,
