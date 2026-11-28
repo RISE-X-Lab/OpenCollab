@@ -573,21 +573,7 @@ class Session:
                 self.state.reset_for_user_turn()
                 self.runner.reset_runtime_for_user_turn()
                 self._completed_turn_output = None
-                with self._auto_save_lock:
-                    self._auto_save_export_source_sequence = None
                 await self.event_bus.emit(SessionEvent(type="user_message_appended"))
-
-    def _checkpoint_user_turn(self) -> Callable[[], None]:
-        state = self.state.checkpoint_user_turn()
-        with self._auto_save_lock:
-            source_sequence = self._auto_save_export_source_sequence
-
-        def restore() -> None:
-            self.state.restore_user_turn(state)
-            with self._auto_save_lock:
-                self._auto_save_export_source_sequence = source_sequence
-
-        return restore
 
     def apply_launch(self, launch: "LaunchSpec") -> None:
         """Apply launch-time persistence as a one-shot lifecycle step.
@@ -929,20 +915,23 @@ class Session:
                 previous_source_sequence = previous.get(_AUTOSAVE_EXPORT_SOURCE_SEQUENCE)
                 saved_message_count = len(snapshot.get("messages", ()))
                 recovered_rows = saved_message_count < len(messages)
-                if (
+                extends_transcript = _snapshot_extends_completed_transcript(previous, messages, meta)
+                if extends_transcript:
+                    sequence = previous_sequence + 1
+                elif (
                     type(previous_source_sequence) is int
                     and previous_source_sequence == source_sequence
                     and previous_sequence >= sequence
                 ):
-                    # Recheck equivalent exports at the target's local cursor under the journal lock.
+                    # Publication at the same sequence requires an equivalent snapshot.
                     sequence = previous_sequence
                 elif not recovered_rows or previous_sequence != sequence:
                     raise
                 previous_messages = previous["messages"]
-                if len(previous_messages) != len(messages):
+                if not extends_transcript and len(previous_messages) != len(messages):
                     raise
                 timestamps = []
-                if recovered_rows:
+                if recovered_rows and not extends_transcript:
                     # A retry regenerates recovery rows with a new wall-clock time.
                     # The checkpoint still compares their content and every source row.
                     timestamps = [message.get("timestamp") for message in previous_messages[saved_message_count:]]
@@ -1166,10 +1155,13 @@ class Session:
             return
         with self._auto_save_lock:
             messages, meta = self._snapshot_for_save()
-            # An exported snapshot may resume this session's autosave target.
-            # Keep its ordering cursor when saving to another filename.
+            # Keep the source's fork point across writes to the local working copy.
             export_source = self._auto_save_export_source_sequence
-            meta["_autosave_sequence"] = self._auto_save_reserved_sequence if export_source is None else export_source
+            if export_source is None:
+                export_source = self._auto_save_reserved_sequence
+            meta["_autosave_sequence"] = export_source
+            if self._auto_save_path is not None or self._auto_save_export_source_sequence is not None:
+                meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = export_source
         self.store.save(path, messages, meta=meta)
 
     def _snapshot_for_save(
@@ -1296,17 +1288,8 @@ class Session:
         ):
             replacement_store = self.store
         messages, meta = self._snapshot_for_save(replace_from)
-        source_sequence = self._auto_save_export_source_sequence
-        if (
-            source_sequence is not None
-            and (self.state.phase is SessionPhase.IDLE or self.state.phase.is_terminal())
-            and self.state.pending_external_user_turn is None
-            and self.state.pending_events.is_empty()
-            and message_count <= self._auto_save_message_count
-            and self._auto_save_rewrite_from is None
-        ):
-            # Readbacks and rollbacks of a provisional append keep the restored source.
-            meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = source_sequence
+        if self._auto_save_export_source_sequence is not None:
+            meta[_AUTOSAVE_EXPORT_SOURCE_SEQUENCE] = self._auto_save_export_source_sequence
         tracked_messages = [*stored_messages[:replace_from], *messages] if track_messages else None
         current_seen_hashes = set(self.state.turn.seen_result_hashes)
         seen_hashes_reset = preceding_write_pending or not self._auto_save_seen_result_hashes.issubset(
@@ -1325,12 +1308,6 @@ class Session:
 
         def advance_cursor() -> None:
             self._auto_save_sequence = sequence
-            # A provisional snapshot cannot clear provenance reinstated by turn rollback.
-            if (
-                source_sequence == self._auto_save_export_source_sequence
-                and _AUTOSAVE_EXPORT_SOURCE_SEQUENCE not in meta
-            ):
-                self._auto_save_export_source_sequence = None
             self._auto_save_message_count = message_count
             self._auto_save_messages = tracked_messages
             if self._auto_save_rewrite_revision == rewrite_revision:
@@ -1463,6 +1440,32 @@ def _read_session_snapshot(
     if isinstance(store, SnapshotStorePort):
         return store.load_snapshot(path, system_prompt)
     return {"messages": store.load_messages(path, system_prompt)}
+
+def _snapshot_extends_completed_transcript(
+    previous: dict[str, Any], messages: list[dict[str, Any]], meta: dict[str, Any],
+) -> bool:
+    previous_messages = previous["messages"]
+    previous_state = previous.get("session_state")
+    if not isinstance(previous_state, dict) or previous_state.get("phase") != SessionPhase.DONE.value:
+        return False
+    # Accepted work may only exist in persisted runtime state until delivery.
+    if (
+        previous.get("pending_messages")
+        or previous_state.get("pending_external_user_turn")
+        or previous_state.get("pending_events")
+        or previous_state.get("loop_checkpoint_results")
+        or previous_state.get("submitted_summary") is not None
+    ):
+        return False
+    state = meta["session_state"]
+    return (
+        len(previous_messages) < len(messages)
+        and same_snapshot_value(previous_messages, messages[:len(previous_messages)])
+        and all(
+            _snapshot_nonnegative_int(previous_state.get(key)) <= state[key]
+            for key in ("step_count", "used_tokens")
+        )
+    )
 
 def _same_snapshot_path(left: str | None, right: str | None) -> bool:
     if left is None or right is None:

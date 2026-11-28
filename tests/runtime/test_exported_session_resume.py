@@ -20,6 +20,8 @@ from opencollab.application.ports import SnapshotSequenceConflict
 from opencollab.bootstrap import build_session, load_session
 from opencollab.domain import session as session_module
 from opencollab.domain.agent import Agent
+from opencollab.domain.pending import PendingRow, RowKind
+from opencollab.domain.session import SessionPhase
 from opencollab.tools import builtin_tools
 from tests.support.environment_test_support import local_environment_factory as local_environment_factory
 from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
@@ -238,7 +240,9 @@ async def test_export_preserves_source_cursor_when_overwriting_an_old_autosave(t
         source = store.load_snapshot(automatic, agent.system_prompt)
         assert source["_autosave_sequence"] > 3
         original.save(exported)
-        assert store.load_snapshot(exported, agent.system_prompt) == source
+        assert store.load_snapshot(exported, agent.system_prompt) == {
+            **source, "_autosave_export_source_sequence": source["_autosave_sequence"],
+        }
     finally:
         await original.aclose()
         await original.env.cleanup()
@@ -350,6 +354,166 @@ async def test_writable_restore_copy_can_publish_new_work(tmp_path, local_enviro
         assert restored.used_tokens == 14
         assert await restored.run_loop() == reply
         assert readback.calls == []
+
+@pytest.mark.parametrize(
+    ("exports", "original_turns", "offline_turns"),
+    [(6, 2, 1), (1, 1, 4), (6, 0, 3)],
+)
+async def test_continued_backup_preserves_newer_divergent_autosave(
+    tmp_path, local_environment_factory, exports, original_turns, offline_turns,
+):
+    original_path, backup_path, export_path = (
+        str(tmp_path / name) for name in ("original.json", "backup.json", "continued.json")
+    )
+    agent = Agent(name="reviewer", system_prompt="Remember each requirement.")
+    store = SessionStore()
+    options = {"agent": agent, "store": store, "env": local_environment_factory(str(tmp_path))}
+
+    async def run_turns(session, branch, turns):
+        for index in range(turns):
+            await session.add_user_message(f"{branch} requirement {index}.")
+            await session.run_loop()
+
+    def source_bytes():
+        return [
+            (tmp_path / name).read_bytes() for name in ("original.json", "original.json.journal")
+        ]
+
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, llm=model(1 + original_turns), auto_save_path=original_path)
+        sessions.push_async_callback(original.aclose)
+        await run_turns(original, "Shared", 1)
+        for _ in range(exports):
+            original.save(backup_path)
+        await run_turns(original, "Original", original_turns)
+        await original.aclose()
+        before = source_bytes()
+        state = store.load_snapshot(original_path, agent.system_prompt)
+
+        offline = load_session(backup_path, **options, llm=model(offline_turns), auto_save_path=backup_path)
+        sessions.push_async_callback(offline.aclose)
+        await run_turns(offline, "Offline", offline_turns)
+        await offline.aclose()
+        # Reopening the working copy must retain the originating sequence.
+        reopened = load_session(backup_path, **options, llm=model(), auto_save_path=backup_path)
+        sessions.push_async_callback(reopened.aclose)
+        reopened.save(export_path)
+
+        if original_turns:
+            with pytest.raises(SnapshotSequenceConflict):
+                load_session(export_path, **options, llm=model(), auto_save_path=original_path)
+            assert source_bytes() == before
+            assert store.load_snapshot(original_path, agent.system_prompt) == state
+            return
+
+        restored = load_session(export_path, **options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(restored.aclose)
+        assert source_bytes() != before
+        assert restored.messages == offline.messages
+        assert restored.used_tokens == (1 + offline_turns) * 7
+        requests = [m["content"].splitlines()[0] for m in restored.messages if m["role"] == "user"]
+        assert requests == ["Shared requirement 0."] + [f"Offline requirement {i}." for i in range(offline_turns)]
+        await restored.aclose()
+
+        # The originating cursor stays fixed, so a subsequent restore uses the
+        # earlier transcript to recognize a continuation.
+        await run_turns(reopened, "Follow-up", 1)
+        reopened.save(export_path)
+        later = load_session(export_path, **options, llm=model(), auto_save_path=original_path)
+        sessions.push_async_callback(later.aclose)
+        assert later.messages == reopened.messages
+        assert later.used_tokens == (2 + offline_turns) * 7
+
+@pytest.mark.parametrize("pending", ["inbox", "deferred-user", "settled-child"])
+async def test_continued_backup_preserves_pending_autosave_state(
+    tmp_path, local_environment_factory, pending,
+):
+    source, exported, working, backup = (
+        str(tmp_path / f"{name}.json") for name in ("source", "exported", "working", "backup")
+    )
+    agent = Agent(name="reviewer", system_prompt="Retain each accepted requirement.")
+    store = SessionStore()
+    options = {"agent": agent, "env": local_environment_factory(str(tmp_path)), "store": store}
+    source_paths = (tmp_path / "source.json", tmp_path / "source.json.journal")
+
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, auto_save_path=source, llm=model())
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        if pending != "inbox":
+            original.state.append_message({
+                "role": "assistant", "tool_calls": [tool_call("check", "read_receipt", "{}")],
+            })
+            original.state.set_phase(SessionPhase.AWAITING_EVENTS)
+            original.state.pending_events.add(PendingRow("check", RowKind.CHILD_AGENT, 0, ref=1))
+        original.save(source)
+        original.save(exported)
+        if pending == "inbox":
+            original.state.queue_pending_user_message({
+                "role": "user", "content": "Record the accepted correction.", "message_id": "inbox-correction",
+            })
+        elif pending == "deferred-user":
+            original.state.append_queued_external_user_turn("Record the accepted correction.", defer=True)
+        else:
+            original.state.pending_events.fill("check", result="The signed record confirms the correction.")
+        original.save(source)
+        before = store.load_snapshot(source, agent.system_prompt)
+        source_bytes = [path.read_bytes() for path in source_paths]
+        await original.aclose()
+
+        offline = load_session(exported, **options, auto_save_path=working, llm=model(2))
+        sessions.push_async_callback(offline.aclose)
+        if pending != "inbox":
+            await offline.run_loop()
+        await offline.add_user_message("Review an independent proposal.")
+        await offline.run_loop()
+        offline.save(backup)
+        continued = store.load_snapshot(backup, agent.system_prompt)
+        assert continued["messages"][:len(before["messages"])] == before["messages"]
+        assert len(continued["messages"]) > len(before["messages"])
+        assert continued["session_state"]["step_count"] > before["session_state"]["step_count"]
+        assert continued["session_state"]["used_tokens"] > before["session_state"]["used_tokens"]
+
+        with pytest.raises(SnapshotSequenceConflict):
+            load_session(backup, **options, auto_save_path=source, llm=model())
+        assert [path.read_bytes() for path in source_paths] == source_bytes
+        assert store.load_snapshot(source, agent.system_prompt) == before
+
+
+@pytest.mark.parametrize("change", ["inbox", "stop"])
+async def test_equal_transcript_does_not_replace_newer_runtime_state(
+    tmp_path, local_environment_factory, change,
+):
+    seed, exported, target = (str(tmp_path / f"{name}.json") for name in ("seed", "exported", "target"))
+    agent = Agent(name="reviewer", system_prompt="Retain each accepted requirement.")
+    store = SessionStore()
+    options = {"agent": agent, "env": local_environment_factory(str(tmp_path)), "store": store}
+    target_paths = (tmp_path / "target.json", tmp_path / "target.json.journal")
+
+    async with AsyncExitStack() as sessions:
+        original = build_session(**options, auto_save_path=seed, llm=model())
+        sessions.push_async_callback(original.aclose)
+        await converse(original, 1)
+        original.save(exported)
+        restored = load_session(exported, **options, auto_save_path=target, llm=model())
+        sessions.push_async_callback(restored.aclose)
+        if change == "inbox":
+            restored.state.queue_pending_user_message({
+                "role": "user", "content": "Record the accepted correction.", "message_id": "inbox-correction",
+            })
+        else:
+            restored.state.cancel("interrupted by user")
+        restored.save(target)
+        before = store.load_snapshot(target, agent.system_prompt)
+        exported_state = store.load_snapshot(exported, agent.system_prompt)
+        assert before["messages"] == exported_state["messages"]
+        assert before["_autosave_export_source_sequence"] == exported_state["_autosave_sequence"]
+        target_bytes = [path.read_bytes() for path in target_paths]
+
+        with pytest.raises(SnapshotSequenceConflict):
+            load_session(exported, **options, auto_save_path=target, llm=model())
+        assert [path.read_bytes() for path in target_paths] == target_bytes
+        assert store.load_snapshot(target, agent.system_prompt) == before
 
 
 @pytest.mark.parametrize(

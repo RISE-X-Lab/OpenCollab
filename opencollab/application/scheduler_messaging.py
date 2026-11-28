@@ -308,16 +308,11 @@ class MessagingMixin:
         current_task = asyncio.current_task()
         if current_task is not None:
             self._message_delivery_tasks[aid] = current_task
-        checkpoint_turn = getattr(session, "_checkpoint_user_turn", None)
-        rollback = checkpoint_turn() if callable(checkpoint_turn) else None
-        checkpoint = session.state.checkpoint_user_turn() if rollback is None else None
+        checkpoint = session.state.checkpoint_user_turn()
         try:
             await session.add_user_message(message)
         except BaseException:
-            if rollback is None:
-                session.state.restore_user_turn(checkpoint)
-            else:
-                rollback()
+            session.state.restore_user_turn(checkpoint)
             self._autosave_session(aid)
             self._release_turn_lease(aid)
             if not self._shutting_down:

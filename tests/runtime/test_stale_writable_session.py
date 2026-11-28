@@ -214,7 +214,11 @@ async def test_manual_checkpoint_can_retry_its_own_failed_publication(
         assert journal.read_bytes() == original_journal
         source_bytes = path.read_bytes(), journal.read_bytes()
         session.save(str(exported))
-        assert OpenCollab.read_session_snapshot(exported) == {**original, "_autosave_sequence": sequence + 1}
+        assert OpenCollab.read_session_snapshot(exported) == {
+            **original,
+            "_autosave_sequence": sequence + 1,
+            "_autosave_export_source_sequence": sequence + 1,
+        }
         assert (path.read_bytes(), journal.read_bytes()) == source_bytes
 
         if peer_write:
