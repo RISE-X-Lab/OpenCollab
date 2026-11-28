@@ -125,6 +125,8 @@ async def _finalize_session(
     cleanup_environment: bool,
 ) -> bool:
     quiesced = await _wait_session_tasks(session, timeout)
+    if not quiesced and getattr(session, "_autosave_acquisition", None) is not None:
+        return False
     persistence_ready = False
     try:
         save_owner = session.enqueue_auto_save()

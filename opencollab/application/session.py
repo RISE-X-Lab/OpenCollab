@@ -7,8 +7,8 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -173,6 +173,7 @@ class Session:
         self._auto_save_lock = threading.Lock()
         self._autosave_writer: Callable[[], None] | None = None
         self._autosave_writer_references = 0
+        self._autosave_acquisition: asyncio.Task[None] | None = None
         self._run_cleanup_loop: asyncio.AbstractEventLoop | None = None
         self._auto_save_checkpoint_lock = threading.RLock()
         self._auto_save_pending_checkpoints: set[int] = set()
@@ -267,6 +268,8 @@ class Session:
     def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
         """Execution and subscriber work that must finish before teardown."""
         owned = {*self.pending_execution_tasks, *self.event_bus.pending_tasks}
+        if self._autosave_acquisition is not None:
+            owned.add(self._autosave_acquisition)
         return tuple(task for task in owned if not task.done())
 
     @property
@@ -448,11 +451,34 @@ class Session:
         else:
             release()
 
+    @asynccontextmanager
+    async def _turn_autosave_access(self) -> AsyncIterator[None]:
+        path = self._auto_save_path
+        if not path or not isinstance(self.store, AutosaveOwnershipStorePort):
+            yield
+            return
+
+        access = self._autosave_access(path, settle=True, require_current=True)
+
+        async def acquire() -> None:
+            # The journal lock can be held by another reader or writer.
+            await await_owned_operation(asyncio.to_thread(access.__enter__))
+
+        owner = asyncio.create_task(acquire())
+        self._autosave_acquisition = owner
+        try:
+            await await_owned_operation(owner, propagate_cancellation=True)
+            yield
+        finally:
+            self._autosave_acquisition = None
+            if not owner.cancelled() and owner.exception() is None:
+                access.__exit__(None, None, None)
+
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         if self._turn_lock.locked() or self.runner.pending_cleanup_tasks:
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            with self._autosave_access(self._auto_save_path, settle=True, require_current=True):
+            async with self._turn_autosave_access():
                 return await self._run_turn(cancel_event)
 
     async def _run_turn(self, cancel_event: asyncio.Event | None) -> str:
@@ -571,7 +597,7 @@ class Session:
         ):
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            with self._autosave_access(self._auto_save_path, settle=True, require_current=True):
+            async with self._turn_autosave_access():
                 self.state.append_queued_external_user_turn(
                     content, defer=not self.state.pending_events.is_empty()
                 )
