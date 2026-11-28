@@ -53,6 +53,7 @@ from opencollab.application.ports import (
     _native_completion_controls,
     _NativeCompletionControls,
 )
+from opencollab.application.provider_failure import provider_rejected_output_limit
 from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.shaping.pipeline import context_token_estimator
 from opencollab.application.steering import (
@@ -903,6 +904,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 isinstance(exc, GenerationTimeoutError)
                 or self._is_context_overflow(exc)
                 or self._is_retryable_provider_error(exc)
+                or provider_rejected_output_limit(exc, retry_limit=retry_limit)
             )
             if recoverable and not self._run_cancellation_requested():
                 logger.warning("completion budget retry failed on aid=%s (%s)", self.state.aid, type(exc).__name__)

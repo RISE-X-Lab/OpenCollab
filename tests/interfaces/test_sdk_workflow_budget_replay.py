@@ -82,6 +82,16 @@ async def _wait(event):
         ("chat", "busy", 100, [10, 128], "stopped", "Useful partial", [6000]),
         ("chat", "context", 100, [10, 128], "stopped", "Useful partial", [6000]),
         ("chat", "empty", 100, [10, 128], "stopped", "Useful partial", [6000, 6118]),
+        ("chat", "output_limit_rejected", 100, [10, 128], "stopped", "Useful partial", [6000]),
+        ("chat", "uncoded_unsupported_value", 100, [10, 128], "failed", None, [6000]),
+        ("chat", "generic_output_limit", 100, [10, 128], "stopped", "Useful partial", [6000]),
+        ("chat", "nonpositive_cap", 100, [10, 128], "failed", None, [6000]),
+        ("chat", "cap_allows_retry", 100, [10, 128], "failed", None, [6000]),
+        ("chat_reasoning", "integer_above_max_value", 100, [10, 128], "stopped", "Useful partial", [6000]),
+        ("responses", "integer_above_max_value", 100, [32, 128], "stopped", "Useful partial", [6000]),
+        ("anthropic", "integer_above_max_value", 100, [32, 128], "stopped", "Useful partial", [6000]),
+        ("chat", "unsupported_value", 100, [10, 128], "failed", None, [6000]),
+        ("chat", "invalid_type", 100, [10, 128], "failed", None, [6000]),
         ("chat", "invalid", 100, [10, 128], "failed", None, [6000]),
         ("chat", "expired", 100, [10, 128], "failed", None, [6000]),
         ("chat", "filtered", 100, [10, 128], "stopped", "", [6000, 5994]),
@@ -112,12 +122,26 @@ async def test_budget_replay_preserves_first_partial_when_it_cannot_improve(
     preparing, finish_prepare, collection_entered, start_review = (asyncio.Event() for _ in range(4))
     reviewing, sibling_admitted, finish_sibling, replay_pending, admit_replay = (asyncio.Event() for _ in range(5))
     events, review_payloads, assistant_history = [], [], []
-    model = {"chat_sse": "deepseek-reasoner", "responses": "o3", "anthropic": "claude-opus-5-5"}.get(
-        protocol, "gpt-4o",
-    )
+    model = {
+        "chat_sse": "deepseek-reasoner", "chat_reasoning": "gpt-5",
+        "responses": "o3", "anthropic": "claude-opus-5-5",
+    }.get(protocol, "gpt-4o")
     provider = "anthropic" if protocol == "anthropic" else "openai"
     wire = "responses" if protocol == "responses" else "chat_completions"
-    review_inputs = 5990 if protocol == "chat" else 5968
+    output_field = {"chat_reasoning": "max_completion_tokens", "responses": "max_output_tokens"}.get(
+        protocol, "max_tokens",
+    )
+    review_inputs = 5990 if protocol in {"chat", "chat_reasoning"} else 5968
+    output_parameter_errors = {
+        "output_limit_rejected": (None, "This route supports at most 64 output tokens."),
+        "uncoded_unsupported_value": (None, "This output parameter is unsupported for the requested model."),
+        "generic_output_limit": ("invalid_value", f"{output_field} must be less than or equal to 64."),
+        "nonpositive_cap": (None, f"{output_field} must be less than or equal to 0."),
+        "cap_allows_retry": ("invalid_value", f"{output_field} must be less than or equal to 128."),
+        "integer_above_max_value": ("integer_above_max_value", "The maximum allowed value is 64."),
+        "unsupported_value": ("unsupported_value", "This output parameter is unsupported for the requested model."),
+        "invalid_type": ("invalid_type", "The output parameter must be an integer."),
+    }
 
     class Client(LLMClient):
         def estimate_context_tokens(self, messages, **kwargs):
@@ -136,7 +160,7 @@ async def test_budget_replay_preserves_first_partial_when_it_cannot_improve(
     async def handler(request):
         body = json.loads(request.content)
         label = _prompt(body.get("messages", body.get("input")))
-        limit = body.get("max_tokens", body.get("max_output_tokens"))
+        limit = body[output_field]
         finish_reason = "stop"
         reasoning = None
         if label == "prepare":
@@ -161,6 +185,16 @@ async def test_budget_replay_preserves_first_partial_when_it_cannot_improve(
             elif outcome in {"busy", "invalid"}:
                 code = 503 if outcome == "busy" else 400
                 return http_response(request, code, json={"error": {"message": f"Offline replay {outcome}"}})
+            elif outcome in output_parameter_errors:
+                code, message = output_parameter_errors[outcome]
+                error = {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "param": output_field,
+                }
+                if code is not None:
+                    error["code"] = code
+                return http_response(request, 400, json={"error": error})
             elif outcome == "expired":
                 return http_response(request, 401, json={
                     "error": {"message": "Authentication session expired after its idle timeout."},
@@ -264,14 +298,27 @@ async def test_budget_replay_preserves_first_partial_when_it_cannot_improve(
     completions = [row for row in rows if row["type"] == "llm_call"]
     assert sum(row["metrics"]["tokens"] for row in completions) == result.tokens
     assert [event.data["total_tokens"] for event in events if event.type == "usage"] == usage
-    assert [body.get("max_tokens", body.get("max_output_tokens")) for body in review_payloads] == review_limits
+    assert [body[output_field] for body in review_payloads] == review_limits
     if len(review_limits) > 1:
         input_key = "input" if wire == "responses" else "messages"
         assert review_payloads[0][input_key] == review_payloads[1][input_key]
-    if outcome.startswith(("reasoning", "decoded_context")) or outcome.endswith("prefix"):
-        assert assistant_history == [output]
-        ledger_usage = [json.loads(line)["usage"]["total_tokens"] for line in ledger.read_text().splitlines()]
-        assert sorted(ledger_usage) == sorted([3000, sibling_tokens, *usage])
+    if (
+        outcome in output_parameter_errors
+        or outcome.startswith(("reasoning", "decoded_context"))
+        or outcome.endswith("prefix")
+    ):
+        assert assistant_history == ([output] if output is not None else [])
+        ledger_rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+        ledger_usage = [entry["usage"]["total_tokens"] for entry in ledger_rows]
+        expected_ledger_usage = [3000, sibling_tokens, *usage]
+        if outcome in output_parameter_errors:
+            expected_ledger_usage.append(0)
+            [error] = [entry for entry in ledger_rows if entry["status"] == "error"]
+            assert error["error"]["type"] == "BadRequestError"
+            assert error["usage"]["total_tokens"] == 0
+            if status == "failed":
+                assert row.reason == "run failed: BadRequestError"
+        assert sorted(ledger_usage) == sorted(expected_ledger_usage)
     if outcome.startswith("reasoning"):
         discarded = [row for row in completions if row["payload"].get("reasoning") == REASONING]
         assert len(discarded) == 1
