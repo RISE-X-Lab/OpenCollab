@@ -128,6 +128,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self.max_budget_tokens = max_budget_tokens
         self.budget_reservations: list[Callable[[], int]] = []
         self._request_budget_recovery: _RequestBudgetRecovery | None = None
+        self._interrupted_budget_replay_output: tuple[float, str] | None = None
         self._initialize_run_control(run_control, run_id)
         self.max_steps = max_steps
         self.deferrable_tool_names = deferrable_tool_names
@@ -203,6 +204,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         self._pending_tool_gate_label = None
         self._preserve_submit_reserve = False
         self._required_tool_retried = False
+        self._interrupted_budget_replay_output = None
 
     def reset_for_restore(self) -> None:
         """Discard process-local turn state before publishing a snapshot."""

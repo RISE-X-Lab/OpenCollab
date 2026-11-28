@@ -160,8 +160,15 @@ class WorkflowAgentRunMixin:
                         status, reason = "failed", "cleanup incomplete"
                     if getattr(session, "persistence_errors", ()):
                         status, reason = "failed", "session persistence failed"
+                    runner = getattr(session, "runner", None)
                     if status == "stopped" and reason == "timeout":
                         output = _completed_session_output_before(session, deadline)
+                        partial = getattr(runner, "_interrupted_budget_replay_output", None)
+                        if (
+                            output is None and partial is not None
+                            and deadline is not None and partial[0] < deadline
+                        ):
+                            output = partial[1]
                     state = getattr(session, "state", None)
                     phase = getattr(getattr(state, "phase", None), "value", None)
                     terminal_reason = getattr(state, "terminal_reason", None)
@@ -170,7 +177,6 @@ class WorkflowAgentRunMixin:
                         reason = terminal_reason
                     elif status == "completed" and phase not in {None, "done"}:
                         status, reason = "stopped", terminal_reason or f"session phase: {phase}"
-                    runner = getattr(session, "runner", None)
                     return WorkflowAgentResult(
                         output, status, reason, int(getattr(session, "used_tokens", 0)),
                         int(getattr(session, "step_count", 0)),

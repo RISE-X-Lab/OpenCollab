@@ -873,6 +873,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         response = await self._invoke_llm(
             messages=messages, tools=tools, max_output_tokens=max_output_tokens, **kwargs,
         )
+        first_reply_at = time.monotonic()
         recovery = self._budget_recovery_authority()
         if response.finish_reason not in _OUTPUT_LIMIT_REASONS or recovery is None:
             return response
@@ -900,6 +901,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         except (_TokenBudgetStop, _TeamBudgetStop):
             return response
         except BaseException as exc:
+            if (
+                isinstance(exc, asyncio.CancelledError)
+                and isinstance(response.content, str) and response.content.strip()
+                and not getattr(response, "content_from_reasoning", False)
+            ):
+                self._interrupted_budget_replay_output = (first_reply_at, response.content)
             recoverable = isinstance(exc, Exception) and (
                 isinstance(exc, GenerationTimeoutError)
                 or self._is_context_overflow(exc)
