@@ -730,3 +730,79 @@ async def test_duo_can_start_b_after_a_budget_refusal_and_reservation_release(tm
     assert result.output["candidates"]["B"]["public_test_records"][0]["verified"]
     assert (repo / "source.py").read_text() == "def value():\n    return 3\n"
     assert _git(repo, "worktree", "list", "--porcelain") == initial_worktrees
+
+
+async def test_duo_stops_when_verified_budget_fallback_cannot_be_adopted(tmp_path, monkeypatch):
+    simulate_candidate_sandbox(monkeypatch)
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    repo = _repository(tmp_path / "repo", both_pass=False)
+    package = repo / "catalog"
+    package.mkdir()
+    (package / "__init__.py").touch()
+    (repo / "test_public.py").write_text(
+        "def test_catalog_entry():\n"
+        "    from catalog.labels import entry\n"
+        "    assert entry() == 'ready'\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "Set up catalog")
+    worktrees_before = _git(repo, "worktree", "list", "--porcelain")
+    command = [sys.executable, "-B", "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider", "test_public.py"]
+    calls = []
+
+    class Model:
+        def estimate_request_tokens(self, messages, tools, **kwargs):
+            # The final reply uses the rest of the 20,000-token budget.
+            return (3_800, 3_800, 12_299)[sum(row["role"] == "tool" for row in messages)]
+
+        async def complete(self, messages, tools=None, **kwargs):
+            prompt = next(row["content"] for row in messages if row["role"] == "user")
+            assert "You are candidate A" in prompt
+            step = sum(row["role"] == "tool" for row in messages)
+            calls.append(step)
+            inputs = self.estimate_request_tokens(messages, tools)
+            if step == 0:
+                response = _tool_response("file_write", {
+                    "path": "catalog/labels.py", "mode": "create",
+                    "content": "def entry():\n    return 'ready'\n",
+                }, step)
+            elif step == 1:
+                response = _tool_response("bash", {"command": shlex.join(command)}, step)
+            else:
+                return LLMResponse(content="Catalog test passed.", usage=Usage(inputs, 21))
+            response.usage = Usage(inputs, 40)
+            return response
+
+    artifacts = tmp_path / "artifacts"
+    package.chmod(0o555)
+    try:
+        if os.access(package, os.W_OK):
+            pytest.skip("source directory remains writable with read-only permissions")
+        result = await OpenCollab(repo, model="scripted-local-model", config={"max_output_tokens": 128}).workflow(
+            "duo", {"goal": "Add the catalog entry 'ready'."},
+            llm=Model(), budget=20_000, max_steps=5, timeout=20, trace=True,
+            artifacts=artifacts, limit_mode="explicit",
+        )
+    finally:
+        package.chmod(0o755)
+
+    assert calls == [0, 1, 2]
+    traces = [json.loads(line) for line in (artifacts / "orchestration.jsonl").read_text().splitlines()]
+    test_results = [row["payload"]["result"] for row in traces if row["type"] == "tool_exec"
+                    and row["payload"]["tool"] == "bash"]
+    assert [line.splitlines()[0] for line in test_results] == ["Exit code: 0"]
+    assert any(row["type"] == "workflow_log" and "Duo adoption failed (A)" in row["payload"]["message"]
+               for row in traces)
+    assert not (package / "labels.py").exists()
+    failed_check = subprocess.run(command, cwd=repo, capture_output=True, text=True)
+    assert failed_check.returncode == 1 and "No module named 'catalog.labels'" in failed_check.stdout
+    assert _git(repo, "status", "--short") == ""
+    assert _git(repo, "worktree", "list", "--porcelain") == worktrees_before
+    assert (result.status, result.reason, result.tokens) == ("stopped", "budget_exceeded", 20_000)
+    assert result.output["status"] == "budget_exceeded"
+    manifest = json.loads((artifacts / "workflow.json").read_text())
+    assert (manifest["status"], manifest["reason"], manifest["tokens_spent"]) == (
+        "stopped", "budget_exceeded", 20_000,
+    )

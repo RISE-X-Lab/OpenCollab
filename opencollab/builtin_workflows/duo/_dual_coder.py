@@ -198,6 +198,7 @@ async def run_dual_coder(
     shared_command = dual._candidate_command(candidate_a)
 
     await ctx.phase("dual-coder-b")
+    budget_refusal = None
     try:
         candidate_b = await _coder_candidate(
             ctx,
@@ -209,9 +210,10 @@ async def run_dual_coder(
         )
         if candidate_b.initial_budget_refusal is not None:
             raise WorkflowBudgetExceeded(candidate_b.initial_budget_refusal)
-    except WorkflowBudgetExceeded:
+    except WorkflowBudgetExceeded as exc:
         if not dual._verified_for_budget_fallback(candidate_a):
             raise
+        budget_refusal = exc
         candidate_b = None
 
     await ctx.phase("dual-coder-mechanical-selection")
@@ -251,6 +253,8 @@ async def run_dual_coder(
         candidates=candidates,
         preserve_paths=preserve_paths,
     )
+    if adopted is None and budget_refusal is not None:
+        raise budget_refusal
     return {
         "status": "done" if adopted is not None else "incomplete",
         "submission_mode": submission_mode,
